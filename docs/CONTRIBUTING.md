@@ -169,19 +169,20 @@ No long-lived npm or NuGet key is stored anywhere.
 
 **Once, before the first release:**
 - **Release environment (done):** only `v*` tags can publish through the
-  `release` environment. GitHub offers required approval for private
-  repositories only on its Enterprise plan. Once the repository is public,
-  add yourself as a required reviewer (Settings, Environments, `release`), so
-  each release waits for your approval.
+  `release` environment, and each release waits for a maintainer's approval
+  (Settings, Environments, `release`).
 - **NuGet:** on nuget.org, open your account menu, then **Trusted
   Publishing**, and add a policy:
   - owner `SmithSoft-Studios`, repository `JAZMIN`;
   - workflow file `release.yml`, environment `release`.
 
   Then save your nuget.org user name (the profile name, not the email) as a
-  repository secret: `gh secret set NUGET_USER`. While the repository is
-  private, the policy is provisional for 7 days until the first publish. It
-  can be restarted at any time.
+  repository secret: `gh secret set NUGET_USER`.
+
+  *Or, with a NuGet API key:* create a key on nuget.org that can push new
+  packages, limited to the glob `Jazmin`, and save it with
+  `gh secret set NUGET_API_KEY`. The workflow then uses the key instead of
+  trusted publishing. Trusted publishing is safer, because no key is stored.
 - **npm, first version:** npm can only trust a workflow for a package that
   already exists, so the first version needs one of these:
   - **A short-lived token:** on npmjs.com, under Access Tokens, create a
@@ -197,9 +198,8 @@ No long-lived npm or NuGet key is stored anywhere.
   `SmithSoft-Studios`, repository `JAZMIN`, workflow `release.yml` and
   environment `release`. Later releases need no npm token.
 - **Signing:** npm *provenance* is a signed record of the commit and workflow
-  that built the package. It needs a public repository, so while this one is
-  private the npm package is published without it. nuget.org signs every
-  package it accepts.
+  that built the package; it is added because the repository is public.
+  nuget.org signs every package it accepts.
 
 **Each release:**
 1. Work through the checklist below on `main`.

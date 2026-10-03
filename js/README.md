@@ -1,3 +1,5 @@
+<p align="center"><img src="https://raw.githubusercontent.com/SmithSoft-Studios/JAZMIN/main/docs/images/jazmin-logo.png" alt="JAZMIN logo" width="200"></p>
+
 # jazmin
 
 **JAZMIN** is a compact, indexed, optionally encrypted file format for lists of records. This is the library for

@@ -3,10 +3,11 @@ name: Release
 # Publishes both packages when a version tag is pushed (git tag v1.2.3 && git push origin v1.2.3); see
 # docs/CONTRIBUTING.md, "Releasing". Nothing is published unless the tag matches the versions in js/package.json
 # and Jazmin.csproj, the tests pass and the packages work in a clean project. The publish jobs use the "release"
-# environment, which accepts only v* tags (and, once the repository is public, can require a maintainer's approval).
+# environment, which accepts only v* tags and waits for a maintainer's approval.
 # Both registries use trusted publishing: they trust this workflow and hand it a key that lasts about an hour, so no
 # long-lived key is stored. Secrets: NUGET_USER (the nuget.org user name), and NPM_TOKEN only for npm's first
-# publish (npm can trust a workflow only for a package that already exists). Each publish job skips a version that
+# publish (npm can trust a workflow only for a package that already exists). A NUGET_API_KEY secret, if set, is used
+# instead of NuGet's trusted publishing. Each publish job skips a version that
 # is already on its registry, so a release that failed halfway can be re-run.
 on:
   push:
@@ -96,6 +97,8 @@ jobs:
     permissions:
       contents: read
       id-token: write # trusted publishing: nuget.org exchanges the workflow's identity for a one-hour key
+    env:
+      NUGET_API_KEY_SECRET: ${{ secrets.NUGET_API_KEY }} # optional: an API key instead of trusted publishing
     steps:
       - uses: actions/setup-dotnet@v4
         with:
@@ -105,12 +108,13 @@ jobs:
           name: packages
           path: dist
       - name: NuGet login (trusted publishing)
+        if: env.NUGET_API_KEY_SECRET == ''
         id: login
         uses: NuGet/login@v1
         with:
           user: ${{ secrets.NUGET_USER }}
       - name: dotnet nuget push
         env:
-          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY || secrets.NUGET_API_KEY }}
         # Also pushes the symbols package (.snupkg) next to it; --skip-duplicate makes a re-run safe.
         run: dotnet nuget push "dist/Jazmin.*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate
