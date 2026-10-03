@@ -71,24 +71,24 @@ of rows.
 
 ## 2. Installation
 
-The packages are not yet published to npm or NuGet (see
-[TASKS.md](TASKS.md), task R-1). Until they are, reference them from this
-repository.
-
 **JavaScript / TypeScript** (Node.js 22 or later, no runtime dependencies):
 
 ```bash
-npm install ../path/to/JSZMIN/js      # or: npm pack, then install the .tgz
+npm install @smithsoft-studios/jazmin
+```
+
+```js
+import { open, write } from '@smithsoft-studios/jazmin';
 ```
 
 **.NET** (.NET 10, no third-party dependencies):
 
-```xml
-<ProjectReference Include="..\path\to\JSZMIN\dotnet\src\Jazmin\Jazmin.csproj" />
+```bash
+dotnet add package Jazmin
 ```
 
-or build a package with `dotnet pack dotnet/src/Jazmin -c Release` and
-reference the `.nupkg` from a local feed.
+To use the code in this repository instead, run `npm install ../path/to/JSZMIN/js`,
+or add `<ProjectReference Include="..\path\to\JSZMIN\dotnet\src\Jazmin\Jazmin.csproj" />`.
 
 ## 3. Core concepts
 
@@ -165,7 +165,7 @@ Everything is authenticated, so any tampering is detected.
 ## 4. JavaScript guide
 
 ```js
-import { JAZMIN, JazminKey, JazminWriter, open, write, toJSON, toCSV, exportFile, fromCSV } from 'jazmin';
+import { JAZMIN, JazminKey, JazminWriter, open, write, toJSON, toCSV, exportFile, fromCSV } from '@smithsoft-studios/jazmin';
 ```
 
 ### 4.1 The JSON-like one-liners
@@ -278,7 +278,7 @@ The package ships type definitions (`src/index.d.ts`), so no `@types`
 package is needed.
 
 ```ts
-import { JAZMIN, JazminKey, JazminKeyError, open, write, toCSV, type Filter, type JazminColumnInput } from 'jazmin';
+import { JAZMIN, JazminKey, JazminKeyError, open, write, toCSV, type Filter, type JazminColumnInput } from '@smithsoft-studios/jazmin';
 
 interface Customer { id: number; name: string; country: string | null; joined: Date; }
 
@@ -854,7 +854,7 @@ C# objects with System.Text.Json, by about 15%. Re-run with
 ### 14.3 JavaScript
 
 ```js
-import { importJSONFile, open } from 'jazmin';
+import { importJSONFile, open } from '@smithsoft-studios/jazmin';
 
 // Once (e.g. when the data arrives): streams the JSON, never loads it whole.
 // Works with a JSON array or JSON Lines. Add `key` to encrypt.
@@ -948,7 +948,7 @@ files whose signature or contents were changed.
 ### 15.1 JavaScript
 
 ```js
-import { JazminKey, open, write, grantAccess, revokeAccess } from 'jazmin';
+import { JazminKey, open, write, grantAccess, revokeAccess } from '@smithsoft-studios/jazmin';
 
 const owner = JazminKey.generate();          // keep in your secret store; it controls the file
 const bob = owner.createAccessKey();         // send bob.toString() to Bob (e.g. via your secrets API)
@@ -976,7 +976,7 @@ revokeAccess('statements.jzm', owner, bob);  // Bob cannot open the new version
 ### 15.2 TypeScript
 
 ```ts
-import { JazminKey, open, write, type AccessOptions } from 'jazmin';
+import { JazminKey, open, write, type AccessOptions } from '@smithsoft-studios/jazmin';
 
 const owner = JazminKey.generate();
 const bob = owner.createAccessKey();
@@ -1087,7 +1087,7 @@ took **3.0 s** with a **74 MB** process peak (Node.js).
 | Access-controlled files | `grant`, `revoke` (or `grantAccess` / `revokeAccess`) | `Grant`, `Revoke` (or `GrantAccess` / `RevokeAccess`) |
 
 ```js
-import { update } from 'jazmin';
+import { update } from '@smithsoft-studios/jazmin';
 
 const result = update('statements.jzm', {
   key: owner,                                   // encrypted files need their key; access-controlled files need the OWNER key
@@ -1153,7 +1153,7 @@ a threshold you choose.
 ### 17.1 JavaScript
 
 ```js
-import { append, compact, open } from 'jazmin';
+import { append, compact, open } from '@smithsoft-studios/jazmin';
 
 const result = append('statements.jzm', {
   key: owner,                                     // the owner key for access-controlled files
@@ -1232,7 +1232,7 @@ Example: user1 for 2 hours, user2 for 2 weeks (online), user3 for 5 years.
 ### 18.1 JavaScript / TypeScript
 
 ```js
-import { JazminUnlockRequiredError, inspect, issueUnlockToken, open, write } from 'jazmin';
+import { JazminUnlockRequiredError, inspect, issueUnlockToken, open, write } from '@smithsoft-studios/jazmin';
 
 write('statement.jzm', rows, {
   key: owner,
@@ -1385,7 +1385,7 @@ A key never learns the names of files it cannot see.
 ### 19.1 JavaScript
 
 ```js
-import { append, open, write } from 'jazmin';
+import { append, open, write } from '@smithsoft-studios/jazmin';
 
 write('statements.jzm', rows, {
   key: owner,
@@ -1463,7 +1463,7 @@ file size.
 ### 20.1 Write once, sorted
 
 ```js
-import { JazminWriter } from 'jazmin';
+import { JazminWriter } from '@smithsoft-studios/jazmin';
 
 // Rows arrive from your database cursor one at a time; memory stays at one chunk.
 const writer = new JazminWriter('statements.jzm', {
@@ -1500,7 +1500,7 @@ contain it. No index is needed, and the file opens in milliseconds.
 ### 20.2 Read one section, with only the columns you need
 
 ```js
-import { open } from 'jazmin';
+import { open } from '@smithsoft-studios/jazmin';
 
 const r = open('statements.jzm');
 const lines = [...r.find(
@@ -1704,7 +1704,7 @@ The file has one row per transaction:
 | C1 | ABC Corp | 10 Test Street | 2025-03-04 | 250.5 |
 
 ```js
-import { open, toJSON, toXML, exportFile } from 'jazmin';
+import { open, toJSON, toXML, exportFile } from '@smithsoft-studios/jazmin';
 
 const shape = {
   title: { $meta: 'title' },                       // a metadata member of the file
@@ -1845,7 +1845,7 @@ lists each member's type, and whether it can be null, from the column
 definitions:
 
 ```js
-import { shapeSchema } from 'jazmin';
+import { shapeSchema } from '@smithsoft-studios/jazmin';
 fs.writeFileSync('statement.schema.json', JSON.stringify(shapeSchema(reader, shape), null, 2));
 ```
 
@@ -1888,7 +1888,7 @@ the same order.
 ### 22.1 Reading
 
 ```js
-import { openAsync } from 'jazmin';
+import { openAsync } from '@smithsoft-studios/jazmin';
 
 const reader = await openAsync('statements.jzm');            // header read with non-blocking reads
 for await (const line of reader.findAsync({ account: 'ACC000123' }, { select: ['date', 'amount'] })) {
@@ -1938,7 +1938,7 @@ file once per task, which is cheap.
 ### 22.2 Writing from async sources
 
 ```js
-import { writeAsync, JazminWriter } from 'jazmin';
+import { writeAsync, JazminWriter } from '@smithsoft-studios/jazmin';
 
 // A database cursor, a stream... (columns are required: an async source cannot be read twice to infer them)
 await writeAsync('statements.jzm', db.cursor('SELECT ...'), { columns, sortedBy: ['account'] });
@@ -1978,7 +1978,7 @@ Declare the tables, then write them one after another. Only the current
 table's chunk is in memory, however many tables there are.
 
 ```js
-import { JazminWriter, write } from 'jazmin';
+import { JazminWriter, write } from '@smithsoft-studios/jazmin';
 
 const writer = new JazminWriter('statements.jzm', {
   tables: [
@@ -2160,7 +2160,7 @@ requested page of rows crosses into the sandbox.
 - **Tested** in Chrome, Edge and Firefox (`npm run test:viewer`, and in CI on
   Linux). Not tested yet: Safari and mobile browsers.
 
-For developers, the browser reader on its own is `jazmin/browser`
+For developers, the browser reader on its own is `@smithsoft-studios/jazmin/browser`
 (`js/browser/jazmin-browser.js`). It is read-only, async and has no
 dependencies:
 

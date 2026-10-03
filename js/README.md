@@ -1,16 +1,16 @@
 <p align="center"><img src="https://raw.githubusercontent.com/SmithSoft-Studios/JAZMIN/main/docs/images/jazmin-logo.png" alt="JAZMIN logo" width="200"></p>
 
-# jazmin
+# @smithsoft-studios/jazmin
 
 **JAZMIN** is a compact, indexed, optionally encrypted file format for lists of records. This is the library for
 Node.js 22+ and TypeScript. It reads and writes the same files as the .NET library (NuGet: `Jazmin`).
 
 ```bash
-npm install jazmin
+npm install @smithsoft-studios/jazmin
 ```
 
 ```js
-import { JAZMIN, JazminKey, open, write } from 'jazmin';
+import { JAZMIN, JazminKey, open, write } from '@smithsoft-studios/jazmin';
 
 // One-liners, like JSON
 const bytes = JAZMIN.stringify([{ id: 1, name: 'Ann' }, { id: 2, name: 'Bob' }]);
@@ -41,7 +41,7 @@ reader.close();
 - **Access control:** one file, many keys. Each access key sees only its rows and columns, and keys can expire.
 - **Several tables per file,** embedded files, and append-only updates.
 - **Conversion:** lossless JSON round trip, plus CSV and XML.
-- **Browser:** the read-only browser reader is `jazmin/browser`.
+- **Browser:** the read-only browser reader is `@smithsoft-studios/jazmin/browser`.
 
 Full documentation, the format specification and the .NET library:
 [github.com/SmithSoft-Studios/JAZMIN](https://github.com/SmithSoft-Studios/JAZMIN).

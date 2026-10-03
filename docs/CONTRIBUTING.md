@@ -183,6 +183,10 @@ No long-lived npm or NuGet key is stored anywhere.
   packages, limited to the glob `Jazmin`, and save it with
   `gh secret set NUGET_API_KEY`. The workflow then uses the key instead of
   trusted publishing. Trusted publishing is safer, because no key is stored.
+- **npm organisation (done):** the package is published as `@smithsoft-studios/jazmin` under the
+  `smithsoft-studios` npm organisation. npm refuses the plain name `jazmin`
+  as too close to the `jasmine` package. An npm token must be allowed to
+  publish to that organisation.
 - **npm, first version:** npm can only trust a workflow for a package that
   already exists, so the first version needs one of these:
   - **A short-lived token:** on npmjs.com, under Access Tokens, create a
@@ -190,10 +194,10 @@ No long-lived npm or NuGet key is stored anywhere.
     two-factor sign-in, expiring in 7 days. Save it with
     `gh secret set NPM_TOKEN`, and delete it after the release.
   - **By hand:** run `npm login` (two-factor sign-in in the browser), then
-    `npm publish jazmin-1.0.0.tgz --access public`, using the file that
+    `npm publish ./smithsoft-studios-jazmin-1.0.0.tgz --access public`, using the file that
     `check-packages.sh` makes, before pushing the tag. The workflow then sees
     the version is already on npm and skips it.
-- **npm, afterwards:** on npmjs.com, open `jazmin`, then **Settings**, then
+- **npm, afterwards:** on npmjs.com, open `@smithsoft-studios/jazmin`, then **Settings**, then
   **Trusted publishing**. Add GitHub Actions with organization
   `SmithSoft-Studios`, repository `JAZMIN`, workflow `release.yml` and
   environment `release`. Later releases need no npm token.
@@ -209,7 +213,7 @@ No long-lived npm or NuGet key is stored anywhere.
    - the tests pass;
    - each package installs in an empty project and its sample runs there.
 4. Then it publishes, after approval if a reviewer is required. A pre-release such as
-   `1.0.0-rc.1` goes to npm's `next` tag, so `npm install jazmin` still gets
+   `1.0.0-rc.1` goes to npm's `next` tag, so `npm install @smithsoft-studios/jazmin` still gets
    the last full release.
 5. Each publish job skips a version that is already on its registry, so a
    release that failed halfway can simply be re-run.

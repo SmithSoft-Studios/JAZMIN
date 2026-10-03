@@ -1,5 +1,5 @@
 // TypeScript quick start - type-checked by `npm run typecheck`.
-import { JAZMIN, JazminKey, JazminKeyError, append, compact, importJSONFile, open, toCSV, update, write, type Filter, type JazminColumnInput } from 'jazmin';
+import { JAZMIN, JazminKey, JazminKeyError, append, compact, importJSONFile, open, toCSV, update, write, type Filter, type JazminColumnInput } from '@smithsoft-studios/jazmin';
 import fs from 'node:fs';
 
 interface Customer {
@@ -78,7 +78,7 @@ const { bytesBefore, bytesAfter } = compact('shared.jzm', { key: owner });
 console.log(bytesBefore, '->', bytesAfter);
 
 // 7. Time-limited access: offline (enforced by the library) or online (needs your key service).
-import { JazminUnlockRequiredError, issueUnlockToken } from 'jazmin';
+import { JazminUnlockRequiredError, issueUnlockToken } from '@smithsoft-studios/jazmin';
 const shortTerm = owner.createAccessKey();
 const viaService = owner.createAccessKey();
 write('timed.jzm', [{ section: 'A', amount: 1 }], {
@@ -102,7 +102,7 @@ try {
 }
 
 // 8. Export shapes: nested output from flat rows, validated against the file's columns.
-import { shapeSchema, toJSON, type ExportShape } from 'jazmin';
+import { shapeSchema, toJSON, type ExportShape } from '@smithsoft-studios/jazmin';
 const shape: ExportShape = {
   sections: { $rows: { section: 'section', total: { $sum: 'amount' }, lines: { $rows: 'amount', $sort: ['-amount'] } }, $groupBy: 'section' },
   count: { $count: true },
@@ -112,7 +112,7 @@ console.log(toJSON(shaped, { shape, pretty: true }), shapeSchema(shaped, shape))
 shaped.close();
 
 // 9. Async: non-blocking reads (a server keeps serving other requests during long scans) and async row sources.
-import { openAsync, writeAsync } from 'jazmin';
+import { openAsync, writeAsync } from '@smithsoft-studios/jazmin';
 async function asyncExample(): Promise<void> {
   async function* cursor() {
     for (let i = 0; i < 1000; i++) yield { id: i, amount: i / 4 }; // e.g. rows from a database cursor
@@ -128,7 +128,7 @@ async function asyncExample(): Promise<void> {
 await asyncExample();
 
 // 10. Several tables in one file: declared up front, written one after another, read by name.
-import { JazminWriter, type TableDefinition } from 'jazmin';
+import { JazminWriter, type TableDefinition } from '@smithsoft-studios/jazmin';
 const tables: TableDefinition[] = [
   { name: 'clients', columns: [{ name: 'clientId', type: 'string' }, { name: 'name', type: 'string' }], sortedBy: ['clientId'], chunkRows: 256 },
   { name: 'transactions', columns: [{ name: 'clientId', type: 'string' }, { name: 'amount', type: 'float' }], sortedBy: ['clientId'] },

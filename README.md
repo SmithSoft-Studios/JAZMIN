@@ -41,6 +41,13 @@ Writing with indexes is slower than System.Text.Json, because the indexes are
 built as the file is written. JSON remains the right choice for small API
 payloads. The user guide shows the trade-offs.
 
+## Install
+
+```bash
+npm install @smithsoft-studios/jazmin   # Node.js 22+ and TypeScript
+dotnet add package Jazmin               # .NET 10
+```
+
 ## Documentation
 
 - [User guide](docs/USER-GUIDE.md): JavaScript, TypeScript and .NET examples; migrating from Newtonsoft; benchmarks; security

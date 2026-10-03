@@ -33,7 +33,7 @@ Safari/iOS (not yet tested).
 |---|---|---|---|
 | A | Embedded files in the format (version 1.3) | RFC, JS and .NET libraries | — |
 | B | Access per key for embedded files | RFC, both libraries | A |
-| C | Browser reader (full) | `jazmin/browser` | A, B |
+| C | Browser reader (full) | `@smithsoft-studios/jazmin/browser` | A, B |
 | D | Viewer: installable web app, plus "export as HTML" | `viewer/` | C |
 | E | Server-side rendering helpers | JS and .NET | A |
 | F | `jazmin` CLI: `pack`, `export-html`, `files` | `js/bin` | A, D |
@@ -183,7 +183,7 @@ Data APIs are unchanged.
   - integers without BigInt where possible;
   - cache derived keys;
   - decode chunks on demand.
-- Ships as `jazmin/browser`: a plain-script build plus an ES module build, both with no
+- Ships as `@smithsoft-studios/jazmin/browser`: a plain-script build plus an ES module build, both with no
   dependencies.
 - Writers get a `browserCompatible: true` option, which refuses Brotli and warns about
   sections larger than the browser limits.

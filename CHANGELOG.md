@@ -78,6 +78,8 @@ The first published release.
 
 ### Added
 - **Packages ready to publish (R-1).**
+  - **Names:** npm `@smithsoft-studios/jazmin` and NuGet `Jazmin`. npm refuses the plain
+    name `jazmin` as too close to the `jasmine` package.
   - **Contents:** the npm and NuGet packages now include a README, the MIT
     licence and repository links. The NuGet package has the JAZMIN icon, and
     .NET debugging symbols come as a `.snupkg`.
@@ -96,7 +98,7 @@ The first published release.
     unlock token for online keys.
   - **Documents** run in a sandbox with the `window.jazmin` API. Queries run in
     the viewer, so the key never reaches the template.
-  - **Browser reader:** `jazmin/browser` (`js/browser/jazmin-browser.js`) is
+  - **Browser reader:** `@smithsoft-studios/jazmin/browser` (`js/browser/jazmin-browser.js`) is
     read-only and has no dependencies. It reads every fixture except Brotli
     ones, with the same results as the library.
   - **Tested** in Chrome, Edge and Firefox (`npm run test:viewer`; CI runs

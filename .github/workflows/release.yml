@@ -80,15 +80,15 @@ jobs:
           PROVENANCE: ${{ github.event.repository.private && ' ' || '--provenance' }}
         run: |
           version="${GITHUB_REF_NAME#v}"
-          if npm view "jazmin@$version" version > /dev/null 2>&1; then
-            echo "::notice::jazmin $version is already on npm: nothing to publish"
+          if npm view "@smithsoft-studios/jazmin@$version" version > /dev/null 2>&1; then
+            echo "::notice::@smithsoft-studios/jazmin $version is already on npm: nothing to publish"
             exit 0
           fi
           npm install --global npm@latest > /dev/null # trusted publishing needs npm 11.5.1 or later
-          # A pre-release (1.0.0-rc.1) goes to the "next" tag, so "npm install jazmin" keeps the last release.
+          # A pre-release (1.0.0-rc.1) goes to the "next" tag, so "npm install @smithsoft-studios/jazmin" keeps the last release.
           case "$version" in *-*) dist_tag=next ;; *) dist_tag=latest ;; esac
           # "./" marks a local file: npm 12 reads "dist/x.tgz" as a GitHub repository name and refuses it.
-          npm publish ./dist/jazmin-*.tgz --access public --tag "$dist_tag" $PROVENANCE
+          npm publish ./dist/smithsoft-studios-jazmin-*.tgz --access public --tag "$dist_tag" $PROVENANCE
 
   nuget:
     name: Publish to NuGet

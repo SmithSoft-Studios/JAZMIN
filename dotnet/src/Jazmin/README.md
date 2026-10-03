@@ -2,7 +2,7 @@
 
 **JAZMIN** is a compact, indexed, optionally encrypted file format for lists of records. This is the library for
 .NET 10, shaped like Newtonsoft.Json and with no third-party dependencies. It reads and writes the same files as the
-JavaScript library (npm: `jazmin`).
+JavaScript library (npm: `@smithsoft-studios/jazmin`).
 
 ```bash
 dotnet add package Jazmin

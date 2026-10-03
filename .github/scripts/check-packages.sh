@@ -15,19 +15,19 @@ export NUGET_PACKAGES="$work/nuget-cache" # an empty package cache, so an older 
 
 echo "== npm package"
 (cd js && npm pack --loglevel=warn --pack-destination "$out" > /dev/null)
-tgz=$(ls "$out"/jazmin-*.tgz)
+tgz=$(ls "$out"/smithsoft-studios-jazmin-*.tgz)
 mkdir "$work/npm" && cd "$work/npm"
 npm init -y > /dev/null
 npm pkg set type=module
 npm install --no-audit --no-fund "$tgz" > /dev/null
-sed "s#'../src/index.js'#'jazmin'#" "$root/js/examples/quickstart.mjs" > quickstart.mjs
+sed "s#'../src/index.js'#'@smithsoft-studios/jazmin'#" "$root/js/examples/quickstart.mjs" > quickstart.mjs
 node quickstart.mjs > /dev/null
-node --input-type=module -e "await import('jazmin/browser'); if (typeof JazminBrowser.open !== 'function') throw new Error('jazmin/browser did not load');"
+node --input-type=module -e "await import('@smithsoft-studios/jazmin/browser'); if (typeof JazminBrowser.open !== 'function') throw new Error('@smithsoft-studios/jazmin/browser did not load');"
 npm install --no-audit --no-fund --no-save typescript@5 @types/node@22 > /dev/null
 cp "$root/js/examples/typescript/quickstart.ts" .
 printf '{ "compilerOptions": { "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext", "strict": true, "noEmit": true, "types": ["node"] }, "include": ["quickstart.ts"] }\n' > tsconfig.json
 npx tsc -p .
-echo "   $(basename "$tgz"): installs, the quickstart runs, jazmin/browser loads, the types check"
+echo "   $(basename "$tgz"): installs, the quickstart runs, @smithsoft-studios/jazmin/browser loads, the types check"
 
 echo "== NuGet package"
 cd "$root/dotnet"

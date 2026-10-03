@@ -24,7 +24,7 @@ it, and credit you in the release notes unless you prefer not to be named.
 ## Scope
 
 In scope:
-- the libraries (npm `jazmin`, NuGet `Jazmin`) and the viewer;
+- the libraries (npm `@smithsoft-studios/jazmin`, NuGet `Jazmin`) and the viewer;
 - the file format's security design: key hierarchy, encryption, signatures,
   access control and expiry. The design is described in
   [docs/SECURITY-REVIEW.md](docs/SECURITY-REVIEW.md) and in the format

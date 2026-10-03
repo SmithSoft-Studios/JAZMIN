@@ -1,5 +1,5 @@
 {
-  "name": "jazmin",
+  "name": "@smithsoft-studios/jazmin",
   "version": "1.0.0",
   "description": "JAZMIN (Javascript Secure Zipped Multi Index Notation) - compact, indexed, optionally encrypted tabular file format with JSON/CSV/XML conversion.",
   "keywords": [
