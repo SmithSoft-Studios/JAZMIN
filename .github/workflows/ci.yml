@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [22, 24, 26]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: js/package-lock.json
+
+      # .NET first: its tests read the JS-written fixtures and write fresh dotnet-*.jzm files,
+      # which the JavaScript tests then read - so every run proves interop in both directions.
+      - name: .NET tests
+        working-directory: dotnet
+        env:
+          JAZMIN_WRITE_FIXTURES: "1" # write fresh dotnet-*.jzm for the JavaScript tests to read
+        run: dotnet test --configuration Release
+
+      - name: JavaScript tests
+        working-directory: js
+        run: |
+          npm ci
+          npm test
+
+      - name: TypeScript typecheck
+        working-directory: js
+        run: npm run typecheck
+
+      - name: Examples run
+        run: |
+          node js/examples/quickstart.mjs
+          dotnet run --configuration Release --project dotnet/samples/Jazmin.Samples
+
+  # The viewer in real browsers (TASKS F-2): the files fixtures with every kind of key, a template that queries the
+  # data, and a saved HTML copy opened from disk. The runner image has Chrome and Firefox.
+  viewer:
+    name: Viewer (Chrome, Firefox)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: js/package-lock.json
+      - name: Viewer end-to-end
+        working-directory: js
+        run: |
+          npm ci
+          node scripts/viewer-e2e.mjs --browser chrome --browser firefox
+
+  # The npm and NuGet packages as users get them (TASKS R-1): each is packed, installed into a new, empty project and
+  # runs the quickstart sample there. The release workflow runs the same check before publishing.
+  packages:
+    name: Packages install and run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Pack, then install and run each package in a clean project
+        run: bash .github/scripts/check-packages.sh dist
+
+  # The next .NET release, while it is a preview: the .NET 10 build runs on the newer runtime, so problems show up
+  # before it ships. It does not block pull requests.
+  next-dotnet:
+    name: Next .NET (preview runtime)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 11.0.x
+          dotnet-quality: preview
+      - name: .NET tests on the preview runtime
+        working-directory: dotnet
+        env:
+          DOTNET_ROLL_FORWARD: LatestMajor # run on the newest runtime installed, even though .NET 10 is there too
+          DOTNET_ROLL_FORWARD_TO_PRERELEASE: "1"
+        run: |
+          dotnet --list-runtimes
+          dotnet test --configuration Release
+

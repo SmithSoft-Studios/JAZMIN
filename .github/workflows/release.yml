@@ -1,0 +1,116 @@
+name: Release
+
+# Publishes both packages when a version tag is pushed (git tag v1.2.3 && git push origin v1.2.3); see
+# docs/CONTRIBUTING.md, "Releasing". Nothing is published unless the tag matches the versions in js/package.json
+# and Jazmin.csproj, the tests pass and the packages work in a clean project. The publish jobs use the "release"
+# environment, which accepts only v* tags (and, once the repository is public, can require a maintainer's approval).
+# Both registries use trusted publishing: they trust this workflow and hand it a key that lasts about an hour, so no
+# long-lived key is stored. Secrets: NUGET_USER (the nuget.org user name), and NPM_TOKEN only for npm's first
+# publish (npm can trust a workflow only for a package that already exists). Each publish job skips a version that
+# is already on its registry, so a release that failed halfway can be re-run.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  pack:
+    name: Test and pack
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: js/package-lock.json
+
+      - name: The tag matches the package versions
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          npm_version=$(node -p "require('./js/package.json').version")
+          dotnet_version=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' dotnet/src/Jazmin/Jazmin.csproj)
+          if [ "$tag" != "$npm_version" ] || [ "$tag" != "$dotnet_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME, js/package.json $npm_version and Jazmin.csproj $dotnet_version must match"
+            exit 1
+          fi
+
+      - name: Tests
+        env:
+          JAZMIN_WRITE_FIXTURES: "1"
+        run: |
+          (cd dotnet && dotnet test --configuration Release)
+          (cd js && npm ci && npm test && npm run typecheck)
+
+      - name: Pack, then install and run each package in a clean project
+        run: bash .github/scripts/check-packages.sh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages
+          path: dist/
+          if-no-files-found: error
+
+  npm:
+    name: Publish to npm
+    needs: pack
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # trusted publishing, and npm provenance once the repository is public
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+      - name: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }} # only for the first publish; trusted publishing needs none
+          PROVENANCE: ${{ github.event.repository.private && ' ' || '--provenance' }}
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if npm view "jazmin@$version" version > /dev/null 2>&1; then
+            echo "::notice::jazmin $version is already on npm: nothing to publish"
+            exit 0
+          fi
+          npm install --global npm@latest > /dev/null # trusted publishing needs npm 11.5.1 or later
+          # A pre-release (1.0.0-rc.1) goes to the "next" tag, so "npm install jazmin" keeps the last release.
+          case "$version" in *-*) dist_tag=next ;; *) dist_tag=latest ;; esac
+          npm publish dist/jazmin-*.tgz --access public --tag "$dist_tag" $PROVENANCE
+
+  nuget:
+    name: Publish to NuGet
+    needs: pack
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      id-token: write # trusted publishing: nuget.org exchanges the workflow's identity for a one-hour key
+    steps:
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - uses: actions/download-artifact@v4
+        with:
+          name: packages
+          path: dist
+      - name: NuGet login (trusted publishing)
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: ${{ secrets.NUGET_USER }}
+      - name: dotnet nuget push
+        env:
+          NUGET_API_KEY: ${{ steps.login.outputs.NUGET_API_KEY }}
+        # Also pushes the symbols package (.snupkg) next to it; --skip-duplicate makes a re-run safe.
+        run: dotnet nuget push "dist/Jazmin.*.nupkg" --api-key "$NUGET_API_KEY" --source https://api.nuget.org/v3/index.json --skip-duplicate

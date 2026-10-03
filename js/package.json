@@ -1,0 +1,53 @@
+{
+  "name": "jazmin",
+  "version": "1.0.0",
+  "description": "JAZMIN (Javascript Secure Zipped Multi Index Notation) - compact, indexed, optionally encrypted tabular file format with JSON/CSV/XML conversion.",
+  "keywords": [
+    "jazmin",
+    "file-format",
+    "tabular",
+    "columnar",
+    "index",
+    "encryption",
+    "json",
+    "csv"
+  ],
+  "homepage": "https://github.com/SmithSoft-Studios/JAZMIN#readme",
+  "bugs": "https://github.com/SmithSoft-Studios/JAZMIN/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SmithSoft-Studios/JAZMIN.git",
+    "directory": "js"
+  },
+  "author": "SmithSoft Pty Ltd",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": {
+      "types": "./src/index.d.ts",
+      "default": "./src/index.js"
+    },
+    "./browser": "./browser/jazmin-browser.js"
+  },
+  "files": [
+    "src",
+    "browser"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "tsc -p examples/typescript",
+    "bench": "node bench/benchmark.js",
+    "fixtures": "node scripts/make-fixtures.js",
+    "viewer": "node viewer/serve.mjs",
+    "test:viewer": "node scripts/viewer-e2e.mjs"
+  },
+  "license": "MIT",
+  "types": "src/index.d.ts",
+  "devDependencies": {
+    "@types/node": "^22.20.4",
+    "typescript": "^5.9.3"
+  }
+}

@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/bench/">
+    <Project Path="bench/Jazmin.Benchmarks/Jazmin.Benchmarks.csproj" />
+  </Folder>
+  <Folder Name="/samples/">
+    <Project Path="samples/Jazmin.KeyService/Jazmin.KeyService.csproj" />
+    <Project Path="samples/Jazmin.Samples/Jazmin.Samples.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Jazmin/Jazmin.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Jazmin.KeyService.Tests/Jazmin.KeyService.Tests.csproj" />
+    <Project Path="tests/Jazmin.Tests/Jazmin.Tests.csproj" />
+  </Folder>
+</Solution>

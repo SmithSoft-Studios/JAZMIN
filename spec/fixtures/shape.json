@@ -1,0 +1,30 @@
+{
+  "title": { "$meta": "title" },
+  "count": { "$count": true },
+  "idTotal": { "$sum": "id" },
+  "balanceTotal": { "$sum": "balance" },
+  "firstName": "name",
+  "countries": {
+    "$rows": {
+      "country": "country",
+      "people": { "$count": true },
+      "balance": { "$sum": "balance" },
+      "best": { "$max": "score" },
+      "firstJoined": { "$min": "joined" },
+      "topActive": {
+        "$rows": { "id": "id", "name": "name", "score": "score", "joined": "joined", "blob": "blob", "extra": "extra" },
+        "$filter": { "active": true },
+        "$sort": ["-score"],
+        "$limit": 3,
+        "$xmlItem": "person"
+      }
+    },
+    "$groupBy": "country",
+    "$sort": ["country"],
+    "$xmlItem": "country"
+  },
+  "byActive": { "$rows": { "active": "active", "n": { "$count": true }, "low": { "$min": "score" } }, "$groupBy": "active" },
+  "big": { "$rows": "id", "$filter": { "id": { "gt": "9007199254740990" } } },
+  "label": { "$value": "interop" },
+  "version": 1
+}

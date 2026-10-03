@@ -1,0 +1,195 @@
+// JAZMIN format 1.0: the catalog messages (spec draft-jazmin-format-03, section 6).
+//
+// The header and every catalog section (chunk directories, statistics, partition tables, index
+// directories, append deltas, column definitions, the owner catalog) are encoded with the Protocol
+// Buffers wire format using these messages. Readers MUST skip fields they do not know, so optional
+// information can be added in later versions without breaking files. Information a reader must
+// understand is announced through reader features (Header.reader_features), never silently.
+//
+// The reference implementations encode and decode the wire format with a small built-in codec; any
+// standard Protocol Buffers tool can decode a decrypted section with this schema.
+syntax = "proto3";
+
+package jazmin.v1;
+
+// Where a section is: its absolute offset and total length (envelope included). In access-controlled
+// files, also its SHA-256 (32 bytes), which readers MUST verify.
+message SectionRef {
+  uint64 offset = 1;
+  uint32 length = 2;
+  bytes digest = 3;
+}
+
+// The header section (section id "header").
+message Header {
+  repeated string reader_features = 1; // features a reader must support to read the file (none in 1.0)
+  repeated string writer_features = 2; // features a writer must support to append to or rewrite the file
+  int64 created = 3;                   // milliseconds since 1970-01-01T00:00Z
+  int64 modified = 4;                  // time of the last append; 0 if never appended
+  uint32 append_count = 5;             // appends since the file was last written in full
+  string metadata = 6;                 // application metadata: a JSON object as text ("" = {})
+  repeated Table tables = 7;           // at least one
+  Keyring keyring = 8;                 // files encrypted with a key or password
+  FilesInfo files = 9;                 // embedded files, if any
+  AccessInfo access = 10;              // access-controlled files
+  repeated SectionRef deltas = 11;     // append deltas (Delta), oldest first
+}
+
+// Random 32-byte secrets, one per keyring group (spec 7.3).
+message Keyring {
+  bytes data = 1;    // chunks, chunk directories, statistics, deletes, partition tables, deltas
+  bytes index = 2;   // indexes
+  bytes files = 3;   // embedded-file directories (present only when the file stores files)
+}
+
+enum Type {
+  TYPE_UNSPECIFIED = 0;
+  BOOL = 1;
+  INT = 2;
+  FLOAT = 3;
+  DECIMAL = 4;
+  STRING = 5;
+  DATETIME = 6;
+  BINARY = 7;
+  JSON = 8;
+}
+
+enum TimeUnit {
+  MILLISECONDS = 0; // other units are reserved for reader features
+}
+
+message Column {
+  uint32 position = 1;   // index in the table's full column list (0-based, unique)
+  string name = 2;       // unique within the table, non-empty
+  Type type = 3;
+  bool required = 4;     // true: null values are not allowed ("nullable": false)
+  string description = 5;
+  string attributes = 6; // free-form JSON object as text ("" = none)
+  TimeUnit unit = 7;     // datetime columns
+}
+
+// A set of columns stored and locked together. Every column is in exactly one group.
+message ColumnGroup {
+  string name = 1;                // "*" for the default group, which comes first
+  repeated Column columns = 2;    // the default group, and every group of a file that is not access-controlled
+  uint32 column_count = 3;        // restricted groups: the number of columns in the definitions section
+  SectionRef definitions = 4;     // restricted groups: a ColumnDefinitions section, locked with the group's secret
+}
+
+// Section "<t>/columns/<group>": the columns of a restricted column group.
+message ColumnDefinitions {
+  repeated Column columns = 1;
+}
+
+message Table {
+  string name = 1;
+  uint32 column_count = 2;                // all columns, hidden ones included
+  repeated ColumnGroup column_groups = 3; // the default group first
+  repeated string sorted_by = 4;          // rows are in this order (spec 6.7)
+  string partition_by = 5;                // access-controlled files: the partition column ("" = one partition)
+  uint64 row_count = 6;                   // rows written, deleted rows included
+  uint64 deleted_count = 7;
+  uint32 chunk_count = 8;
+  repeated Partition partitions = 9;      // partitions listed in the header (writers: at most 64)...
+  SectionRef partition_table = 10;        // ...and/or in a PartitionTable section
+  repeated IndexRef indexes = 11;         // files that are not access-controlled (else: the owner catalog)
+  SectionRef deletes = 12;                // sorted ids of deleted rows, section "<t>/deletes/<deleted_count>" (spec 11.2)
+}
+
+// A partition: the rows of one partition-column value (or all rows, in a table without partitions).
+message Partition {
+  bytes id = 1;                      // 12 bytes in access-controlled files; empty otherwise. Writers encode it first
+  repeated SectionRef segments = 2;  // its chunk directory, in segments (oldest first)
+}
+
+// Section "<t>/partitions": partitions sorted by id, so a reader can binary-search for its own.
+message PartitionTable {
+  repeated Partition partitions = 1;
+}
+
+// Section "<t>/dir/<partition>[/<k>]": segment k of a partition's chunk directory (k = its position in
+// Partition.segments; omitted for the first).
+// Chunks are in ascending ordinal (and row) order. Numeric lists are packed; "differences" means the
+// first value is absolute and each later one is the difference from the previous value.
+message ChunkDirectory {
+  repeated uint32 ordinals = 1;     // chunk ordinals, as differences
+  repeated uint64 row_starts = 2;   // first row id of each chunk, as differences
+  repeated uint32 row_counts = 3;
+  repeated uint64 part_offsets = 4; // one part per column group per chunk, chunk by chunk; as differences
+  repeated uint32 part_lengths = 5;
+  bytes part_digests = 6;           // access-controlled files: 32 bytes per part, same order
+  repeated StatisticsBlock statistics = 7;
+}
+
+// Statistics for some columns of the chunks in one directory segment.
+message StatisticsBlock {
+  repeated uint32 columns = 1;  // column positions covered (one column group only, in access-controlled files)
+  SectionRef section = 2;       // a Statistics section
+}
+
+// Section "<t>/stats/<partition>/<block>[/<k>]", k as for its directory segment. Statistics are optional.
+message Statistics {
+  repeated ColumnStatistics columns = 1; // same order as StatisticsBlock.columns
+}
+
+message ColumnStatistics {
+  repeated uint32 null_counts = 1; // one per chunk
+  repeated bytes min = 2;          // one per chunk: a bound in key form (spec 6.5), empty = unbounded
+  repeated bytes max = 3;
+}
+
+message IndexRef {
+  string column = 1;
+  string kind = 2;        // "sorted" or "trigram"
+  SectionRef section = 3; // sorted: an IndexDirectory section; trigram: the index section
+  uint32 segment = 4;     // 0: written with the file; n: written by append n (covers that append's rows)
+}
+
+// Section "<t>/index/<column>/sorted[/<segment>]": the pages of a sorted index.
+message IndexDirectory {
+  repeated bytes first_keys = 1;    // each page's smallest key, in key form
+  repeated uint32 entry_counts = 2;
+  repeated uint64 page_offsets = 3; // as differences
+  repeated uint32 page_lengths = 4;
+  bytes page_digests = 5;           // access-controlled files: 32 bytes per page
+  SectionRef nulls = 6;             // postings of null cells (absent when none)
+}
+
+// Section "delta/<d>", d = its position in Header.deltas: what one append changed. Readers apply deltas in order.
+message Delta {
+  repeated TableDelta tables = 1;
+}
+
+message TableDelta {
+  uint32 table = 1;
+  repeated Partition partitions = 2; // new partitions, and new segments of existing ones
+}
+
+// Embedded files (spec 6.8). File directories are JSON sections.
+message FilesInfo {
+  repeated FileDirectory directories = 1;
+  uint32 next_content = 2;
+  string package = 3;  // viewer settings: JSON object as text ("" = none)
+  uint32 segment = 4;  // set when an append wrote the directories
+}
+
+message FileDirectory {
+  string group = 1;    // "*" or a file-group id (access-controlled files)
+  SectionRef section = 2;
+}
+
+// Access-controlled files (spec 7.6).
+message AccessInfo {
+  SectionRef owner_directory = 1; // grants and partition names: owner only
+  SectionRef owner_catalog = 2;   // an OwnerCatalog section: owner only
+}
+
+// Section "owner/catalog": what only the owner may use.
+message OwnerCatalog {
+  repeated TableIndexes tables = 1;
+}
+
+message TableIndexes {
+  uint32 table = 1;
+  repeated IndexRef indexes = 2;
+}

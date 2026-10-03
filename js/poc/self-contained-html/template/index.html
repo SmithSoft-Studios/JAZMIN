@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Account statement</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="top">
+  <img src="img/logo.svg" alt="Example Bank" class="logo">
+  <div class="who">
+    <div id="client" class="client"></div>
+    <div id="account" class="muted"></div>
+  </div>
+  <nav class="actions no-print">
+    <button id="print">Print</button>
+    <button id="pdf">Download PDF</button>
+    <button id="csv">Export CSV</button>
+    <a href="docs/terms.pdf" download="terms.pdf" class="button">Terms (PDF)</a>
+    <a href="about.html" class="button">About</a>
+  </nav>
+</header>
+
+<main>
+  <h1 id="title">Account statement</h1>
+  <p id="period" class="muted"></p>
+
+  <section class="cards">
+    <div class="card"><span>Opening balance</span><strong id="opening"></strong></div>
+    <div class="card"><span>Money in</span><strong id="in" class="pos"></strong></div>
+    <div class="card"><span>Money out</span><strong id="out" class="neg"></strong></div>
+    <div class="card"><span>Closing balance</span><strong id="closing"></strong></div>
+  </section>
+
+  <section class="chart-box">
+    <h2>Monthly movement</h2>
+    <canvas id="chart" width="900" height="220" aria-label="Money in and out per month"></canvas>
+  </section>
+
+  <section>
+    <div class="filters no-print">
+      <input id="search" type="search" placeholder="Search description…">
+      <select id="category"><option value="">All categories</option></select>
+      <span id="count" class="muted"></span>
+    </div>
+    <table>
+      <thead><tr><th>Date</th><th>Description</th><th>Category</th><th class="num">Amount</th><th class="num">Balance</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </section>
+</main>
+<script src="vendor/jspdf.umd.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

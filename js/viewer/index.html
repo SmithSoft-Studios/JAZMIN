@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Open JAZMIN (.jzm) files: data, embedded documents and files. Nothing is uploaded.">
+<meta name="theme-color" content="#1f5eff">
+<title>JAZMIN viewer</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-32.png" sizes="32x32" type="image/png">
+<link rel="stylesheet" href="viewer.css" data-jz-inline="css">
+</head>
+<body>
+<header class="bar">
+  <strong class="brand">JAZMIN viewer</strong>
+  <span id="jz-name" class="name"></span>
+  <span class="grow"></span>
+  <label class="button" for="jz-input">Open file…</label>
+  <input id="jz-input" type="file" accept=".jzm" hidden>
+  <button id="jz-export" type="button" hidden>Save as HTML</button>
+</header>
+
+<main>
+  <section id="jz-start" class="panel start">
+    <div id="jz-drop" class="drop" tabindex="0">
+      <p class="big">Drop a <code>.jzm</code> file here, or choose one</p>
+      <p class="hint">The file is read on this device. Nothing is uploaded.</p>
+      <label class="button primary" for="jz-input">Choose a file…</label>
+    </div>
+  </section>
+
+  <form id="jz-unlock" class="panel unlock" hidden autocomplete="off">
+    <h1 id="jz-unlock-title">This file is locked</h1>
+    <p>Enter the key (<code>jzk1-…</code> or <code>jza1-…</code>) or the password you were given. It stays on this device.</p>
+    <label for="jz-key">Key or password</label>
+    <input id="jz-key" type="password" spellcheck="false" autocomplete="off" placeholder="jzk1-…, jza1-… or password">
+    <div id="jz-token-row" hidden>
+      <label for="jz-token">Unlock token</label>
+      <input id="jz-token" type="password" spellcheck="false" autocomplete="off" placeholder="jzu1-…">
+      <p class="hint">This key also needs an unlock token from the file owner's key service. Give them:
+        <br>file id <code id="jz-file-id"></code>, key id <code id="jz-key-id"></code></p>
+    </div>
+    <button type="submit" class="primary">Open</button>
+    <p id="jz-error" class="error" role="alert"></p>
+  </form>
+
+  <section id="jz-content" hidden>
+    <nav class="tabs" role="tablist">
+      <button id="jz-tab-document" role="tab" data-tab="document" hidden>Document</button>
+      <button id="jz-tab-data" role="tab" data-tab="data">Data</button>
+      <button id="jz-tab-files" role="tab" data-tab="files">Files</button>
+      <span class="grow"></span>
+      <label id="jz-table-label" for="jz-table" hidden>Table <select id="jz-table"></select></label>
+    </nav>
+    <div id="jz-pane-document" class="pane" role="tabpanel" hidden>
+      <iframe id="jz-frame" title="Document" sandbox="allow-scripts allow-modals allow-downloads"></iframe>
+    </div>
+    <div id="jz-pane-data" class="pane" role="tabpanel" hidden>
+      <form id="jz-filter-form" class="filter">
+        <label for="jz-filter">Filter</label>
+        <input id="jz-filter" spellcheck="false" placeholder='{ "country": "ZA", "amount": { "gt": 100 } }'>
+        <button type="submit">Apply</button>
+      </form>
+      <p id="jz-data-status" class="hint" role="status"></p>
+      <div class="table-wrap"><table id="jz-rows"><thead></thead><tbody></tbody></table></div>
+      <div class="pager">
+        <button id="jz-prev" type="button">Previous</button>
+        <button id="jz-next" type="button">Next</button>
+      </div>
+    </div>
+    <div id="jz-pane-files" class="pane" role="tabpanel" hidden>
+      <p id="jz-files-status" class="hint"></p>
+      <ul id="jz-files" class="files"></ul>
+    </div>
+  </section>
+  <p id="jz-status" class="status" role="status"></p>
+</main>
+
+<script src="../browser/jazmin-browser.js" data-jz-inline="reader"></script>
+<script src="sandbox.js" data-jz-inline="sandbox"></script>
+<script src="viewer.js" data-jz-inline="viewer"></script>
+</body>
+</html>

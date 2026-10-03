@@ -1,0 +1,289 @@
+using System.Security.Cryptography;
+using System.Text.Json.Nodes;
+using Jazmin.Format;
+
+namespace Jazmin;
+
+/// <summary>
+/// A file to embed in a JAZMIN file (spec 6.8). Give <see cref="Content"/> (bytes) or
+/// <see cref="FilePath"/> (a file on disk, read in blocks).
+/// </summary>
+public sealed class JazminFileInput
+{
+    public JazminFileInput(string path, byte[] content)
+    {
+        Path = path;
+        Content = content ?? throw new ArgumentNullException(nameof(content));
+    }
+
+    private JazminFileInput(string path, string filePath)
+    {
+        Path = path;
+        FilePath = filePath;
+    }
+
+    /// <summary>A file read from disk (block by block, so it is never fully in memory).</summary>
+    public static JazminFileInput FromFile(string path, string filePath, IReadOnlyList<string>? groups = null, string? type = null) =>
+        new(path, filePath) { Groups = groups, Type = type };
+
+    /// <summary>Relative path with '/' separators, e.g. "img/logo.png".</summary>
+    public string Path { get; }
+
+    public byte[]? Content { get; }
+
+    public string? FilePath { get; }
+
+    /// <summary>Media type (default: from the extension).</summary>
+    public string? Type { get; init; }
+
+    /// <summary>Groups that may see the file: null or ["*"] for everyone with a key, or partition / named file-group names.</summary>
+    public IReadOnlyList<string>? Groups { get; init; }
+}
+
+/// <summary>An embedded file visible to the current key.</summary>
+public sealed record JazminEmbeddedFile(string Path, string Type, long Size, string Sha256, IReadOnlyList<string>? Groups);
+
+/// <summary>Settings for viewers that render a file's embedded website.</summary>
+public sealed class JazminPackage
+{
+    public string? Entry { get; init; }
+
+    public string? Title { get; init; }
+
+    /// <summary>https origins the rendered page may contact.</summary>
+    public IReadOnlyList<string>? AllowedOrigins { get; init; }
+
+    public bool? AllowWasm { get; init; }
+}
+
+/// <summary>Validation, media types and the stored-content model for embedded files (spec 6.8).</summary>
+internal static class EmbeddedFiles
+{
+    public const int BlockSize = 256 * 1024;
+    public const string Everyone = "*";
+
+    private static readonly Dictionary<string, string> Mime = new(StringComparer.OrdinalIgnoreCase)
+    {
+        [".html"] = "text/html", [".htm"] = "text/html", [".css"] = "text/css", [".js"] = "text/javascript", [".mjs"] = "text/javascript",
+        [".json"] = "application/json", [".txt"] = "text/plain", [".csv"] = "text/csv", [".xml"] = "application/xml", [".svg"] = "image/svg+xml",
+        [".png"] = "image/png", [".jpg"] = "image/jpeg", [".jpeg"] = "image/jpeg", [".gif"] = "image/gif", [".webp"] = "image/webp", [".ico"] = "image/x-icon",
+        [".woff2"] = "font/woff2", [".woff"] = "font/woff", [".ttf"] = "font/ttf", [".otf"] = "font/otf", [".pdf"] = "application/pdf",
+        [".mp4"] = "video/mp4", [".webm"] = "video/webm", [".mp3"] = "audio/mpeg", [".ogg"] = "audio/ogg", [".wav"] = "audio/wav", [".zip"] = "application/zip",
+    };
+
+    public static string MediaType(string path) => Mime.TryGetValue(System.IO.Path.GetExtension(path), out var type) ? type : "application/octet-stream";
+
+    public static string ValidatePath(string? path)
+    {
+        if (string.IsNullOrEmpty(path) || path.Length > 1024) throw new JazminValidationException("A file path must be 1 to 1024 characters");
+        if (path.Contains('\\') || path.Split('/').Any(s => s is "" or "." or ".."))
+            throw new JazminValidationException($"Invalid file path '{path}': use relative paths with '/' and no empty, '.' or '..' segments");
+        return path;
+    }
+
+    public static List<string> NormalizeGroups(IReadOnlyList<string>? groups, string path)
+    {
+        if (groups is null) return [Everyone];
+        if (groups.Count == 0) throw new JazminValidationException($"File '{path}': groups must be null, [\"*\"] or a non-empty list");
+        var names = groups.Distinct(StringComparer.Ordinal).ToList();
+        foreach (var g in names)
+            if (g.Length is 0 or > 256) throw new JazminValidationException($"File '{path}': invalid group name '{g}'");
+        if (names.Contains(Everyone)) return [Everyone];
+        names.Sort(StringComparer.Ordinal);
+        return names;
+    }
+
+    /// <summary>Validates package settings against the stored paths; returns the header JSON or null.</summary>
+    public static JsonObject? PackageJson(JazminPackage? package, ICollection<string> paths)
+    {
+        if (package is null) return null;
+        var json = new JsonObject();
+        if (package.Entry is not null)
+        {
+            if (!paths.Contains(package.Entry)) throw new JazminValidationException($"package.entry '{package.Entry}' is not one of the stored files");
+            json["entry"] = package.Entry;
+        }
+        if (package.Title is not null) json["title"] = package.Title;
+        if (package.AllowedOrigins is not null)
+        {
+            var origins = new JsonArray();
+            foreach (var o in package.AllowedOrigins)
+            {
+                if (!Uri.TryCreate(o, UriKind.Absolute, out var uri) || uri.Scheme != "https" || $"{uri.Scheme}://{uri.Authority}" != o)
+                    throw new JazminValidationException($"package.allowedOrigins: '{o}' must be an https origin such as https://api.example.com");
+                origins.Add(o);
+            }
+            json["allowedOrigins"] = origins;
+        }
+        if (package.AllowWasm is { } wasm) json["allowWasm"] = wasm;
+        return json;
+    }
+
+    public static JazminPackage? PackageFrom(JsonNode? json) => json is not JsonObject o ? null : new JazminPackage
+    {
+        Entry = (string?)o["entry"],
+        Title = (string?)o["title"],
+        AllowedOrigins = o["allowedOrigins"] is JsonArray a ? a.Select(x => (string)x!).ToList() : null,
+        AllowWasm = (bool?)o["allowWasm"],
+    };
+}
+
+/// <summary>A file to store: metadata, its SHA-256, and a block reader (from bytes, disk, or an older version).</summary>
+internal sealed class FileSource
+{
+    public required string Path { get; init; }
+    public required string Type { get; init; }
+    public required List<string> Groups { get; init; }
+    public required long Size { get; init; }
+    public required string Sha256 { get; init; }
+    public required Func<long, int, byte[]> Read { get; init; }
+
+    public static FileSource From(JazminFileInput input)
+    {
+        var path = EmbeddedFiles.ValidatePath(input.Path);
+        var type = input.Type ?? EmbeddedFiles.MediaType(path);
+        var groups = EmbeddedFiles.NormalizeGroups(input.Groups, path);
+        if ((input.Content is null) == (input.FilePath is null)) throw new JazminValidationException($"File '{path}': supply exactly one of content or file");
+        if (input.Content is { } bytes)
+        {
+            return new FileSource
+            {
+                Path = path, Type = type, Groups = groups, Size = bytes.Length,
+                Sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
+                Read = (offset, length) => bytes.AsSpan((int)offset, length).ToArray(),
+            };
+        }
+        var disk = input.FilePath!;
+        string sha;
+        long size;
+        using (var stream = File.OpenRead(disk))
+        {
+            size = stream.Length;
+            sha = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+        }
+        return new FileSource
+        {
+            Path = path, Type = type, Groups = groups, Size = size, Sha256 = sha,
+            Read = (offset, length) =>
+            {
+                using var stream = File.OpenRead(disk);
+                stream.Position = offset;
+                var buffer = new byte[length];
+                stream.ReadExactly(buffer);
+                return buffer;
+            },
+        };
+    }
+}
+
+/// <summary>A stored content (spec 6.8): one per distinct SHA-256, split into blocks.</summary>
+internal sealed class StoredContent
+{
+    public required int Id { get; init; }
+    public required long Size { get; init; }
+    public required string Sha256 { get; init; }
+    public int BlockSize { get; init; } = EmbeddedFiles.BlockSize;
+    public byte[]? Key { get; init; }
+    public required List<(long Offset, int Length, string? Digest)> Blocks { get; init; }
+
+    public JsonObject ToJson()
+    {
+        var json = new JsonObject { ["id"] = Id, ["size"] = Size, ["sha256"] = Sha256, ["blockSize"] = BlockSize };
+        if (Key is not null) json["key"] = Convert.ToBase64String(Key);
+        json["blocks"] = new JsonArray(Blocks.Select(b =>
+        {
+            var block = new JsonObject { ["offset"] = b.Offset, ["length"] = b.Length };
+            if (b.Digest is not null) block["digest"] = b.Digest;
+            return (JsonNode?)block;
+        }).ToArray());
+        return json;
+    }
+
+    /// <summary>Parses an embedded-file directory read from a file (spec 6.8), checking its shape before it is used.</summary>
+    public static JsonObject CheckDirectory(string text)
+    {
+        static bool Count(JsonNode? n, long max = long.MaxValue) => n is JsonValue v && v.TryGetValue<long>(out var x) && x >= 0 && x <= max;
+        static bool Text(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out _);
+        static bool Base64(JsonNode? n) => Text(n) && Convert.TryFromBase64String((string)n!, new byte[((string)n!).Length], out _);
+        static bool Content(JsonNode? c)
+        {
+            if (c is not JsonObject o || !Count(o["id"], int.MaxValue) || !Count(o["size"]) || !Text(o["sha256"]) || o["blocks"] is not JsonArray blocks) return false;
+            if (o["blockSize"] is { } bs && !(Count(bs, int.MaxValue) && (long)bs > 0)) return false;
+            var blockSize = (long?)o["blockSize"] ?? EmbeddedFiles.BlockSize;
+            return (o["key"] is null || Base64(o["key"]))
+                && blocks.Count == ((long)o["size"]! + blockSize - 1) / blockSize
+                && blocks.All(b => b is JsonObject bo && Count(bo["offset"]) && Count(bo["length"], int.MaxValue) && (bo["digest"] is null || Base64(bo["digest"])));
+        }
+        static bool Entry(JsonNode? f) => f is JsonObject o && Text(o["path"]) && Text(o["type"]) && Count(o["content"], int.MaxValue)
+            && (o["groups"] is null || o["groups"] is JsonArray g && g.All(Text));
+
+        var json = Values.ParseJson(text, "An embedded-file directory") as JsonObject;
+        if (json?["contents"] is not JsonArray contents || json["files"] is not JsonArray files || !contents.All(Content) || !files.All(Entry))
+            throw new JazminFormatException("An embedded-file directory is malformed");
+        return json;
+    }
+
+    public static StoredContent FromJson(JsonNode json) => new()
+    {
+        Id = (int)json["id"]!,
+        Size = (long)json["size"]!,
+        Sha256 = (string)json["sha256"]!,
+        BlockSize = (int?)json["blockSize"] ?? EmbeddedFiles.BlockSize,
+        Key = json["key"] is { } key ? Convert.FromBase64String((string)key!) : null,
+        Blocks = json["blocks"]!.AsArray().Select(b => ((long)b!["offset"]!, (int)b["length"]!, (string?)b["digest"])).ToList(),
+    };
+}
+
+/// <summary>A directory entry: path -> content id, with its groups where known.</summary>
+internal sealed record FileEntry(string Path, string Type, int Content, List<string>? Groups);
+
+/// <summary>The files carried from one version of a file to the next (append / update).</summary>
+internal sealed record FileState(List<FileEntry> Entries, List<StoredContent> Contents, int NextId, JsonObject? Package);
+
+/// <summary>Read-only, seekable view of an embedded file; decodes one block at a time.</summary>
+internal sealed class EmbeddedFileStream(JazminReader reader, StoredContent content) : Stream
+{
+    private long _position;
+    private int _blockIndex = -1;
+    private byte[] _block = [];
+
+    public override bool CanRead => true;
+    public override bool CanSeek => true;
+    public override bool CanWrite => false;
+    public override long Length => content.Size;
+
+    public override long Position
+    {
+        get => _position;
+        set => _position = value is >= 0 ? value : throw new ArgumentOutOfRangeException(nameof(value));
+    }
+
+    public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+
+    public override int Read(Span<byte> buffer)
+    {
+        if (_position >= content.Size || buffer.Length == 0) return 0;
+        var b = (int)(_position / content.BlockSize);
+        if (b != _blockIndex)
+        {
+            _block = reader.FileBlock(content, b);
+            _blockIndex = b;
+        }
+        var within = (int)(_position - (long)b * content.BlockSize);
+        var n = Math.Min(buffer.Length, _block.Length - within);
+        _block.AsSpan(within, n).CopyTo(buffer);
+        _position += n;
+        return n;
+    }
+
+    public override long Seek(long offset, SeekOrigin origin) => Position = origin switch
+    {
+        SeekOrigin.Begin => offset,
+        SeekOrigin.Current => _position + offset,
+        _ => content.Size + offset,
+    };
+
+    public override void Flush() { }
+    public override void SetLength(long value) => throw new NotSupportedException();
+    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+}

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' blob:; style-src 'unsafe-inline' blob:; img-src blob: data:; font-src blob: data:; media-src blob: data:; object-src blob:; frame-src blob:; worker-src blob:; connect-src blob: data:">
+<title>{{TITLE}}</title>
+<style>
+  html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; background: #f4f5f7; color: #1d2430; }
+  #jz-unlock { max-width: 420px; margin: 12vh auto; padding: 28px; background: #fff; border-radius: 12px; box-shadow: 0 8px 30px rgba(0, 0, 0, .08); }
+  #jz-unlock h1 { font-size: 20px; margin: 0 0 6px; }
+  #jz-unlock p { margin: 0 0 16px; color: #5b6475; font-size: 14px; }
+  #jz-key { width: 100%; box-sizing: border-box; padding: 10px 12px; font: 14px ui-monospace, monospace; border: 1px solid #c9ced8; border-radius: 8px; }
+  #jz-unlock button { margin-top: 12px; width: 100%; padding: 10px; border: 0; border-radius: 8px; background: #1f5eff; color: #fff; font-size: 15px; cursor: pointer; }
+  #jz-status { margin-top: 12px; font-size: 13px; color: #b42318; min-height: 1em; }
+  #jz-frame { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+  html[data-status="ready"] body, html[data-status="opening"] body { overflow: hidden; }
+  @media print { #jz-unlock { display: none; } }
+</style>
+</head>
+<body>
+<form id="jz-unlock" hidden autocomplete="off">
+  <div id="jz-form-inner">
+    <h1>{{TITLE}}</h1>
+    <p>This document is encrypted. Enter the key (jzk1-…) or password you were given. It stays on this device.</p>
+    <input id="jz-key" type="password" spellcheck="false" placeholder="jzk1-… or password" aria-label="Key or password">
+    <button type="submit">Open</button>
+  </div>
+  <div id="jz-status" role="status"></div>
+</form>
+<script id="jzm-assets" type="application/octet-stream">{{ASSETS}}</script>
+<script id="jzm-data" type="application/octet-stream">{{DATA}}</script>
+<script id="jzm-bootstrap" type="text/plain">{{BOOTSTRAP}}</script>
+<script>{{READER}}</script>
+{{TEST_HOOK}}
+<script>{{VIEWER}}</script>
+</body>
+</html>
