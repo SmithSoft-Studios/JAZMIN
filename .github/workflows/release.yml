@@ -87,7 +87,8 @@ jobs:
           npm install --global npm@latest > /dev/null # trusted publishing needs npm 11.5.1 or later
           # A pre-release (1.0.0-rc.1) goes to the "next" tag, so "npm install jazmin" keeps the last release.
           case "$version" in *-*) dist_tag=next ;; *) dist_tag=latest ;; esac
-          npm publish dist/jazmin-*.tgz --access public --tag "$dist_tag" $PROVENANCE
+          # "./" marks a local file: npm 12 reads "dist/x.tgz" as a GitHub repository name and refuses it.
+          npm publish ./dist/jazmin-*.tgz --access public --tag "$dist_tag" $PROVENANCE
 
   nuget:
     name: Publish to NuGet
