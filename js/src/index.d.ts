@@ -242,6 +242,22 @@ export type QueryPlan =
   | { strategy: 'index'; candidateRows: number }
   | { strategy: 'scan'; chunks: number; chunksSkipped: number };
 
+/** What a query read: explain(filter, { analyze: true }). */
+export interface QueryCost {
+  /** Rows the query returned. */
+  rows: number;
+  /** Bytes of the sections read: chunks, index pages, statistics and directories. */
+  bytesRead: number;
+  /** Chunks read and decoded. */
+  chunksRead: number;
+  /** Index sections read: index directories, pages and trigram indexes. */
+  indexPagesRead: number;
+  /** Column streams decoded: one per column per chunk. */
+  columnsDecoded: number;
+  /** Time taken, in milliseconds. */
+  ms: number;
+}
+
 export class JazminKey {
   constructor(bytes: Uint8Array);
   static generate(): JazminKey;
@@ -396,6 +412,12 @@ export class JazminReader implements Iterable<JazminRow> {
   rowsAsync(options?: QueryOptions): AsyncGenerator<JazminRow>;
   count(filter?: Filter): number;
   explain(filter: Filter): QueryPlan;
+  /**
+   * Runs the query (with any find() options) and reports what it read. Indexes and the last chunk this reader
+   * already holds are not read again: analyze on a freshly opened reader to see a query's full cost.
+   */
+  explain(filter: Filter, options: QueryOptions & { analyze: true }): QueryPlan & QueryCost;
+  explain(filter: Filter, options?: QueryOptions & { analyze?: boolean }): QueryPlan | (QueryPlan & QueryCost);
   close(): void;
   [Symbol.iterator](): Iterator<JazminRow>;
 }

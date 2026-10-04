@@ -54,7 +54,18 @@ public sealed class JazminQueryOptions
 }
 
 /// <summary>How a filter executes: via indexes (candidate rows) or a chunk scan (chunks skipped by statistics).</summary>
-public sealed record JazminPlan(string Strategy, long CandidateRows, int Chunks, int ChunksSkipped);
+public sealed record JazminPlan(string Strategy, long CandidateRows, int Chunks, int ChunksSkipped)
+{
+    /// <summary>What the query read, from <see cref="JazminReader.Explain(JazminFilter?, bool, JazminQueryOptions?)"/> with analyze; else null.</summary>
+    public JazminQueryCost? Cost { get; init; }
+}
+
+/// <summary>
+/// What a query read: the rows it returned, the bytes of the sections it read (chunks, index pages, statistics and
+/// directories), the chunks it read and decoded, the index sections it read, the column streams it decoded (one per
+/// column per chunk) and the time it took.
+/// </summary>
+public sealed record JazminQueryCost(long Rows, long BytesRead, int ChunksRead, int IndexPagesRead, long ColumnsDecoded, TimeSpan Elapsed);
 
 /// <summary>
 /// Random-access reader. Opening reads the trailer and header (and, for access-controlled files, the key slots,
@@ -182,6 +193,16 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private long _validEnd;
     private int _cachedOrdinal = -1;
     private object?[][]? _cachedRows;
+    private CostCounter? _cost; // while Explain(analyze: true) runs a query: what it reads
+
+    /// <summary>Counts what a query reads (see <see cref="JazminQueryCost"/>). Updated on the thread that iterates.</summary>
+    private sealed class CostCounter
+    {
+        public long BytesRead;
+        public int ChunksRead;
+        public int IndexPagesRead;
+        public long ColumnsDecoded;
+    }
 
     /// <summary>Opens the file, or (<paramref name="from"/>, set by <see cref="OpenTable"/>) shares that reader's open file, keys and checks.</summary>
     private JazminReader(Stream stream, JazminReadOptions? options, bool leaveOpen, JazminReader? from = null)
@@ -752,6 +773,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private byte[] ReadSection(SectionRef at, string sectionId, byte[]? key)
     {
         var section = Read(at.Offset, at.Length);
+        if (_cost is not null) _cost.BytesRead += at.Length;
         if (at.Digest is null)
         {
             if (_access is not null) throw new JazminFormatException($"Section '{sectionId}' has no digest");
@@ -1056,11 +1078,23 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         // files (where read-ahead gains little) stay sequential.
         var decodedColumns = wanted is null ? types.Length : wanted.Count(w => w);
         var ahead = Math.Clamp(128 / Math.Max(1, decodedColumns), 1, _readAhead);
+        (byte[] Section, int Length) ReadChunk(int ordinal)
+        {
+            var at = Part(ordinal, 0);
+            var read = ReadRawPooled(at);
+            if (_cost is not null)
+            {
+                _cost.BytesRead += at.Length;
+                _cost.ChunksRead++;
+                _cost.ColumnsDecoded += decodedColumns;
+            }
+            return read;
+        }
         if (ahead <= 1)
         {
             foreach (var ordinal in ordinals)
             {
-                var (section, length) = ReadRawPooled(Part(ordinal, 0));
+                var (section, length) = ReadChunk(ordinal);
                 yield return (ordinal, Decode(ordinal, section, length, _strings));
             }
             yield break;
@@ -1075,7 +1109,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 while (queue.Count < ahead && next.MoveNext())
                 {
                     var ordinal = next.Current;
-                    var (section, length) = ReadRawPooled(Part(ordinal, 0));
+                    var (section, length) = ReadChunk(ordinal);
                     queue.Enqueue((ordinal, Task.Run(() => Decode(ordinal, section, length, null))));
                 }
                 if (queue.Count == 0) yield break;
@@ -1121,6 +1155,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 ? AccessCrypto.PartKey(partitionSecret!, ColumnSecret(group.Name)!, _salt, sectionId)
                 : _keys?.SectionKey(FormatConstants.KeyringData, sectionId);
             var decoded = Columnar.Decode(ReadSection(Part(ordinal, g), sectionId, key), group.Cols.Select(c => _types[c]).ToArray(), rowCount, ordinal, strings: _strings);
+            if (_cost is not null) _cost.ColumnsDecoded += group.Cols.Length;
             rows ??= NewRows();
             for (var j = 0; j < group.Cols.Length; j++)
             {
@@ -1137,6 +1172,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             rows[_deleted[i] - start] = null!;
         _cachedOrdinal = ordinal;
         _cachedRows = rows;
+        if (_cost is not null) _cost.ChunksRead++;
         return rows;
     }
 
@@ -1180,7 +1216,11 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         if (infos.Count > 0)
         {
             var type = _allColumns.First(c => c.Name == column).Type;
-            byte[] Read(string sectionId, SectionRef at) => ReadSection(at, sectionId, CatalogKey(sectionId, _access?.Secrets?.Owner, FormatConstants.KeyringIndex));
+            byte[] Read(string sectionId, SectionRef at)
+            {
+                if (_cost is not null) _cost.IndexPagesRead++;
+                return ReadSection(at, sectionId, CatalogKey(sectionId, _access?.Secrets?.Owner, FormatConstants.KeyringIndex));
+            }
             // One segment for the original rows plus one per append.
             if (kind == "sorted")
             {
@@ -1496,6 +1536,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     public long Count(JazminFilter? filter = null) => filter is null ? RowCount : Find(filter).LongCount();
 
+    /// <summary>Describes how a filter executes: "index" (with the candidate row count) or "scan" (with chunks skipped).</summary>
     public JazminPlan Explain(JazminFilter? filter)
     {
         var plan = Plan(filter);
@@ -1504,6 +1545,30 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         var scanned = ScanChunks(plan);
         var matching = plan is null ? scanned.Count : scanned.Count(i => MayMatch(plan, i));
         return new JazminPlan("scan", RowCount, _visibleChunks.Length, _visibleChunks.Length - matching);
+    }
+
+    /// <summary>
+    /// <see cref="Explain(JazminFilter?)"/>; with <paramref name="analyze"/> it also runs the query (with any
+    /// <paramref name="options"/>) and reports what it read in <see cref="JazminPlan.Cost"/>. Indexes and the last chunk
+    /// this reader already holds are not read again, so analyze a query on a freshly opened reader to see its full cost.
+    /// </summary>
+    public JazminPlan Explain(JazminFilter? filter, bool analyze, JazminQueryOptions? options = null)
+    {
+        if (!analyze) return Explain(filter);
+        var cost = new CostCounter();
+        long rows = 0;
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        _cost = cost;
+        try
+        {
+            foreach (var _ in Find(filter, options)) rows++;
+        }
+        finally
+        {
+            _cost = null;
+        }
+        watch.Stop();
+        return Explain(filter) with { Cost = new JazminQueryCost(rows, cost.BytesRead, cost.ChunksRead, cost.IndexPagesRead, cost.ColumnsDecoded, watch.Elapsed) };
     }
 
     /// <summary>Streams all visible rows mapped to <typeparamref name="T"/>.</summary>

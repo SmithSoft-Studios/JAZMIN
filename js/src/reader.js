@@ -332,6 +332,7 @@ export class JazminReader {
   #makers = new Map(); // selected column indexes -> row-object builder
   #fileIndex = null; // embedded files visible to this key: { entries: Map(path -> entry), contents: Map(id -> content) }
   #scratch = Buffer.alloc(0); // file-read buffer reused across chunks (see #readChunk)
+  #cost = null; // while explain({ analyze: true }) runs a query: what it reads (see QueryCost in index.d.ts)
 
   /**
    * options: key | password; for online access keys `unlockToken` (from the owner's key service);
@@ -1059,6 +1060,7 @@ export class JazminReader {
   #read(ref, sectionId, key, scratch) {
     if (!(ref.length >= ENVELOPE_SIZE)) throw new JazminFormatError(`Section '${sectionId}' is truncated`);
     const section = this.#source.read(ref.offset, ref.length, scratch);
+    if (this.#cost) this.#cost.bytesRead += ref.length;
     if (sectionPayloadLength(section) + ENVELOPE_SIZE !== ref.length) throw new JazminFormatError(`Section '${sectionId}' length mismatch`);
     if (ref.digest === undefined) {
       // Access-controlled files list every section with its digest (spec 7.6.5): one without is refused.
@@ -1082,6 +1084,16 @@ export class JazminReader {
     return this.#read(part, sectionId, this.#keys?.sectionKey(KEYRING_GROUPS.data, sectionId), this.#scratch);
   }
 
+  /** Reads and decodes one chunk's columns (files with one column group); `wanted` skips unneeded columns. */
+  #decodeChunk(ordinal, wanted) {
+    const columns = decodeColumnar(this.#readChunk(ordinal), this.#types, this.#rowCount[ordinal], ordinal, wanted);
+    if (this.#cost) {
+      this.#cost.chunksRead++;
+      this.#cost.columnsDecoded += wanted ? wanted.filter(Boolean).length : this.#types.length;
+    }
+    return columns;
+  }
+
   #chunkRows(ordinal) {
     if (this.#cachedChunk.ordinal === ordinal) return this.#cachedChunk.rows;
     const width = this.#columns.length;
@@ -1103,6 +1115,7 @@ export class JazminReader {
         : this.#keys?.sectionKey(KEYRING_GROUPS.data, sectionId);
       const raw = this.#read(this.#part(ordinal, g), sectionId, key);
       const columns = decodeColumnar(raw, group.cols.map((c) => this.#types[c]), rowCount, ordinal);
+      if (this.#cost) this.#cost.columnsDecoded += group.cols.length;
       rows ??= newRows();
       group.cols.forEach((col, j) => {
         const values = columns[j];
@@ -1116,6 +1129,7 @@ export class JazminReader {
       rows[this.#deleted[i] - start] = null;
     }
     this.#cachedChunk = { ordinal, rows };
+    if (this.#cost) this.#cost.chunksRead++;
     return rows;
   }
 
@@ -1130,7 +1144,10 @@ export class JazminReader {
     const descriptors = leadingSort ? [] : this.#indexList().filter((ix) => ix.column === column && ix.kind === kind);
     if (descriptors.length) {
       const type = this.#columns.find((c) => c.name === column)?.type;
-      const read = (sectionId, ref) => this.#read(ref, sectionId, this.#catalogKey(sectionId, this.#access?.secrets.owner, KEYRING_GROUPS.index));
+      const read = (sectionId, ref) => {
+        if (this.#cost) this.#cost.indexPagesRead++;
+        return this.#read(ref, sectionId, this.#catalogKey(sectionId, this.#access?.secrets.owner, KEYRING_GROUPS.index));
+      };
       // One segment for the original rows plus one per append (section id suffix "/<segment>").
       const parts = descriptors.map((ix) => {
         const sectionId = `${this.#tableIndex}/index/${column}/${kind}${ix.segment ? `/${ix.segment}` : ''}`;
@@ -1418,7 +1435,7 @@ export class JazminReader {
       for (const ordinal of this.#visibleChunks) {
         const rowCount = this.#rowCount[ordinal];
         if (ticks) yield NEXT_CHUNK;
-        const columns = decodeColumnar(this.#readChunk(ordinal), this.#types, rowCount, ordinal, wanted);
+        const columns = this.#decodeChunk(ordinal, wanted);
         for (let r = 0; r < rowCount; r++) {
           if (yielded >= limit) return;
           const rowId = this.#rowStart[ordinal] + r;
@@ -1452,7 +1469,7 @@ export class JazminReader {
       if (!this.#mayMatch(plan, ordinal)) continue;
       if (ticks) yield NEXT_CHUNK;
       const rowCount = this.#rowCount[ordinal];
-      const columns = decodeColumnar(this.#readChunk(ordinal), this.#types, rowCount, ordinal, wanted);
+      const columns = this.#decodeChunk(ordinal, wanted);
       for (let r = 0; r < rowCount; r++) {
         if (yielded >= limit) return;
         const rowId = this.#rowStart[ordinal] + r;
@@ -1582,8 +1599,27 @@ export class JazminReader {
     return n;
   }
 
-  /** Describes how a filter would execute: 'index' (with candidate count) or 'scan' (with chunks skipped). */
-  explain(filter) {
+  /**
+   * Describes how a filter executes: 'index' (with the candidate row count) or 'scan' (with chunks skipped).
+   * With `{ analyze: true }` (and any find() options) it also runs the query and reports what it read: rows,
+   * bytesRead, chunksRead, indexPagesRead, columnsDecoded and ms. Indexes and the last chunk this reader already
+   * holds are not read again, so analyze a query on a freshly opened reader to see its full cost.
+   */
+  explain(filter, { analyze = false, ...options } = {}) {
+    if (!analyze) return this.#describe(filter);
+    const cost = { rows: 0, bytesRead: 0, chunksRead: 0, indexPagesRead: 0, columnsDecoded: 0, ms: 0 };
+    const start = performance.now();
+    this.#cost = cost;
+    try {
+      for (const _ of this.find(filter, options)) cost.rows++;
+    } finally {
+      this.#cost = null;
+    }
+    cost.ms = performance.now() - start;
+    return { ...this.#describe(filter), ...cost };
+  }
+
+  #describe(filter) {
     const plan = this.#plan(filter);
     const ids = plan ? candidates(plan, { get: (column, kind) => this.#index(column, kind) }) : null;
     if (ids !== null) return { strategy: 'index', candidateRows: ids.length };

@@ -222,6 +222,7 @@ for (const row of reader.find({ country: 'ZA', name: { icontains: 'ndlovu' } }))
 reader.get(1);                                      // row by position
 reader.count({ country: 'ZA' });                    // 2
 reader.explain({ id: 3 });                          // { strategy: 'index', candidateRows: 1 }
+reader.explain({ id: 3 }, { analyze: true });       // ... plus rows, bytesRead, chunksRead, ... (section 9.6)
 [...reader.rows({ offset: 1, limit: 1 })];          // paging
 [...reader.find({ id: { gte: 2 } }, { select: ['id', 'name'] })];  // projection
 reader.close();
@@ -467,6 +468,7 @@ reader.Find("""{ "Name": { "icontains": "ndlovu" } }""");
 reader.Get(42);                                    // by row position
 reader.Count(JazminFilter.Eq("Country", "ZA"));
 reader.Explain(JazminFilter.Eq("Id", 3));          // JazminPlan { Strategy = index, CandidateRows = 1, ... }
+reader.Explain(JazminFilter.Eq("Id", 3), analyze: true).Cost;   // rows, bytes read, ... (section 9.6)
 reader.Rows(new JazminQueryOptions { Select = new[] { "Id", "Name" }, Offset = 100, Limit = 50 });   // paging + projection
 ```
 
@@ -698,6 +700,44 @@ were run back to back. ¹ With `node --max-semi-space-size=8` (see 20.5).
 | indexes | none | Add `sorted` to columns used in `eq` / range filters, and `trigram` to text searched with `contains`. Skip `sorted` on the first `sortedBy` column: chunk statistics already find its values. Large sorted indexes are paged automatically |
 | `kdfIterations` | 600,000 | Do not lower it in production. It only affects password-based files. Allowed: 1,000 to 10,000,000; readers refuse files outside that range |
 | `maxDegreeOfParallelism` (JS) / `MaxDegreeOfParallelism` (.NET writer) | JS: up to 2 worker threads; .NET: one thread per core, up to 16 | Set 1 for the lowest memory. Raise it in .NET for faster writes. In JS, more than 2 gains little, because preparing rows on the main thread is the limit |
+
+### 9.6 Seeing what a query reads
+
+`explain(filter)` says how a query will run: through an index (with the
+number of candidate rows), or as a scan (with the chunks its statistics skip).
+
+With `analyze`, it also **runs the query** and reports what it actually read:
+
+| Field | Meaning |
+|---|---|
+| `rows` | Rows returned |
+| `bytesRead` | Bytes read from the file: chunks, index pages, statistics and directories |
+| `chunksRead` | Chunks read and decoded |
+| `indexPagesRead` | Index sections read: directories, pages and trigram indexes |
+| `columnsDecoded` | Column streams decoded (one per column per chunk) |
+| `ms` (.NET: `Elapsed`) | Time taken |
+
+```js
+const reader = open('statements.jzm', { key });
+reader.explain({ account: 'ACC-100001' }, { analyze: true, limit: 50 });
+// { strategy: 'scan', chunks: 49, chunksSkipped: 48, rows: 50,
+//   bytesRead: 102806, chunksRead: 1, indexPagesRead: 0, columnsDecoded: 9, ms: 6.1 }
+```
+
+```csharp
+using var reader = JazminReader.Open("statements.jzm", new() { Key = key });
+var plan = reader.Explain(JazminFilter.Eq("account", "ACC-100001"), analyze: true, new() { Limit = 50 });
+Console.WriteLine($"{plan.Strategy}: {plan.Cost!.Rows} rows, {plan.Cost.BytesRead} bytes, {plan.Cost.ChunksRead} chunks");
+```
+
+- **Use a freshly opened reader.** A reader keeps the indexes it has loaded
+  and its last decoded chunk, and doesn't read them again. On a reused reader,
+  `analyze` shows only what *that* query added.
+- **What to look for.** A query that reads many chunks to return a few rows
+  usually needs a better layout:
+  - sort the file by the column you filter on (`sortedBy`);
+  - use smaller chunks (`chunkRows`);
+  - or add an index.
 
 ---
 

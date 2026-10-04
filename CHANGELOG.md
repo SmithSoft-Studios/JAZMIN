@@ -6,6 +6,13 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Added
+- **`explain(filter, { analyze: true })` (#6):** runs a query and reports
+  what it read (USER-GUIDE §9.6): rows, bytes, chunks, index pages and column
+  streams decoded, plus the time. In .NET it's
+  `Explain(filter, analyze: true, options)`, with the result in
+  `JazminPlan.Cost`. Both libraries report the same numbers for the same file
+  and query, except where .NET's read-ahead reads more (#8). A plain
+  `explain(filter)` is unchanged.
 - **Query cost benchmark (#5):** `npm run bench:proposals` measures the rows,
   bytes read and time of 25 queries on 200,000 seeded transactions.
   - **What it covers:** lookups, account pages, keyset and date-range pages,
