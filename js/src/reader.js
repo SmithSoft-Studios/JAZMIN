@@ -19,7 +19,7 @@ import {
 import { JazminFormatError, JazminKeyError, JazminValidationError } from './errors.js';
 import { enforceExpiry, toMs } from './expiry.js';
 import { EVERYONE } from './files.js';
-import { candidates, evaluate, mayMatch, normalizeFilter } from './filter.js';
+import { candidates, evaluate, mayMatch, mustMatch, normalizeFilter } from './filter.js';
 import { CompositeIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
 import { JazminAccessKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
 import { decodeSection, sectionPayloadLength } from './section.js';
@@ -65,20 +65,31 @@ function sortBounds(plan, col) {
   return bounds;
 }
 
-/**
- * Partition names a filter pins the partition column to (top-level AND of eq / in / isNull:true),
- * or null when the filter does not restrict the column to exact values.
- */
-function partitionLookup(plan, col) {
+/** The top-level AND condition (eq / in / isNull:true) that pins the partition column to exact values, or null. */
+function partitionLeaf(plan, col) {
   if (col < 0) return null;
   const leaves = plan.kind === 'and' ? plan.items : [plan];
-  for (const leaf of leaves) {
-    if (leaf.kind !== 'leaf' || leaf.col !== col) continue;
-    if (leaf.op === 'eq') return [partitionName(leaf.value)];
-    if (leaf.op === 'in') return leaf.value.map((v) => partitionName(v));
-    if (leaf.op === 'isNull' && leaf.value) return [''];
-  }
-  return null;
+  return leaves.find((leaf) => leaf.kind === 'leaf' && leaf.col === col
+    && (leaf.op === 'eq' || leaf.op === 'in' || (leaf.op === 'isNull' && leaf.value))) ?? null;
+}
+
+/** Partition names a filter pins the partition column to, or null when it does not restrict it to exact values. */
+function partitionLookup(plan, col) {
+  const leaf = partitionLeaf(plan, col);
+  if (!leaf) return null;
+  if (leaf.op === 'eq') return [partitionName(leaf.value)];
+  if (leaf.op === 'in') return leaf.value.map((v) => partitionName(v));
+  return [''];
+}
+
+/**
+ * The statistics every chunk of a pinned partition has for the partition column: all its rows hold the one value
+ * (or null) that names the partition. Undefined for `in`, whose partitions hold different values.
+ */
+function pinnedPartitionStats(plan, col) {
+  const leaf = partitionLeaf(plan, col);
+  if (!leaf || leaf.op === 'in') return undefined;
+  return (rowCount) => (leaf.op === 'eq' ? { nulls: 0, min: leaf.value, max: leaf.value } : { nulls: rowCount });
 }
 
 /** Internal: state the appender needs to continue an existing file (see append.js). */
@@ -746,6 +757,28 @@ export class JazminReader {
     view.min = s.min[ordinal];
     view.max = s.max[ordinal];
     return view;
+  }
+
+  /** Rows of a chunk that appends have not deleted. */
+  #liveRows(ordinal) {
+    const count = this.#rowCount[ordinal];
+    if (this.#deleted.length === 0) return count;
+    const start = this.#rowStart[ordinal];
+    return count - (lowerBound(this.#deleted, start + count) - lowerBound(this.#deleted, start));
+  }
+
+  /**
+   * A test for chunks every row of which matches the filter: proven by chunk statistics or, in access-controlled
+   * files, by the partition the filter pins. An offset skips such chunks by their row count, without reading them.
+   */
+  #wholeChunkTest(plan) {
+    if (!plan) return () => true;
+    const partitionCol = this.#access ? this.#partitionCol() : -1;
+    const pinned = partitionCol >= 0 ? pinnedPartitionStats(plan, partitionCol) : undefined;
+    return (ordinal) => {
+      const rowCount = this.#rowCount[ordinal];
+      return mustMatch(plan, (col) => (pinned && col === partitionCol ? pinned(rowCount) : this.#statAt(col, ordinal)), rowCount);
+    };
   }
 
   #mayMatch(plan, ordinal) {
@@ -1426,13 +1459,20 @@ export class JazminReader {
         return;
       }
     }
-    const decode = singleGroup && !plan && offset === 0 ? this.#directDecoder(selection) : null;
+    const decode = singleGroup && !plan ? this.#directDecoder(selection) : null;
     if (decode) {
       const wanted = this.#columns.map((_, i) => selection.includes(i)); // skip unselected columns
-      // Full scan: each chunk's columns are decoded and rows built from them one at a time.
+      // Full scan: each chunk's columns are decoded and rows built from them one at a time. Chunks wholly before
+      // the offset are counted, not read.
+      let skipped = 0;
       let yielded = 0;
       let deleted = 0;
       for (const ordinal of this.#visibleChunks) {
+        if (yielded >= limit) return;
+        if (skipped < offset && offset - skipped >= this.#liveRows(ordinal)) {
+          skipped += this.#liveRows(ordinal);
+          continue;
+        }
         const rowCount = this.#rowCount[ordinal];
         if (ticks) yield NEXT_CHUNK;
         const columns = this.#decodeChunk(ordinal, wanted);
@@ -1441,6 +1481,10 @@ export class JazminReader {
           const rowId = this.#rowStart[ordinal] + r;
           while (deleted < this.#deleted.length && this.#deleted[deleted] < rowId) deleted++;
           if (deleted < this.#deleted.length && this.#deleted[deleted] === rowId) continue; // removed by an append
+          if (skipped < offset) {
+            skipped++;
+            continue;
+          }
           yielded++;
           yield decode(columns, r);
         }
@@ -1462,11 +1506,17 @@ export class JazminReader {
     const wanted = this.#columns.map((_, i) => planCols.has(i) || selection.includes(i));
     const make = this.#maker(selection);
     const row = new Array(this.#columns.length);
+    const whole = this.#wholeChunkTest(plan);
     let skipped = 0;
     let yielded = 0;
     let deleted = 0;
     for (const ordinal of this.#scanChunks(plan)) {
+      if (yielded >= limit) return;
       if (!this.#mayMatch(plan, ordinal)) continue;
+      if (skipped < offset && offset - skipped >= this.#liveRows(ordinal) && whole(ordinal)) {
+        skipped += this.#liveRows(ordinal); // every row matches and lies before the offset: no need to read it
+        continue;
+      }
       if (ticks) yield NEXT_CHUNK;
       const rowCount = this.#rowCount[ordinal];
       const columns = this.#decodeChunk(ordinal, wanted);
@@ -1535,8 +1585,14 @@ export class JazminReader {
       return;
     }
 
+    const whole = this.#wholeChunkTest(plan);
     for (const ordinal of this.#scanChunks(plan)) {
+      if (yielded >= limit) return;
       if (plan && !this.#mayMatch(plan, ordinal)) continue;
+      if (skipped < offset && offset - skipped >= this.#liveRows(ordinal) && whole(ordinal)) {
+        skipped += this.#liveRows(ordinal); // every row matches and lies before the offset: no need to read it
+        continue;
+      }
       if (ticks) yield NEXT_CHUNK;
       const rows = this.#chunkRows(ordinal);
       for (let r = 0; r < rows.length; r++) {

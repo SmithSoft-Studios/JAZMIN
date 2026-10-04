@@ -40,11 +40,11 @@
     "rows": 549
   },
   "deep page (offset 150,000)": {
-    "bytes": 3648286,
+    "bytes": 99773,
     "rows": 50
   },
   "newest 50 (offset rowCount - 50)": {
-    "bytes": 4822130,
+    "bytes": 83651,
     "rows": 50
   },
   "sum of amount, select": {
@@ -96,7 +96,7 @@
     "rows": 50
   },
   "browser: query() deep page with total": {
-    "bytes": 5012203,
+    "bytes": 102404,
     "rows": 50
   }
 }

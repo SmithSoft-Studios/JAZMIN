@@ -1116,6 +1116,20 @@
       deleted = readPostingsSection(await file.section(table.deletes, sectionId, await file.key(sectionId, access?.header), { requireDigest }));
     }
     const deletedSet = new Set(deleted);
+    /** Rows of a chunk not deleted by appends (`deleted` is sorted). */
+    const liveRows = (chunk) => {
+      const below = (id) => {
+        let lo = 0;
+        let hi = deleted.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >>> 1;
+          if (deleted[mid] < id) lo = mid + 1;
+          else hi = mid;
+        }
+        return lo;
+      };
+      return chunk.rowCount - (below(chunk.rowStart + chunk.rowCount) - below(chunk.rowStart));
+    };
     const visibleColumns = columns.filter(Boolean).map(({ position, ...c }) => c);
     const visibleRows = chunks.reduce((n, c) => n + c.rowCount, 0) - deleted.filter((id) => chunks.some((c) => id >= c.rowStart && id < c.rowStart + c.rowCount)).length;
     hiddenRows = table.rowCount - table.deletedCount - visibleRows;
@@ -1209,20 +1223,35 @@
       openTable: (tableName) => openTable(file, tableName),
       /** Rows matching a filter (spec 9), chunk by chunk. options: { offset, limit, select }. */
       async *find(filter, { offset = 0, limit = Infinity, select } = {}) {
-        const match = compileFilter(filter, visibleColumns);
+        const match = filter ? compileFilter(filter, visibleColumns) : null;
         let skipped = 0;
         let yielded = 0;
         for (const chunk of chunks) {
+          if (yielded >= limit) return;
+          // Without a filter every row matches: chunks wholly before the offset are counted, not read.
+          if (!match && offset - skipped >= liveRows(chunk)) {
+            skipped += liveRows(chunk);
+            continue;
+          }
           for (const row of await chunkRows(chunk)) {
-            if (!match(row)) continue;
-            if (skipped++ < offset) continue;
-            if (yielded++ >= limit) return;
+            if (match && !match(row)) continue;
+            if (skipped < offset) {
+              skipped++;
+              continue;
+            }
             yield select ? Object.fromEntries(select.map((s) => [s, row[s]])) : row;
+            if (++yielded >= limit) return;
           }
         }
       },
       /** A page of rows as an array, in file order: { rows, total } (total counts every match). */
       async query(filter, { offset = 0, limit = 100, select } = {}) {
+        // Without a filter the total is the row count, so only the page is read.
+        if (!filter) {
+          const rows = [];
+          for await (const row of this.find(null, { offset, limit, select })) rows.push(row);
+          return { rows, total: visibleRows };
+        }
         const rows = [];
         let total = 0;
         for await (const row of this.find(filter, { select })) {

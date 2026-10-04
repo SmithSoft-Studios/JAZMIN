@@ -31,8 +31,9 @@ public class ExplainTests
     [InlineData("js-paged-key.jzm", """{"country":"NA"}""", null, null, null, "index", 100L, 100L, 9187L, 8, 2, 72L)]
     [InlineData("js-paged-key.jzm", """{"score":{"gt":50}}""", "id", null, null, "scan", 500L, 126L, 3493L, 3, 0, 6L)]
     [InlineData("js-access.jzm", """{"score":{"gt":50}}""", "id", null, null, "scan", 500L, 126L, 70847L, 126, 0, 1134L)]
-    // Not yet here: js/test/explain.test.js's offset-and-limit page. .NET still reads chunks ahead of a page that
-    // needs only 2 of them (issue #8).
+    // Chunks wholly before the offset are counted, not read (issue #8): one chunk read for this page.
+    [InlineData("js-paged-key.jzm", null, null, 100L, 10L, "scan", 500L, 10L, 1145L, 1, 0, 9L)]
+    [InlineData("js-access.jzm", null, null, 100L, 10L, "scan", 500L, 10L, 37152L, 10, 0, 90L)]
     public void Analyze_reports_rows_bytes_chunks_index_pages_and_columns(string file, string? where, string? select, long? offset, long? limit,
         string strategy, long candidateRows, long rows, long bytesRead, int chunksRead, int indexPagesRead, long columnsDecoded)
     {

@@ -220,6 +220,40 @@ internal static class FilterEngine
             _ => true,
         };
     }
+
+    /// <summary>
+    /// True when chunk statistics prove that every row of the chunk matches (the counterpart of MayMatch): such a
+    /// chunk can be counted by its row count, for example to skip it whole for an offset.
+    /// </summary>
+    public static bool MustMatch(BoundFilter node, Func<int, ColumnStats?> statOf, int rowCount) => node switch
+    {
+        BoundFilter.And a => a.Items.All(i => MustMatch(i, statOf, rowCount)),
+        BoundFilter.Or o => o.Items.Any(i => MustMatch(i, statOf, rowCount)),
+        BoundFilter.Not n => !MayMatch(n.Item, statOf, rowCount),
+        BoundFilter.Leaf l => LeafMustMatch(l, statOf(l.Col), rowCount),
+        _ => false,
+    };
+
+    private static bool LeafMustMatch(BoundFilter.Leaf leaf, ColumnStats? stat, int rowCount)
+    {
+        // Float statistics leave NaN values out, so they cannot prove that every row matches.
+        if (stat is null || leaf.Type == JazminType.Float) return false;
+        if (leaf.Op == "isNull") return (bool)leaf.Value! ? stat.Nulls == rowCount : stat.Nulls == 0;
+        // A string minimum may be a prefix of the real one: still a lower bound. A maximum is exact or absent.
+        var (min, max) = (stat.Min, stat.Max);
+        if (stat.Nulls != 0 || min is null || max is null) return false;
+        return leaf.Op switch
+        {
+            "eq" => Values.Compare(min, leaf.Value!) == 0 && Values.Compare(max, leaf.Value!) == 0,
+            "ne" => Values.Compare(max, leaf.Value!) < 0 || Values.Compare(min, leaf.Value!) > 0,
+            "in" => Values.Compare(min, max) == 0 && ((object?[])leaf.Value!).Any(v => v is not null && Values.Compare(min, v) == 0),
+            "gt" => Values.Compare(min, leaf.Value!) > 0,
+            "gte" => Values.Compare(min, leaf.Value!) >= 0,
+            "lt" => Values.Compare(max, leaf.Value!) < 0,
+            "lte" => Values.Compare(max, leaf.Value!) <= 0,
+            _ => false, // string searches: statistics cannot prove a match
+        };
+    }
 }
 
 internal interface IIndexProvider

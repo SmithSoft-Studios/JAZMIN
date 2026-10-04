@@ -1050,7 +1050,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <see cref="JazminReadOptions.MaxDegreeOfParallelism"/> ahead on worker threads: the file is read in order here,
     /// while decryption, decompression and decoding run in parallel.
     /// </summary>
-    private IEnumerable<(int Ordinal, DecodedColumn?[] Columns)> DecodeAhead(IEnumerable<int> ordinals, JazminType[] types, bool[]? wanted)
+    private IEnumerable<(int Ordinal, DecodedColumn?[] Columns)> DecodeAhead(IEnumerable<int> ordinals, JazminType[] types, bool[]? wanted, bool rampUp = false)
     {
         var (fileId, keys, group) = (_fileId, _keys, _groups[0].Name);
         DecodedColumn?[] Decode(int ordinal, byte[] section, int length, StringPool? strings)
@@ -1102,11 +1102,12 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
         var queue = new Queue<(int Ordinal, Task<DecodedColumn?[]> Work)>();
         using var next = ordinals.GetEnumerator();
+        var window = rampUp ? 1 : ahead; // rampUp: read ahead 1, 2, 4... chunks, so a query that stops early reads little more
         try
         {
             while (true)
             {
-                while (queue.Count < ahead && next.MoveNext())
+                while (queue.Count < window && next.MoveNext())
                 {
                     var ordinal = next.Current;
                     var (section, length) = ReadChunk(ordinal);
@@ -1114,6 +1115,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 }
                 if (queue.Count == 0) yield break;
                 var (done, work) = queue.Dequeue();
+                window = Math.Min(window * 2, ahead);
                 yield return (done, work.GetAwaiter().GetResult());
             }
         }
@@ -1309,21 +1311,56 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         return plan;
     }
 
-    /// <summary>Partition names a filter pins the partition column to (top-level AND of eq / in / isNull), else null.</summary>
-    private static List<string>? PartitionLookup(BoundFilter plan, int col)
+    /// <summary>The top-level AND condition (eq / in / isNull: true) that pins the partition column to exact values, or null.</summary>
+    private static BoundFilter.Leaf? PartitionLeaf(BoundFilter plan, int col)
     {
         if (col < 0) return null;
         var leaves = plan is BoundFilter.And and ? and.Items : [plan];
-        foreach (var leaf in leaves.OfType<BoundFilter.Leaf>().Where(l => l.Col == col))
+        return leaves.OfType<BoundFilter.Leaf>().FirstOrDefault(l => l.Col == col && (l.Op is "eq" or "in" || (l.Op == "isNull" && (bool)l.Value!)));
+    }
+
+    /// <summary>Partition names a filter pins the partition column to, else null.</summary>
+    private static List<string>? PartitionLookup(BoundFilter plan, int col) => PartitionLeaf(plan, col) switch
+    {
+        { Op: "eq" } leaf => [AccessCrypto.PartitionName(leaf.Value)],
+        { Op: "in" } leaf => ((object?[])leaf.Value!).Select(AccessCrypto.PartitionName).ToList(),
+        { } => [""],
+        null => null,
+    };
+
+    /// <summary>Rows of a chunk that appends have not deleted.</summary>
+    private int LiveRows(int ordinal)
+    {
+        var count = _rowCount[ordinal];
+        if (_deleted.Length == 0) return count;
+        var start = _rowStart[ordinal];
+        static int LowerBound(long[] sorted, long value)
         {
-            switch (leaf.Op)
-            {
-                case "eq": return [AccessCrypto.PartitionName(leaf.Value)];
-                case "in": return ((object?[])leaf.Value!).Select(AccessCrypto.PartitionName).ToList();
-                case "isNull" when (bool)leaf.Value!: return [""];
-            }
+            var i = Array.BinarySearch(sorted, value);
+            return i >= 0 ? i : ~i;
         }
-        return null;
+        return count - (LowerBound(_deleted, start + count) - LowerBound(_deleted, start));
+    }
+
+    /// <summary>
+    /// A test for chunks every row of which matches the filter: proven by chunk statistics or, in access-controlled
+    /// files, by the partition the filter pins (all its rows hold the one value, or null, that names it). An offset
+    /// skips such chunks by their row count, without reading them.
+    /// </summary>
+    private Func<int, bool> WholeChunkTest(BoundFilter? plan)
+    {
+        if (plan is null) return _ => true;
+        var partitionCol = _access is null ? -1 : PartitionCol();
+        var pinned = partitionCol >= 0 ? PartitionLeaf(plan, partitionCol) : null;
+        if (pinned?.Op == "in") pinned = null; // the partitions of an `in` hold different values
+        return ordinal =>
+        {
+            var rowCount = _rowCount[ordinal];
+            ColumnStats? StatOf(int col) => pinned is not null && col == partitionCol
+                ? (pinned.Op == "eq" ? new ColumnStats { Nulls = 0, Min = pinned.Value, Max = pinned.Value } : new ColumnStats { Nulls = rowCount })
+                : StatAt(col, ordinal);
+            return FilterEngine.MustMatch(plan, StatOf, rowCount);
+        };
     }
 
     /// <summary>Access-controlled files: chunks of the partitions a filter pins, found by id (no statistics scan).</summary>
@@ -1483,9 +1520,16 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             yield break;
         }
 
+        var whole = WholeChunkTest(plan);
         foreach (var ordinal in ScanChunks(plan))
         {
+            if (yielded >= limit) yield break;
             if (plan is not null && !MayMatch(plan, ordinal)) continue;
+            if (skipped < offset && offset - skipped >= LiveRows(ordinal) && whole(ordinal))
+            {
+                skipped += LiveRows(ordinal); // every row matches and lies before the offset: no need to read it
+                continue;
+            }
             var rows = ChunkRows(ordinal);
             for (var r = 0; r < rows.Length; r++)
             {
@@ -1509,8 +1553,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         var scratch = new object?[_types.Length];
         long skipped = 0, yielded = 0;
         var deleted = 0;
-        var ordinals = ScanChunks(plan).Where(o => plan is null || MayMatch(plan, o));
-        foreach (var (ordinal, columns) in DecodeAhead(ordinals, _types, all ? null : wanted))
+        var ordinals = ScanChunks(plan).Where(o => plan is null || MayMatch(plan, o)).ToArray();
+        var whole = WholeChunkTest(plan);
+        foreach (var (ordinal, columns) in Chunks())
         {
             for (var r = 0; r < _rowCount[ordinal]; r++)
             {
@@ -1532,6 +1577,38 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 yield return new JazminRow(rowId, _allColumns, selection, columns, r); // points into the chunk: no copy per row
             }
         }
+
+        // Chunks wholly before the offset are counted, not read. Until the offset is reached chunks are read one at a
+        // time, since each one read decides whether the next can be skipped; then they are read ahead and decoded in
+        // parallel. Without a filter a limit says exactly which chunks are needed; with one, a limited query reads
+        // ahead gradually (1, 2, 4... chunks), so a small page reads little more than it uses.
+        IEnumerable<(int Ordinal, DecodedColumn?[] Columns)> Chunks()
+        {
+            var i = 0;
+            for (; i < ordinals.Length && skipped < offset && yielded < limit; i++)
+            {
+                var ordinal = ordinals[i];
+                if (offset - skipped >= LiveRows(ordinal) && whole(ordinal))
+                {
+                    skipped += LiveRows(ordinal);
+                    continue;
+                }
+                foreach (var chunk in DecodeAhead([ordinal], _types, all ? null : wanted)) yield return chunk;
+            }
+            if (i >= ordinals.Length || yielded >= limit) yield break;
+            var rest = ordinals[i..];
+            var limited = limit != long.MaxValue;
+            if (limited && plan is null) rest = rest[..NeededChunks(rest, limit - yielded + Math.Max(0, offset - skipped))];
+            foreach (var chunk in DecodeAhead(rest.TakeWhile(_ => yielded < limit), _types, all ? null : wanted, rampUp: limited)) yield return chunk;
+        }
+    }
+
+    /// <summary>How many of these chunks (in order, every row matching) hold the next <paramref name="rows"/> live rows.</summary>
+    private int NeededChunks(int[] ordinals, long rows)
+    {
+        var n = 0;
+        for (long seen = 0; n < ordinals.Length && seen < rows; n++) seen += LiveRows(ordinals[n]);
+        return n;
     }
 
     public long Count(JazminFilter? filter = null) => filter is null ? RowCount : Find(filter).LongCount();

@@ -204,3 +204,35 @@ export function mayMatch(node, stats, rowCount) {
     default: return leafMayMatch(node, typeof stats === 'function' ? stats(node.col) : stats[node.col], rowCount);
   }
 }
+
+function leafMustMatch(leaf, stat, rowCount) {
+  // Float statistics leave NaN values out, so they cannot prove that every row matches.
+  if (!stat || leaf.type === 'float') return false;
+  if (leaf.op === 'isNull') return leaf.value ? stat.nulls === rowCount : stat.nulls === 0;
+  // A string minimum may be a prefix of the real one: still a lower bound. A maximum is exact or absent.
+  const { min, max } = stat;
+  if (stat.nulls !== 0 || min === undefined || max === undefined) return false;
+  switch (leaf.op) {
+    case 'eq': return compareKeys(min, leaf.value) === 0 && compareKeys(max, leaf.value) === 0;
+    case 'ne': return compareKeys(max, leaf.value) < 0 || compareKeys(min, leaf.value) > 0;
+    case 'in': return compareKeys(min, max) === 0 && leaf.value.some((v) => v !== null && compareKeys(min, v) === 0);
+    case 'gt': return compareKeys(min, leaf.value) > 0;
+    case 'gte': return compareKeys(min, leaf.value) >= 0;
+    case 'lt': return compareKeys(max, leaf.value) < 0;
+    case 'lte': return compareKeys(max, leaf.value) <= 0;
+    default: return false; // string searches: statistics cannot prove a match
+  }
+}
+
+/**
+ * Whether per-chunk statistics prove that every row of a chunk matches (the counterpart of mayMatch): such a
+ * chunk can be counted by its row count, for example to skip it whole for an offset.
+ */
+export function mustMatch(node, stats, rowCount) {
+  switch (node.kind) {
+    case 'and': return node.items.every((n) => mustMatch(n, stats, rowCount));
+    case 'or': return node.items.some((n) => mustMatch(n, stats, rowCount));
+    case 'not': return !mayMatch(node.item, stats, rowCount);
+    default: return leafMustMatch(node, typeof stats === 'function' ? stats(node.col) : stats[node.col], rowCount);
+  }
+}

@@ -5,6 +5,21 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased
 
+### Changed
+- **Paging reads only what the page needs (#8).** Chunks wholly before the
+  `offset` are counted by their row counts instead of being read and decoded
+  (USER-GUIDE §9.7).
+  - **When:** with no filter; when chunk statistics prove every row matches;
+    or, in access-controlled files, when the filter names one partition.
+  - **Measured:** a deep page went from 3,563 KB to 97 KB read (59 ms to
+    1.7 ms), and the newest 50 rows from 4,709 KB to 82 KB.
+  - **Limits:** a page that ends on a chunk boundary no longer reads the next
+    chunk.
+  - **.NET:** it no longer reads chunks ahead of a limited query's need. A
+    filtered, limited query reads ahead gradually.
+  - **Browser reader:** it pages without a filter the same way, and `query()`
+    without a filter returns `total` from the row count.
+
 ### Added
 - **`explain(filter, { analyze: true })` (#6):** runs a query and reports
   what it read (USER-GUIDE §9.6): rows, bytes, chunks, index pages and column

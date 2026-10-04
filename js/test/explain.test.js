@@ -25,7 +25,9 @@ const CASES = [
   ['js-paged-key.jzm', { id: 7 }, {}, { strategy: 'index', candidateRows: 1, rows: 1, bytesRead: 1817, chunksRead: 1, indexPagesRead: 2, columnsDecoded: 9 }],
   ['js-paged-key.jzm', { country: 'NA' }, {}, { strategy: 'index', candidateRows: 100, rows: 100, bytesRead: 9187, chunksRead: 8, indexPagesRead: 2, columnsDecoded: 72 }],
   ['js-paged-key.jzm', { score: { gt: 50 } }, { select: ['id'] }, { strategy: 'scan', chunks: 8, chunksSkipped: 5, rows: 126, bytesRead: 3493, chunksRead: 3, indexPagesRead: 0, columnsDecoded: 6 }],
-  ['js-paged-key.jzm', null, { offset: 100, limit: 10 }, { strategy: 'scan', chunks: 8, chunksSkipped: 0, rows: 10, bytesRead: 2292, chunksRead: 2, indexPagesRead: 0, columnsDecoded: 18 }],
+  // Chunks wholly before the offset are counted, not read (issue #8): one chunk read for this page.
+  ['js-paged-key.jzm', null, { offset: 100, limit: 10 }, { strategy: 'scan', chunks: 8, chunksSkipped: 0, rows: 10, bytesRead: 1145, chunksRead: 1, indexPagesRead: 0, columnsDecoded: 9 }],
+  ['js-access.jzm', null, { offset: 100, limit: 10 }, { strategy: 'scan', chunks: 500, chunksSkipped: 0, rows: 10, bytesRead: 37152, chunksRead: 10, indexPagesRead: 0, columnsDecoded: 90 }],
   ['js-access.jzm', { score: { gt: 50 } }, { select: ['id'] }, { strategy: 'scan', chunks: 500, chunksSkipped: 374, rows: 126, bytesRead: 70847, chunksRead: 126, indexPagesRead: 0, columnsDecoded: 1134 }],
 ];
 

@@ -739,6 +739,43 @@ Console.WriteLine($"{plan.Strategy}: {plan.Cost!.Rows} rows, {plan.Cost.BytesRea
   - use smaller chunks (`chunkRows`);
   - or add an index.
 
+### 9.7 Paging
+
+`offset` and `limit` page through results. A chunk that lies wholly before the
+offset is **counted, not read**, as long as every row in it is known to match.
+That holds:
+
+- **with no filter:** every row matches;
+- **when chunk statistics prove it:** for example a date range on the file's
+  first `sortedBy` column, or a value that fills whole chunks;
+- **in access-controlled files,** for a filter that names one partition
+  (`{ account: 'ACC-1' }` when the file is partitioned by account).
+
+So the last page costs about the same as the first:
+
+```js
+reader.rows({ offset: reader.rowCount - 50, limit: 50 });   // the newest 50 rows (in a file sorted by time)
+reader.rows({ offset: 150000, limit: 50 });                 // a deep page
+```
+
+On 200,000 transactions (`npm run bench:proposals`):
+
+| Query | 1.0.0 | Now |
+|---|---:|---:|
+| Deep page (offset 150,000) | 3,563 KB, 59 ms | 97 KB, 1.7 ms |
+| Newest 50 | 4,709 KB, 78 ms | 82 KB, 1.5 ms |
+
+- **Float columns:** a filter on a float column can't skip chunks this way.
+  Its statistics leave out `NaN` values, so they can't prove that every row
+  matches.
+- **Filtered deep pages:** when a filter's matches are spread through many
+  chunks, the reader has to read those chunks to count their matches.
+  *Keyset paging* avoids that: remember the last row of a page and ask for the
+  rows after it, for example `{ account, at: { gt: lastAt } }` with
+  `limit: 50`.
+- **The browser reader** pages without a filter the same way, and its
+  `query()` returns `total` without counting row by row.
+
 ---
 
 ## 10. Security guide
