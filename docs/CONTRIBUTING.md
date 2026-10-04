@@ -26,6 +26,7 @@ dotnet/bench/      Benchmark vs Newtonsoft.Json and System.Text.Json
 npm test                       # all tests, including interop with .NET-written files
 npm run typecheck              # TypeScript definitions + example
 npm run bench                  # node --expose-gc gives the memory rows
+npm run bench:proposals        # bytes read, rows and time per query (see below)
 node examples/quickstart.mjs
 
 # .NET (in dotnet/)
@@ -38,6 +39,26 @@ dotnet run -c Release -f net10.0 --project bench/Jazmin.Benchmarks
 When you change the format, run `JAZMIN_WRITE_FIXTURES=1 dotnet test` before
 `npm test`, so that the JavaScript side reads fresh .NET files. CI always does
 this.
+
+## Measuring what a query reads
+
+`npm run bench:proposals` (in `js/`) writes 200,000 seeded card and account
+transactions three ways: sorted by time, sorted by account, and
+access-controlled. It then runs the queries behind the improvement proposals
+(GitHub issues #5 to #27): lookups, account pages, keyset pages, date ranges,
+deep pages, one-column sums, and `get()` by position.
+
+For each query it prints the rows returned, the bytes read from the file and
+the median time of 5 runs, each on a freshly opened reader.
+
+- **Bytes and rows are the same on every machine**, so CI checks them against
+  `js/bench/proposals-baseline.json`. The build fails if a query reads more
+  than 10% more bytes, or returns different rows.
+- **Times depend on the machine.** Compare them only with each other, from
+  one run.
+- **When a change makes a query read less**, run
+  `node bench/proposals.mjs --update-baseline` and commit the new baseline in
+  the same pull request. Quote the before and after numbers in the PR.
 
 ## Fuzzing the readers
 

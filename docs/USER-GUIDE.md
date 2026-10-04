@@ -603,6 +603,8 @@ run on an Intel i7-12700H laptop under Windows 11. Each figure is the best of
 
 Re-run on your own data with `npm run bench` (in `js/`) or
 `dotnet run -c Release -f net10.0 --project bench/Jazmin.Benchmarks` (in `dotnet/`).
+`npm run bench:proposals` shows what typical statement queries read (bytes,
+rows and time per query); docs/CONTRIBUTING.md explains it.
 
 ### 9.1 .NET 10 (vs Newtonsoft.Json 13.0.3 and System.Text.Json)
 

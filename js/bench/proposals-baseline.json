@@ -1,0 +1,102 @@
+{
+  "open": {
+    "bytes": 788,
+    "rows": 0
+  },
+  "id lookup": {
+    "bytes": 153902,
+    "rows": 1
+  },
+  "account page, first account": {
+    "bytes": 103603,
+    "rows": 50
+  },
+  "account page, last account": {
+    "bytes": 87074,
+    "rows": 50
+  },
+  "account page, time-sorted file": {
+    "bytes": 449140,
+    "rows": 50
+  },
+  "account count, time-sorted file": {
+    "bytes": 4880212,
+    "rows": 755
+  },
+  "account count, account-sorted file": {
+    "bytes": 103603,
+    "rows": 755
+  },
+  "keyset page within an account": {
+    "bytes": 3875596,
+    "rows": 50
+  },
+  "one day, all accounts": {
+    "bytes": 7645888,
+    "rows": 549
+  },
+  "one day, time-sorted file": {
+    "bytes": 100148,
+    "rows": 549
+  },
+  "deep page (offset 150,000)": {
+    "bytes": 3648286,
+    "rows": 50
+  },
+  "newest 50 (offset rowCount - 50)": {
+    "bytes": 4822130,
+    "rows": 50
+  },
+  "sum of amount, select": {
+    "bytes": 4822130,
+    "rows": 200000
+  },
+  "sum of amount, all columns": {
+    "bytes": 4822130,
+    "rows": 200000
+  },
+  "account amounts through an index": {
+    "bytes": 4880212,
+    "rows": 755
+  },
+  "reference lookup, select": {
+    "bytes": 147387,
+    "rows": 1
+  },
+  "access file: account amounts": {
+    "bytes": 53037,
+    "rows": 755
+  },
+  "access file: all amounts": {
+    "bytes": 6071277,
+    "rows": 200000
+  },
+  "get() one day, time order": {
+    "bytes": 55106228,
+    "rows": 549
+  },
+  "get() one day, position order": {
+    "bytes": 5012203,
+    "rows": 549
+  },
+  "browser: open": {
+    "bytes": 797,
+    "rows": 0
+  },
+  "browser: id lookup": {
+    "bytes": 5012203,
+    "rows": 1
+  },
+  "browser: account page, first account": {
+    "bytes": 103313,
+    "rows": 50
+  },
+  "browser: account page, last account": {
+    "bytes": 5012203,
+    "rows": 50
+  },
+  "browser: query() deep page with total": {
+    "bytes": 5012203,
+    "rows": 50
+  }
+}

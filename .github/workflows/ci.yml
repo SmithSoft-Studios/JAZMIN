@@ -72,6 +72,25 @@ jobs:
           npm ci
           node scripts/viewer-e2e.mjs --browser chrome --browser firefox
 
+  # What each benchmark query reads (GitHub issue #5): bytes and rows are deterministic, so a query that reads more
+  # than 10% more bytes than js/bench/proposals-baseline.json, or returns other rows, fails the build. Times are
+  # printed only.
+  bench-bytes:
+    name: Benchmark bytes read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: js/package-lock.json
+      - name: Proposals benchmark against the baseline
+        working-directory: js
+        run: |
+          npm ci
+          node bench/proposals.mjs --check
+
   # The npm and NuGet packages as users get them (TASKS R-1): each is packed, installed into a new, empty project and
   # runs the quickstart sample there. The release workflow runs the same check before publishing.
   packages:

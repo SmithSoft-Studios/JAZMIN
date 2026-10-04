@@ -3,6 +3,18 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## Unreleased
+
+### Added
+- **Query cost benchmark (#5):** `npm run bench:proposals` measures the rows,
+  bytes read and time of 25 queries on 200,000 seeded transactions.
+  - **What it covers:** lookups, account pages, keyset and date-range pages,
+    deep pages, one-column sums, access-controlled reads, `get()` by position,
+    and the browser reader.
+  - **CI check:** fails when a query reads more than 10% more bytes than the
+    recorded baseline, or returns different rows (docs/CONTRIBUTING.md,
+    "Measuring what a query reads").
+
 ## 1.0.0 - 2026-10-04 (file format 1.0)
 
 The first published release.
