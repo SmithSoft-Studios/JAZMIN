@@ -65,6 +65,25 @@ function sortBounds(plan, col) {
   return bounds;
 }
 
+/**
+ * Row `r` of a decoded chunk (see #chunk), written by column position into `into`, an array of nulls: only the
+ * decoded columns are written, so reusing it for the rows of chunks decoded with the same columns is safe.
+ */
+function chunkRow(chunk, r, into) {
+  for (const c of chunk.decoded) into[c] = chunk.columns[c][r];
+  return into;
+}
+
+/** Positions of the columns a normalized filter reads. */
+function planColumns(plan) {
+  const cols = new Set();
+  (function collect(node) {
+    if (node.kind === 'leaf') cols.add(node.col);
+    else (node.items ?? [node.item]).forEach(collect);
+  })(plan);
+  return cols;
+}
+
 /** The top-level AND condition (eq / in / isNull:true) that pins the partition column to exact values, or null. */
 function partitionLeaf(plan, col) {
   if (col < 0) return null;
@@ -331,7 +350,7 @@ export class JazminReader {
   #statLookup = (col) => this.#statAt(col, this.#statOrdinal); // statistics of one chunk, for mayMatch
   #indexRefs = null;
   #indexes = new Map();
-  #cachedChunk = { ordinal: -1, rows: null };
+  #cachedChunk = { ordinal: -1, wanted: null, chunk: null }; // the last chunk decoded, and the columns decoded (null: all)
   #sortStatsComplete; // computed on first sorted scan
   #flags = 0;
   #deleted = []; // sorted row ids removed by appends
@@ -1127,43 +1146,46 @@ export class JazminReader {
     return columns;
   }
 
-  #chunkRows(ordinal) {
-    if (this.#cachedChunk.ordinal === ordinal) return this.#cachedChunk.rows;
-    const width = this.#columns.length;
+  /**
+   * A chunk decoded: its columns by position (null where not decoded) and the positions in it of rows that appends
+   * deleted. `wanted` (by column position) limits the columns decoded, and a column group none of whose columns is
+   * wanted is not read at all. Rows are built from the columns only for the rows a query looks at (chunkRow).
+   */
+  #chunk(ordinal, wanted = null) {
+    const cached = this.#cachedChunk;
+    if (cached.ordinal === ordinal && (cached.wanted === null || cached.wanted === wanted)) return cached.chunk;
     const rowCount = this.#rowCount[ordinal];
-    // Made after a part is decoded: decodeColumnar checks the directory's row count against the part's size.
-    let rows = null;
-    const newRows = () => {
-      const out = new Array(rowCount);
-      for (let r = 0; r < rowCount; r++) out[r] = new Array(width).fill(null);
-      return out;
-    };
+    const columns = new Array(this.#columns.length).fill(null);
     const partitionSecret = this.#access ? this.#partitionSecret(this.#chunkPartition[ordinal]) : null;
     if (this.#access && !partitionSecret) throw new JazminKeyError(`Chunk ${ordinal} is not visible with this key`);
     this.#groups.forEach((group, g) => {
       if (!group.visible) return; // column group not granted: its columns stay hidden
+      const groupWanted = wanted && group.cols.map((c) => wanted[c]);
+      if (groupWanted && !groupWanted.includes(true)) return; // none of its columns is needed: its part is not read
       const sectionId = `${this.#tableIndex}/chunk/${ordinal}/${group.name}`;
       const key = this.#access
         ? partKey(partitionSecret, this.#columnSecret(group.name), this.#salt, sectionId)
         : this.#keys?.sectionKey(KEYRING_GROUPS.data, sectionId);
       const raw = this.#read(this.#part(ordinal, g), sectionId, key);
-      const columns = decodeColumnar(raw, group.cols.map((c) => this.#types[c]), rowCount, ordinal);
-      if (this.#cost) this.#cost.columnsDecoded += group.cols.length;
-      rows ??= newRows();
+      const decoded = decodeColumnar(raw, group.cols.map((c) => this.#types[c]), rowCount, ordinal, groupWanted ?? undefined);
+      if (this.#cost) this.#cost.columnsDecoded += groupWanted ? groupWanted.filter(Boolean).length : group.cols.length;
       group.cols.forEach((col, j) => {
-        const values = columns[j];
-        for (let r = 0; r < rowCount; r++) rows[r][col] = values[r];
+        if (!groupWanted || groupWanted[j]) columns[col] = decoded[j];
       });
     });
-    rows ??= newRows();
-    // Deleted rows become null and are skipped by every read path.
+    // Positions of deleted rows: a set as large as the deletions it holds, never as large as a (possibly damaged)
+    // row count.
     const start = this.#rowStart[ordinal];
-    for (let i = lowerBound(this.#deleted, start); i < this.#deleted.length && this.#deleted[i] < start + rows.length; i++) {
-      rows[this.#deleted[i] - start] = null;
+    let deleted = null;
+    for (let i = lowerBound(this.#deleted, start); i < this.#deleted.length && this.#deleted[i] < start + rowCount; i++) {
+      (deleted ??= new Set()).add(this.#deleted[i] - start);
     }
-    this.#cachedChunk = { ordinal, rows };
+    const decodedCols = [];
+    for (let c = 0; c < columns.length; c++) if (columns[c] !== null) decodedCols.push(c);
+    const chunk = { columns, decoded: decodedCols, deleted, rowCount };
+    this.#cachedChunk = { ordinal, wanted, chunk };
     if (this.#cost) this.#cost.chunksRead++;
-    return rows;
+    return chunk;
   }
 
   /** Loads (and caches) an index, or returns undefined if the file has none this reader may use. */
@@ -1256,11 +1278,7 @@ export class JazminReader {
     const names = partitionCol >= 0 ? partitionLookup(plan, partitionCol) : null;
     if (names && this.#access.isOwner && !this.#allLoaded) this.#ensurePartitions(names.map((n) => this.#access.secrets.partitionId(n)));
     else this.#ensureAllChunks();
-    const cols = new Set();
-    (function collect(node) {
-      if (node.kind === 'leaf') cols.add(node.col);
-      else (node.items ?? [node.item]).forEach(collect);
-    })(plan);
+    const cols = planColumns(plan);
     const leading = this.#table.sortedBy[0];
     if (leading !== undefined) cols.add(this.#columns.findIndex((c) => c.name === leading));
     if (names) cols.delete(partitionCol);
@@ -1323,9 +1341,10 @@ export class JazminReader {
     this.#ensureAllChunks();
     const ordinal = this.#chunkOrdinalFor(rowId);
     if (!this.#isVisibleChunk(ordinal) || this.#visibleCols.length === 0) throw new JazminKeyError(`Row ${rowId} is not visible with this key`);
-    const row = this.#chunkRows(ordinal)[rowId - this.#rowStart[ordinal]];
-    if (row === null) throw new JazminValidationError(`Row ${rowId} was deleted`);
-    return this.#toObject(row, this.#visibleCols);
+    const chunk = this.#chunk(ordinal);
+    const r = rowId - this.#rowStart[ordinal];
+    if (chunk.deleted?.has(r)) throw new JazminValidationError(`Row ${rowId} was deleted`);
+    return this.#toObject(chunkRow(chunk, r, new Array(this.#columns.length).fill(null)), this.#visibleCols);
   }
 
   /** Streams all visible rows (same as find() without a filter). */
@@ -1459,11 +1478,12 @@ export class JazminReader {
         return;
       }
     }
-    const decode = singleGroup && !plan ? this.#directDecoder(selection) : null;
+    const wanted = this.#wantedColumns(plan, selection); // only the filter's and the selected columns are decoded
+    const decode = plan ? null : this.#directDecoder(selection);
     if (decode) {
-      const wanted = this.#columns.map((_, i) => selection.includes(i)); // skip unselected columns
-      // Full scan: each chunk's columns are decoded and rows built from them one at a time. Chunks wholly before
-      // the offset are counted, not read.
+      // Full scan: each chunk's columns are decoded and rows built from them one at a time (in access-controlled
+      // files through #chunk, which reads each column group's part). Chunks wholly before the offset are counted,
+      // not read.
       let skipped = 0;
       let yielded = 0;
       let deleted = 0;
@@ -1475,7 +1495,7 @@ export class JazminReader {
         }
         const rowCount = this.#rowCount[ordinal];
         if (ticks) yield NEXT_CHUNK;
-        const columns = this.#decodeChunk(ordinal, wanted);
+        const columns = singleGroup ? this.#decodeChunk(ordinal, wanted) : this.#chunk(ordinal, wanted).columns;
         for (let r = 0; r < rowCount; r++) {
           if (yielded >= limit) return;
           const rowId = this.#rowStart[ordinal] + r;
@@ -1492,18 +1512,19 @@ export class JazminReader {
       return;
     }
     const make = this.#maker(selection);
-    for (const item of this.#iterate(plan, offset, limit, ticks)) yield item === NEXT_CHUNK ? item : make(item[1]);
+    for (const item of this.#iterate(plan, offset, limit, ticks, wanted)) yield item === NEXT_CHUNK ? item : make(item[1]);
+  }
+
+  /** By column position: the columns a query decodes - those its filter reads and those it returns. */
+  #wantedColumns(plan, selection) {
+    const used = plan ? planColumns(plan) : new Set();
+    for (const c of selection) used.add(c);
+    return this.#columns.map((_, i) => used.has(i));
   }
 
   /** Scan with a filter (one column group): only the columns the filter and the selection use are decoded. */
   *#scanColumns(plan, selection, offset, limit, ticks) {
-    const planCols = new Set();
-    (function collect(node) {
-      if (node.kind === 'leaf') planCols.add(node.col);
-      else if (node.kind === 'not') collect(node.item);
-      else node.items.forEach(collect);
-    })(plan);
-    const wanted = this.#columns.map((_, i) => planCols.has(i) || selection.includes(i));
+    const wanted = this.#wantedColumns(plan, selection);
     const make = this.#maker(selection);
     const row = new Array(this.#columns.length);
     const whole = this.#wholeChunkTest(plan);
@@ -1550,15 +1571,20 @@ export class JazminReader {
     for (const [rowId, row] of this.#iterate(this.#plan(filter), 0, Infinity)) yield [rowId, make(row)];
   }
 
-  /** Yields [rowId, row array] for visible, non-deleted rows matching a normalized filter. */
-  *#iterate(plan, offset, limit, ticks = false) {
+  /**
+   * Yields [rowId, row array] for visible, non-deleted rows matching a normalized filter. `wanted` (by column
+   * position, null: all) limits the columns decoded. The row array is reused for the next row: copy what you keep.
+   */
+  *#iterate(plan, offset, limit, ticks = false, wanted = null) {
     let skipped = 0;
     let yielded = 0;
     const indexes = { get: (column, kind) => this.#index(column, kind) };
     const rowIds = plan ? candidates(plan, indexes) : null;
+    const row = new Array(this.#columns.length).fill(null);
 
-    const accept = (row) => {
-      if (row === null) return false; // deleted
+    const accept = (chunk, r) => {
+      if (chunk.deleted?.has(r)) return false;
+      chunkRow(chunk, r, row);
       if (plan && !evaluate(plan, row)) return false;
       if (skipped < offset) {
         skipped++;
@@ -1576,8 +1602,7 @@ export class JazminReader {
         if (!this.#isVisibleChunk(ordinal)) continue;
         if (ticks && ordinal !== previous) yield NEXT_CHUNK;
         previous = ordinal;
-        const row = this.#chunkRows(ordinal)[rowId - this.#rowStart[ordinal]];
-        if (accept(row)) {
+        if (accept(this.#chunk(ordinal, wanted), rowId - this.#rowStart[ordinal])) {
           yielded++;
           yield [rowId, row];
         }
@@ -1594,12 +1619,12 @@ export class JazminReader {
         continue;
       }
       if (ticks) yield NEXT_CHUNK;
-      const rows = this.#chunkRows(ordinal);
-      for (let r = 0; r < rows.length; r++) {
+      const chunk = this.#chunk(ordinal, wanted);
+      for (let r = 0; r < chunk.rowCount; r++) {
         if (yielded >= limit) return;
-        if (accept(rows[r])) {
+        if (accept(chunk, r)) {
           yielded++;
-          yield [this.#rowStart[ordinal] + r, rows[r]];
+          yield [this.#rowStart[ordinal] + r, row];
         }
       }
     }
@@ -1609,7 +1634,7 @@ export class JazminReader {
   get [APPEND_STATE]() {
     this.#ensureAllChunks();
     const lastOrdinal = this.#visibleChunks[this.#visibleChunks.length - 1];
-    const last = lastOrdinal === undefined ? null : this.#chunkRowsRaw(lastOrdinal);
+    const last = lastOrdinal === undefined ? null : this.#chunk(lastOrdinal); // its last row, even if deleted, bounds the sort order
     const isOwner = this.#access?.isOwner;
     return {
       header: this.#header,
@@ -1630,21 +1655,8 @@ export class JazminReader {
       deleted: this.#deleted,
       files: this[FILE_STATE],
       validEnd: this.#validEnd,
-      lastRow: last && last.length ? Object.fromEntries(this.#columns.map((c, i) => [c.name, last[last.length - 1][i]])) : null,
+      lastRow: last && last.rowCount ? Object.fromEntries(this.#columns.map((c, i) => [c.name, chunkRow(last, last.rowCount - 1, new Array(this.#columns.length).fill(null))[i]])) : null,
     };
-  }
-
-  /** Decoded rows of a chunk including deleted ones (for the appender's sort-order check). */
-  #chunkRowsRaw(ordinal) {
-    const saved = this.#deleted;
-    this.#deleted = [];
-    this.#cachedChunk = { ordinal: -1, rows: null };
-    try {
-      return this.#chunkRows(ordinal);
-    } finally {
-      this.#deleted = saved;
-      this.#cachedChunk = { ordinal: -1, rows: null };
-    }
   }
 
   /** Counts matching visible rows. Without a filter this reads only the header. */
@@ -1689,7 +1701,7 @@ export class JazminReader {
     if (this.#closed) return;
     this.#closed = true;
     release(this.#source);
-    this.#cachedChunk = { ordinal: -1, rows: null };
+    this.#cachedChunk = { ordinal: -1, wanted: null, chunk: null };
     this.#indexes.clear();
   }
 

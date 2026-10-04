@@ -697,6 +697,7 @@ were run back to back. ¹ With `node --max-semi-space-size=8` (see 20.5).
 |---|---|---|
 | `codec` | `deflate` | Use `brotli` for archives (smaller, slower to write), or `none` for already-compressed data |
 | `chunkRows` | 4096 | Lower (e.g. 512) for many single-row lookups; higher for whole-file reads |
+| `select` (query option) | every column | List only the columns you need. Only those, and the columns the filter uses, are decoded, on every kind of query: scans, index lookups and access-controlled files. In access-controlled files, a column group none of whose columns is needed is not read at all. A one-column read through an index took 45% of the time of reading every column |
 | indexes | none | Add `sorted` to columns used in `eq` / range filters, and `trigram` to text searched with `contains`. Skip `sorted` on the first `sortedBy` column: chunk statistics already find its values. Large sorted indexes are paged automatically |
 | `kdfIterations` | 600,000 | Do not lower it in production. It only affects password-based files. Allowed: 1,000 to 10,000,000; readers refuse files outside that range |
 | `maxDegreeOfParallelism` (JS) / `MaxDegreeOfParallelism` (.NET writer) | JS: up to 2 worker threads; .NET: one thread per core, up to 16 | Set 1 for the lowest memory. Raise it in .NET for faster writes. In JS, more than 2 gains little, because preparing rows on the main thread is the limit |

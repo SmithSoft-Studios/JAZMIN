@@ -20,6 +20,20 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   - **Browser reader:** it pages without a filter the same way, and `query()`
     without a filter returns `total` from the row count.
 
+- **Only the columns a query uses are decoded (#11).**
+  - **Now everywhere:** index lookups and access-controlled reads now decode
+    only the columns the filter uses and those `select` returns, as scans
+    already did. In access-controlled files, a column group none of whose
+    columns is needed is not read at all.
+  - **No rows built up front:** in JS, a decoded chunk is kept as columns, and
+    rows are built only for the rows a query looks at. That saves time, and the
+    memory of a decoded chunk.
+  - **Measured, one column through an index:** JS 75.6 to 33.7 ms; .NET 66.3
+    to 29.3 ms.
+  - **Measured, one column of an access-controlled file:** JS 128 to 70 ms;
+    .NET 95 to 71 ms. The rest of that time is decrypting and decompressing
+    each chunk part, which holds every column (#23 would split them).
+
 ### Added
 - **`explain(filter, { analyze: true })` (#6):** runs a query and reports
   what it read (USER-GUIDE §9.6): rows, bytes, chunks, index pages and column

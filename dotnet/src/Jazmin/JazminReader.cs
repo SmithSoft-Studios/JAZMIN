@@ -193,6 +193,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private long _validEnd;
     private int _cachedOrdinal = -1;
     private object?[][]? _cachedRows;
+    private bool[]? _cachedWanted; // the columns the cached chunk decoded (null: all)
     private CostCounter? _cost; // while Explain(analyze: true) runs a query: what it reads
 
     /// <summary>Counts what a query reads (see <see cref="JazminQueryCost"/>). Updated on the thread that iterates.</summary>
@@ -1135,9 +1136,14 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         }
     }
 
-    private object?[][] ChunkRows(int ordinal)
+    /// <summary>
+    /// A chunk's rows as arrays by column position; deleted rows are null. <paramref name="wanted"/> (by column position)
+    /// limits the columns decoded - the others stay null - and a column group none of whose columns is wanted is not
+    /// read at all.
+    /// </summary>
+    private object?[][] ChunkRows(int ordinal, bool[]? wanted = null)
     {
-        if (_cachedOrdinal == ordinal) return _cachedRows!;
+        if (_cachedOrdinal == ordinal && (_cachedWanted is null || ReferenceEquals(_cachedWanted, wanted))) return _cachedRows!;
         var width = _allColumns.Length;
         var rowCount = _rowCount[ordinal];
         object?[][]? rows = null; // made after a part is decoded: Columnar checks the directory's row count against the part's size
@@ -1152,16 +1158,18 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         {
             var group = _groups[g];
             if (!group.Visible) continue; // column group not granted: its columns stay hidden
+            var groupWanted = wanted is null ? null : Array.ConvertAll(group.Cols, c => wanted[c]);
+            if (groupWanted is not null && !groupWanted.Contains(true)) continue; // none of its columns is needed: not read
             var sectionId = FormatConstants.ChunkSectionId(_tableIndex, ordinal, group.Name);
             var key = _access is not null
                 ? AccessCrypto.PartKey(partitionSecret!, ColumnSecret(group.Name)!, _salt, sectionId)
                 : _keys?.SectionKey(FormatConstants.KeyringData, sectionId);
-            var decoded = Columnar.Decode(ReadSection(Part(ordinal, g), sectionId, key), group.Cols.Select(c => _types[c]).ToArray(), rowCount, ordinal, strings: _strings);
-            if (_cost is not null) _cost.ColumnsDecoded += group.Cols.Length;
+            var decoded = Columnar.Decode(ReadSection(Part(ordinal, g), sectionId, key), group.Cols.Select(c => _types[c]).ToArray(), rowCount, ordinal, groupWanted, _strings);
+            if (_cost is not null) _cost.ColumnsDecoded += groupWanted?.Count(w => w) ?? group.Cols.Length;
             rows ??= NewRows();
             for (var j = 0; j < group.Cols.Length; j++)
             {
-                var values = decoded[j]!;
+                if (decoded[j] is not { } values) continue; // not wanted
                 var col = group.Cols[j];
                 for (var r = 0; r < rowCount; r++) rows[r][col] = values[r];
             }
@@ -1174,6 +1182,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             rows[_deleted[i] - start] = null!;
         _cachedOrdinal = ordinal;
         _cachedRows = rows;
+        _cachedWanted = wanted;
         if (_cost is not null) _cost.ChunksRead++;
         return rows;
     }
@@ -1491,6 +1500,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             foreach (var row in ScanColumns(plan, selection, offset, limit)) yield return row;
             yield break;
         }
+        var wanted = WantedColumns(plan, selection); // only the filter's and the selected columns are decoded
 
         bool Accept(object?[]? row)
         {
@@ -1512,7 +1522,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 if (yielded >= limit) yield break;
                 var ordinal = ChunkOrdinalFor(rowId);
                 if (ordinal < 0) continue;
-                var row = ChunkRows(ordinal)[rowId - _rowStart[ordinal]];
+                var row = ChunkRows(ordinal, wanted)[rowId - _rowStart[ordinal]];
                 if (!Accept(row)) continue;
                 yielded++;
                 yield return new JazminRow(rowId, _allColumns, selection, row);
@@ -1530,7 +1540,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 skipped += LiveRows(ordinal); // every row matches and lies before the offset: no need to read it
                 continue;
             }
-            var rows = ChunkRows(ordinal);
+            var rows = ChunkRows(ordinal, wanted);
             for (var r = 0; r < rows.Length; r++)
             {
                 if (yielded >= limit) yield break;
@@ -1541,13 +1551,19 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         }
     }
 
-    /// <summary>Scan with a filter (one column group): only the columns the filter and the selection use are decoded.</summary>
-    private IEnumerable<JazminRow> ScanColumns(BoundFilter? plan, int[] selection, long offset, long limit)
+    /// <summary>By column position: the columns a query decodes - those its filter reads and those it returns.</summary>
+    private bool[] WantedColumns(BoundFilter? plan, int[] selection)
     {
         var used = new HashSet<int>(selection);
         CollectColumns(plan, used);
-        var all = used.Count == _allColumns.Length;
-        var wanted = Enumerable.Range(0, _types.Length).Select(used.Contains).ToArray();
+        return Enumerable.Range(0, _types.Length).Select(used.Contains).ToArray();
+    }
+
+    /// <summary>Scan with a filter (one column group): only the columns the filter and the selection use are decoded.</summary>
+    private IEnumerable<JazminRow> ScanColumns(BoundFilter? plan, int[] selection, long offset, long limit)
+    {
+        var wanted = WantedColumns(plan, selection);
+        var all = !wanted.Contains(false);
         var planColumns = new HashSet<int>();
         CollectColumns(plan, planColumns);
         var scratch = new object?[_types.Length];
