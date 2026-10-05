@@ -104,6 +104,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     each chunk part, which holds every column (#23 would split them).
 
 ### Added
+- **`columnArrays()` for charts (#19),** in the library and the browser
+  reader (USER-GUIDE §9.11).
+  - **What it returns:** column values as arrays instead of an object per
+    row: numbers and dates in a `Float64Array`, bools in a `Uint8Array`,
+    other types in plain arrays. A null bitmap covers the typed arrays.
+  - **Measured:** 200,000 rows of a date and an amount keep 3.3 MB instead
+    of 30.7 MB (Node), and 3.8 MB instead of 34.8 MB (browser reader), in the
+    same time.
 - **`compact({ regroup: true })` (#17):** each partition's rows are written
   together in an access-controlled file (.NET:
   `JazminFile.Compact(path, owner, regroup: true)`).

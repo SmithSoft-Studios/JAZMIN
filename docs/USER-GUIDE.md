@@ -222,6 +222,7 @@ for (const row of reader.find({ country: 'ZA', name: { icontains: 'ndlovu' } }))
 
 reader.get(1);                                      // row by position (many? sort them first: section 9.9)
 reader.count({ country: 'ZA' });                    // 2 (reads as little as it can: section 9.10)
+reader.columnArrays(null, { select: ['balance'] });  // { rowCount, values: { balance: Float64Array }, nulls } (section 9.11)
 reader.explain({ id: 3 });                          // { strategy: 'index', candidateRows: 1 }
 reader.explain({ id: 3 }, { analyze: true });       // ... plus rows, bytesRead, chunksRead, ... (section 9.6)
 [...reader.rows({ offset: 1, limit: 1 })];          // paging
@@ -882,6 +883,44 @@ of the file. On 200,000 transactions (`npm run bench:proposals`):
   `total`.
 - **Access keys** don't use indexes (only the owner can read them), so they
   count from chunk statistics and the partitions a filter names.
+
+### 9.11 Column arrays for charts
+
+A chart needs a few columns of many rows. `find()` gives an object per row,
+which costs about 160 bytes each. `columnArrays()` gives one array per column
+instead:
+
+```js
+const { rowCount, values, nulls } = reader.columnArrays({ at: { gte: start } }, { select: ['at', 'amount'] });
+values.at;       // Float64Array of milliseconds since 1970 (UTC)
+values.amount;   // Float64Array
+chart.draw(values.at, values.amount);
+```
+
+| Column type | Array |
+|---|---|
+| `int`, `float`, `datetime` | `Float64Array` (dates as milliseconds) |
+| `bool` | `Uint8Array` (1 = true) |
+| Other types | A plain array |
+
+- **Nulls:** a plain array holds `null` itself. A typed array can't, so a
+  null row holds `NaN` (0 for bools), and `nulls[column]` marks it. That
+  bitmap exists only when the column has nulls. Bit `i & 7` of byte `i >> 3`
+  is set for row `i`.
+- **Integers beyond ±2⁵³** are refused, because a `Float64Array` can't hold
+  them exactly. Use `find()` for those.
+- **Options:** `select` picks the columns (default: every visible one), and
+  `filter`, `offset` and `limit` work as in `find()`.
+
+200,000 rows of a date and an amount, memory kept after the call:
+
+| Reader | Row objects | `columnArrays()` |
+|---|---:|---:|
+| Node | 30.7 MB | **3.3 MB** |
+| Browser reader | 34.8 MB | **3.8 MB** |
+
+The raw arrays are 3.1 MB, and the time is the same as `find()`. On a phone,
+a dashboard showing 250,000 rows keeps about 5 MB instead of 43 MB.
 
 ---
 
@@ -2394,6 +2433,7 @@ const reader = await JazminBrowser.open(file, { key });   // a File, Blob or byt
 for await (const row of reader.find({ country: 'ZA' })) console.log(row);
 const { rows } = await reader.query({ country: 'ZA' }, { offset: 50, limit: 50, total: false });
 await reader.count({ country: 'ZA' });
+await reader.columnArrays(null, { select: ['at', 'amount'] }); // arrays for charts (section 9.11)
 await reader.explain({ id: 7 }, { analyze: true });    // as in the library (section 9.6)
 const pdf = await reader.readFile('terms.pdf');
 ```

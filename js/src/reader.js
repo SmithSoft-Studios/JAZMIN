@@ -75,6 +75,59 @@ function chunkRow(chunk, r, into) {
   return into;
 }
 
+const PIECE = 8192; // values per piece of a column array: pieces are joined once, at the end
+const NUMBER_TYPES = new Set(['int', 'float', 'datetime']);
+
+/**
+ * Collects one column's values for columnArrays(): numbers and dates (as milliseconds) in a Float64Array, bools in a
+ * Uint8Array (1 = true), other types in a plain array. Typed arrays cannot hold null: those rows hold NaN (0 for bools)
+ * and their bit is set in a null bitmap (bit i & 7 of byte i >> 3). Values are gathered in pieces and joined at the
+ * end, so memory peaks at about twice the result.
+ */
+function columnCollector({ name, type }) {
+  const Typed = NUMBER_TYPES.has(type) ? Float64Array : type === 'bool' ? Uint8Array : null;
+  if (!Typed) {
+    const values = [];
+    return { add: (v) => values.push(v), finish: () => ({ values }) };
+  }
+  const pieces = [];
+  let piece = new Typed(PIECE);
+  let used = 0;
+  let count = 0;
+  const nullRows = [];
+  return {
+    add(v) {
+      if (used === PIECE) {
+        pieces.push(piece);
+        piece = new Typed(PIECE);
+        used = 0;
+      }
+      if (v === null) {
+        nullRows.push(count);
+        piece[used] = Typed === Float64Array ? NaN : 0;
+      } else if (type === 'datetime') piece[used] = v.getTime();
+      else if (type === 'bool') piece[used] = v ? 1 : 0;
+      else if (typeof v === 'bigint') throw new JazminValidationError(`Column '${name}' holds ${v}, beyond ±2^53: a Float64Array cannot hold it exactly (use find())`);
+      else piece[used] = v;
+      used++;
+      count++;
+    },
+    finish() {
+      const values = new Typed(count);
+      let at = 0;
+      for (const p of pieces) {
+        values.set(p, at);
+        at += p.length;
+      }
+      values.set(piece.subarray(0, used), at);
+      if (!nullRows.length) return { values };
+      const nulls = new Uint8Array((count + 7) >> 3);
+      for (const r of nullRows) nulls[r >> 3] |= 1 << (r & 7);
+      return { values, nulls };
+    },
+  };
+}
+
 /** Whether a chunk decoded with the columns `have` (by position; null: all) holds every column `need` asks for. */
 const decodedAll = (have, need) => have === null || (need !== null && need.every((wanted, c) => !wanted || have[c]));
 
@@ -1771,6 +1824,32 @@ export class JazminReader {
       }
     }
     return n;
+  }
+
+  /**
+   * Column values as arrays, for charts and totals: far less memory than an object per row. `select` picks the
+   * columns (default: every visible one); filter, offset and limit work as in find(). Returns { rowCount, values,
+   * nulls }: numbers and dates (as milliseconds) in a Float64Array, bools in a Uint8Array (1 = true), other types in
+   * plain arrays (where null stays null). Typed arrays cannot hold null: those rows hold NaN (0 for bools), and
+   * `nulls[column]`, present when the column has nulls, is a bitmap with bit i & 7 of byte i >> 3 set for row i.
+   * Integers beyond ±2^53 are refused: a Float64Array cannot hold them exactly.
+   */
+  columnArrays(filter, { select, offset, limit } = {}) {
+    const names = select ?? this.columns.map((c) => c.name);
+    const collectors = this.#selection(names).map((i) => columnCollector(this.#columns[i]));
+    let rowCount = 0;
+    for (const row of this.find(filter, { select: names, offset, limit })) {
+      for (let i = 0; i < names.length; i++) collectors[i].add(row[names[i]]);
+      rowCount++;
+    }
+    const values = {};
+    const nulls = {};
+    names.forEach((name, i) => {
+      const column = collectors[i].finish();
+      values[name] = column.values;
+      if (column.nulls) nulls[name] = column.nulls;
+    });
+    return { rowCount, values, nulls };
   }
 
   /**

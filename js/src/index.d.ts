@@ -243,6 +243,15 @@ export type QueryPlan =
   | { strategy: 'scan'; chunks: number; chunksSkipped: number };
 
 /** reader.advise(): layout advice from chunk directories and statistics (no rows decoded). */
+/** Column values as arrays (JazminReader.columnArrays). */
+export interface ColumnArrays {
+  rowCount: number;
+  /** int, float and datetime (milliseconds) as Float64Array; bool as Uint8Array (1 = true); other types as arrays. */
+  values: Record<string, Float64Array | Uint8Array | unknown[]>;
+  /** For typed columns with nulls: bit (i & 7) of byte (i >> 3) is set where row i is null (the value is NaN, or 0). */
+  nulls: Record<string, Uint8Array>;
+}
+
 export interface LayoutAdvice {
   rows: number;
   chunks: number;
@@ -434,6 +443,11 @@ export class JazminReader implements Iterable<JazminRow> {
    * reading rows; elsewhere only the filter's columns are decoded.
    */
   count(filter?: Filter): number;
+  /**
+   * Column values as arrays, for charts and totals: far less memory than an object per row. Integers beyond ±2^53 are
+   * refused (a Float64Array cannot hold them exactly).
+   */
+  columnArrays(filter?: Filter | null, options?: { select?: string[]; offset?: number; limit?: number }): ColumnArrays;
   /** Layout advice for lookups of these columns (chunk directories and statistics only). */
   advise(options?: { columns?: string[] }): LayoutAdvice;
   explain(filter: Filter): QueryPlan;

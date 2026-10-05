@@ -33,6 +33,9 @@ for (const row of reader.find(where, { select: ['id', 'name'] })) {
   console.log(id, row.name);
 }
 console.log(reader.explain(where)); // { strategy: 'index', candidateRows: 1 }
+const { values } = reader.columnArrays(null, { select: ['joined'] }); // arrays for charts
+const joined = values.joined as Float64Array; // milliseconds since 1970
+console.log(joined.length);
 
 // 3. Export to CSV, then read back with the JSON-like API.
 console.log(toCSV(reader, { filter: { id: { gte: 1 } } }));

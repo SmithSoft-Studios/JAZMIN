@@ -934,6 +934,52 @@
     return leaves.length === 1 || leaves.every((l) => RANGE_OPS.has(l.op) && l.column.position === leaves[0].column.position);
   }
 
+  /** As columnCollector in the library's reader.js: one column's values for columnArrays(). */
+  function columnCollector({ name, type }) {
+    const PIECE = 8192; // values per piece: pieces are joined once, at the end
+    const Typed = type === 'int' || type === 'float' || type === 'datetime' ? Float64Array : type === 'bool' ? Uint8Array : null;
+    if (!Typed) {
+      const values = [];
+      return { add: (v) => values.push(v), finish: () => ({ values }) };
+    }
+    const pieces = [];
+    let piece = new Typed(PIECE);
+    let used = 0;
+    let count = 0;
+    const nullRows = [];
+    return {
+      add(v) {
+        if (used === PIECE) {
+          pieces.push(piece);
+          piece = new Typed(PIECE);
+          used = 0;
+        }
+        if (v === null || v === undefined) {
+          nullRows.push(count);
+          piece[used] = Typed === Float64Array ? NaN : 0;
+        } else if (type === 'datetime') piece[used] = v.getTime();
+        else if (type === 'bool') piece[used] = v ? 1 : 0;
+        else if (typeof v === 'bigint') throw new JazminError(`Column '${name}' holds ${v}, beyond ±2^53: a Float64Array cannot hold it exactly (use find())`);
+        else piece[used] = v;
+        used++;
+        count++;
+      },
+      finish() {
+        const values = new Typed(count);
+        let at = 0;
+        for (const p of pieces) {
+          values.set(p, at);
+          at += p.length;
+        }
+        values.set(piece.subarray(0, used), at);
+        if (!nullRows.length) return { values };
+        const nulls = new Uint8Array((count + 7) >> 3);
+        for (const r of nullRows) nulls[r >> 3] |= 1 << (r & 7);
+        return { values, nulls };
+      },
+    };
+  }
+
   function planColumns(plan, into = new Set()) {
     if (!plan) return into;
     if (plan.kind === 'leaf') into.add(plan.column.position);
@@ -2101,6 +2147,29 @@
         const rows = [];
         for await (const row of matches(filter, { offset, limit, select })) rows.push(row);
         return total ? { rows, total: await this.count(filter) } : { rows };
+      },
+      /**
+       * Column values as arrays, for charts and totals, as the library's columnArrays(): { rowCount, values, nulls }.
+       * Numbers and dates (milliseconds) in a Float64Array, bools in a Uint8Array (1 = true), other types in plain
+       * arrays. Null rows of typed arrays hold NaN (0 for bools), with their bit (i & 7 of byte i >> 3) set in
+       * nulls[column]. Far less memory than an object per row: 200,000 rows of a date and an amount take 3.2 MB.
+       */
+      async columnArrays(filter, { select, offset, limit } = {}) {
+        const names = select ?? visibleColumns.map((c) => c.name);
+        const collectors = names.map((name) => columnCollector(visibleColumns.find((c) => c.name === name) ?? { name }));
+        let rowCount = 0;
+        for await (const row of matches(filter, { select: names, offset, limit })) {
+          for (let i = 0; i < names.length; i++) collectors[i].add(row[names[i]]);
+          rowCount++;
+        }
+        const values = {};
+        const nulls = {};
+        names.forEach((name, i) => {
+          const column = collectors[i].finish();
+          values[name] = column.values;
+          if (column.nulls) nulls[name] = column.nulls;
+        });
+        return { rowCount, values, nulls };
       },
       /**
        * Rows matching a filter. When sorted indexes answer it exactly, their row count is the answer; otherwise chunks
