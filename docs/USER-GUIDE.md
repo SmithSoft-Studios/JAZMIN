@@ -876,8 +876,8 @@ of the file. On 200,000 transactions (`npm run bench:proposals`):
 | 12 monthly counts over a year (file sorted by time) | 5,771 KB, 104 ms | 1,062 KB, 15 ms |
 | One account's count (file sorted by time, `account` indexed) | 4,766 KB, 81 ms | 57 KB, 1.2 ms |
 
-- **.NET** counts the same way. The 12 monthly counts took 82 ms in 1.0.0
-  and 27 ms now. On 1,000,000 rows, they took 323 ms and now take 25 ms.
+- **.NET** counts the same way. The 12 monthly counts took 81 ms in 1.0.0
+  and 32 ms now. On 1,000,000 rows, they took 257 ms and now take 16 ms.
 - **The browser reader** counts the same way, and `query()` uses it for
   `total`.
 - **Access keys** don't use indexes (only the owner can read them), so they
