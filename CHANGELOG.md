@@ -39,6 +39,18 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     init"`). It didn't reproduce locally, so CI will confirm the fix.
 
 ### Changed
+- **Faster owner lookups and appends in shared files (JS and .NET).**
+  - **Lookups through a small index match** (an id, a few values) no longer
+    read the statistics of every partition: the index already narrows the
+    rows to check. With 100 partitions, finding one record by id read 218
+    sections in JS; it now reads 12 times from disk.
+  - **Appends work out their result** (row, append and deleted-row counts)
+    instead of opening the file again. A one-record append to a shared file
+    with 100 partitions: JS 15.6 -> 13.3 ms, .NET 15.9 -> 14.4 ms.
+  - **JS reads an owner's many small catalog sections in a few reads**
+    (chunk directories, statistics: one per partition), when there are 16 or
+    more close together.
+  - The filing service files a batch in about 30 ms, down from about 40.
 - **Faster, leaner index building for rows that arrive almost in order (JS and
   .NET).** Sorted indexes are built from ascending runs, merged when the
   index is written. Before, one row out of order switched the builder to a

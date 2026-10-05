@@ -154,22 +154,24 @@ rest.
 
 | Records in the shared file | 10,000 | 100,000 | 250,000 |
 |---|---:|---:|---:|
-| File 1 new record | 33 ms, 6 MB | 34 ms, 6 MB | 37 ms, 7 MB |
-| File 50 new records | 38 ms, 6 MB | 37 ms, 7 MB | 40 ms, 8 MB |
-| Change 50 records | 40 ms, 8 MB | 40 ms, 11 MB | 46 ms, 11 MB |
-| The same 50 changes again (nothing changes) | 18 ms, 4 MB | 19 ms, 4 MB | 22 ms, 5 MB |
-| File 10 records with a 200 KB photo each | 85 ms, 19 MB | 90 ms, 20 MB | 90 ms, 21 MB |
-| Change a record to drop its photo | 46 ms, 10 MB | 58 ms, 11 MB | 85 ms, 13 MB |
-| Compact and regroup after 50 appends | 71 ms, 13 MB | 225 ms, 56 MB | 499 ms, 115 MB |
+| File 1 new record | 34 ms, 6 MB | 33 ms, 6 MB | 27 ms, 6 MB |
+| File 50 new records | 33 ms, 7 MB | 31 ms, 6 MB | 28 ms, 6 MB |
+| Change 50 records | 34 ms, 7 MB | 37 ms, 12 MB | 36 ms, 11 MB |
+| The same 50 changes again (nothing changes) | 17 ms, 4 MB | 20 ms, 4 MB | 22 ms, 5 MB |
+| File 10 records with a 200 KB photo each | 84 ms, 20 MB | 80 ms, 20 MB | 88 ms, 18 MB |
+| Change a record to drop its photo | 34 ms, 11 MB | 52 ms, 11 MB | 74 ms, 13 MB |
+| Compact and regroup after 50 appends | 64 ms, 12 MB | 232 ms, 55 MB | 496 ms, 109 MB |
 
 What the numbers mean:
-- **A batch costs about 35 to 45 ms, whatever the size of the shared file.**
+- **A batch costs about 30 to 35 ms, whatever the size of the shared file.**
   An append writes only the change: a batch grows the file by 1 to 2 KB,
   plus its photos.
 - **Most of that time is fixed work per batch:**
   - the append: writing safely to disk, signing the file and re-sealing the
-    key slots, about 18 ms;
-  - looking up the batch's ids, about 10 ms.
+    key slots, about 13 ms;
+  - looking up the batch's ids, about 5 ms. Most of it is reading every
+    partition's chunk directory (100 here), which says where each record
+    is.
 
   The shared file is opened once per batch, for the grant, the records and
   the files. So 50 records cost about the same as one: send records in

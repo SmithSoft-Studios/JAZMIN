@@ -715,6 +715,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     private void LoadStats(IReadOnlySet<int> wanted, IEnumerable<SegmentInfo> segments)
     {
+        _sortStatsComplete = null; // the leading sort column's statistics may be complete now
         foreach (var segment in segments)
         {
             for (var b = 0; b < segment.Statistics.Count; b++)
@@ -1376,6 +1377,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         var names = partitionCol >= 0 ? PartitionLookup(plan, partitionCol) : null;
         if (names is not null && _access is { IsOwner: true } && !_allLoaded) EnsurePartitions(names.Select(n => _access.Secrets!.PartitionId(n)).ToList());
         else EnsureAllChunks();
+        // An owner's statistics are one section per partition and column. A small index lookup (an id, a few values)
+        // already narrows the rows to check, so statistics would not narrow them further: they are not read.
+        if (names is null && _access is { IsOwner: true } && _partitions.Count > 1 && FilterEngine.IndexPlan(plan, this, SmallLookupBytes) is not null) return plan;
         var used = new HashSet<int>();
         CollectColumns(plan, used);
         if (_table.SortedBy.Count > 0) used.Add(Array.FindIndex(_allColumns, c => c.Name == _table.SortedBy[0]));

@@ -108,6 +108,7 @@ function appendUnlocked(path, options) {
     const allDeleted = Float64Array.from(new Set([...state.deleted, ...removed])).sort();
     const sortedBy = reader.sortedBy;
     const existingMetadata = reader.metadata;
+    const before = { rowCount: reader.rowCount, appendCount: reader.appendCount };
     let incoming = [...insert, ...upsert];
     if (sortedBy) {
       incoming = incoming.map((row) => ({ row, k: tuple(row, sortedBy) })).sort((a, b) => compareTuples(a.k, b.k)).map((x) => x.row);
@@ -136,18 +137,17 @@ function appendUnlocked(path, options) {
     }
     writer.finish();
 
-    const after = new JazminReader(path, { key, password, table });
+    // The new version's counts follow from the change: no need to open the file again.
     result = {
-      rowCount: after.rowCount,
+      rowCount: before.rowCount - removed.size + incoming.length,
       inserted: insert.length + upsert.length - updated,
       updated,
       deleted: deletedNow,
-      appendCount: after.appendCount,
-      deletedRowCount: after.deletedRowCount,
+      appendCount: before.appendCount + 1,
+      deletedRowCount: allDeleted.length,
       expiredGrantsRemoved: writer.expiredGrants,
       compacted: false,
     };
-    after.close();
   } catch (error) {
     writer?.abort();
     reader.close();

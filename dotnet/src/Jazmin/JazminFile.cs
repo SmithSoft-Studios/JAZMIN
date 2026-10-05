@@ -361,6 +361,7 @@ public static class JazminFile
             }
             var accessOptions = ownerGrants is null ? null : AccessFor(reader, ownerGrants, new JazminUpdate { Grant = append.Grant });
             var metadata = reader.Metadata;
+            var (rowCountBefore, appendCountBefore) = (reader.RowCount, reader.AppendCount);
             reader.Dispose();
 
             writer = JazminWriter.Continue(path, shape.Columns, new JazminWriteOptions
@@ -386,9 +387,9 @@ public static class JazminFile
             }
             writer.Finish();
 
-            using var after = JazminReader.Open(path, new JazminReadOptions { Key = append.Key, Password = append.Password, Table = append.Table });
-            result = new JazminAppendResult(after.RowCount, append.Insert.Count + append.Upsert.Count - updated, updated, deletedNow,
-                after.AppendCount, after.DeletedRowCount, false) { ExpiredGrantsRemoved = writer.ExpiredGrants };
+            // The new version's counts follow from the change: no need to open the file again.
+            result = new JazminAppendResult(rowCountBefore - removed.Count + incoming.Count, append.Insert.Count + append.Upsert.Count - updated, updated, deletedNow,
+                appendCountBefore + 1, allDeleted.Length, false) { ExpiredGrantsRemoved = writer.ExpiredGrants };
         }
         catch
         {

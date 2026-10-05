@@ -58,6 +58,31 @@ test('writtenAt: when the file was created, then when it was last appended to', 
   assert.deepEqual(writtenAt(), new Date(Date.UTC(2026, 0, 2, 12)));
 });
 
+test('append results match the file: row, append and deleted-row counts', () => {
+  const owner = JazminKey.generate();
+  for (const [name, options] of [['plain', {}], ['shared', { key: owner, access: { partitionBy: 'section', grants: [{ key: owner.createAccessKey(), rows: ['S1'] }] } }]]) {
+    const file = tmp(`results-${name}.jzm`);
+    write(file, Array.from({ length: 30 }, (_, i) => row(i)), { columns, ...options });
+    const key = options.key;
+    for (const change of [
+      { insert: [row(30), row(31)] },
+      { delete: { section: 'S1' } },
+      { upsert: [{ ...row(5), amount: -1 }, { ...row(40), section: 'S2' }], keyColumns: ['id'] },
+      { insert: [row(5), row(5)] }, // the same id twice more
+      { upsert: [{ ...row(5), amount: -2 }], keyColumns: ['id'] }, // replaces all three rows of id 5
+      { delete: { section: 'S1' }, insert: [row(50, 'S1')] }, // nothing left to delete in S1
+    ]) {
+      const result = append(file, { key, ...change });
+      const r = open(file, { key });
+      try {
+        assert.deepEqual([result.rowCount, result.appendCount, result.deletedRowCount], [r.rowCount, r.appendCount, r.deletedRowCount], `${name} ${JSON.stringify(change)}`);
+      } finally {
+        r.close();
+      }
+    }
+  }
+});
+
 test('delete and upsert are recorded as deletions; reads skip them everywhere', () => {
   const file = tmp('d.jzm');
   write(file, Array.from({ length: 30 }, (_, i) => row(i)), { columns, chunkRows: 8 });

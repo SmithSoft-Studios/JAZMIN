@@ -184,6 +184,12 @@ export const FILE_STATE = Symbol('jazmin.fileState');
 const NEXT_CHUNK = Symbol('jazmin.nextChunk'); // yielded by internal scans before each chunk is read (findAsync)
 const READ_AHEAD = 2; // chunks read ahead by findAsync
 const SMALL_LOOKUP_BYTES = 8 * 1024; // index lookups this small are always made: the bytes are negligible, and rows are not decoded
+// Many catalog sections read together (an owner's chunk directories and statistics: one per partition) are read in
+// ranges: from READ_AHEAD_SECTIONS sections, those at most READ_AHEAD_GAP apart share a read of at most READ_AHEAD_MAX
+// bytes. A read is a system call; the gaps are other small catalog sections.
+const READ_AHEAD_SECTIONS = 16;
+const READ_AHEAD_GAP = 4 * 1024;
+const READ_AHEAD_MAX = 8 * 1024 * 1024;
 const nextTurn = () => new Promise((resolve) => setImmediate(resolve)); // lets timers and I/O callbacks run
 
 /** Internal: openTable() passes this as the source, with the reader it shares the open file with. */
@@ -257,6 +263,22 @@ export function fileSource(fd, size) {
     },
     release(start) {
       loaded = loaded.filter((range) => range.start !== start);
+    },
+    /** Reads a range now and keeps it for `read` until `unload(range)`: many small sections in one read. */
+    preload(position, length) {
+      if (position < 0 || position + length > size) throw new JazminFormatError('Unexpected end of file');
+      const buf = Buffer.allocUnsafe(length);
+      for (let offset = 0; offset < length;) {
+        const n = fs.readSync(fd, buf, offset, length - offset, position + offset);
+        if (n === 0) throw new JazminFormatError('Unexpected end of file');
+        offset += n;
+      }
+      const range = { start: position, buf };
+      loaded.push(range);
+      return range;
+    },
+    unload(range) {
+      loaded = loaded.filter((r) => r !== range);
     },
     drop() {
       generation++;
@@ -410,6 +432,7 @@ export class JazminReader {
   #indexRefs = null;
   #indexes = new Map();
   #indexProvider = { get: (column, kind) => this.#index(column, kind) };
+  #readAheads = []; // ranges read ahead (#readAhead) while they are held
   #cachedChunk = { ordinal: -1, wanted: null, chunk: null }; // the last chunk decoded, and the columns decoded (null: all)
   #sortStatsComplete; // computed on first sorted scan
   #flags = 0;
@@ -760,11 +783,56 @@ export class JazminReader {
     this.#partitionTable = null; // decoded: no longer needed
   }
 
+  /**
+   * Reads these sections' bytes ahead, in a few reads (sections close together share one), for #read to serve from
+   * memory. Returns a function that releases them.
+   */
+  #readAhead(refs) {
+    if (!this.#source.preload || refs.length < READ_AHEAD_SECTIONS) return () => {};
+    const sorted = refs.map((r) => [r.offset, r.offset + r.length]).sort((a, b) => a[0] - b[0]);
+    const ranges = [];
+    for (const [start, end] of sorted) {
+      const last = ranges[ranges.length - 1];
+      if (last && start - last.end <= READ_AHEAD_GAP && end - last.start <= READ_AHEAD_MAX) {
+        last.end = Math.max(last.end, end);
+        last.sections++;
+      } else {
+        ranges.push({ start, end, sections: 1 });
+      }
+    }
+    const held = ranges.filter((r) => r.sections > 1).map((r) => this.#source.preload(r.start, r.end - r.start));
+    if (this.#cost) for (const range of held) this.#cost.bytesRead += range.buf.length;
+    this.#readAheads.push(...held);
+    return () => {
+      for (const range of held) this.#source.unload(range);
+      this.#readAheads = this.#readAheads.filter((r) => !held.includes(r));
+    };
+  }
+
   /** Loads the chunk directories of these partitions (id texts). */
   #ensurePartitions(ids) {
     this.#lookupPartitions(ids);
     const g = this.#groups.length;
     const added = [];
+    const release = this.#readAhead(ids.flatMap((id) => {
+      const p = this.#partitions.get(id);
+      return p && p.visible ? p.segments.slice(p.loaded) : [];
+    }));
+    try {
+      this.#loadDirectories(ids, g, added);
+    } finally {
+      release();
+    }
+    if (added.length === 0) return;
+    let count = 0;
+    for (let o = 0; o < this.#loaded.length; o++) count += this.#loaded[o];
+    this.#visibleChunks = new Int32Array(count);
+    for (let o = 0, i = 0; o < this.#loaded.length; o++) if (this.#loaded[o]) this.#visibleChunks[i++] = o;
+    this.#sortStatsComplete = undefined;
+    if (this.#statCols.size) this.#loadStats(this.#statCols, added);
+  }
+
+  #loadDirectories(ids, g, added) {
     for (const id of ids) {
       const p = this.#partitions.get(id);
       if (!p || !p.visible || p.loaded === p.segments.length) continue;
@@ -796,13 +864,6 @@ export class JazminReader {
       }
       p.loaded = p.segments.length;
     }
-    if (added.length === 0) return;
-    let count = 0;
-    for (let o = 0; o < this.#loaded.length; o++) count += this.#loaded[o];
-    this.#visibleChunks = new Int32Array(count);
-    for (let o = 0, i = 0; o < this.#loaded.length; o++) if (this.#loaded[o]) this.#visibleChunks[i++] = o;
-    this.#sortStatsComplete = undefined;
-    if (this.#statCols.size) this.#loadStats(this.#statCols, added);
   }
 
   /** Loads every partition this reader may see (a key holder: its own). */
@@ -885,6 +946,17 @@ export class JazminReader {
   }
 
   #loadStats(cols, segments) {
+    const wanted = (block) => block.columns.some((c) => cols.has(c));
+    const release = this.#readAhead(segments.flatMap((segment) => segment.statistics.filter((block, b) => !segment.statsLoaded.has(b) && wanted(block)).map((block) => block.section)));
+    try {
+      this.#loadStatsOf(cols, segments);
+    } finally {
+      release();
+    }
+    this.#sortStatsComplete = undefined; // the leading sort column's statistics may be complete now
+  }
+
+  #loadStatsOf(cols, segments) {
     const n = this.#loaded.length;
     for (const segment of segments) {
       segment.statistics.forEach((block, b) => {
@@ -1204,7 +1276,8 @@ export class JazminReader {
   #read(ref, sectionId, key, scratch) {
     if (!(ref.length >= ENVELOPE_SIZE)) throw new JazminFormatError(`Section '${sectionId}' is truncated`);
     const section = this.#source.read(ref.offset, ref.length, scratch);
-    if (this.#cost) this.#cost.bytesRead += ref.length;
+    // Bytes read ahead were counted when they were read.
+    if (this.#cost && !this.#readAheads.some((r) => ref.offset >= r.start && ref.offset + ref.length <= r.start + r.buf.length)) this.#cost.bytesRead += ref.length;
     if (sectionPayloadLength(section) + ENVELOPE_SIZE !== ref.length) throw new JazminFormatError(`Section '${sectionId}' length mismatch`);
     if (ref.digest === undefined) {
       // Access-controlled files list every section with its digest (spec 7.6.5): one without is refused.
@@ -1376,6 +1449,9 @@ export class JazminReader {
     const names = partitionCol >= 0 ? partitionLookup(plan, partitionCol) : null;
     if (names && this.#access.isOwner && !this.#allLoaded) this.#ensurePartitions(names.map((n) => this.#access.secrets.partitionId(n)));
     else this.#ensureAllChunks();
+    // An owner's statistics are one section per partition and column. A small index lookup (an id, a few values)
+    // already narrows the rows to check, so statistics would not narrow them further: they are not read.
+    if (!names && this.#access?.isOwner && this.#partitions.size > 1 && indexPlan(plan, this.#indexProvider, SMALL_LOOKUP_BYTES)) return plan;
     const cols = planColumns(plan);
     const leading = this.#table.sortedBy[0];
     if (leading !== undefined) cols.add(this.#columns.findIndex((c) => c.name === leading));

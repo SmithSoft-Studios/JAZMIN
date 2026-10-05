@@ -68,6 +68,43 @@ public sealed class AppendTests : IDisposable
     }
 
     [Fact]
+    public void AppendResults_MatchTheFile_RowAppendAndDeletedRowCounts()
+    {
+        var owner = JazminKey.Generate();
+        foreach (var (name, options) in new[]
+        {
+            ("plain", (JazminWriteOptions?)null),
+            ("shared", new JazminWriteOptions { Key = owner, Access = new JazminAccessOptions { PartitionBy = "section", Grants = [new JazminGrant(owner.CreateAccessKey()) { Rows = ["S1"] }] } }),
+        })
+        {
+            var path = Write($"results-{name}.jzm", Range(0, 30), options);
+            var key = options?.Key;
+            var changes = new[]
+            {
+                new JazminAppend { Insert = [Row(30), Row(31)] },
+                new JazminAppend { Delete = JazminFilter.Eq("section", "S1") },
+                new JazminAppend { Upsert = [Changed(Row(5), -1), Row(40, "S2")], KeyColumns = ["id"] },
+                new JazminAppend { Insert = [Row(5), Row(5)] }, // the same id twice more
+                new JazminAppend { Upsert = [Changed(Row(5), -2)], KeyColumns = ["id"] }, // replaces all three rows of id 5
+                new JazminAppend { Delete = JazminFilter.Eq("section", "S1"), Insert = [Row(50, "S1")] }, // nothing left to delete in S1
+            };
+            foreach (var change in changes)
+            {
+                change.Key = key;
+                var result = JazminFile.Append(path, change);
+                using var reader = JazminReader.Open(path, new JazminReadOptions { Key = key });
+                Assert.Equal((reader.RowCount, reader.AppendCount, reader.DeletedRowCount), (result.RowCount, result.AppendCount, result.DeletedRowCount));
+            }
+        }
+
+        static Dictionary<string, object?> Changed(Dictionary<string, object?> row, double amount)
+        {
+            row["amount"] = amount;
+            return row;
+        }
+    }
+
+    [Fact]
     public void DeleteAndUpsert_AreRecordedAsDeletions_AndSkippedEverywhere()
     {
         var path = Write("d.jzm", Range(0, 30), new JazminWriteOptions { ChunkRows = 8 });
