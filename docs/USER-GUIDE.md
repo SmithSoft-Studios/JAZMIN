@@ -1346,7 +1346,11 @@ When filing:
     that arrives last is kept.
   - **Who may change it:** anyone whose grant covers the record's partition.
     A change can't move a record to another partition.
-  - **Columns the sender can't see** keep their filed values.
+  - **Send only what changed:** an empty value (`null`, not set, or `''`)
+    leaves the field as it is, so a phone can't clear a field.
+  - **Only what the sender can see:** columns the sender's grant doesn't
+    cover are ignored, in new records too. So are columns the shared file
+    doesn't have; the result names them (`ignoredColumns`).
   - **A file sent twice** changes nothing.
   - **The ready-made service** does this by default. Pass
     `onDuplicate: 'skip'` to keep the first version instead.

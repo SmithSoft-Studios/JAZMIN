@@ -74,8 +74,8 @@ test('filing: rows go into the sender own partition, and a batch sent twice is f
     { id: 'b2', person: 'P2', note: 'claims to be Sally', amount: 20 }, // filed as Bob's
     { id: 'b2', person: 'P1', note: 'twice in one batch', amount: 20 },
   ]);
-  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch }), { filed: 2, updated: 0, duplicates: 1, files: 0 });
-  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch }), { filed: 0, updated: 0, duplicates: 3, files: 0 });
+  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch }), { filed: 2, updated: 0, duplicates: 1, files: 0, ignoredColumns: [] });
+  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch }), { filed: 0, updated: 0, duplicates: 3, files: 0, ignoredColumns: [] });
   assert.deepEqual(rowsOf(shared, owner), ['P1:b1', 'P1:b2', 'P1:seed']);
 });
 
@@ -90,7 +90,7 @@ test('filing: forged, revoked and ill-fitting batches are rejected with the reas
   rejects('not-an-id', sallys, /not an access key id/);
   rejects(bob.id, Buffer.from('not a jzm file'), /not a readable \.jzm file|doesn't open/);
   rejects(bob.id, await phoneBatch(bobKey, [{ id: 1, person: 'P1' }], [{ name: 'id', type: 'int' }, { name: 'person', type: 'string' }]), /Column 'id' is int in the batch, string in the shared file/);
-  rejects(bob.id, await phoneBatch(bobKey, [{ id: 'x', extra: 1 }], [{ name: 'id', type: 'string' }, { name: 'extra', type: 'int' }]), /column 'extra' the shared file doesn't have/);
+  rejects(bob.id, await phoneBatch(bobKey, [{ mood: 'x' }], [{ name: 'mood', type: 'string' }]), /^The batch has no column key [0-9a-f]{16} may write$/);
   revokeAccess(shared, owner, sally);
   rejects(sally.id, sallys, /has no grant in this file: unknown or revoked/);
   assert.deepEqual(rowsOf(shared, owner), ['P1:seed']);
@@ -116,7 +116,7 @@ test('filing: a key that expires is filed only for batches written and arrived b
   await assert.rejects(send('l2', EXPIRY + minutes(1), EXPIRY - minutes(1)),
     rejected(/^The batch was written at 2026-01-01T00:01:00\.000Z, after key [0-9a-f]{16}'s access expired at 2026-01-01T00:00:00\.000Z$/));
   // Written and arrived before expiry: filed, although the filing happens later.
-  assert.deepEqual(await send('l3', EXPIRY - minutes(10), EXPIRY - minutes(1)), { filed: 1, updated: 0, duplicates: 0, files: 0 });
+  assert.deepEqual(await send('l3', EXPIRY - minutes(10), EXPIRY - minutes(1)), { filed: 1, updated: 0, duplicates: 0, files: 0, ignoredColumns: [] });
   // That append happened after the expiry, so it removed the grant (spec 11.2): from now on the key is unknown.
   await assert.rejects(send('l4', EXPIRY - minutes(10), EXPIRY - minutes(1)), rejected(/has no grant in this file/));
   assert.deepEqual(rowsOf(shared, owner), ['P1:seed', 'P3:l3']);
@@ -155,8 +155,8 @@ test('filing: each record\'s files are stored once, at paths the service chooses
     { path: 'visit/receipt.pdf', content: new Blob([pdf]) },
     { path: 'visit/photo.jpg', content: new File([photo], 'photo.jpg'), type: 'text/html' }, // the type the phone gives is ignored
   ]);
-  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch }), { filed: 3, updated: 0, duplicates: 0, files: 2 });
-  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch }), { filed: 0, updated: 0, duplicates: 3, files: 0 });
+  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch }), { filed: 3, updated: 0, duplicates: 0, files: 2, ignoredColumns: [] });
+  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch }), { filed: 0, updated: 0, duplicates: 3, files: 0, ignoredColumns: [] });
 
   const pdfPath = `attachments/${bob.id}/${sha(pdf)}.pdf`;
   const photoPath = `attachments/${bob.id}/${sha(photo)}.jpg`;
@@ -188,11 +188,11 @@ test('filing: a file a sender attaches to rows of two partitions is seen by the 
     { id: 't1', person: 'P1', note: null, amount: 1, attachments: ['p.jpg'] },
     { id: 't2', person: 'P2', note: null, amount: 2, attachments: ['p.jpg'] },
   ], batchColumns, [{ path: 'p.jpg', content: photo }]);
-  assert.deepEqual(fileBatch(shared, owner, { keyId: team.id, batch: first }), { filed: 2, updated: 0, duplicates: 0, files: 1 });
+  assert.deepEqual(fileBatch(shared, owner, { keyId: team.id, batch: first }), { filed: 2, updated: 0, duplicates: 0, files: 1, ignoredColumns: [] });
   for (const key of [bob, sally]) assert.ok(open(shared, { key }).readFile(photoPath).equals(photo));
   // The same photo again, for a row of P1: already stored for P1, so nothing is added.
   const again = await phoneBatch(teamKey, [{ id: 't3', person: 'P1', note: null, amount: 3, attachments: ['again.jpg'] }], batchColumns, [{ path: 'again.jpg', content: photo }]);
-  assert.deepEqual(fileBatch(shared, owner, { keyId: team.id, batch: again }), { filed: 1, updated: 0, duplicates: 0, files: 0 });
+  assert.deepEqual(fileBatch(shared, owner, { keyId: team.id, batch: again }), { filed: 1, updated: 0, duplicates: 0, files: 0, ignoredColumns: [] });
 });
 
 /** The filed record with this id, as the owner reads it. */
@@ -210,18 +210,18 @@ test('filing: a record sent again replaces the filed one, and the last to arrive
   const bobKey = await phoneKey(shared, bob);
   const record = (id, note, amount = 1) => ({ id, person: 'P1', note, amount, attachments: null });
   const file = async (keyId, records, rules = {}) => fileBatch(shared, owner, { keyId, batch: await phoneBatch(keyId === bob.id ? bobKey : await phoneKey(shared, team), records), ...rules });
-  assert.deepEqual(await file(bob.id, [record('b1', 'first')]), { filed: 1, updated: 0, duplicates: 0, files: 0 });
+  assert.deepEqual(await file(bob.id, [record('b1', 'first')]), { filed: 1, updated: 0, duplicates: 0, files: 0, ignoredColumns: [] });
   // A correction, and a new record twice in one batch: the later row counts.
   const fix = await phoneBatch(bobKey, [record('b1', 'fixed'), record('b2', 'draft'), record('b2', 'final')]);
-  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch: fix }), { filed: 1, updated: 1, duplicates: 1, files: 0 });
-  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch: fix }), { filed: 0, updated: 0, duplicates: 3, files: 0 }); // sent twice
+  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch: fix }), { filed: 1, updated: 1, duplicates: 1, files: 0, ignoredColumns: [] });
+  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch: fix }), { filed: 0, updated: 0, duplicates: 3, files: 0, ignoredColumns: [] }); // sent twice
   // Anyone who sees the record's partition may change it: Team (P1 and P2) changes Bob's record and the seed.
-  assert.deepEqual(await file(team.id, [record('b1', 'checked', 2), record('seed', 'seen')]), { filed: 0, updated: 2, duplicates: 0, files: 0 });
+  assert.deepEqual(await file(team.id, [record('b1', 'checked', 2), record('seed', 'seen')]), { filed: 0, updated: 2, duplicates: 0, files: 0, ignoredColumns: [] });
   const note = (id) => `${filedRecord(shared, owner, id).note}:${filedRecord(shared, owner, id).amount}`;
   assert.deepEqual([note('seed'), note('b1'), note('b2')], ['seen:1', 'checked:2', 'final:1']);
   assert.deepEqual(rowsOf(shared, owner), ['P1:b1', 'P1:b2', 'P1:seed']);
   // With onDuplicate 'skip', a record sent again is skipped instead.
-  assert.deepEqual(await file(bob.id, [record('b1', 'skipped')], { onDuplicate: 'skip' }), { filed: 0, updated: 0, duplicates: 1, files: 0 });
+  assert.deepEqual(await file(bob.id, [record('b1', 'skipped')], { onDuplicate: 'skip' }), { filed: 0, updated: 0, duplicates: 1, files: 0, ignoredColumns: [] });
   assert.equal(note('b1'), 'checked:2');
 });
 
@@ -242,12 +242,49 @@ test('filing: a change keeps the columns the sender can\'t see', async () => {
   const bobKey = await phoneKey(shared, bob);
   const bobColumns = batchColumns.filter((c) => c.name !== 'amount'); // Bob's app doesn't know 'amount'
   const edit = await phoneBatch(bobKey, [{ id: 'seed', person: 'P1', note: 'edited' }], bobColumns);
-  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch: edit }), { filed: 0, updated: 1, duplicates: 0, files: 0 });
+  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch: edit }), { filed: 0, updated: 1, duplicates: 0, files: 0, ignoredColumns: [] });
   // A batch that names the hidden column anyway can't change it.
   const sneaky = await phoneBatch(bobKey, [{ id: 'seed', person: 'P1', note: 'edited again', amount: 999 }]);
-  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch: sneaky }), { filed: 0, updated: 1, duplicates: 0, files: 0 });
+  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch: sneaky }), { filed: 0, updated: 1, duplicates: 0, files: 0, ignoredColumns: ['amount'] });
   const seed = filedRecord(shared, owner, 'seed');
   assert.deepEqual([seed.note, seed.amount], ['edited again', 1]);
+  // Nor can a new record fill it in.
+  const fresh = await phoneBatch(bobKey, [{ id: 'b1', person: 'P1', note: 'new', amount: 999 }]);
+  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch: fresh }), { filed: 1, updated: 0, duplicates: 0, files: 0, ignoredColumns: ['amount'] });
+  assert.equal(filedRecord(shared, owner, 'b1').amount, null);
+});
+
+test('filing: columns the shared file doesn\'t have are ignored, and named in the result', async () => {
+  const { owner, bob, shared } = setup();
+  const batch = await phoneBatch(await phoneKey(shared, bob), [{ id: 'b1', note: 'hello', mood: 'good' }],
+    [{ name: 'id', type: 'string' }, { name: 'note', type: 'string' }, { name: 'mood', type: 'string' }]);
+  assert.deepEqual(fileBatch(shared, owner, { keyId: bob.id, batch }), { filed: 1, updated: 0, duplicates: 0, files: 0, ignoredColumns: ['mood'] });
+  const b1 = filedRecord(shared, owner, 'b1');
+  assert.deepEqual([b1.person, b1.note, 'mood' in b1], ['P1', 'hello', false]);
+});
+
+test('filing: a change can send only what changed, and empty values leave fields as they are', async () => {
+  const { owner, bob, team, shared } = setup();
+  const bobKey = await phoneKey(shared, bob);
+  const teamKey = await phoneKey(shared, team);
+  const send = async (keyId, records, cols = batchColumns) => fileBatch(shared, owner, { keyId, batch: await phoneBatch(keyId === bob.id ? bobKey : teamKey, records, cols) });
+  const b1 = () => [filedRecord(shared, owner, 'b1').note, filedRecord(shared, owner, 'b1').amount];
+  const only = (...names) => batchColumns.filter((c) => names.includes(c.name));
+  const result = (updated, duplicates) => ({ filed: 0, updated, duplicates, files: 0, ignoredColumns: [] });
+  await send(bob.id, [{ id: 'b1', person: 'P1', note: 'first', amount: 5 }]);
+  // Only the amount: the batch has just the id and the amount.
+  assert.deepEqual(await send(bob.id, [{ id: 'b1', amount: 7 }], only('id', 'amount')), result(1, 0));
+  assert.deepEqual(b1(), ['first', 7]);
+  // Empty ('' or not set) leaves a field as it is: nothing changes.
+  assert.deepEqual(await send(bob.id, [{ id: 'b1', person: 'P1', note: '', amount: null }]), result(0, 1));
+  assert.deepEqual(b1(), ['first', 7]);
+  // Changes to one record in one batch all apply, in order.
+  assert.deepEqual(await send(bob.id, [{ id: 'b1', note: 'second' }, { id: 'b1', amount: 9 }, { id: 'b1', note: 'third' }], only('id', 'note', 'amount')), result(1, 2));
+  assert.deepEqual(b1(), ['third', 9]);
+  // A sender granted several partitions may leave the partition out of a change: it stays where it is.
+  assert.deepEqual(await send(team.id, [{ id: 'b1', note: 'team' }], only('id', 'note')), result(1, 0));
+  assert.deepEqual(b1(), ['team', 9]);
+  assert.deepEqual(rowsOf(shared, owner), ['P1:b1', 'P1:seed']);
 });
 
 test('filing: a change keeps, adds and removes a record\'s files', async () => {
@@ -267,17 +304,21 @@ test('filing: a change keeps, adds and removes a record\'s files', async () => {
   assert.deepEqual(await send([
     { id: 'b1', person: 'P1', attachments: ['receipt.pdf', 'photo.jpg'] },
     { id: 'b2', person: 'P1', attachments: ['photo.jpg'] },
-  ], [{ path: 'receipt.pdf', content: pdf }, { path: 'photo.jpg', content: photo }]), { filed: 2, updated: 0, duplicates: 0, files: 2 });
+  ], [{ path: 'receipt.pdf', content: pdf }, { path: 'photo.jpg', content: photo }]), { filed: 2, updated: 0, duplicates: 0, files: 2, ignoredColumns: [] });
+
+  // A change that doesn't send the list keeps the record's files.
+  assert.deepEqual(await send([{ id: 'b1', person: 'P1', note: 'only the note' }]), { filed: 0, updated: 1, duplicates: 0, files: 0, ignoredColumns: [] });
+  assert.equal(filedRecord(shared, owner, 'b1').attachments.length, 2);
 
   // b1 keeps its receipt (the entry as read from the shared file), drops the photo and adds a PNG.
   const [receipt] = filedRecord(shared, owner, 'b1').attachments;
   assert.deepEqual(await send([{ id: 'b1', person: 'P1', note: 'new photo', attachments: [receipt, 'new.png'] }], [{ path: 'new.png', content: png }]),
-    { filed: 0, updated: 1, duplicates: 0, files: 1 });
+    { filed: 0, updated: 1, duplicates: 0, files: 1, ignoredColumns: [] });
   assert.deepEqual(filedRecord(shared, owner, 'b1').attachments.map((e) => [e.path, e.name]), [[pdfPath, 'receipt.pdf'], [pngPath, 'new.png']]);
   assert.deepEqual(stored(), [pdfPath, photoPath, pngPath].sort()); // b2 still lists the photo
 
   // b2 drops the photo too: no record lists it now, so it is removed.
-  assert.deepEqual(await send([{ id: 'b2', person: 'P1', attachments: [] }]), { filed: 0, updated: 1, duplicates: 0, files: 0 });
+  assert.deepEqual(await send([{ id: 'b2', person: 'P1', attachments: [] }]), { filed: 0, updated: 1, duplicates: 0, files: 0, ignoredColumns: [] });
   assert.deepEqual(stored(), [pdfPath, pngPath].sort());
 
   // A record keeps only files it lists itself.

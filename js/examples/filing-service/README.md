@@ -24,7 +24,7 @@ import { RejectedBatch, fileBatch } from './filing.mjs';
 
 // keyId: the sender's access key id, sent with the upload (the phone knows it, for example bob.id); body: the batch
 try {
-  const result = fileBatch('shared.jzm', process.env.JAZMIN_KEY, { keyId, batch: body }); // { filed, updated, duplicates, files }
+  const result = fileBatch('shared.jzm', process.env.JAZMIN_KEY, { keyId, batch: body }); // { filed, updated, duplicates, files, ignoredColumns }
   // reply 200 with the result
 } catch (error) {
   if (error instanceof RejectedBatch) { /* reply 422 with error.message, so the phone can show why */ }
@@ -66,7 +66,7 @@ file locked and stops, and the next run carries on.
 | The sender | The key id has no grant in the shared file: unknown, or revoked |
 | Expiry | The key expires, and the batch was written (by the phone's clock) or arrived (by the server's clock) after it. The phone's clock can be set to anything, so the arrival time is the check that counts. |
 | Proof | The batch doesn't open with that key's submission key: it was made without opening the shared file (a leaked key alone isn't enough), or it was changed |
-| Columns | A column isn't in the shared file, or has another type |
+| Columns | A column the sender may write has another type in the shared file. Not a rejection: columns the shared file doesn't have, or the sender's key can't see, are ignored and named in `ignoredColumns`. |
 | Partition | A row names a partition the key isn't granted. With a grant of one partition, rows are simply put in it. |
 | Changing a record | A row whose `id` is already filed replaces the filed record (see below). Rejected when the record is in a partition the key isn't granted, or the change would move it to another partition. |
 | Files listed | A row lists a file the batch doesn't hold, or the batch holds a file no row lists |
@@ -111,11 +111,19 @@ record. This is how corrections made on a phone reach the shared file.
   row with that `id` counts.
 - **Who may change it:** anyone whose key's grant covers the record's
   partition. A change can't move a record to another partition.
-- **Hidden columns are kept:** only the columns the batch has and the
-  sender's grant covers change. A key that can't see a column can't change
-  it, even by sending it.
-- **Nothing changed:** a row identical to the filed record, such as a batch
-  sent twice, changes nothing and counts as a duplicate.
+- **Send only what changed:** a value that's empty (`null`, not set, or
+  `''`) leaves the field as it is. So a phone can send just the fields it
+  changed, and can't clear a field.
+  - A batch has one set of columns for all its rows: leave out the columns
+    no row changes, or make them nullable.
+  - A sender granted several partitions can leave the partition out of a
+    change; the record stays where it is.
+  - Several rows for one record in a batch all apply, in order.
+- **Only what the sender can see:** only the columns the batch has and the
+  sender's grant covers change. The same goes for new records: a key that
+  can't see a column can't fill it in, even by sending it.
+- **Nothing changed:** a row that changes nothing, such as a batch sent
+  twice, counts as a duplicate.
 - **To keep the first version instead:** pass `onDuplicate: 'skip'`. A
   record sent again is then skipped, as a duplicate. Pass it to `fileBatch()` in
   your upload handler, and to `processInbox()` for the runner.
@@ -160,8 +168,10 @@ What the numbers mean:
 - **Most of that time is fixed work per batch:**
   - the append: writing safely to disk, signing the file and re-sealing the
     key slots, about 18 ms;
-  - checking the sender's grant, about 9 ms;
-  - looking up the batch's ids, about 7 ms.
+  - looking up the batch's ids, about 10 ms.
+
+  The shared file is opened once per batch, for the grant, the records and
+  the files.
 
   So 50 records cost about the same as one. Send records in batches when you
   can.

@@ -1,7 +1,7 @@
 // Filing the files people send back (submissions) into a shared file (USER-GUIDE 15.6, docs/design/browser-writer.md).
 // Runs where the owner (master) key is kept: a server or a scheduled job you control - never a phone or a web page.
 import { isDeepStrictEqual } from 'node:util';
-import { JazminError, JazminKey, JazminKeyError, JazminValidationError, accessKeyOf, append, open } from '../../src/index.js';
+import { JazminError, JazminKey, JazminKeyError, JazminValidationError, append, open } from '../../src/index.js';
 
 /**
  * Kinds of file a batch may carry, told apart by their first bytes: never by the name or the type the phone gives. To
@@ -34,22 +34,25 @@ export class RejectedBatch extends Error {
  *     file after the expiry removes the grant (spec 11.2), so file batches as they arrive, not later on a schedule;
  *   - the batch must open with that key's submission key, which only someone who opened the shared file with that
  *     access key has: anything else was made without it (a leaked key alone isn't enough), or was changed;
- *   - its columns must be columns of the shared file, with the same types;
+ *   - the sender writes only the columns the shared file has and its grant covers. The batch's other columns are
+ *     ignored, and named in `ignoredColumns`; a column it may write but with another type rejects the batch;
  *   - its rows go into the sender's own partition, whatever they say (a grant of one partition), or must name one of
  *     the sender's partitions (a grant of several): nobody files rows as someone else;
- *   - a row whose `idColumn` value is already filed replaces the filed record (onDuplicate 'replace', the default),
- *     so the last to arrive wins. The record must be in a partition the sender's grant covers, and stay in it. Only the
- *     columns the batch has and the grant covers change; the others keep their filed values. A row that changes
- *     nothing (a batch sent twice) is counted as a duplicate. With onDuplicate 'skip', such rows are skipped instead.
- *     Within a batch, the last row of an id counts ('skip': the first);
+ *   - a row whose `idColumn` value is already filed changes the filed record (onDuplicate 'replace', the default).
+ *     Its values that aren't empty (null or '') replace the filed ones; the others stay as they are, so a phone can
+ *     send only what changed, and can't clear a field. The last change to arrive wins. The record must be in a
+ *     partition the sender's grant covers, and stay in it. Rows of one id in a batch apply in order. A row that
+ *     changes nothing (a batch sent twice) counts as a duplicate. With onDuplicate 'skip', a filed record is never
+ *     changed, and only the first row of a new id counts;
  *   - files (attachments): each row lists the paths of its files in the batch in `filesColumn`, a json column of the
  *     shared file. Every file listed must be in the batch and every file in the batch must be listed; each must be one
  *     of `fileTypes` (see FILE_KINDS) by its first bytes, at most `maxFileBytes`, and all of them at most
  *     `maxBatchFileBytes`. A filed row's files are stored at attachments/<key id>/<sha256>.<ext>, seen by the keys that
  *     see the row's partition, and its list becomes [{ path, name, type, size }]. Identical files are stored once.
- *     A replacement keeps a file by keeping its entry ({ path, ... }, as filed) in the list; a file no record lists
- *     any more is removed.
- * Returns { filed, updated, duplicates, files }; throws RejectedBatch for a batch that must not be filed.
+ *     A change keeps a file by keeping its entry ({ path, ... }, as filed) in the list, and [] drops them all; a file
+ *     no record lists any more is removed.
+ * The shared file is read once, and written once (one append).
+ * Returns { filed, updated, duplicates, files, ignoredColumns }; throws RejectedBatch for a batch that must not be filed.
  */
 export function fileBatch(sharedPath, ownerKey, {
   keyId, batch, idColumn = 'id', receivedAt = Date.now(), onDuplicate = 'replace',
@@ -58,28 +61,40 @@ export function fileBatch(sharedPath, ownerKey, {
   for (const type of fileTypes) if (!FILE_KINDS[type]) throw new Error(`Unknown file type '${type}': add it to FILE_KINDS`);
   if (onDuplicate !== 'replace' && onDuplicate !== 'skip') throw new Error(`onDuplicate must be 'replace' or 'skip', not '${onDuplicate}'`);
   if (!/^[0-9a-f]{16}$/.test(keyId)) throw new RejectedBatch(`'${keyId}' is not an access key id`);
-  try {
-    accessKeyOf(sharedPath, ownerKey, keyId); // the key must still have a grant
-  } catch (error) {
-    if (error instanceof JazminValidationError) throw new RejectedBatch(`Key ${keyId} has no grant in this file: unknown or revoked`);
-    throw error;
-  }
+  const replace = onDuplicate === 'replace';
 
   const shared = open(sharedPath, { key: ownerKey });
-  let grant;
-  let columns;
-  let partitionBy;
-  let storedFiles;
-  let groupColumns;
+  let plan;
   try {
-    grant = shared.access.grants.find((g) => g.keyId === keyId);
-    columns = new Map(shared.columns.map((c) => [c.name, c]));
-    partitionBy = shared.access.partitionBy;
-    storedFiles = new Map(shared.files.map((f) => [f.path, f]));
-    groupColumns = shared.access.groupColumns;
+    plan = planBatch(shared, ownerKey, { keyId, batch, idColumn, receivedAt, replace, filesColumn, fileTypes, maxFileBytes, maxBatchFileBytes });
   } finally {
     shared.close();
   }
+  const { inserts, upsert, addFiles, removeFiles, rows, ignoredColumns } = plan;
+  if (inserts.length || upsert.length) {
+    try {
+      append(sharedPath, {
+        key: ownerKey,
+        insert: inserts,
+        ...(upsert.length ? { upsert, keyColumns: [idColumn] } : {}),
+        ...(addFiles.length ? { addFiles } : {}),
+        ...(removeFiles.length ? { removeFiles } : {}),
+      });
+    } catch (error) {
+      if (error instanceof JazminValidationError) throw new RejectedBatch(`The batch's rows don't fit the shared file: ${error.message}`);
+      throw error;
+    }
+  }
+  return { filed: inserts.length, updated: upsert.length, duplicates: rows - inserts.length - upsert.length, files: addFiles.length, ignoredColumns };
+}
+
+/** Empty values leave a filed field as it is. */
+const isEmpty = (value) => value === null || value === undefined || value === '';
+
+/** What a batch changes, worked out from one open reader of the shared file (owner key). Throws RejectedBatch. */
+function planBatch(shared, ownerKey, { keyId, batch, idColumn, receivedAt, replace, filesColumn, fileTypes, maxFileBytes, maxBatchFileBytes }) {
+  const grant = shared.access.grants.find((g) => g.keyId === keyId);
+  if (!grant) throw new RejectedBatch(`Key ${keyId} has no grant in this file: unknown or revoked`);
   const expires = grant.expires == null ? null : Date.parse(grant.expires);
   if (expires !== null) {
     const arrived = Number(receivedAt);
@@ -88,11 +103,17 @@ export function fileBatch(sharedPath, ownerKey, {
       throw new RejectedBatch(`The batch arrived at ${new Date(arrived).toISOString()}, after key ${keyId}'s access expired at ${grant.expires}`);
     }
   }
+  const columns = new Map(shared.columns.map((c) => [c.name, c]));
+  const { partitionBy, groupColumns } = shared.access;
+  const covered = grant.columns === '*' ? null : new Set(grant.columns.flatMap((g) => groupColumns[g] ?? []));
+  const storedFiles = new Map(shared.files.map((f) => [f.path, f]));
 
-  const withFiles = columns.get(filesColumn)?.type === 'json';
+  // The batch: only the columns the sender may write are read.
+  const writable = [];
+  const ignoredColumns = [];
   let rows;
   let files;
-  let batchColumns;
+  let withFiles;
   try {
     const reader = open(batch, { key: JazminKey.from(ownerKey).submissionKey(keyId) });
     try {
@@ -101,11 +122,16 @@ export function fileBatch(sharedPath, ownerKey, {
       }
       for (const c of reader.columns) {
         const known = columns.get(c.name);
-        if (!known) throw new RejectedBatch(`The batch has a column '${c.name}' the shared file doesn't have`);
+        if (!known || (covered && !covered.has(c.name))) {
+          ignoredColumns.push(c.name); // not in the shared file, or not the sender's to write
+          continue;
+        }
         if (known.type !== c.type) throw new RejectedBatch(`Column '${c.name}' is ${c.type} in the batch, ${known.type} in the shared file`);
+        writable.push(c.name);
       }
-      batchColumns = reader.columns.map((c) => c.name);
-      rows = [...reader.rows()];
+      if (!writable.length) throw new RejectedBatch(`The batch has no column key ${keyId} may write`);
+      withFiles = columns.get(filesColumn)?.type === 'json' && writable.includes(filesColumn);
+      rows = [...reader.rows({ select: writable })];
       files = batchFiles(reader, withFiles ? rows.map((r) => r[filesColumn]) : [], { filesColumn, fileTypes, maxFileBytes, maxBatchFileBytes });
     } finally {
       reader.close();
@@ -117,36 +143,26 @@ export function fileBatch(sharedPath, ownerKey, {
     throw error;
   }
 
-  const own = grant.rows === '*' ? null : grant.rows; // partition names
-  if (partitionBy) {
-    for (const row of rows) {
-      if (own?.length === 1 && columns.get(partitionBy).type === 'string') row[partitionBy] = own[0];
-      else if (own && !own.includes(String(row[partitionBy]))) {
-        throw new RejectedBatch(`A row is for partition '${row[partitionBy]}', which key ${keyId} isn't granted`);
-      }
-    }
+  // Records already filed, by id: whole when they may be changed.
+  const hasId = writable.includes(idColumn);
+  const idOf = (row) => (hasId && !isEmpty(row[idColumn]) ? String(row[idColumn]) : null);
+  const filed = new Map();
+  const ids = hasId ? [...new Set(rows.map((r) => r[idColumn]).filter((v) => !isEmpty(v)))] : [];
+  if (ids.length) {
+    for (const r of shared.find({ [idColumn]: { in: ids } }, replace ? undefined : { select: [idColumn] })) filed.set(String(r[idColumn]), r);
   }
 
-  // Records already filed, by id: whole when they may be replaced.
-  const replace = onDuplicate === 'replace';
-  const hasId = columns.has(idColumn);
-  const filed = new Map();
-  if (hasId && rows.length) {
-    const reader = open(sharedPath, { key: ownerKey });
-    try {
-      const ids = rows.map((r) => r[idColumn]).filter((v) => v != null);
-      for (const r of reader.find({ [idColumn]: { in: ids } }, replace ? undefined : { select: [idColumn] })) filed.set(String(r[idColumn]), r);
-    } finally {
-      reader.close();
+  // Partitions: the sender's own, or one it's granted; a change without one keeps the record's.
+  const own = grant.rows === '*' ? null : grant.rows; // partition names
+  if (partitionBy) {
+    const forced = own?.length === 1 && columns.get(partitionBy).type === 'string' ? own[0] : null;
+    for (const row of rows) {
+      const before = filed.get(idOf(row));
+      if (forced !== null) row[partitionBy] = forced;
+      else if (isEmpty(row[partitionBy]) && before) row[partitionBy] = before[partitionBy];
+      if (own && !own.includes(String(row[partitionBy]))) throw new RejectedBatch(`A row is for partition '${row[partitionBy]}', which key ${keyId} isn't granted`);
     }
   }
-  const counted = new Map(); // id -> the batch row that counts for it: the last ('replace') or the first ('skip')
-  for (const row of rows) {
-    const id = hasId ? row[idColumn] : null;
-    if (id != null && (replace || !counted.has(String(id)))) counted.set(String(id), row);
-  }
-  const isNew = (r) => !hasId || r[idColumn] == null || (counted.get(String(r[idColumn])) === r && !filed.has(String(r[idColumn])));
-  const inserts = rows.filter(isNew);
 
   // A row's files, at paths chosen here, seen by the keys that see the row's partition. Entries it keeps ({ path, ... })
   // must be files the filed record lists.
@@ -172,64 +188,69 @@ export function fileBatch(sharedPath, ownerKey, {
     }
     row[filesColumn] = [...entries.values()];
   };
-  if (withFiles) for (const row of inserts) attach(row, null);
 
-  // Replacements: the filed record, with the columns the batch has and the sender's grant covers.
-  const covered = grant.columns === '*' ? null : new Set(grant.columns.flatMap((g) => groupColumns[g] ?? []));
-  const writable = batchColumns.filter((name) => !covered || covered.has(name));
+  // Rows by record, in batch order; rows without an id are always new records.
+  const byId = new Map();
+  const order = [];
+  for (const row of rows) {
+    const id = idOf(row);
+    if (id === null) order.push(row);
+    else if (!byId.has(id)) byId.set(id, [row]) && order.push(id);
+    else byId.get(id).push(row);
+  }
+  /** Applies a row's values that aren't empty. */
+  const merge = (target, row) => {
+    for (const name of writable) if (!isEmpty(row[name])) target[name] = row[name];
+    return target;
+  };
+  const inserts = [];
   const updates = [];
-  for (const [id, row] of replace ? counted : []) {
-    const before = filed.get(id);
-    if (!before) continue;
+  for (const entry of order) {
+    if (typeof entry !== 'string') {
+      inserts.push(entry);
+      continue;
+    }
+    const list = byId.get(entry);
+    const before = filed.get(entry);
+    if (!before) {
+      inserts.push(replace ? list.slice(1).reduce(merge, list[0]) : list[0]); // a new record: later rows fill it in
+      continue;
+    }
+    if (!replace) continue;
     if (partitionBy) {
       const was = String(before[partitionBy]);
-      if (own && !own.includes(was)) throw new RejectedBatch(`Record '${id}' is in partition '${was}', which key ${keyId} isn't granted`);
-      if (String(row[partitionBy]) !== was) throw new RejectedBatch(`Record '${id}' is in partition '${was}': a change can't move it to '${row[partitionBy]}'`);
+      if (own && !own.includes(was)) throw new RejectedBatch(`Record '${entry}' is in partition '${was}', which key ${keyId} isn't granted`);
+      const moved = list.find((r) => String(r[partitionBy]) !== was);
+      if (moved) throw new RejectedBatch(`Record '${entry}' is in partition '${was}': a change can't move it to '${moved[partitionBy]}'`);
     }
-    const after = { ...before };
-    for (const name of writable) after[name] = row[name];
-    if (withFiles && writable.includes(filesColumn)) attach(after, before[filesColumn]);
+    const after = list.reduce(merge, { ...before });
+    if (withFiles && after[filesColumn] !== before[filesColumn]) attach(after, before[filesColumn]);
     if (!isDeepStrictEqual(after, { ...before })) updates.push({ before, after });
   }
+  if (withFiles) for (const row of inserts) attach(row, null);
 
-  // Files a replaced record no longer lists are removed, unless another record still lists them.
+  // Files a changed record no longer lists are removed, unless another record still lists them.
   const dropped = new Set(updates.flatMap(({ before }) => listOf(before[filesColumn]).map((e) => e?.path)));
   for (const r of [...inserts, ...updates.map((u) => u.after)]) for (const e of listOf(r[filesColumn])) dropped.delete(e?.path);
   if (dropped.size) {
-    const replaced = new Set(updates.map((u) => String(u.after[idColumn])));
-    const reader = open(sharedPath, { key: ownerKey });
-    try {
-      for (const r of reader.rows({ select: [idColumn, filesColumn] })) {
-        if (!replaced.has(String(r[idColumn]))) for (const e of listOf(r[filesColumn])) dropped.delete(e?.path);
-      }
-    } finally {
-      reader.close();
+    const changed = new Set(updates.map((u) => String(u.after[idColumn])));
+    for (const r of shared.rows({ select: [idColumn, filesColumn] })) {
+      if (!changed.has(String(r[idColumn]))) for (const e of listOf(r[filesColumn])) dropped.delete(e?.path);
     }
   }
-  const removeFiles = [...dropped].filter((path) => storedFiles.has(path));
 
   const unchanged = (f) => {
     const known = storedFiles.get(f.path)?.groups;
     return Boolean(known) && known.length === f.groups.size && known.every((g) => f.groups.has(g));
   };
-  const newFiles = [...addFiles.values()].filter((f) => !unchanged(f)).map((f) => ({ ...f, groups: f.groups.has('*') ? '*' : [...f.groups] }));
-
-  const upsert = updates.map((u) => u.after);
-  if (inserts.length || upsert.length) {
-    try {
-      append(sharedPath, {
-        key: ownerKey,
-        insert: inserts,
-        ...(upsert.length ? { upsert, keyColumns: [idColumn] } : {}),
-        ...(newFiles.length ? { addFiles: newFiles } : {}),
-        ...(removeFiles.length ? { removeFiles } : {}),
-      });
-    } catch (error) {
-      if (error instanceof JazminValidationError) throw new RejectedBatch(`The batch's rows don't fit the shared file: ${error.message}`);
-      throw error;
-    }
-  }
-  return { filed: inserts.length, updated: upsert.length, duplicates: rows.length - inserts.length - upsert.length, files: newFiles.length };
+  return {
+    inserts,
+    upsert: updates.map((u) => u.after),
+    addFiles: [...addFiles.values()].filter((f) => !unchanged(f)).map((f) => ({ ...f, groups: f.groups.has('*') ? '*' : [...f.groups] })),
+    removeFiles: [...dropped].filter((path) => storedFiles.has(path)),
+    rows: rows.length,
+    ignoredColumns,
+  };
 }
 
 const listOf = (list) => (Array.isArray(list) ? list : []);

@@ -19,14 +19,14 @@ import { RejectedBatch, fileBatch } from './filing.mjs';
  * more appends: regrouped, so each person's rows are stored together, when its sort order allows that. A batch's file
  * modified time is when it arrived. Other options (idColumn, onDuplicate, filesColumn, fileTypes, maxFileBytes,
  * maxBatchFileBytes) go to fileBatch.
- * Returns { batches, filed, updated, duplicates, files, rejected: [{ batch, reason }], compacted }.
+ * Returns { batches, filed, updated, duplicates, files, ignoredColumns, rejected: [{ batch, reason }], compacted }.
  */
 export function processInbox(sharedPath, inboxDir, ownerKey, { compactAfter = 50, ...rules } = {}) {
   const filedDir = path.join(inboxDir, 'filed');
   const rejectedDir = path.join(inboxDir, 'rejected');
   fs.mkdirSync(filedDir, { recursive: true });
   fs.mkdirSync(rejectedDir, { recursive: true });
-  const report = { batches: 0, filed: 0, updated: 0, duplicates: 0, files: 0, rejected: [], compacted: false };
+  const report = { batches: 0, filed: 0, updated: 0, duplicates: 0, files: 0, ignoredColumns: [], rejected: [], compacted: false };
   for (const name of fs.readdirSync(inboxDir).filter((n) => n.endsWith('.jzm')).sort()) {
     const from = path.join(inboxDir, name);
     try {
@@ -36,6 +36,7 @@ export function processInbox(sharedPath, inboxDir, ownerKey, { compactAfter = 50
       report.updated += result.updated;
       report.duplicates += result.duplicates;
       report.files += result.files;
+      for (const name of result.ignoredColumns) if (!report.ignoredColumns.includes(name)) report.ignoredColumns.push(name);
       fs.renameSync(from, path.join(filedDir, name));
     } catch (error) {
       if (!(error instanceof RejectedBatch)) throw error; // anything else (a busy file, a full disk) stops the run: try again later

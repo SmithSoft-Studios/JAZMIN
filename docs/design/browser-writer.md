@@ -74,8 +74,10 @@ Readers (access keys) ◄── read the shared file in the browser ◄── st
 - **Records sent again:** each record carries an id. A record whose id is
   already filed replaces the filed one, and the last to arrive wins (agreed
   5 October 2026, issue #55). It's allowed for anyone whose grant covers the
-  record's partition. Columns the sender can't see keep their values, and a
-  batch sent twice changes nothing.
+  record's partition. Only non-empty values change a field, so phones send
+  just what changed (agreed 6 October 2026). A sender writes only the columns
+  its grant covers, in new records too; columns the shared file doesn't have
+  are ignored. A batch sent twice changes nothing.
 - **iPhone storage:** Safari clears a website's saved data after about 7 days
   without use, unless the app is installed to the home screen. Install it, and
   sync often.
