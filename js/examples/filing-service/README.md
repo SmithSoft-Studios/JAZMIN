@@ -12,18 +12,40 @@ See USER-GUIDE §15.6 and `docs/design/browser-writer.md` for the design.
 | File | What it does |
 |---|---|
 | `filing.mjs` | `fileBatch()`: the rules for filing one batch |
-| `inbox.mjs` | `processInbox()`: files every batch in an inbox folder, then compacts. Also a command line for a schedule. |
+| `inbox.mjs` | `processInbox()`: files every batch waiting in an inbox folder, then compacts. Also a command line. |
 
 ## Run it
+
+**File each batch as it arrives.** Call `fileBatch()` from whatever receives
+the uploads, after sign-in and a size limit:
+
+```js
+import { RejectedBatch, fileBatch } from './filing.mjs';
+
+// keyId: the sender's access key id, sent with the upload (the phone knows it, for example bob.id); body: the batch
+try {
+  const result = fileBatch('shared.jzm', process.env.JAZMIN_KEY, { keyId, batch: body }); // { filed, duplicates, files }
+  // reply 200 with the result
+} catch (error) {
+  if (error instanceof RejectedBatch) { /* reply 422 with error.message, so the phone can show why */ }
+  else { /* for example the shared file is busy: save the batch to the inbox, and reply 202 */ }
+}
+```
+
+Why at once: for keys that expire, a batch is filed only if it arrived before
+the expiry. The first write to the shared file after the expiry removes the
+key's grant, and a batch filed after that is refused as unknown.
+
+**The inbox runner** files the batches that couldn't be filed at once:
 
 ```bash
 JAZMIN_KEY="$(cat owner.key)" node inbox.mjs shared.jzm inbox/
 # or: node inbox.mjs --key-file owner.key shared.jzm inbox/
 ```
 
-1. **Uploads:** whatever receives them saves each batch as
-   `inbox/<access key id>.<anything>.jzm`. The phone knows its key id, for
-   example `bob.id`.
+1. **Saving:** save each batch as `inbox/<access key id>.<anything>.jzm`, as
+   a new file. Its modified time counts as when the batch arrived, so never
+   copy a time the phone sends.
 2. **Filing:** each run files the batches, oldest name first.
    - **Filed batches** move to `inbox/filed/`.
    - **Rejected batches** move to `inbox/rejected/`, each with a `.txt` file
@@ -33,16 +55,16 @@ JAZMIN_KEY="$(cat owner.key)" node inbox.mjs shared.jzm inbox/
    It regroups too when the sort order allows, so each person's rows are
    stored together (USER-GUIDE §17.4).
 
-Run it on a schedule: cron, a systemd timer, Task Scheduler, or a cloud timer
-function. Only one run at a time: a second run finds the shared file locked
-and stops, and the next run carries on.
+Run it often, or on a schedule: cron, a systemd timer, Task Scheduler, or a
+cloud timer function. Only one run at a time: a second run finds the shared
+file locked and stops, and the next run carries on.
 
 ## The rules (`fileBatch`)
 
 | Check | Rejected when |
 |---|---|
 | The sender | The key id has no grant in the shared file: unknown, or revoked |
-| Expiry | The grant has expired |
+| Expiry | The key expires, and the batch was written (by the phone's clock) or arrived (by the server's clock) after it. The phone's clock can be set to anything, so the arrival time is the check that counts. |
 | Proof | The batch doesn't open with that key's submission key: it was made without opening the shared file (a leaked key alone isn't enough), or it was changed |
 | Columns | A column isn't in the shared file, or has another type |
 | Partition | A row names a partition the key isn't granted. With a grant of one partition, rows are simply put in it. |
@@ -82,6 +104,7 @@ stored again.
 | `maxFileBytes` | 10 MB | Per file |
 | `maxBatchFileBytes` | 50 MB | All of a batch's files |
 | `idColumn` | `'id'` | The column that tells records apart |
+| `receivedAt` | now | When the batch arrived, by the server's clock. The inbox runner uses each file's modified time. |
 
 ## Keeping the owner key safe
 

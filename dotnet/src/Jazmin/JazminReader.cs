@@ -945,6 +945,12 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     public int AppendCount => _header.AppendCount;
 
     /// <summary>
+    /// When the file was last written: its last append or, without one, when it was created. It comes from the writer's
+    /// clock, so it is what the writer claims, not when the file reached you.
+    /// </summary>
+    public DateTimeOffset WrittenAt => DateTimeOffset.FromUnixTimeMilliseconds(_header.Modified != 0 ? _header.Modified : _header.Created);
+
+    /// <summary>
     /// The submission key (spec 7.8): lock the files you send back to the owner with it, such as records captured
     /// offline. Only an access key that opened this file has it (with its unlock token, for an online grant); the owner
     /// derives anyone's with <see cref="JazminKey.SubmissionKey(string)"/>. Null for the owner, and for files written

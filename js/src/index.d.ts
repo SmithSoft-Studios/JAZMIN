@@ -418,6 +418,8 @@ export class JazminReader implements Iterable<JazminRow> {
   readonly deletedRowCount: number;
   /** Appends since the file was last written in full. */
   readonly appendCount: number;
+  /** When the file was last written (its last append, or when it was created), by the writer's clock. */
+  readonly writtenAt: Date;
   /**
    * The submission key (spec 7.8): lock the files you send back to the owner with it. Only an access key that opened
    * this file has it; null for the owner and for files written before submission keys existed.

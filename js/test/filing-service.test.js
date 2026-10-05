@@ -52,8 +52,8 @@ async function phoneKey(shared, accessKey) {
 }
 
 /** A batch as a phone writes it: in the browser, locked with the person's submission key, with any files. */
-async function phoneBatch(key, records, cols = batchColumns, files = []) {
-  return Buffer.from(await (await JazminBrowser.write(records, { columns: cols, key, files })).arrayBuffer());
+async function phoneBatch(key, records, cols = batchColumns, files = [], writtenAt = undefined) {
+  return Buffer.from(await (await JazminBrowser.write(records, { columns: cols, key, files, now: writtenAt })).arrayBuffer());
 }
 
 const rowsOf = (shared, owner) => {
@@ -77,9 +77,9 @@ test('filing: rows go into the sender own partition, and a batch sent twice is f
   assert.deepEqual(rowsOf(shared, owner), ['P1:b1', 'P1:b2', 'P1:seed']);
 });
 
-test('filing: forged, revoked, expired and ill-fitting batches are rejected with the reason', async () => {
-  const { owner, bob, sally, late, shared } = setup();
-  const rejects = (keyId, batch, pattern, now) => assert.throws(() => fileBatch(shared, owner, { keyId, batch, now }), (e) => e instanceof RejectedBatch && pattern.test(e.message));
+test('filing: forged, revoked and ill-fitting batches are rejected with the reason', async () => {
+  const { owner, bob, sally, shared } = setup();
+  const rejects = (keyId, batch, pattern) => assert.throws(() => fileBatch(shared, owner, { keyId, batch }), (e) => e instanceof RejectedBatch && pattern.test(e.message));
   const bobKey = await phoneKey(shared, bob);
   const sallys = await phoneBatch(await phoneKey(shared, sally), [{ id: 's1', person: 'P2', note: null, amount: 1 }]);
   rejects(bob.id, sallys, /doesn't open with key .* submission key/); // Sally's batch, sent as Bob's
@@ -89,12 +89,54 @@ test('filing: forged, revoked, expired and ill-fitting batches are rejected with
   rejects(bob.id, Buffer.from('not a jzm file'), /not a readable \.jzm file|doesn't open/);
   rejects(bob.id, await phoneBatch(bobKey, [{ id: 1, person: 'P1' }], [{ name: 'id', type: 'int' }, { name: 'person', type: 'string' }]), /Column 'id' is int in the batch, string in the shared file/);
   rejects(bob.id, await phoneBatch(bobKey, [{ id: 'x', extra: 1 }], [{ name: 'id', type: 'string' }, { name: 'extra', type: 'int' }]), /column 'extra' the shared file doesn't have/);
-  // A key the phone saved before its access expired (the owner derives the same one).
-  const lateKey = owner.submissionKey(late.id).toString();
-  rejects(late.id, await phoneBatch(lateKey, [{ id: 'l1', person: 'P3' }], [{ name: 'id', type: 'string' }, { name: 'person', type: 'string' }]), /expired/, Date.UTC(2026, 5, 1));
   revokeAccess(shared, owner, sally);
   rejects(sally.id, sallys, /has no grant in this file: unknown or revoked/);
   assert.deepEqual(rowsOf(shared, owner), ['P1:seed']);
+});
+
+// Late's access expires at midnight UTC on 1 January 2026 (setup). The phone saved its submission key while the access
+// was valid, so it can still lock batches; what it sends after that is judged by when it was written and when it arrived.
+const EXPIRY = Date.UTC(2026, 0, 1);
+const minutes = (n) => n * 60_000;
+
+test('filing: a key that expires is filed only for batches written and arrived before it expired', async () => {
+  const { owner, late, shared } = setup();
+  const lateKey = owner.submissionKey(late.id).toString(); // the owner derives the key the phone saved
+  const send = async (id, writtenAt, receivedAt) => {
+    const batch = await phoneBatch(lateKey, [{ id, person: 'P3', note: null, amount: 0 }], batchColumns, [], writtenAt);
+    return fileBatch(shared, owner, { keyId: late.id, batch, receivedAt });
+  };
+  const rejected = (pattern) => (e) => e instanceof RejectedBatch && pattern.test(e.message);
+  // Captured before expiry, arrived a minute after it: rejected, whatever time the batch says it was written.
+  await assert.rejects(send('l1', EXPIRY - minutes(10), EXPIRY + minutes(1)),
+    rejected(/^The batch arrived at 2026-01-01T00:01:00\.000Z, after key [0-9a-f]{16}'s access expired at 2026-01-01T00:00:00\.000Z$/));
+  // Written after expiry by the phone's clock: rejected, even though it arrived before.
+  await assert.rejects(send('l2', EXPIRY + minutes(1), EXPIRY - minutes(1)),
+    rejected(/^The batch was written at 2026-01-01T00:01:00\.000Z, after key [0-9a-f]{16}'s access expired at 2026-01-01T00:00:00\.000Z$/));
+  // Written and arrived before expiry: filed, although the filing happens later.
+  assert.deepEqual(await send('l3', EXPIRY - minutes(10), EXPIRY - minutes(1)), { filed: 1, duplicates: 0, files: 0 });
+  // That append happened after the expiry, so it removed the grant (spec 11.2): from now on the key is unknown.
+  await assert.rejects(send('l4', EXPIRY - minutes(10), EXPIRY - minutes(1)), rejected(/has no grant in this file/));
+  assert.deepEqual(rowsOf(shared, owner), ['P1:seed', 'P3:l3']);
+});
+
+test('the inbox runner judges expiry by when each batch arrived (its file time), not when the run happens', async () => {
+  const { dir, owner, late, shared } = setup();
+  const inbox = path.join(dir, 'inbox');
+  fs.mkdirSync(inbox);
+  const lateKey = owner.submissionKey(late.id).toString();
+  const record = (id) => [{ id, person: 'P3', note: null, amount: 0 }];
+  const tooLate = path.join(inbox, `${late.id}.1.jzm`);
+  const inTime = path.join(inbox, `${late.id}.2.jzm`);
+  fs.writeFileSync(tooLate, await phoneBatch(lateKey, record('too-late'), batchColumns, [], EXPIRY - minutes(10)));
+  fs.writeFileSync(inTime, await phoneBatch(lateKey, record('on-time'), batchColumns, [], EXPIRY - minutes(10)));
+  fs.utimesSync(tooLate, new Date(EXPIRY + minutes(5)), new Date(EXPIRY + minutes(5))); // arrived 5 minutes after expiry
+  fs.utimesSync(inTime, new Date(EXPIRY - minutes(5)), new Date(EXPIRY - minutes(5))); // 5 minutes before
+  const report = processInbox(shared, inbox, owner); // this run happens months later
+  assert.equal(report.filed, 1);
+  assert.deepEqual(report.rejected.map((r) => r.batch), [`${late.id}.1.jzm`]);
+  assert.match(report.rejected[0].reason, /^The batch arrived at 2026-01-01T00:05:00\.000Z, after key/);
+  assert.deepEqual(rowsOf(shared, owner), ['P1:seed', 'P3:on-time']);
 });
 
 const pdf = Buffer.from('%PDF-1.7\n1 0 obj << /Type /Catalog >> endobj\n%%EOF\n');

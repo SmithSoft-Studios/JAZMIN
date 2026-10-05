@@ -135,10 +135,15 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 - **A reference filing service (#13),** in `js/examples/filing-service`.
   - **`fileBatch()`** files the records a phone sends back into the shared
     file.
-    - **Refused:** unknown, revoked or expired keys; batches that don't open
+    - **Refused:** unknown or revoked keys; batches that don't open
       with the sender's submission key; columns the shared file doesn't have, or
       has with another type; rows for another person's partition.
     - **Duplicates:** rows already filed are skipped.
+    - **Keys that expire:** a batch is filed only if it was written (by the
+      phone's clock) and received (by the server's clock, `receivedAt`)
+      before the expiry. The first write after the expiry removes the grant,
+      so the README shows filing each upload as it arrives. The inbox runner
+      takes each batch's arrival time from its file's modified time.
     - **Files with records:** each row lists its files (photos, PDFs) in an
       `attachments` column. Refused: files a row lists that the batch doesn't
       hold, files no row lists, files whose first bytes aren't PDF, JPEG, PNG
@@ -167,6 +172,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     with two attachments in each browser, which the library then reads.
   - **Refused:** shared files (their master key stays off web pages),
     indexes, several tables, viewer package settings, `sortedBy` and Brotli.
+- **When a file was written: `reader.writtenAt`** (.NET `WrittenAt`, and in
+  the browser reader). It is the last append or, without one, when the file
+  was written, by the writer's clock. The filing service uses it to refuse
+  batches written after a key expired.
 - **Submission keys (#13, spec 7.8).** A person sends records back to the
   owner in a small file locked with their submission key.
   - **Where the key comes from:** the writer seals it into that person's key

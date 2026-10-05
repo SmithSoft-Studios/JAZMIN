@@ -1,10 +1,13 @@
 // Files every batch people sent back, waiting in an inbox folder, into a shared file, then compacts it once appends pile up.
-// Run it on a schedule (cron, a systemd timer, Task Scheduler, a cloud timer function), where the owner key is kept:
+// Best: file each batch as it arrives, by calling fileBatch() from your upload handler (README). This runner files what
+// is left: batches saved for later, for example while the shared file was busy. Run it where the owner key is kept,
+// often, or on a schedule (cron, a systemd timer, Task Scheduler, a cloud timer function):
 //
 //   JAZMIN_KEY="$(cat owner.key)" node inbox.mjs shared.jzm inbox/      (or --key-file owner.key)
 //
-// Whatever receives uploads saves each batch as inbox/<access key id>.<anything>.jzm. Filed batches move to
-// inbox/filed/; rejected ones to inbox/rejected/, each with a .txt file that gives the reason.
+// Whatever receives uploads saves each batch as inbox/<access key id>.<anything>.jzm, as a new file: its modified time
+// is taken as when the batch arrived (for keys that expire), so never copy a time the phone sends. Filed batches move
+// to inbox/filed/; rejected ones to inbox/rejected/, each with a .txt file that gives the reason.
 import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -13,11 +16,12 @@ import { RejectedBatch, fileBatch } from './filing.mjs';
 
 /**
  * Files the batches in `inboxDir` (oldest name first), then compacts the shared file when it has `compactAfter` or
- * more appends: regrouped, so each person's rows are stored together, when its sort order allows that. Other options
- * (idColumn, filesColumn, fileTypes, maxFileBytes, maxBatchFileBytes) go to fileBatch.
+ * more appends: regrouped, so each person's rows are stored together, when its sort order allows that. A batch's file
+ * modified time is when it arrived. Other options (idColumn, filesColumn, fileTypes, maxFileBytes,
+ * maxBatchFileBytes) go to fileBatch.
  * Returns { batches, filed, duplicates, files, rejected: [{ batch, reason }], compacted }.
  */
-export function processInbox(sharedPath, inboxDir, ownerKey, { compactAfter = 50, now, ...rules } = {}) {
+export function processInbox(sharedPath, inboxDir, ownerKey, { compactAfter = 50, ...rules } = {}) {
   const filedDir = path.join(inboxDir, 'filed');
   const rejectedDir = path.join(inboxDir, 'rejected');
   fs.mkdirSync(filedDir, { recursive: true });
@@ -26,7 +30,7 @@ export function processInbox(sharedPath, inboxDir, ownerKey, { compactAfter = 50
   for (const name of fs.readdirSync(inboxDir).filter((n) => n.endsWith('.jzm')).sort()) {
     const from = path.join(inboxDir, name);
     try {
-      const result = fileBatch(sharedPath, ownerKey, { ...rules, keyId: name.split('.')[0], batch: fs.readFileSync(from), now });
+      const result = fileBatch(sharedPath, ownerKey, { ...rules, keyId: name.split('.')[0], batch: fs.readFileSync(from), receivedAt: fs.statSync(from).mtimeMs });
       report.batches++;
       report.filed += result.filed;
       report.duplicates += result.duplicates;

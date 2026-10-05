@@ -976,6 +976,14 @@ export class JazminReader {
     return this.#header.appendCount;
   }
 
+  /**
+   * When the file was last written: its last append or, without one, when it was created. It comes from the writer's
+   * clock, so it is what the writer claims, not when the file reached you.
+   */
+  get writtenAt() {
+    return new Date(this.#header.modified || this.#header.created);
+  }
+
   /** True when the end of the file held an interrupted append, and the previous version was used. */
   get recovered() {
     return this.#recovered;

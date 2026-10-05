@@ -2121,6 +2121,8 @@
       /** Rows of this table this key may not see. */
       hiddenRowCount: Math.max(0, hiddenRows),
       encrypted: Boolean(file.keys || access),
+      /** When the file was last written (its last append, or when it was created), by the writer's clock. */
+      writtenAt: new Date(header.modified || header.created),
       access: access ? { isOwner: access.isOwner, online: access.online, expires: access.expires, partitionBy: table.partitionBy || null } : null,
       /**
        * The submission key (spec 7.8), as key text: lock the files you send back to the owner with it, for example

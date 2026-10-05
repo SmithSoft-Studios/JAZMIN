@@ -164,6 +164,7 @@ test('browser writer: the library reads what it writes, and refuses a wrong key 
     // ... and the browser reader too.
     const browser = await JazminBrowser.open(new Blob([bytes]), lock);
     assert.equal(browser.rowCount, rows.length);
+    assert.deepEqual(browser.writtenAt, open(bytes, lock).writtenAt, lockName);
   }
 });
 

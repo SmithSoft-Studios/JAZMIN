@@ -26,7 +26,11 @@ export class RejectedBatch extends Error {
 /**
  * Files one batch - `batch`, the bytes of a .jzm file the holder of access key `keyId` sent back, locked with their
  * submission key (spec 7.8) - into the shared file. The rules:
- *   - the key must have a grant in the shared file (an unknown or revoked key has none) that has not expired;
+ *   - the key must have a grant in the shared file (an unknown or revoked key has none);
+ *   - when the grant expires, the batch must have been written before it expired (the time in the batch, from the
+ *     phone's clock) and have arrived before it expired (`receivedAt`, by the server's clock). The phone's clock can
+ *     be set to anything, so the arrival time is what stops a key that has expired. The first write to the shared
+ *     file after the expiry removes the grant (spec 11.2), so file batches as they arrive, not later on a schedule;
  *   - the batch must open with that key's submission key, which only someone who opened the shared file with that
  *     access key has: anything else was made without it (a leaked key alone isn't enough), or was changed;
  *   - its columns must be columns of the shared file, with the same types;
@@ -41,7 +45,7 @@ export class RejectedBatch extends Error {
  * Returns { filed, duplicates, files }; throws RejectedBatch for a batch that must not be filed.
  */
 export function fileBatch(sharedPath, ownerKey, {
-  keyId, batch, idColumn = 'id', now = Date.now(),
+  keyId, batch, idColumn = 'id', receivedAt = Date.now(),
   filesColumn = 'attachments', fileTypes = Object.keys(FILE_KINDS), maxFileBytes = 10 * MIB, maxBatchFileBytes = 50 * MIB,
 }) {
   for (const type of fileTypes) if (!FILE_KINDS[type]) throw new Error(`Unknown file type '${type}': add it to FILE_KINDS`);
@@ -66,7 +70,14 @@ export function fileBatch(sharedPath, ownerKey, {
   } finally {
     shared.close();
   }
-  if (grant.expires && !(now <= Date.parse(grant.expires))) throw new RejectedBatch(`Key ${keyId}'s access expired at ${grant.expires}`);
+  const expires = grant.expires == null ? null : Date.parse(grant.expires);
+  if (expires !== null) {
+    const arrived = Number(receivedAt);
+    if (!Number.isFinite(expires)) throw new RejectedBatch(`Key ${keyId}'s expiry date '${grant.expires}' is not valid`); // fail closed
+    if (!(arrived <= expires)) {
+      throw new RejectedBatch(`The batch arrived at ${new Date(arrived).toISOString()}, after key ${keyId}'s access expired at ${grant.expires}`);
+    }
+  }
 
   const withFiles = columns.get(filesColumn)?.type === 'json';
   let rows;
@@ -74,6 +85,9 @@ export function fileBatch(sharedPath, ownerKey, {
   try {
     const reader = open(batch, { key: JazminKey.from(ownerKey).submissionKey(keyId) });
     try {
+      if (expires !== null && reader.writtenAt.getTime() > expires) {
+        throw new RejectedBatch(`The batch was written at ${reader.writtenAt.toISOString()}, after key ${keyId}'s access expired at ${grant.expires}`);
+      }
       for (const c of reader.columns) {
         const known = columns.get(c.name);
         if (!known) throw new RejectedBatch(`The batch has a column '${c.name}' the shared file doesn't have`);

@@ -59,6 +59,10 @@ Readers (access keys) ◄── read the shared file in the browser ◄── st
   public, and safe to log.
 - **Filing:**
   1. The service finds that person's access key in the shared file's grant list.
+     If the key expires, the batch must have been written (phone's clock) and
+     received (server's clock) before the expiry. The first write after the
+     expiry removes the grant, so batches are filed as they arrive (agreed
+     5 October 2026: no grace period).
   2. It derives their submission key and opens the batch. A batch that doesn't open
      was not made with that key, so it's refused.
   3. It writes the rows into **that person's own partition**, whatever the

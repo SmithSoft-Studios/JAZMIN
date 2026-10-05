@@ -57,6 +57,17 @@ public sealed class AppendTests : IDisposable
     }
 
     [Fact]
+    public void WrittenAt_IsWhenTheFileWasCreated_ThenWhenItWasLastAppendedTo()
+    {
+        var created = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var appended = new DateTimeOffset(2026, 1, 2, 12, 0, 0, TimeSpan.Zero);
+        var path = Write("written.jzm", Range(0, 3), new JazminWriteOptions { Now = created });
+        using (var reader = JazminReader.Open(path)) Assert.Equal(created, reader.WrittenAt);
+        JazminFile.Append(path, new JazminAppend { Insert = [Row(9)], Now = appended });
+        using (var reader = JazminReader.Open(path)) Assert.Equal(appended, reader.WrittenAt);
+    }
+
+    [Fact]
     public void DeleteAndUpsert_AreRecordedAsDeletions_AndSkippedEverywhere()
     {
         var path = Write("d.jzm", Range(0, 30), new JazminWriteOptions { ChunkRows = 8 });

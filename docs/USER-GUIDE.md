@@ -1339,6 +1339,15 @@ When filing:
   filed twice.
 - **Revoked keys:** once a key is revoked, `accessKeyOf` no longer finds it,
   and its files are refused.
+- **Keys that expire:** a file is filed only if it was both written and
+  received before the key expired.
+  - **Written:** `reader.writtenAt` comes from the phone's clock, which its
+    owner can set to anything. So on its own it can't be trusted.
+  - **Received:** your server's clock. This check is what actually stops a
+    key that has expired.
+  - **File each upload as it arrives:** the first write to the shared file
+    after a key expires removes its grant. A file that arrived in time but is
+    filed after that is refused as unknown.
 - **Older shared files:** files written before submission keys existed have
   none (`submissionKey` is `null`) until the owner's next rewrite or
   `compact()`.
@@ -1480,6 +1489,7 @@ const result = append('statements.jzm', {
 const r = open('statements.jzm', { key: owner });
 r.appendCount;       // appends since the last full write
 r.deletedRowCount;   // rows waiting to be removed by compact()
+r.writtenAt;         // a Date: the last append, or when the file was written; by the writer's clock
 r.close();
 
 compact('statements.jzm', { key: owner });         // { rowCount, bytesBefore, bytesAfter }
@@ -1499,7 +1509,7 @@ var result = JazminFile.Append("statements.jzm", new JazminAppend
 });
 
 using (var r = JazminReader.Open("statements.jzm", new JazminReadOptions { Key = owner }))
-    Console.WriteLine($"{r.AppendCount} appends, {r.DeletedRowCount} deleted rows waiting");
+    Console.WriteLine($"{r.AppendCount} appends, {r.DeletedRowCount} deleted rows waiting, last written {r.WrittenAt}");
 
 var compacted = JazminFile.Compact("statements.jzm", owner);   // RowCount, BytesBefore, BytesAfter
 JazminFile.Compact("visits.jzm", owner, regroup: true);         // each partition's rows together (17.4)

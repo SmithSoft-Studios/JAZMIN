@@ -42,6 +42,22 @@ test('append adds rows without changing existing bytes; indexes cover old and ne
   r.close();
 });
 
+test('writtenAt: when the file was created, then when it was last appended to', () => {
+  const file = tmp('written.jzm');
+  const writtenAt = () => {
+    const r = open(file);
+    try {
+      return r.writtenAt;
+    } finally {
+      r.close();
+    }
+  };
+  write(file, [row(1)], { columns, now: Date.UTC(2026, 0, 1) });
+  assert.deepEqual(writtenAt(), new Date(Date.UTC(2026, 0, 1)));
+  append(file, { insert: [row(2)], now: Date.UTC(2026, 0, 2, 12) });
+  assert.deepEqual(writtenAt(), new Date(Date.UTC(2026, 0, 2, 12)));
+});
+
 test('delete and upsert are recorded as deletions; reads skip them everywhere', () => {
   const file = tmp('d.jzm');
   write(file, Array.from({ length: 30 }, (_, i) => row(i)), { columns, chunkRows: 8 });
