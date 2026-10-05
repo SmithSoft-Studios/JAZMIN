@@ -774,8 +774,9 @@ On 200,000 transactions (`npm run bench:proposals`):
   *Keyset paging* avoids that: remember the last row of a page and ask for the
   rows after it, for example `{ account, at: { gt: lastAt } }` with
   `limit: 50`.
-- **The browser reader** pages without a filter the same way, and its
-  `query()` returns `total` without counting row by row.
+- **The browser reader** pages the same way. Its `query()` counts chunks
+  whose every row matches without reading them, and `{ total: false }` reads
+  only the page.
 
 ### 9.8 How a query chooses between indexes and a scan
 
@@ -2282,5 +2283,20 @@ dependencies:
 ```js
 const reader = await JazminBrowser.open(file, { key });   // a File, Blob or bytes
 for await (const row of reader.find({ country: 'ZA' })) console.log(row);
+const { rows } = await reader.query({ country: 'ZA' }, { offset: 50, limit: 50, total: false });
+await reader.count({ country: 'ZA' });
+await reader.explain({ id: 7 }, { analyze: true });    // as in the library (section 9.6)
 const pdf = await reader.readFile('terms.pdf');
 ```
+
+**It plans queries as the library does** (sections 9.7 and 9.8):
+
+- **What it uses:** chunk statistics, a binary search on the file's first
+  `sortedBy` column, and offsets that skip whole chunks. For files that aren't
+  access-controlled, it also uses sorted and trigram indexes, with the same
+  cost rules.
+- **What that saves:** a query reads the same chunks it would in Node. For
+  example, one account's page in a 9.7 MB file reads 85 KB rather than the
+  whole file.
+- **Access-controlled files:** only the owner may use their indexes, so the
+  browser reader relies on statistics and the sort order there.

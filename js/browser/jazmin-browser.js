@@ -418,10 +418,21 @@
     return p;
   }
 
+  function readIndexRef(bytes) {
+    const ix = { column: '', kind: '', section: null, segment: 0 };
+    readMessage(bytes, (f, v) => {
+      if (f === 1) ix.column = text(v);
+      else if (f === 2) ix.kind = text(v);
+      else if (f === 3) ix.section = readRef(v);
+      else if (f === 4) ix.segment = num(v);
+    });
+    return ix;
+  }
+
   function readTable(bytes) {
     const t = {
       name: '', columnCount: 0, groups: [], sortedBy: [], partitionBy: '', rowCount: 0, deletedCount: 0, chunkCount: 0,
-      partitions: [], partitionTable: null, deletes: null,
+      partitions: [], partitionTable: null, deletes: null, indexes: [],
     };
     readMessage(bytes, (f, v) => {
       switch (f) {
@@ -445,6 +456,7 @@
         case 8: t.chunkCount = num(v); break;
         case 9: t.partitions.push(readPartition(v)); break;
         case 10: t.partitionTable = readRef(v); break;
+        case 11: t.indexes.push(readIndexRef(v)); break;
         case 12: t.deletes = readRef(v); break;
         default: break;
       }
@@ -499,7 +511,10 @@
     return h;
   }
 
-  /** A chunk-directory segment (spec 6.3): one entry per chunk, with its parts (one per column group). */
+  /**
+   * A chunk-directory segment (spec 6.3): one entry per chunk, with its parts (one per column group), and its
+   * statistics blocks ({ columns, section }).
+   */
   function readDirectory(bytes, groupCount) {
     let ordinals = [];
     let rowStarts = [];
@@ -507,6 +522,7 @@
     let offsets = [];
     let lengths = [];
     let digests = null;
+    const statistics = [];
     readMessage(bytes, (f, v) => {
       if (f === 1) ordinals = cumulative(readPacked(v));
       else if (f === 2) rowStarts = cumulative(readPacked(v));
@@ -514,13 +530,21 @@
       else if (f === 4) offsets = cumulative(readPacked(v));
       else if (f === 5) lengths = readPacked(v);
       else if (f === 6) digests = bytesOf(v);
+      else if (f === 7) {
+        const block = { columns: [], section: null };
+        readMessage(v, (bf, bv) => {
+          if (bf === 1) block.columns = readPacked(bv);
+          else if (bf === 2) block.section = readRef(bv);
+        });
+        statistics.push(block);
+      }
     });
     const n = ordinals.length;
     if (rowStarts.length !== n || rowCounts.length !== n || offsets.length !== n * groupCount || lengths.length !== n * groupCount
       || (digests && digests.length !== n * groupCount * 32)) {
       throw new JazminFormatError('Chunk directory lists are inconsistent');
     }
-    return ordinals.map((ordinal, i) => ({
+    const chunks = ordinals.map((ordinal, i) => ({
       ordinal,
       rowStart: rowStarts[i],
       rowCount: rowCounts[i],
@@ -529,6 +553,49 @@
         return { offset: offsets[k], length: lengths[k], digest: digests ? digests.slice(k * 32, k * 32 + 32) : null };
       }),
     }));
+    return { chunks, statistics };
+  }
+
+  /** A statistics section (spec 6.4): per column, null counts and bounds (key-form bytes) for each chunk. */
+  function readStatistics(bytes) {
+    const columns = [];
+    readMessage(bytes, (f, v) => {
+      if (f !== 1) return;
+      const c = { nulls: [], min: [], max: [] };
+      readMessage(v, (cf, cv) => {
+        if (cf === 1) c.nulls = readPacked(cv);
+        else if (cf === 2) c.min.push(bytesOf(cv));
+        else if (cf === 3) c.max.push(bytesOf(cv));
+      });
+      columns.push(c);
+    });
+    return columns;
+  }
+
+  /** A sorted index's directory (spec 8.1): its pages ({ first, count, offset, length, digest }) and null postings. */
+  function readIndexDirectory(bytes) {
+    const firsts = [];
+    let counts = [];
+    let offsets = [];
+    let lengths = [];
+    let digests = null;
+    let nulls = null;
+    readMessage(bytes, (f, v) => {
+      if (f === 1) firsts.push(bytesOf(v));
+      else if (f === 2) counts = readPacked(v);
+      else if (f === 3) offsets = cumulative(readPacked(v));
+      else if (f === 4) lengths = readPacked(v);
+      else if (f === 5) digests = bytesOf(v);
+      else if (f === 6) nulls = readRef(v);
+    });
+    const n = firsts.length;
+    if (counts.length !== n || offsets.length !== n || lengths.length !== n || (digests && digests.length !== n * 32)) {
+      throw new JazminFormatError('Index directory lists are inconsistent');
+    }
+    return {
+      pages: firsts.map((first, i) => ({ first, count: counts[i], offset: offsets[i], length: lengths[i], digest: digests ? digests.slice(i * 32, i * 32 + 32) : null })),
+      nulls,
+    };
   }
 
   function readPartitionList(bytes) {
@@ -553,10 +620,8 @@
     return tables;
   }
 
-  /** A postings section (deleted rows): encoding byte, count, then differences. */
-  function readPostingsSection(bytes) {
-    const r = new Reader(bytes);
-    if (r.byte() !== 0) throw new JazminFormatError('Deleted rows use an encoding this reader does not support');
+  /** Postings: count, then differences between ascending row ids. */
+  function readPostings(r) {
     const count = r.varUint();
     if (count > r.remaining) throw new JazminFormatError('Postings are truncated');
     const ids = new Array(count);
@@ -566,7 +631,15 @@
       if (previous > Number.MAX_SAFE_INTEGER) throw new JazminFormatError('A row id is out of range');
       ids[i] = previous;
     }
-    if (!r.eof) throw new JazminFormatError('Deleted rows have trailing bytes');
+    return ids;
+  }
+
+  /** A postings section (deleted rows, null cells): encoding byte, then postings. */
+  function readPostingsSection(bytes, what = 'Deleted rows') {
+    const r = new Reader(bytes);
+    if (r.byte() !== 0) throw new JazminFormatError(`${what} use an encoding this reader does not support`);
+    const ids = readPostings(r);
+    if (!r.eof) throw new JazminFormatError(`${what} have trailing bytes`);
     return ids;
   }
 
@@ -619,8 +692,11 @@
     }
   }
 
-  /** Decodes a columnar chunk payload into one array of values per column (null for null). */
-  function decodeColumnar(raw, types, rowCount, ordinal) {
+  /**
+   * Decodes a columnar chunk payload into one array of values per column (null for null). `wanted[j] === false`
+   * skips column j (left undefined) without decoding it.
+   */
+  function decodeColumnar(raw, types, rowCount, ordinal, wanted) {
     if (!Number.isSafeInteger(rowCount) || rowCount < 0 || (rowCount > 0 && rowCount > raw.length * 8)) {
       throw new JazminFormatError(`Chunk ${ordinal}: row count does not match its size`);
     }
@@ -630,6 +706,10 @@
       const length = reader.varUint();
       const end = reader.pos + length;
       if (length < 1 || end > raw.length) throw new JazminFormatError(`Chunk ${ordinal}: invalid stream length`);
+      if (wanted && !wanted[j]) {
+        reader.pos = end;
+        continue;
+      }
       const r = new Reader(raw.subarray(0, end), reader.pos);
       const flags = r.byte();
       const type = types[j];
@@ -762,6 +842,7 @@
 
   function condition(column, op, operand) {
     const { name, type } = column;
+    if ((op === 'eq' || op === 'ne') && (operand === null || operand === undefined)) return condition(column, 'isNull', op === 'eq');
     if (op === 'isNull') return (row) => (row[name] === null || row[name] === undefined) === Boolean(operand);
     if (op === 'contains') return (row) => row[name] != null && row[name].includes(operand);
     if (op === 'icontains') {
@@ -777,6 +858,461 @@
     const key = keyOf(type, operand);
     const test = { eq: (c) => c === 0, ne: (c) => c !== 0, gt: (c) => c > 0, gte: (c) => c >= 0, lt: (c) => c < 0, lte: (c) => c <= 0 }[op];
     return (row) => row[name] != null && test(compare(type, keyOf(type, row[name]), key));
+  }
+
+  // ---- query planning: statistics, sort order and indexes (as the library does, spec 6.4, 8, 9) --------
+
+  const ORDERED_TYPES = new Set(['int', 'float', 'decimal', 'string', 'datetime', 'bool']);
+  const RANGE_OPS = new Set(['gt', 'gte', 'lt', 'lte']);
+  const SMALL_LOOKUP_BYTES = 8 * 1024; // index lookups this small are always made: the bytes are negligible
+  const PAGES_CACHED = 8; // decoded pages kept per sorted index
+
+  /** Compares two keys of a column type; NaN when a float key is NaN (NaN matches nothing). */
+  function keyCompare(type, a, b) {
+    if (type === 'float' && (Number.isNaN(a) || Number.isNaN(b))) return NaN;
+    return compare(type, a, b);
+  }
+
+  /** A value in the value encoding (spec 5.1), as a key. */
+  function readKey(r, type) {
+    switch (type) {
+      case 'bool': return r.byte() !== 0;
+      case 'int': return r.varInt();
+      case 'float': return r.float64();
+      case 'decimal': return keyOf('decimal', readDecimal(r));
+      case 'datetime': return r.varInt();
+      default: return r.string();
+    }
+  }
+
+  /** A statistics or index-directory bound (spec 6.5): strings are bare UTF-8; empty means unbounded. */
+  function decodeBound(type, bytes) {
+    if (bytes.length === 0) return undefined;
+    if (type === 'string') return fromUtf8.decode(bytes);
+    return readKey(new Reader(bytes), type);
+  }
+
+  /**
+   * A filter as a tree for planning, parsed by the same rules as compileFilter (which checks it first):
+   * { kind: 'and' | 'or', items } | { kind: 'not', item } | { kind: 'leaf', column, op, value } (values as keys).
+   */
+  function planOf(filter, columns) {
+    if (filter === null || filter === undefined) return null;
+    const byName = new Map(columns.map((c) => [c.name, c]));
+    const node = (f) => {
+      const items = [];
+      for (const [key, spec] of Object.entries(f)) {
+        if (key === 'and' || key === 'or') items.push({ kind: key, items: spec.map(node) });
+        else if (key === 'not') items.push({ kind: 'not', item: node(spec) });
+        else {
+          const column = byName.get(key);
+          const conditions = spec === null ? { isNull: true }
+            : typeof spec === 'object' && !(spec instanceof Date) && !Array.isArray(spec) ? spec : { eq: spec };
+          for (const [op, operand] of Object.entries(conditions)) items.push(planLeaf(column, op, operand));
+        }
+      }
+      return items.length === 1 ? items[0] : { kind: 'and', items };
+    };
+    return node(filter);
+  }
+
+  function planLeaf(column, op, operand) {
+    const leaf = { kind: 'leaf', column, op };
+    if ((op === 'eq' || op === 'ne') && (operand === null || operand === undefined)) return { ...leaf, op: 'isNull', value: op === 'eq' };
+    if (op === 'isNull') return { ...leaf, value: Boolean(operand) };
+    if (STRING_OPS.has(op)) return { ...leaf, value: String(operand) };
+    if (!ORDERED_TYPES.has(column.type)) return { ...leaf, op: 'opaque' }; // binary / json: not planned
+    if (op === 'in') return { ...leaf, value: operand.filter((v) => v !== null && v !== undefined).map((v) => keyOf(column.type, v)) };
+    return { ...leaf, value: keyOf(column.type, operand) };
+  }
+
+  function planColumns(plan, into = new Set()) {
+    if (!plan) return into;
+    if (plan.kind === 'leaf') into.add(plan.column.position);
+    else (plan.items ?? [plan.item]).forEach((n) => planColumns(n, into));
+    return into;
+  }
+
+  function leafMayMatch(leaf, stat, rowCount) {
+    if (!stat) return true;
+    if (leaf.op === 'isNull') return leaf.value ? stat.nulls > 0 : stat.nulls < rowCount;
+    if (stat.nulls === rowCount) return false;
+    const { min, max } = stat;
+    const cmp = (a, b) => keyCompare(leaf.column.type, a, b);
+    const belowMax = (v, inclusive) => max === undefined || (inclusive ? cmp(v, max) <= 0 : cmp(v, max) < 0);
+    const aboveMin = (v, inclusive) => min === undefined || (inclusive ? cmp(v, min) >= 0 : cmp(v, min) > 0);
+    switch (leaf.op) {
+      case 'eq': return aboveMin(leaf.value, true) && belowMax(leaf.value, true);
+      case 'in': return leaf.value.some((v) => aboveMin(v, true) && belowMax(v, true));
+      case 'gt': return max === undefined || cmp(max, leaf.value) > 0;
+      case 'gte': return max === undefined || cmp(max, leaf.value) >= 0;
+      case 'lt': return min === undefined || cmp(min, leaf.value) < 0;
+      case 'lte': return min === undefined || cmp(min, leaf.value) <= 0;
+      default: return true;
+    }
+  }
+
+  /** False when chunk statistics prove no row can match; `stats(col)` gives a column's statistics or undefined. */
+  function mayMatch(node, stats, rowCount) {
+    switch (node.kind) {
+      case 'and': return node.items.every((n) => mayMatch(n, stats, rowCount));
+      case 'or': return node.items.some((n) => mayMatch(n, stats, rowCount));
+      case 'not': return true;
+      default: return leafMayMatch(node, stats(node.column.position), rowCount);
+    }
+  }
+
+  function leafMustMatch(leaf, stat, rowCount) {
+    // Float statistics leave NaN values out, so they cannot prove that every row matches.
+    if (!stat || leaf.column.type === 'float') return false;
+    if (leaf.op === 'isNull') return leaf.value ? stat.nulls === rowCount : stat.nulls === 0;
+    const { min, max } = stat;
+    if (stat.nulls !== 0 || min === undefined || max === undefined) return false;
+    const cmp = (a, b) => keyCompare(leaf.column.type, a, b);
+    switch (leaf.op) {
+      case 'eq': return cmp(min, leaf.value) === 0 && cmp(max, leaf.value) === 0;
+      case 'ne': return cmp(max, leaf.value) < 0 || cmp(min, leaf.value) > 0;
+      case 'in': return cmp(min, max) === 0 && leaf.value.some((v) => cmp(min, v) === 0);
+      case 'gt': return cmp(min, leaf.value) > 0;
+      case 'gte': return cmp(min, leaf.value) >= 0;
+      case 'lt': return cmp(max, leaf.value) < 0;
+      case 'lte': return cmp(max, leaf.value) <= 0;
+      default: return false;
+    }
+  }
+
+  /** True when chunk statistics prove that every row matches (an offset can then skip the chunk by its row count). */
+  function mustMatch(node, stats, rowCount) {
+    switch (node.kind) {
+      case 'and': return node.items.every((n) => mustMatch(n, stats, rowCount));
+      case 'or': return node.items.some((n) => mustMatch(n, stats, rowCount));
+      case 'not': return !mayMatch(node.item, stats, rowCount);
+      default: return leafMustMatch(node, stats(node.column.position), rowCount);
+    }
+  }
+
+  /** Bounds the top-level AND of a filter puts on one column: { low, lowInclusive, high, highInclusive } or null. */
+  function sortBounds(plan, position) {
+    const leaves = plan.kind === 'and' ? plan.items : [plan];
+    let bounds = null;
+    for (const leaf of leaves) {
+      if (leaf.kind !== 'leaf' || leaf.column.position !== position || !['eq', ...RANGE_OPS].includes(leaf.op)) continue;
+      if (typeof leaf.value === 'number' && Number.isNaN(leaf.value)) continue;
+      const cmp = (a, b) => keyCompare(leaf.column.type, a, b);
+      bounds ??= {};
+      if (leaf.op !== 'lt' && leaf.op !== 'lte' && (bounds.low === undefined || cmp(leaf.value, bounds.low) > 0)) {
+        Object.assign(bounds, { low: leaf.value, lowInclusive: leaf.op !== 'gt' });
+      }
+      if (leaf.op !== 'gt' && leaf.op !== 'gte' && (bounds.high === undefined || cmp(leaf.value, bounds.high) < 0)) {
+        Object.assign(bounds, { high: leaf.value, highInclusive: leaf.op !== 'lt' });
+      }
+    }
+    return bounds;
+  }
+
+  /*
+   * Index lookups (as the library's indexes.js): { op: 'eq', value } | { op: 'in', values }
+   * | { op: 'range', low, lowInclusive, high, highInclusive } | { op: 'prefix', text } | { op: 'nulls' }
+   * | { op: 'contains', text, ci }. cost(lookup): bytes of index data still to read (nothing is read to answer),
+   * null when the index cannot answer it; rows(lookup): the sorted row ids.
+   */
+  const unionAll = (lists) => [...new Set(lists.flat())].sort((a, b) => a - b);
+  function intersectSorted(a, b) {
+    const out = [];
+    for (let i = 0, j = 0; i < a.length && j < b.length;) {
+      if (a[i] === b[j]) {
+        out.push(a[i]);
+        i++;
+        j++;
+      } else if (a[i] < b[j]) i++;
+      else j++;
+    }
+    return out;
+  }
+
+  /** A sorted index (spec 8.1): its directory is read up front; pages as lookups need them (a few kept). */
+  class PagedIndex {
+    constructor(directory, type, load) {
+      this.type = type;
+      this.pages = directory.pages.map((p) => ({ ...p, first: decodeBound(type, p.first) }));
+      if (this.pages.some((p) => p.first === undefined)) throw new JazminFormatError('Index page has no first key');
+      this.nullsAt = directory.nulls;
+      this.load = load;
+      this.cache = new Map();
+    }
+
+    async page(i) {
+      let page = this.cache.get(i);
+      if (page) {
+        this.cache.delete(i);
+      } else {
+        const r = new Reader(await this.load(`page/${i}`, this.pages[i]));
+        if (r.byte() !== 0) throw new JazminFormatError('Index page uses an encoding this reader does not support');
+        const count = r.varUint();
+        if (count > r.remaining || count !== this.pages[i].count) throw new JazminFormatError('Index page does not match its directory');
+        page = { keys: new Array(count), postings: new Array(count) };
+        for (let k = 0; k < count; k++) {
+          page.keys[k] = readKey(r, this.type);
+          page.postings[k] = readPostings(r);
+        }
+        if (!r.eof) throw new JazminFormatError('Index page has trailing bytes');
+        if (this.cache.size >= PAGES_CACHED) this.cache.delete(this.cache.keys().next().value);
+      }
+      this.cache.set(i, page);
+      return page;
+    }
+
+    /** Last page whose first key is <= value, or -1. */
+    pageFor(value) {
+      let lo = 0;
+      let hi = this.pages.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (keyCompare(this.type, this.pages[mid].first, value) <= 0) lo = mid + 1;
+        else hi = mid;
+      }
+      return lo - 1;
+    }
+
+    span(lookup) {
+      const last = this.pages.length - 1;
+      const isNaNKey = (v) => typeof v === 'number' && Number.isNaN(v);
+      switch (lookup.op) {
+        case 'eq': {
+          if (isNaNKey(lookup.value)) return [0, -1];
+          const i = this.pageFor(lookup.value);
+          return [Math.max(i, 0), i];
+        }
+        case 'range':
+          if (isNaNKey(lookup.low) || isNaNKey(lookup.high)) return [0, -1];
+          return [lookup.low === undefined ? 0 : Math.max(this.pageFor(lookup.low), 0), lookup.high === undefined ? last : this.pageFor(lookup.high)];
+        case 'prefix': {
+          const from = Math.max(this.pageFor(lookup.text), 0);
+          let to = from;
+          while (to < last && this.pages[to + 1].first.startsWith(lookup.text)) to++;
+          return [from, Math.min(to, last)];
+        }
+        default: return [0, -1];
+      }
+    }
+
+    cost(lookup) {
+      if (lookup.op === 'contains') return null;
+      if (lookup.op === 'nulls') return this.nullsAt ? this.nullsAt.length : 0;
+      const pages = new Set();
+      const add = ([from, to]) => {
+        for (let i = from; i <= to; i++) if (!this.cache.has(i)) pages.add(i);
+      };
+      if (lookup.op === 'in') for (const value of lookup.values) add(this.span({ op: 'eq', value }));
+      else add(this.span(lookup));
+      let bytes = 0;
+      for (const i of pages) bytes += this.pages[i].length;
+      return bytes;
+    }
+
+    /** First position in a page whose key is >= value (> value when strict). */
+    bound(page, value, strict) {
+      let lo = 0;
+      let hi = page.keys.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        const c = keyCompare(this.type, page.keys[mid], value);
+        if (c < 0 || (strict && c === 0)) lo = mid + 1;
+        else hi = mid;
+      }
+      return lo;
+    }
+
+    async rows(lookup) {
+      switch (lookup.op) {
+        case 'eq': case 'in': {
+          const lists = [];
+          for (const value of lookup.op === 'eq' ? [lookup.value] : lookup.values) {
+            const [from, to] = this.span({ op: 'eq', value });
+            if (to < from) continue;
+            const page = await this.page(from);
+            const i = this.bound(page, value, false);
+            if (i < page.keys.length && keyCompare(this.type, page.keys[i], value) === 0) lists.push(page.postings[i]);
+          }
+          return unionAll(lists);
+        }
+        case 'nulls': return this.nullsAt ? readPostingsSection(await this.load('nulls', this.nullsAt), 'Index null postings') : [];
+        case 'range': case 'prefix': {
+          const [from, to] = this.span(lookup);
+          const lists = [];
+          for (let j = from; j <= to; j++) {
+            const page = await this.page(j);
+            let start;
+            let end;
+            if (lookup.op === 'prefix') {
+              start = this.bound(page, lookup.text, false);
+              end = start;
+              while (end < page.keys.length && page.keys[end].startsWith(lookup.text)) end++;
+            } else {
+              start = lookup.low === undefined ? 0 : this.bound(page, lookup.low, !lookup.lowInclusive);
+              end = lookup.high === undefined ? page.keys.length : this.bound(page, lookup.high, lookup.highInclusive);
+            }
+            for (let k = start; k < end; k++) lists.push(page.postings[k]);
+          }
+          return unionAll(lists);
+        }
+        default: return [];
+      }
+    }
+  }
+
+  /** Whether a trigram index can narrow a search: not under 3 characters, nor case-insensitive non-ASCII. */
+  function trigramsOf(text) {
+    const lower = text.replace(/[A-Z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 32));
+    const grams = new Set();
+    for (let i = 0; i + 3 <= lower.length; i++) grams.add(lower.substring(i, i + 3));
+    return grams;
+  }
+  const trigramAnswers = (text, ci) => !(ci && /[^\x00-\x7f]/.test(text)) && trigramsOf(text).size > 0;
+
+  /** A trigram index (spec 8.2), read only when a lookup is made: until then a lookup costs its whole size. */
+  class LazyTrigramIndex {
+    constructor(bytes, load) {
+      this.bytes = bytes;
+      this.load = load;
+      this.grams = null;
+    }
+
+    cost(lookup) {
+      if (lookup.op !== 'contains' || !trigramAnswers(lookup.text, lookup.ci)) return null;
+      return this.grams ? 0 : this.bytes;
+    }
+
+    async rows(lookup) {
+      if (!this.grams) {
+        this.grams = new Map();
+        for (const bytes of await this.load()) {
+          const r = new Reader(bytes);
+          if (r.byte() !== 0) throw new JazminFormatError('Trigram index uses an encoding this reader does not support');
+          const count = r.varUint();
+          if (count > r.remaining / 7) throw new JazminFormatError('Trigram index is truncated');
+          for (let i = 0; i < count; i++) {
+            const gram = String.fromCharCode(r.u16(), r.u16(), r.u16());
+            this.grams.set(gram, [...(this.grams.get(gram) ?? []), ...readPostings(r)]);
+          }
+          if (!r.eof) throw new JazminFormatError('Trigram index has trailing bytes');
+        }
+        for (const [gram, ids] of this.grams) this.grams.set(gram, unionAll([ids]));
+      }
+      let result = null;
+      for (const gram of trigramsOf(lookup.text)) {
+        const ids = this.grams.get(gram);
+        if (!ids) return [];
+        result = result === null ? ids : intersectSorted(result, ids);
+        if (!result.length) return result;
+      }
+      return result ?? [];
+    }
+  }
+
+  /** Several index segments of one column (the original rows, and each append's): costs add up, rows unite. */
+  class CompositeIndex {
+    constructor(parts) {
+      this.parts = parts;
+    }
+
+    cost(lookup) {
+      let bytes = 0;
+      for (const part of this.parts) {
+        const c = part.cost(lookup);
+        if (c === null) return null;
+        bytes += c;
+      }
+      return bytes;
+    }
+
+    async rows(lookup) {
+      const lists = [];
+      for (const part of this.parts) lists.push(await part.rows(lookup));
+      return unionAll(lists);
+    }
+  }
+
+  /** The index lookup a condition can use - [kind, lookup] - or null. */
+  function leafLookup(leaf) {
+    switch (leaf.op) {
+      case 'contains': case 'icontains': return ['trigram', { op: 'contains', text: leaf.value, ci: leaf.op === 'icontains' }];
+      case 'eq': return ['sorted', { op: 'eq', value: leaf.value }];
+      case 'in': return ['sorted', { op: 'in', values: leaf.value }];
+      case 'startsWith': return ['sorted', { op: 'prefix', text: leaf.value }];
+      case 'isNull': return leaf.value ? ['sorted', { op: 'nulls' }] : null;
+      case 'gt': case 'gte': return ['sorted', { op: 'range', low: leaf.value, lowInclusive: leaf.op === 'gte' }];
+      case 'lt': case 'lte': return ['sorted', { op: 'range', high: leaf.value, highInclusive: leaf.op === 'lte' }];
+      default: return null;
+    }
+  }
+
+  /**
+   * How indexes can narrow a filter: { cost, rows() } or null (as the library's indexPlan). Range conditions on one
+   * column (in an AND) become one bounded lookup; lookups are taken cheapest first within `budget` bytes.
+   */
+  async function indexPlan(node, indexes, budget) {
+    const lookupPlan = async (leaf, kind, lookup) => {
+      const index = await indexes(leaf.column.name, kind);
+      const cost = index ? index.cost(lookup) : null;
+      return cost === null || cost > budget ? null : { cost, rows: () => index.rows(lookup) };
+    };
+    switch (node.kind) {
+      case 'and': {
+        const parts = [];
+        const ranges = new Map(); // column position -> [leaf, merged range lookup]
+        for (const item of node.items) {
+          if (item.kind === 'leaf' && RANGE_OPS.has(item.op) && !(typeof item.value === 'number' && Number.isNaN(item.value))) {
+            const [, add] = leafLookup(item);
+            const [, merged] = ranges.get(item.column.position) ?? [item, { op: 'range' }];
+            const cmp = (a, b) => keyCompare(item.column.type, a, b);
+            if (add.low !== undefined && (merged.low === undefined || cmp(add.low, merged.low) > 0 || (cmp(add.low, merged.low) === 0 && !add.lowInclusive))) {
+              Object.assign(merged, { low: add.low, lowInclusive: add.lowInclusive });
+            }
+            if (add.high !== undefined && (merged.high === undefined || cmp(add.high, merged.high) < 0 || (cmp(add.high, merged.high) === 0 && !add.highInclusive))) {
+              Object.assign(merged, { high: add.high, highInclusive: add.highInclusive });
+            }
+            ranges.set(item.column.position, [item, merged]);
+          } else {
+            parts.push(await indexPlan(item, indexes, budget));
+          }
+        }
+        for (const [leaf, lookup] of ranges.values()) parts.push(await lookupPlan(leaf, 'sorted', lookup));
+        const usable = parts.filter(Boolean).sort((a, b) => a.cost - b.cost);
+        const chosen = [];
+        let cost = 0;
+        for (const part of usable) {
+          if (cost + part.cost > budget) break;
+          chosen.push(part);
+          cost += part.cost;
+        }
+        if (!chosen.length) return null;
+        return {
+          cost,
+          rows: async () => {
+            let result = await chosen[0].rows();
+            for (let i = 1; i < chosen.length && result.length; i++) result = intersectSorted(result, await chosen[i].rows());
+            return result;
+          },
+        };
+      }
+      case 'or': {
+        const parts = [];
+        let cost = 0;
+        for (const item of node.items) {
+          const part = await indexPlan(item, indexes, budget);
+          if (part === null) return null;
+          parts.push(part);
+          cost += part.cost;
+        }
+        return cost > budget ? null : { cost, rows: async () => unionAll(await Promise.all(parts.map((p) => p.rows()))) };
+      }
+      case 'not': return null;
+      default: {
+        const lookup = leafLookup(node);
+        return lookup ? lookupPlan(node, lookup[0], lookup[1]) : null;
+      }
+    }
   }
 
   // ---- sources: a File / Blob read in slices, or bytes in memory -------------------------------------
@@ -827,6 +1363,7 @@
     async function section(ref, sectionId, key, { requireDigest = false } = {}) {
       if (!(ref.length >= ENVELOPE)) throw new JazminFormatError(`Section '${sectionId}' is truncated`);
       const s = await read(ref.offset, ref.length);
+      if (file.cost) file.cost.bytesRead += ref.length;
       if (ref.digest) {
         if (!equal(await sha256(s), ref.digest)) throw new JazminFormatError(`Section '${sectionId}' does not match the owner's signature`);
       } else if (requireDigest) {
@@ -948,6 +1485,7 @@
 
     const file = {
       header, fileId, salt, size, keys, access, section, read,
+      cost: null, // while explain({ analyze }) runs a query: what it reads
       metadata: header.metadata ? parseJson(header.metadata, 'Metadata') : {},
       /** Key of a catalog section: keyring group (key files) or HKDF(secret) (access-controlled files). */
       async key(sectionId, secret, group = 'data') {
@@ -1092,6 +1630,7 @@
       }
     }
     const chunks = [];
+    const dirSegments = []; // { partition, suffix, chunks, statistics, loaded: block numbers read }
     const groupCount = table.groups.length;
     let hiddenRows = 0;
     for (const [id, list] of segments) {
@@ -1102,9 +1641,10 @@
         if (!visible) {
           continue; // another key's partition: not read
         }
-        for (const c of readDirectory(await file.section(list[s], sectionId, await file.key(sectionId, secret), { requireDigest }), groupCount)) {
-          chunks.push({ ...c, partition: id, partitionSecret: secret });
-        }
+        const directory = readDirectory(await file.section(list[s], sectionId, await file.key(sectionId, secret), { requireDigest }), groupCount);
+        const segmentChunks = directory.chunks.map((c) => ({ ...c, partition: id, partitionSecret: secret, stats: [] }));
+        chunks.push(...segmentChunks);
+        dirSegments.push({ partition: id, suffix: s ? `/${s}` : '', chunks: segmentChunks, statistics: directory.statistics, loaded: new Set() });
       }
     }
     chunks.sort((a, b) => a.ordinal - b.ordinal);
@@ -1134,32 +1674,227 @@
     const visibleRows = chunks.reduce((n, c) => n + c.rowCount, 0) - deleted.filter((id) => chunks.some((c) => id >= c.rowStart && id < c.rowStart + c.rowCount)).length;
     hiddenRows = table.rowCount - table.deletedCount - visibleRows;
 
-    /** A chunk's rows as objects (deleted rows left out). */
-    async function chunkRows(chunk) {
+    /**
+     * A chunk's rows as objects, by position in the chunk (rows deleted by appends are null). `wanted` (by column
+     * position) limits the columns decoded; a column group none of whose columns is wanted is not read.
+     */
+    async function chunkRows(chunk, wanted = null) {
       const values = new Array(table.columnCount).fill(null);
-      let decoded = false;
+      const decodedCols = [];
       for (let g = 0; g < groups.length; g++) {
         const group = groups[g];
         if (!group.visible || !group.cols.length) continue;
+        const groupWanted = wanted && group.cols.map((c) => wanted[c]);
+        if (groupWanted && !groupWanted.includes(true)) continue;
         const sectionId = `${index}/chunk/${chunk.ordinal}/${group.name}`;
         const key = access
           ? await hkdf(concat(chunk.partitionSecret, group.secret), file.salt, `JAZMIN/1/${sectionId}`)
           : await file.key(sectionId, null);
         const raw = await file.section(chunk.parts[g], sectionId, key, { requireDigest });
-        const cols = decodeColumnar(raw, group.cols.map((c) => columns[c].type), chunk.rowCount, chunk.ordinal);
-        group.cols.forEach((c, j) => { values[c] = cols[j]; });
-        decoded = true;
+        const cols = decodeColumnar(raw, group.cols.map((c) => columns[c].type), chunk.rowCount, chunk.ordinal, groupWanted);
+        group.cols.forEach((c, j) => {
+          if (groupWanted && !groupWanted[j]) return;
+          values[c] = cols[j];
+          decodedCols.push(c);
+        });
       }
-      const rows = [];
-      if (!decoded) return rows;
-      const visibleCols = columns.map((c, i) => (c ? i : -1)).filter((i) => i >= 0);
+      if (file.cost) {
+        file.cost.chunksRead++;
+        file.cost.columnsDecoded += decodedCols.length;
+      }
+      const rows = new Array(chunk.rowCount);
       for (let r = 0; r < chunk.rowCount; r++) {
-        if (deletedSet.has(chunk.rowStart + r)) continue;
+        if (deletedSet.has(chunk.rowStart + r)) {
+          rows[r] = null;
+          continue;
+        }
         const row = {};
-        for (const i of visibleCols) row[columns[i].name] = values[i][r];
-        rows.push(row);
+        for (const i of decodedCols) row[columns[i].name] = values[i][r];
+        rows[r] = row;
       }
       return rows;
+    }
+
+    // ---- planning (as the library's reader): statistics, sort order, indexes ----
+    const planColumnsList = columns.filter(Boolean);
+    const byOrdinal = new Map(chunks.map((c) => [c.ordinal, c]));
+    const chunkBytes = (chunk) => chunk.parts.reduce((n, part) => n + part.length, 0);
+    const groupOfColumn = new Map();
+    groups.forEach((g) => g.cols.forEach((c) => groupOfColumn.set(c, g)));
+
+    /** Loads the statistics of these columns for every directory segment that has them. */
+    async function ensureStats(cols) {
+      for (const segment of dirSegments) {
+        for (let b = 0; b < segment.statistics.length; b++) {
+          const block = segment.statistics[b];
+          if (segment.loaded.has(b) || !block.columns.some((c) => cols.has(c))) continue;
+          segment.loaded.add(b);
+          if (block.columns.some((c) => !(c >= 0 && c < table.columnCount))) throw new JazminFormatError('Statistics block lists unknown columns');
+          const group = groupOfColumn.get(block.columns[0]);
+          if (!group || !group.visible) continue; // a column group this key cannot see
+          const sectionId = `${index}/stats/${segment.partition}/${b}${segment.suffix}`;
+          const key = access
+            ? await hkdf(concat(segment.chunks[0]?.partitionSecret ?? await file.partitionSecret(segment.partition), group.secret), file.salt, `JAZMIN/1/${sectionId}`)
+            : await file.key(sectionId, null);
+          const entries = readStatistics(await file.section(block.section, sectionId, key, { requireDigest }));
+          if (entries.length !== block.columns.length) throw new JazminFormatError('Statistics block does not match its columns');
+          block.columns.forEach((col, k) => {
+            const e = entries[k];
+            const n = segment.chunks.length;
+            if (e.nulls.length !== n || e.min.length !== n || e.max.length !== n) throw new JazminFormatError('Statistics do not match the chunk directory');
+            const type = columns[col]?.type;
+            if (!type) return;
+            segment.chunks.forEach((chunk, i) => {
+              chunk.stats[col] = { nulls: e.nulls[i], min: decodeBound(type, e.min[i]), max: decodeBound(type, e.max[i]) };
+            });
+          });
+        }
+      }
+    }
+
+    const statsOf = (chunk) => (col) => chunk.stats[col];
+    const chunkMayMatch = (plan, chunk) => !plan || mayMatch(plan, statsOf(chunk), chunk.rowCount);
+
+    /** The chunks a scan reads: on the leading sort column, a binary search on chunk statistics; then statistics. */
+    function scanList(plan) {
+      let list = chunks;
+      const leading = table.sortedBy[0];
+      const sortColumn = leading !== undefined ? planColumnsList.find((c) => c.name === leading) : undefined;
+      const bounds = plan && sortColumn ? sortBounds(plan, sortColumn.position) : null;
+      if (bounds && chunks.every((c) => { const st = c.stats[sortColumn.position]; return st && st.min !== undefined && st.max !== undefined && st.nulls === 0; })) {
+        const cmp = (a, b) => keyCompare(sortColumn.type, a, b);
+        const stat = (i) => chunks[i].stats[sortColumn.position];
+        const firstWhere = (test) => {
+          let lo = 0;
+          let hi = chunks.length;
+          while (lo < hi) {
+            const mid = (lo + hi) >>> 1;
+            if (test(stat(mid))) hi = mid;
+            else lo = mid + 1;
+          }
+          return lo;
+        };
+        const from = bounds.low === undefined ? 0 : firstWhere((st) => (bounds.lowInclusive ? cmp(st.max, bounds.low) >= 0 : cmp(st.max, bounds.low) > 0));
+        const to = bounds.high === undefined ? chunks.length : firstWhere((st) => (bounds.highInclusive ? cmp(st.min, bounds.high) > 0 : cmp(st.min, bounds.high) >= 0));
+        list = chunks.slice(from, Math.max(from, to));
+      }
+      return list.filter((c) => chunkMayMatch(plan, c));
+    }
+
+    // Indexes: files that are not access-controlled (in those, indexes are the owner's alone).
+    const loadedIndexes = new Map();
+    async function indexOf(column, kind) {
+      const cacheKey = `${column}/${kind}`;
+      if (loadedIndexes.has(cacheKey)) return loadedIndexes.get(cacheKey);
+      let result;
+      const refs = access || table.sortedBy[0] === column ? [] : table.indexes.filter((ix) => ix.column === column && ix.kind === kind);
+      const type = planColumnsList.find((c) => c.name === column)?.type;
+      if (refs.length && type) {
+        const readIndex = async (sectionId, ref) => {
+          if (file.cost) file.cost.indexPagesRead++;
+          return file.section(ref, sectionId, await file.key(sectionId, null, 'index'));
+        };
+        const sectionIdOf = (ix) => `${index}/index/${column}/${kind}${ix.segment ? `/${ix.segment}` : ''}`;
+        const combine = (parts) => (parts.length === 1 ? parts[0] : new CompositeIndex(parts));
+        if (kind === 'trigram') {
+          result = new LazyTrigramIndex(refs.reduce((n, ix) => n + ix.section.length, 0), () => Promise.all(refs.map((ix) => readIndex(sectionIdOf(ix), ix.section))));
+        } else {
+          const parts = [];
+          for (const ix of refs) {
+            const sectionId = sectionIdOf(ix);
+            parts.push(new PagedIndex(readIndexDirectory(await readIndex(sectionId, ix.section)), type, (part, ref) => readIndex(`${sectionId}/${part}`, ref)));
+          }
+          result = combine(parts);
+        }
+      }
+      loadedIndexes.set(cacheKey, result);
+      return result;
+    }
+
+    /** The chunk holding a row id, or undefined. */
+    function chunkFor(rowId) {
+      let lo = 0;
+      let hi = chunks.length - 1;
+      if (hi < 0) return undefined;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >>> 1;
+        if (chunks[mid].rowStart <= rowId) lo = mid;
+        else hi = mid - 1;
+      }
+      const c = chunks[lo];
+      return rowId >= c.rowStart && rowId < c.rowStart + c.rowCount ? c : undefined;
+    }
+
+    /**
+     * How a filtered query reads (as the library's #candidates): the chunks a scan would read, or - when an index
+     * lookup reads less than they do - the index's candidate rows in them. { runs: [{ chunk, from, to }], rowIds }
+     * (from..to: the chunk's candidates in rowIds; rowIds null: every row of each chunk is checked).
+     */
+    async function route(plan) {
+      if (!plan) return { runs: chunks.map((chunk) => ({ chunk })), rowIds: null };
+      const cols = planColumns(plan);
+      const leading = planColumnsList.find((c) => c.name === table.sortedBy[0]);
+      if (leading) cols.add(leading.position);
+      await ensureStats(cols);
+      const scan = scanList(plan);
+      let budget = 0;
+      let smallest = Infinity;
+      for (const chunk of scan) {
+        budget += chunkBytes(chunk);
+        smallest = Math.min(smallest, chunkBytes(chunk));
+      }
+      const lookup = await indexPlan(plan, indexOf, Math.max(scan.length ? budget - smallest : 0, SMALL_LOOKUP_BYTES));
+      if (!lookup) return { runs: scan.map((chunk) => ({ chunk })), rowIds: null };
+      const inScan = new Set(scan);
+      const rowIds = (await lookup.rows()).filter((id) => inScan.has(chunkFor(id)));
+      const runs = [];
+      for (let i = 0; i < rowIds.length;) {
+        const chunk = chunkFor(rowIds[i]);
+        let j = i + 1;
+        while (j < rowIds.length && rowIds[j] < chunk.rowStart + chunk.rowCount) j++;
+        runs.push({ chunk, from: i, to: j });
+        i = j;
+      }
+      return { runs, rowIds };
+    }
+
+    /** By column position: the columns a query decodes - those its filter reads and those it returns. */
+    function wantedColumns(plan, select) {
+      const used = planColumns(plan);
+      if (select) for (const name of select) used.add(planColumnsList.find((c) => c.name === name)?.position);
+      else for (const c of planColumnsList) used.add(c.position);
+      return Array.from({ length: table.columnCount }, (_, i) => used.has(i));
+    }
+
+    /** Rows of a query, chunk by chunk: { row } for each match, after skipping `offset` (whole chunks unread). */
+    async function* matches(filter, { offset = 0, limit = Infinity, select } = {}) {
+      const match = filter ? compileFilter(filter, visibleColumns) : null;
+      if (select) for (const name of select) if (!visibleColumns.some((c) => c.name === name)) throw new JazminError(`Unknown column '${name}' in select`);
+      const plan = planOf(filter, planColumnsList);
+      const { runs, rowIds } = await route(plan);
+      const wanted = wantedColumns(plan, select);
+      let skipped = 0;
+      let yielded = 0;
+      for (const { chunk, from, to } of runs) {
+        if (yielded >= limit) return;
+        // Chunks wholly before the offset whose every row matches are counted, not read.
+        if (rowIds === null && skipped < offset && offset - skipped >= liveRows(chunk) && (!plan || mustMatch(plan, statsOf(chunk), chunk.rowCount))) {
+          skipped += liveRows(chunk);
+          continue;
+        }
+        const rows = await chunkRows(chunk, wanted);
+        const count = rowIds === null ? rows.length : to - from;
+        for (let k = 0; k < count; k++) {
+          const row = rows[rowIds === null ? k : rowIds[from + k] - chunk.rowStart];
+          if (row === null || (match && !match(row))) continue;
+          if (skipped < offset) {
+            skipped++;
+            continue;
+          }
+          yield select ? Object.fromEntries(select.map((name) => [name, row[name]])) : row;
+          if (++yielded >= limit) return;
+        }
+      }
     }
 
     // Embedded files this key can see (spec 6.8): directories merged by path.
@@ -1221,50 +1956,67 @@
       package: header.files?.package ? parseJson(header.files.package, 'Package settings') : undefined,
       /** Another table of the same file (the file is not read again). */
       openTable: (tableName) => openTable(file, tableName),
-      /** Rows matching a filter (spec 9), chunk by chunk. options: { offset, limit, select }. */
-      async *find(filter, { offset = 0, limit = Infinity, select } = {}) {
-        const match = filter ? compileFilter(filter, visibleColumns) : null;
-        let skipped = 0;
-        let yielded = 0;
-        for (const chunk of chunks) {
-          if (yielded >= limit) return;
-          // Without a filter every row matches: chunks wholly before the offset are counted, not read.
-          if (!match && offset - skipped >= liveRows(chunk)) {
-            skipped += liveRows(chunk);
-            continue;
-          }
-          for (const row of await chunkRows(chunk)) {
-            if (match && !match(row)) continue;
-            if (skipped < offset) {
-              skipped++;
-              continue;
-            }
-            yield select ? Object.fromEntries(select.map((s) => [s, row[s]])) : row;
-            if (++yielded >= limit) return;
-          }
-        }
+      /**
+       * Rows matching a filter (spec 9), chunk by chunk. options: { offset, limit, select }. Chunk statistics, the
+       * sort order and indexes decide which chunks are read, as in the library.
+       */
+      find(filter, options) {
+        return matches(filter, options);
       },
-      /** A page of rows as an array, in file order: { rows, total } (total counts every match). */
-      async query(filter, { offset = 0, limit = 100, select } = {}) {
-        // Without a filter the total is the row count, so only the page is read.
-        if (!filter) {
-          const rows = [];
-          for await (const row of this.find(null, { offset, limit, select })) rows.push(row);
-          return { rows, total: visibleRows };
-        }
+      /**
+       * A page of rows as an array, in file order: { rows, total }. `total` counts every match (chunks whose every
+       * row matches are counted without reading them); pass { total: false } to read only the page.
+       */
+      async query(filter, { offset = 0, limit = 100, select, total = true } = {}) {
         const rows = [];
-        let total = 0;
-        for await (const row of this.find(filter, { select })) {
-          if (total >= offset && rows.length < limit) rows.push(row);
-          total++;
-        }
-        return { rows, total };
+        for await (const row of matches(filter, { offset, limit, select })) rows.push(row);
+        return total ? { rows, total: await this.count(filter) } : { rows };
       },
+      /** Rows matching a filter. Chunks whose every row matches are counted by their row count, without reading them. */
       async count(filter) {
         if (!filter) return visibleRows;
+        const match = compileFilter(filter, visibleColumns);
+        const plan = planOf(filter, planColumnsList);
+        const { runs, rowIds } = await route(plan);
+        const wanted = wantedColumns(plan, []);
         let n = 0;
-        for await (const row of this.find(filter)) if (row) n++;
+        for (const { chunk, from, to } of runs) {
+          if (rowIds === null && mustMatch(plan, statsOf(chunk), chunk.rowCount)) {
+            n += liveRows(chunk);
+            continue;
+          }
+          const rows = await chunkRows(chunk, wanted);
+          const count = rowIds === null ? rows.length : to - from;
+          for (let k = 0; k < count; k++) {
+            const row = rows[rowIds === null ? k : rowIds[from + k] - chunk.rowStart];
+            if (row !== null && match(row)) n++;
+          }
+        }
         return n;
+      },
+      /**
+       * How a filter executes, as the library reports it: { strategy: 'index', candidateRows } or { strategy: 'scan',
+       * chunks, chunksSkipped }. With { analyze: true } (and any find() options) it also runs the query and reports
+       * rows, bytesRead, chunksRead, indexPagesRead, columnsDecoded and ms. Statistics and indexes already loaded are
+       * not read again: analyze on a freshly opened reader to see a query's full cost.
+       */
+      async explain(filter, { analyze = false, ...options } = {}) {
+        if (filter) compileFilter(filter, visibleColumns);
+        const describe = async () => {
+          const { runs, rowIds } = await route(planOf(filter, planColumnsList));
+          return rowIds ? { strategy: 'index', candidateRows: rowIds.length } : { strategy: 'scan', chunks: chunks.length, chunksSkipped: chunks.length - runs.length };
+        };
+        if (!analyze) return describe();
+        const cost = { rows: 0, bytesRead: 0, chunksRead: 0, indexPagesRead: 0, columnsDecoded: 0, ms: 0 };
+        const start = performance.now();
+        file.cost = cost;
+        try {
+          for await (const _ of matches(filter, options)) cost.rows++;
+        } finally {
+          file.cost = null;
+        }
+        cost.ms = performance.now() - start;
+        return { ...(await describe()), ...cost };
       },
       /** Embedded files this key can see: [{ path, type, size, sha256 }]. */
       async files() {

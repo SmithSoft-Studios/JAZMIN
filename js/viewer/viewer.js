@@ -267,7 +267,7 @@
   /** A page of rows for a template: { select, orderBy ('col' or '-col'), offset, limit }. */
   async function queryPage(reader, filter, options) {
     const { select, orderBy, offset = 0, limit = 100 } = options || {};
-    if (!orderBy) return (await reader.query(filter, { select, offset, limit })).rows;
+    if (!orderBy) return (await reader.query(filter, { select, offset, limit, total: false })).rows;
     const desc = orderBy.startsWith('-');
     const name = desc ? orderBy.slice(1) : orderBy;
     if (!reader.columns.some((c) => c.name === name)) throw new Error(`orderBy: unknown column '${name}'`);

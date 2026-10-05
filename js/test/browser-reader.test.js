@@ -83,6 +83,51 @@ test('browser reader: filters give the same rows as the library', async () => {
   expected.close();
 });
 
+test('browser reader: plans queries as the library does, reading the same chunks (issue #10)', async () => {
+  // explain({ analyze }) in both readers, each freshly opened: index lookups, statistics, scans and offsets.
+  for (const [name, filter, options] of [
+    ['js-paged-key.jzm', { id: 7 }, {}],
+    ['js-paged-key.jzm', { country: 'NA' }, { select: ['id'] }],
+    ['js-paged-key.jzm', { score: { gt: 50 } }, { select: ['id'] }],
+    ['js-paged-key.jzm', null, { offset: 100, limit: 10 }],
+    ['js-paged-key.jzm', { name: { contains: 'son' } }, {}],
+    ['js-paged-key.jzm', { joined: { gte: '2015-03-01T00:00:00.000Z', lt: '2015-03-05T00:00:00.000Z' } }, {}],
+    ['js-paged-key.jzm', { id: { gte: 100 }, active: true }, { offset: 70, limit: 20 }],
+    ['js-access.jzm', { score: { gt: 50 } }, { select: ['id'] }],
+    ['js-access.jzm', null, { offset: 100, limit: 10 }],
+  ]) {
+    const access = name.endsWith('-access.jzm');
+    const libraryOptions = nodeOptions(name, access ? 'key' : null);
+    const library = open(path.join(dir, name), libraryOptions);
+    const { ms: libraryMs, ...expected } = library.explain(filter, { analyze: true, ...options });
+    library.close();
+    const reader = await JazminBrowser.open(new Blob([fixture(name)]), { key: libraryOptions.key });
+    const { ms, ...actual } = await reader.explain(filter, { analyze: true, ...options });
+    // An access-controlled file's partition directories are read when the browser reader opens it, and when the
+    // library first needs them: compare bytes only for the other files.
+    if (access) delete expected.bytesRead, delete actual.bytesRead;
+    assert.deepEqual(actual, expected, `${name} ${JSON.stringify(filter)} ${JSON.stringify(options)}`);
+    assert.ok(ms >= 0 && libraryMs >= 0);
+  }
+});
+
+test('browser reader: query({ total: false }) reads only the page, and count() matches the library', async () => {
+  const reader = await JazminBrowser.open(new Blob([fixture('js-paged-key.jzm')]), { key: keys.key });
+  const library = open(path.join(dir, 'js-paged-key.jzm'), { key: keys.key });
+  const page = await reader.query({ country: 'ZA' }, { offset: 2, limit: 3, total: false });
+  assert.deepEqual([Object.keys(page), page.rows.length], [['rows'], 3]);
+  for (const filter of [{ country: 'ZA' }, { id: { gte: 100 } }, { score: { gt: 0 } }, { not: { country: 'NA' } }, { country: null }]) {
+    assert.equal(await reader.count(filter), library.count(filter), JSON.stringify(filter));
+  }
+  // eq / ne null mean isNull, as in the library; an unknown selected column is an error.
+  assert.deepEqual(await browserRows(reader, { country: { eq: null } }), rowsOf([...library.find({ country: { eq: null } })]));
+  assert.deepEqual(await browserRows(reader, { country: { ne: null } }), rowsOf([...library.find({ country: { ne: null } })]));
+  await assert.rejects(async () => {
+    for await (const _ of reader.find(null, { select: ['nope'] }));
+  }, /Unknown column 'nope' in select/);
+  library.close();
+});
+
 test('browser reader: keys are checked, and an online key asks for its unlock token', async () => {
   const { JazminKeyError, JazminUnlockRequiredError } = JazminBrowser;
   await assert.rejects(JazminBrowser.open(fixture('js-key.jzm')), JazminKeyError);

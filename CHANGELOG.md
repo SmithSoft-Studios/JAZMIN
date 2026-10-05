@@ -20,6 +20,20 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   - **Browser reader:** it pages without a filter the same way, and `query()`
     without a filter returns `total` from the row count.
 
+- **The browser reader plans queries like the library (#10).**
+  - **What it uses:** chunk statistics, binary search on the leading sort
+    column, offsets that skip whole chunks, and sorted and trigram indexes (in
+    files that aren't access-controlled), with the same cost rules.
+  - **Measured:** a lookup by id in a 9.7 MB file went from reading the whole
+    file (4,895 KB, 303 ms) to 150 KB (14 ms), and the last account's page
+    went from 4,895 KB to 85 KB. That's the same as Node.
+  - **API:** `query(filter, { total: false })` reads only the page. `count()`
+    counts chunks whose every row matches without reading them.
+    `explain(filter, { analyze: true })` reports what a query read, as in the
+    library. Only the filter's and selected columns are decoded.
+  - **Alignment:** `{ eq: null }` / `{ ne: null }` mean "is null" / "is not
+    null", as in the libraries. An unknown `select` column is an error.
+  - **Viewer:** template queries no longer count every match to page.
 - **Query planning (#7):** queries choose between indexes and a scan by what
   each reads (USER-GUIDE §9.8).
   - **One lookup per column:** range conditions on one column make one bounded
