@@ -28,6 +28,7 @@ npm run typecheck              # TypeScript definitions + example
 npm run bench                  # node --expose-gc gives the memory rows
 npm run bench:proposals        # bytes read, rows and time per query (see below)
 npm run test:viewer            # the viewer in every browser found (Safari: run "sudo safaridriver --enable" once)
+npm run test:viewer -- --browser ios   # Safari in the iPhone simulator (a Mac with Xcode; boot a simulator first)
 node examples/quickstart.mjs
 
 # .NET (in dotnet/)
@@ -255,9 +256,19 @@ request.
 
 ### Phone check
 
-CI tests the viewer in Chrome, Firefox and Safari on computers. Before each
-release, check it by hand on one iPhone (Safari) and one Android phone
-(Chrome):
+CI tests the viewer in Chrome, Firefox and Safari on computers. Safari in the
+iPhone simulator runs only when asked, because it takes about 8 minutes of a
+macOS runner. To run it:
+- **From the Actions tab:** choose "iPhone simulator", then "Run workflow".
+- **From the command line:** `gh workflow run ios-simulator.yml --ref <branch>`.
+- **On a pull request:** add the label `ios-simulator`.
+
+Run it before a release, and when a change touches the viewer or the browser
+reader.
+
+A simulator runs the real iPhone browser engine, but it has none of a phone's
+memory limits. So before each release, also check by hand on one iPhone
+(Safari) and one Android phone (Chrome):
 
 1. **Host the viewer:** put `js/viewer` and `js/browser` side by side on an
    HTTPS server the phones can reach. Installing needs HTTPS.

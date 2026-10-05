@@ -2417,7 +2417,8 @@ requested page of rows crosses into the sandbox.
 - **The document's files are held in memory** while it is shown. Data rows
   are read a chunk at a time.
 - **Tested** in Chrome, Edge, Firefox and Safari (`npm run test:viewer`). CI
-  runs Chrome and Firefox on Linux, and Safari on macOS.
+  runs Chrome and Firefox on Linux, and Safari on macOS. Safari in the iPhone
+  simulator runs when asked (CONTRIBUTING, Phone check).
   - **Phones** (Safari on an iPhone, Chrome on Android) are checked by hand
     before each release. The results are in the release notes.
   - **Safari and "Save as HTML":** CI opens the saved copy in Safari from a

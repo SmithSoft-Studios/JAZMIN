@@ -1,0 +1,44 @@
+name: iPhone simulator
+
+# The viewer checks in Safari on the iPhone simulator (GitHub issue #9). It takes about 8 minutes on a macOS runner, so
+# it runs only when asked: from the Actions tab ("Run workflow"), with `gh workflow run ios-simulator.yml --ref
+# <branch>`, or by adding the label "ios-simulator" to a pull request. It doesn't replace the phone check before a
+# release: a simulator has none of a phone's memory limits.
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+jobs:
+  viewer-ios:
+    name: Viewer (iPhone simulator)
+    if: github.event_name == 'workflow_dispatch' || github.event.label.name == 'ios-simulator'
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: js/package-lock.json
+      # Boot a simulator and open Safari once before safaridriver connects: it times out finding Safari otherwise.
+      - name: Start an iPhone simulator
+        run: |
+          UDID=$(xcrun simctl list devices available -j | node -e "const d = JSON.parse(require('fs').readFileSync(0, 'utf8')).devices; const all = Object.entries(d).filter(([r]) => r.includes('iOS')).flatMap(([, l]) => l).filter((x) => x.name.startsWith('iPhone')); console.log(all[0].udid)")
+          echo "Using $UDID"
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl launch "$UDID" com.apple.mobilesafari
+          sleep 10
+          xcrun simctl terminate "$UDID" com.apple.mobilesafari || true
+          echo "JAZMIN_IOS_UDID=$UDID" >> "$GITHUB_ENV"
+      - name: Viewer end-to-end
+        working-directory: js
+        run: |
+          sudo safaridriver --enable
+          npm ci
+          node scripts/viewer-e2e.mjs --browser ios

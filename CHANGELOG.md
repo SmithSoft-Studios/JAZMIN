@@ -126,6 +126,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     by where their chunks lie. Before, it compared chunk sizes, which missed
     files where every chunk is small, and it suggested plain `compact()`,
     which doesn't merge them.
+- **The viewer is tested in the iPhone simulator, on demand (#9).**
+  `npm run test:viewer -- --browser ios` drives Safari in the iOS simulator.
+  A CI workflow runs it only when asked: from the Actions tab, with
+  `gh workflow run`, or with the `ios-simulator` label on a pull request.
+  All 12 checks pass on iOS 18.7.
 - **The viewer is tested in Safari (#9).** `npm run test:viewer` drives
   Safari through `safaridriver`, built into macOS, and CI runs its checks on
   macOS beside Chrome and Firefox on Linux.

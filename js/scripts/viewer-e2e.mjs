@@ -2,7 +2,8 @@
 // libraries with each kind of key, checks the data, the files and the rendered document, then saves the page as one
 // HTML file and opens that copy from disk. Drives Chrome and Edge through the DevTools protocol, Firefox through
 // WebDriver BiDi and Safari (macOS) through WebDriver classic (Node 22+, no packages).
-//   node scripts/viewer-e2e.mjs [--browser chrome|edge|firefox|safari ...]   (default: every browser found)
+//   node scripts/viewer-e2e.mjs [--browser chrome|edge|firefox|safari|ios ...]   (default: every browser found, except ios)
+// ios is Safari in the iPhone simulator (macOS with Xcode), driven by the same safaridriver.
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -21,6 +22,7 @@ const BROWSERS = {
   edge: ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', '/usr/bin/microsoft-edge', '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'],
   firefox: ['C:/Program Files/Mozilla Firefox/firefox.exe', '/usr/bin/firefox', '/Applications/Firefox.app/Contents/MacOS/firefox'],
   safari: ['/usr/bin/safaridriver'],
+  ios: ['/usr/bin/safaridriver'],
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -192,7 +194,7 @@ async function launchFirefox(exe) {
 // Safari through WebDriver classic: plain HTTP calls to safaridriver, which is built into macOS. It must be switched on
 // once with "sudo safaridriver --enable". WebDriver classic reports no page errors, so for Safari the checks alone
 // show problems.
-async function launchSafari(exe) {
+async function launchSafari(exe, simulator = false) {
   const port = 4400 + Math.floor(Math.random() * 500);
   const proc = spawn(exe, ['--port', String(port)], { stdio: 'ignore' });
   const driver = `http://127.0.0.1:${port}`;
@@ -213,7 +215,10 @@ async function launchSafari(exe) {
   }
   let session;
   try {
-    session = `/session/${(await call('POST', '/session', { capabilities: { alwaysMatch: { browserName: 'safari' } } })).sessionId}`;
+    const capabilities = simulator
+      ? { browserName: 'safari', platformName: 'iOS', 'safari:useSimulator': true, ...(process.env.JAZMIN_IOS_UDID ? { 'safari:deviceUDID': process.env.JAZMIN_IOS_UDID } : { 'safari:deviceType': 'iPhone' }) }
+      : { browserName: 'safari' };
+    session = `/session/${(await call('POST', '/session', { capabilities: { alwaysMatch: capabilities } })).sessionId}`;
   } catch (error) {
     proc.kill();
     throw new Error(`${error.message} (switch safaridriver on once with "sudo safaridriver --enable")`);
@@ -289,7 +294,7 @@ function check(c, shown, label) {
 }
 
 const results = [];
-const chosen = args.browser ?? Object.keys(BROWSERS);
+const chosen = args.browser ?? Object.keys(BROWSERS).filter((name) => name !== 'ios'); // the simulator is slow to start: only when asked
 for (const name of chosen) {
   const exe = BROWSERS[name]?.find((p) => fs.existsSync(p));
   if (!exe) {
@@ -298,7 +303,7 @@ for (const name of chosen) {
   }
   let page;
   try {
-    page = await ({ firefox: launchFirefox, safari: launchSafari }[name] ?? launchChromium)(exe);
+    page = await ({ firefox: launchFirefox, safari: launchSafari, ios: (driver) => launchSafari(driver, true) }[name] ?? launchChromium)(exe);
   } catch (error) {
     results.push({ browser: name, label: 'start', ok: false, problems: [error.message] });
     continue;
@@ -329,7 +334,7 @@ for (const name of chosen) {
     await unlock(page, c);
     const html = await page.evaluate('JazminViewer.exportHtml()');
     // Safari's WebDriver refuses file:// pages ("outside the sandbox"), so Safari opens the copy from the test server.
-    const fromDisk = name !== 'safari';
+    const fromDisk = name !== 'safari' && name !== 'ios';
     const saved = path.join(fromDisk ? os.tmpdir() : temp, `jazmin-viewer-export-${name}.html`);
     fs.writeFileSync(saved, html);
     await page.navigate(fromDisk ? pathToFileURL(saved).href : `${base}/e2e/${path.basename(saved)}`);
