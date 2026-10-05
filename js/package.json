@@ -45,6 +45,7 @@
     "typecheck": "tsc -p examples/typescript",
     "bench": "node bench/benchmark.js",
     "bench:proposals": "node bench/proposals.mjs",
+    "bench:filing": "node bench/filing.mjs",
     "fixtures": "node scripts/make-fixtures.js",
     "viewer": "node viewer/serve.mjs",
     "test:viewer": "node scripts/viewer-e2e.mjs"

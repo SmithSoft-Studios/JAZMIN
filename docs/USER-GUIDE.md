@@ -609,6 +609,8 @@ Re-run on your own data with `npm run bench` (in `js/`) or
 `dotnet run -c Release -f net10.0 --project bench/Jazmin.Benchmarks` (in `dotnet/`).
 `npm run bench:proposals` shows what typical statement queries read (bytes,
 rows and time per query); docs/CONTRIBUTING.md explains it.
+`npm run bench:filing` measures filing the records phones send back
+(section 15.6); the results are in `js/examples/filing-service/README.md`.
 
 ### 9.1 .NET 10 (vs Newtonsoft.Json 13.0.3 and System.Text.Json)
 
@@ -1396,6 +1398,10 @@ The filing service then:
 
 The design is in `docs/design/browser-writer.md`, and the spec's section 7.8
 defines the key.
+
+**Speed:** filing a batch takes about 40 ms, whether it holds 1 record or 50, and
+whether the shared file holds 10,000 records or 250,000. The filing-service
+README has the full figures.
 
 **A ready-made filing service** is in `js/examples/filing-service`. Its
 `fileBatch()` applies these rules, and `inbox.mjs` files every batch waiting in

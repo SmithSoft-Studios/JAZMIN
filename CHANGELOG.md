@@ -157,6 +157,8 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
       or WebP, and files over 10 MB (50 MB per batch). Each file is stored at
       `attachments/<key id>/<sha256>.<ext>`, for the keys that see the row's
       partition, and the row's list becomes `[{ path, name, type, size }]`.
+  - **A benchmark, `npm run bench:filing`:** filing costs about 40 ms per
+    batch at 10,000 to 250,000 records (the README has the figures).
   - **`inbox.mjs`** files every batch in a folder on a schedule, then compacts
     and regroups.
   - **The owner key** comes from a secret, never a page or a phone.

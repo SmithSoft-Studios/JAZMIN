@@ -135,6 +135,49 @@ for the runner:
 | `onDuplicate` | `'replace'` | `'replace'`: a record sent again replaces the filed one. `'skip'`: it is skipped. |
 | `receivedAt` | now | When the batch arrived, by the server's clock. The inbox runner uses each file's modified time. |
 
+## Performance
+
+Measured with `npm run bench:filing` (in `js/`) on 5 October 2026: Node 24,
+Intel i7-12700H, Windows 11. The shared files have 100 people, one partition
+and one access key each, and 6 columns. Each figure is the median of 5 runs,
+each on a fresh copy of the shared file. Memory is the filing process's peak
+above its memory at rest.
+
+| Records in the shared file | 10,000 | 100,000 | 250,000 |
+|---|---:|---:|---:|
+| File 1 new record | 40 ms, 13 MB | 36 ms, 13 MB | 38 ms, 22 MB |
+| File 50 new records | 41 ms, 13 MB | 42 ms, 20 MB | 41 ms, 20 MB |
+| Change 50 records | 46 ms, 25 MB | 42 ms, 24 MB | 47 ms, 25 MB |
+| The same 50 changes again (nothing changes) | 19 ms, 12 MB | 19 ms, 14 MB | 22 ms, 16 MB |
+| File 10 records with a 200 KB photo each | 89 ms, 58 MB | 99 ms, 55 MB | 92 ms, 58 MB |
+| Change a record to drop its photo | 50 ms, 27 MB | 69 ms, 30 MB | 91 ms, 45 MB |
+| Compact and regroup after 50 appends | 94 ms, 81 MB | 244 ms, 195 MB | 534 ms, 318 MB |
+
+What the numbers mean:
+- **A batch costs about 40 ms, whatever the size of the shared file.** An
+  append writes only the change: a batch grows the file by 1 to 2 KB, plus
+  its photos.
+- **Most of that time is fixed work per batch:**
+  - the append: writing safely to disk, signing the file and re-sealing the
+    key slots, about 18 ms;
+  - checking the sender's grant, about 9 ms;
+  - looking up the batch's ids, about 7 ms.
+
+  So 50 records cost about the same as one. Send records in batches when you
+  can.
+- **Sending the same batch again** is cheap, at about 20 ms: nothing is
+  written.
+- **Photos** cost what their bytes cost to check and store. The file grows by
+  the photos' size, because photos don't compress.
+- **Dropping a file** grows with the shared file, because every record's list
+  is read to make sure no other record still uses it.
+- **Compacting** rewrites the whole file, so it grows with it. Compact on a
+  schedule, not after every batch: the inbox runner does it after 50
+  appends.
+- **On the phone:** the browser writer makes a 50-record batch, about 1 KB,
+  in about 3 ms. Each 200 KB photo adds about 8 ms. These are Node's figures;
+  phones are slower, but it's still a small fraction of the upload time.
+
 ## Keeping the owner key safe
 
 - **Where the key lives:** keep it in a secret manager (Azure Key Vault, AWS
