@@ -5,6 +5,16 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased
 
+### Fixed
+- **Parallel JS writes stop their worker threads gracefully.**
+  - **The change:** a finished or aborted write used to terminate its
+    compression workers straight away, sometimes mid-compression. Each worker
+    now finishes what it was given and then ends; one that doesn't stop
+    within 10 seconds is still terminated.
+  - **Why:** forced termination is the likely cause of an intermittent Node 26
+    crash on Windows in CI (`Assertion failed: init_done_ && "close before
+    init"`). It didn't reproduce locally, so CI will confirm the fix.
+
 ### Changed
 - **Paging reads only what the page needs (#8).** Chunks wholly before the
   `offset` are counted by their row counts instead of being read and decoded

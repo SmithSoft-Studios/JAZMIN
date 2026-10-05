@@ -13,7 +13,14 @@ const asBuffer = (bytes) => (bytes ? Buffer.from(bytes.buffer, bytes.byteOffset,
  */
 const transferable = (bytes) => bytes.buffer.byteLength > Buffer.poolSize && !isMarkedAsUntransferable(bytes.buffer);
 
-parentPort.on('message', ({ raw, options }) => {
+parentPort.on('message', ({ raw, options, stop }) => {
+  if (stop) {
+    // The pool is done: everything sent before this message is finished, so the thread ends without being killed
+    // mid-compression (forcing that has crashed Node 26 on Windows: "close before init").
+    port.close();
+    parentPort.close();
+    return;
+  }
   let reply;
   const transfer = [];
   try {

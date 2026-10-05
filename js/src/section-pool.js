@@ -4,6 +4,7 @@ import { MessageChannel, Worker, receiveMessageOnPort } from 'node:worker_thread
 import { JazminError } from './errors.js';
 
 const STALL_MS = 120_000; // a worker that has not answered for this long is treated as failed
+const STOP_MS = 10_000; // a worker that has not stopped this long after being asked is terminated
 
 export class SectionPool {
   #workers = [];
@@ -89,10 +90,15 @@ export class SectionPool {
     }
   }
 
+  /**
+   * Stops the workers: each finishes what it was given, then ends on its own. Terminating a worker in the middle of
+   * a compression has crashed Node 26 on Windows; one that does not stop in time is terminated (unref'd timer).
+   */
   close() {
     for (const { worker, port } of this.#workers) {
+      worker.postMessage({ stop: true });
       port.close();
-      worker.terminate();
+      setTimeout(() => worker.terminate(), STOP_MS).unref();
     }
     this.#workers = [];
     this.#queued = [];
