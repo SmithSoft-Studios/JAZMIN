@@ -249,6 +249,7 @@ public class InteropTests
             Metadata = Dataset["metadata"]!.DeepClone().AsObject(),
             Key = JazminKey.Parse((string)Keys["key"]!),
             Access = accessControlled ? FilesAccessFixture() : null,
+            ChunkMap = false, // written as before the owner chunk map (spec 7.6.5), so readers keep reading such files
             Files = FixtureFiles(),
             Package = new JazminPackage { Entry = "index.html", Title = "Interop" },
         }))

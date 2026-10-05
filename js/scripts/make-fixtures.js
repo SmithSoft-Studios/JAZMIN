@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { JazminKey, append, open, toJSON, write } from '../src/index.js';
-import { PAGING } from '../src/writer.js';
+import { CHUNK_MAP, PAGING } from '../src/writer.js';
 import {
   APPEND_DELETE, APPEND_SPLIT, COUNTRY_COLUMNS, FIXTURE_PACKAGE, PARTITIONS_SPLIT, accessFixture, countryRows, filesAccessFixture, fixtureFiles,
   fromCanonical, partitionsFixture, tablesFixture,
@@ -73,7 +73,8 @@ write(path.join(dir, 'js-paged-key.jzm'), rows, { ...base, key: keys.key, [PAGIN
 // Embedded files (spec 6.8).
 const withFiles = { ...base, files: fixtureFiles(), package: FIXTURE_PACKAGE };
 write(path.join(dir, 'js-files-key.jzm'), rows, { ...withFiles, key: keys.key });
-write(path.join(dir, 'js-files-access.jzm'), rows, { ...withFiles, key: keys.key, access: filesAccessFixture(keys) });
+// Written as before the owner chunk map (spec 7.6.5), so readers keep reading such files.
+write(path.join(dir, 'js-files-access.jzm'), rows, { ...withFiles, key: keys.key, access: filesAccessFixture(keys), [CHUNK_MAP]: false });
 
 // Written by the browser writer (js/browser/jazmin-browser.js), as a page would: without indexes, which browsers don't
 // write. The other library reads them in its interop tests.
