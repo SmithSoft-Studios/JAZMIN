@@ -20,7 +20,7 @@ function ownerGrants(path, ownerKey, need = 'Unlock tokens exist only for access
 
 /**
  * The access key a shared file grants, found by its id (or by the key itself) in the grant list: for example to derive
- * the outbox key (spec 7.8) of the person who sent an outbox file. Owner key required.
+ * the grant of the person who sent a file back (spec 7.8). Owner key required.
  */
 export function accessKeyOf(path, ownerKey, accessKey) {
   const keyId = typeof accessKey === 'string' && /^[0-9a-f]{16}$/.test(accessKey) ? accessKey : parseAnyKey(accessKey).id;

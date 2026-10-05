@@ -732,7 +732,8 @@ key the slot belongs to:
 - **Owner bundle:** `{ "header": b64(H), "owner": b64(O) }`
 - **Access bundle:** `{ "header": b64(H), "partitions": { id: b64(P(id)) },
   "partitionNames": { id: name }, "columns": { g: b64(C(g)) } }` (ids in
-  base64url), plus `expires` / `online` (7.7) and `files` (6.8).
+  base64url), plus `expires` / `online` (7.7), `files` (6.8) and
+  `submission` (7.8). Readers MUST ignore bundle fields they don't know.
 
 A grant of all rows (`rows: "*"`) covers every partition present in that
 version of the file.
@@ -838,30 +839,43 @@ machine can delete the last-seen record or use a modified reader. Online
 expiry prevents new opens after expiry, but not the use of data already
 obtained.
 
-### 7.8. Outbox Keys
+### 7.8. Submission Keys
 
-An access key's holder can write files for the owner, for example records
-captured offline and sent later, without holding any key that opens the
-owner's shared file. Such a file is an ordinary file encrypted with a key
-(7.3). Its master key is the holder's **outbox key**:
+An access key's holder can send files back to the owner, for example
+records captured offline, without holding any key that opens the owner's
+shared file. Such a file is an ordinary file encrypted with a key (7.3). Its
+master key is the holder's **submission key**:
 
 ```
-outbox key = HKDF-SHA256(ikm = access key secret, salt = "", info = "JAZMIN/1/outbox", L = 32)
+submission key = HKDF-SHA256(ikm = owner key, salt = "", info = "JAZMIN/1/submission/" || key id, L = 32)
 ```
 
-The owner can derive the same key from the access key in its owner directory
-(7.6.5). The outbox key opens nothing in the shared file, and the access key
-cannot be worked out from it.
+Here `key id` is the access key's slot id (7.6.1) in lowercase hexadecimal
+(16 characters).
 
-Software that files outbox files into a shared file:
-- SHOULD identify the sender by the access key's slot id (7.6.1), and open
-  the file with that key's outbox key;
+- **Writers** SHOULD put it, base64, in each access bundle as `submission`
+  (7.6.4).
+- **The holder** gets it only by opening the shared file with the access key
+  (and, for an online grant, its unlock token). The owner derives it.
+- **The guarantee:** a file locked with it was made by someone who opened the
+  shared file with that key. An access key alone, without the file, is not
+  enough.
+- **Readers** that don't know the field ignore it. Files written before it
+  have none, until the owner's next rewrite.
+
+The submission key opens nothing in the shared file. Neither the owner key nor
+the access key can be worked out from it.
+
+Software that files submitted files into a shared file:
+- SHOULD identify the sender by the access key's slot id and open the file
+  with that key's submission key;
 - SHOULD refuse a file that does not open with it;
 - SHOULD write the rows only into the partitions granted to that key;
-- SHOULD refuse the outbox files of revoked keys.
+- SHOULD refuse the files of revoked or expired keys.
 
-Test vector: for the access key secret `00 01 02 ... 1f`, the outbox key is
-`8e729d9585b59bce5cd951fb3b5f4f81df22fbbb3088e382bd2b490c98309596`.
+Test vector: for the owner key `00 01 02 ... 1f` and the key id
+`0001020304050607`, the submission key is
+`457ac056dd344efb467cdc8a574b1469c328daafd2f09fe14782cd2818ecf29e`.
 
 ## 8. Indexes
 
@@ -1277,7 +1291,8 @@ indexes, embedded files) written by both reference implementations.
     (7.2), key-slot and signature sections only as stored (7.6.4), digests
     required (7.6.5), appends may not narrow grants (11.2), and more in
     Security Considerations (13).
-- **Since format 1.0, without changing the format:** outbox keys (7.8).
+- **Since format 1.0, without changing the format:** submission keys (7.8),
+  carried in a new optional field of the access bundle (7.6.4).
 
 ## Appendix C. Design Notes (informative)
 

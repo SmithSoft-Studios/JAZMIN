@@ -60,6 +60,13 @@ write(path.join(temp, 'template.jzm'), Array.from({ length: 120 }, (_, n) => ({ 
   package: { entry: 'index.html', title: 'Template' },
 });
 
+// A shared file Bob may read, written now: a phone opens it to get the submission key it sends records back with.
+write(path.join(temp, 'shared.jzm'), [{ id: 0, person: 'P1' }], {
+  columns: [{ name: 'id', type: 'int' }, { name: 'person', type: 'string' }],
+  key: keys.key,
+  access: { partitionBy: 'person', grants: [{ key: keys.bob, rows: ['P1'] }] },
+});
+
 // ---- a static server for the repository (the viewer, the browser reader and the fixtures) ----------------
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
 const server = http.createServer((req, res) => {
@@ -339,11 +346,12 @@ for (const name of chosen) {
     const expected = { total: 120, top: [119, 118, 117], all: 120, columns: ['n', 'label'] };
     results.push({ browser: name, label: 'template API: count, sorted query, rows, ready', ok: JSON.stringify(ready) === JSON.stringify(expected), problems: JSON.stringify(ready) === JSON.stringify(expected) ? [] : [JSON.stringify(ready)] });
 
-    // The browser writer: an outbox file written in the page, read back in the page and by the library here.
+    // The browser writer: a file sent back with the submission key, written in the page, read back here and by the library.
     await page.navigate(`${base}/js/viewer/index.html`);
     await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
     const written = await page.evaluate(`(async () => {
-      const key = await JazminBrowser.outboxKey(${JSON.stringify(keys.bob)});
+      const shared = await fetch('/e2e/shared.jzm').then((r) => r.blob());
+      const key = (await JazminBrowser.open(shared, { key: ${JSON.stringify(keys.bob)} })).submissionKey;
       const rows = Array.from({ length: 300 }, (_, i) => ({ id: i, note: 'row ' + i, at: new Date(Date.UTC(2025, 0, 1) + i * 60000), amount: i / 4 }));
       const columns = [{ name: 'id', type: 'int' }, { name: 'note', type: 'string' }, { name: 'at', type: 'datetime' }, { name: 'amount', type: 'float' }];
       const blob = await JazminBrowser.write(rows, { columns, key, chunkRows: 64 });
@@ -355,10 +363,10 @@ for (const name of chosen) {
       for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
       return { rowCount: reader.rowCount, matches, file: btoa(binary) };
     })()`);
-    const library = open(Buffer.from(written.file, 'base64'), { key: JazminAccessKey.parse(keys.bob).outboxKey() });
+    const library = open(Buffer.from(written.file, 'base64'), { key: JazminKey.parse(keys.key).submissionKey(JazminAccessKey.parse(keys.bob).id) });
     const back = [...library.rows()];
     const writeOk = written.rowCount === 300 && written.matches === 100 && back.length === 300 && back[299].note === 'row 299' && library.count({ amount: { gte: 50 } }) === 100;
-    results.push({ browser: name, label: `browser writer: an encrypted outbox file (${Math.round(written.file.length * 0.75 / 1024)} KB) read back here and by the library`, ok: writeOk, problems: writeOk ? [] : [JSON.stringify({ ...written, file: undefined, library: back.length })] });
+    results.push({ browser: name, label: `browser writer: a file sent back with the submission key (${Math.round(written.file.length * 0.75 / 1024)} KB) read back here and by the library`, ok: writeOk, problems: writeOk ? [] : [JSON.stringify({ ...written, file: undefined, library: back.length })] });
 
     // Save as HTML, then open the copy from disk (file://), as a double-click would.
     const c = CASES.find((x) => x.file === 'js-files-access.jzm' && x.key === 'bob');

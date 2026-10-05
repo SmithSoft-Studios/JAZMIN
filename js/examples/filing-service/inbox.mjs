@@ -1,4 +1,4 @@
-// Files every outbox batch waiting in an inbox folder into a shared file, then compacts the file once appends pile up.
+// Files every batch people sent back, waiting in an inbox folder, into a shared file, then compacts it once appends pile up.
 // Run it on a schedule (cron, a systemd timer, Task Scheduler, a cloud timer function), where the owner key is kept:
 //
 //   JAZMIN_KEY="$(cat owner.key)" node inbox.mjs shared.jzm inbox/      (or --key-file owner.key)

@@ -1056,6 +1056,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             var columns = new JsonObject((grant.Columns ?? allColumns)
                 .Select(n => new KeyValuePair<string, JsonNode?>(n, Convert.ToBase64String(s.ColumnSecret(n)))));
             var bundle = new JsonObject { ["header"] = header, ["partitions"] = partitions, ["partitionNames"] = partitionNames, ["columns"] = columns };
+            bundle["submission"] = Convert.ToBase64String(_options.Key!.SubmissionKey(grant.Key.Id).Bytes); // what this holder sends back (spec 7.8)
             // File groups this key sees: everyone's, its partitions', and the named ones it was granted.
             var fileSecrets = new JsonObject();
             foreach (var name in _fileGroupNames)

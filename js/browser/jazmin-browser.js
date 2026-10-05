@@ -219,14 +219,8 @@
     throw new JazminKeyError("A key starts with 'jzk1-' (master or owner key) or 'jza1-' (access key)");
   }
 
-  /**
-   * The outbox key (spec 7.8) of an access key, as key text ("jzk1-..."): the key of files its holder writes for the
-   * owner, such as records captured offline. The owner derives the same key; it opens nothing in the shared file.
-   */
-  async function outboxKey(accessKeyText) {
-    const key = await parseKey(accessKeyText);
-    if (key.kind !== 'access') throw new JazminKeyError("An outbox key is made from an access key ('jza1-...')");
-    const bytes = await hkdf(key.secret, new Uint8Array(0), 'JAZMIN/1/outbox');
+  /** Key text ("jzk1-...") of 32 key bytes. */
+  async function keyText(bytes) {
     return `jzk1-${bytesToBase64Url(concat(bytes, await checksum(bytes)))}`;
   }
 
@@ -1621,6 +1615,8 @@
         files: new Map(Object.entries(bundle.files ?? {}).map(([g, s]) => [g, b(s)])),
         expires: bundle.expires,
         online: Boolean(bundle.online),
+        // The key of what this key's holder sends back to the owner (spec 7.8); files written before it have none.
+        submission: typeof bundle.submission === 'string' ? await keyText(b(bundle.submission)) : null,
       };
       if (access.expires !== undefined) {
         const expires = Date.parse(access.expires);
@@ -2126,6 +2122,12 @@
       hiddenRowCount: Math.max(0, hiddenRows),
       encrypted: Boolean(file.keys || access),
       access: access ? { isOwner: access.isOwner, online: access.online, expires: access.expires, partitionBy: table.partitionBy || null } : null,
+      /**
+       * The submission key (spec 7.8), as key text: lock the files you send back to the owner with it, for example
+       * with JazminBrowser.write(rows, { columns, key: reader.submissionKey }). Null for files written before
+       * submission keys existed, until the owner's next rewrite.
+       */
+      submissionKey: access?.submission ?? null,
       package: header.files?.package ? parseJson(header.files.package, 'Package settings') : undefined,
       /** Another table of the same file (the file is not read again). */
       openTable: (tableName) => openTable(file, tableName),
@@ -2851,7 +2853,7 @@
   }
 
   /**
-   * Starts writing a file in the browser: one table, locked with a key ("jzk1-...", for example an outbox key), a
+   * Starts writing a file in the browser: one table, locked with a key ("jzk1-...", for example a submission key), a
    * password, or nothing. options: { columns, key | password, kdfIterations, metadata, codec: 'deflate' | 'none',
    * chunkRows, chunkBytes, now }. Rows go in with writeRows / writeRow (await each call); finish() returns the file as
    * a Blob. Shared (access-controlled) files, indexes, several tables, embedded files and sortedBy are not written in
@@ -2892,7 +2894,7 @@
     let keyBytes = null;
     if (key) {
       const parsed = await parseKey(typeof key === 'string' ? key : String(key));
-      if (parsed.kind !== 'owner') throw new JazminKeyError("An access key can't write a file: write an outbox file with its outbox key (JazminBrowser.outboxKey)");
+      if (parsed.kind !== 'owner') throw new JazminKeyError("An access key can't write a file: lock what you send back with your submission key (reader.submissionKey, after opening the shared file)");
       keyBytes = parsed.bytes;
     }
     const created = now === undefined || now === null ? Date.now() : now instanceof Date ? now.getTime() : typeof now === 'string' ? Date.parse(now) : now;
@@ -3060,7 +3062,6 @@
   global.JazminBrowser = {
     open,
     openUrl,
-    outboxKey,
     createWriter,
     write,
     compileFilter,

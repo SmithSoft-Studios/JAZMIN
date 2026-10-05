@@ -293,6 +293,11 @@ export class JazminKey {
   readonly ownerPublicKey: Buffer;
   /** Issues a new access key; grant it rows/columns with `access.grants` or grantAccess(). */
   createAccessKey(): JazminAccessKey;
+  /**
+   * The submission key of one of this owner's access keys (spec 7.8): the key of the files its holder sends back.
+   * The holder gets the same key from the shared file (reader.submissionKey).
+   */
+  submissionKey(accessKey: JazminAccessKey | string): JazminKey;
   toString(): string;
 }
 
@@ -304,11 +309,6 @@ export class JazminAccessKey {
   readonly ownerFingerprint: Buffer;
   /** Short public identifier, safe to log. */
   readonly id: string;
-  /**
-   * The key of this holder's outbox files (spec 7.8), such as records captured offline and sent to the owner later.
-   * The owner derives the same key with accessKeyOf(); it opens nothing in the shared file.
-   */
-  outboxKey(): JazminKey;
   toString(): string;
 }
 
@@ -418,6 +418,11 @@ export class JazminReader implements Iterable<JazminRow> {
   readonly deletedRowCount: number;
   /** Appends since the file was last written in full. */
   readonly appendCount: number;
+  /**
+   * The submission key (spec 7.8): lock the files you send back to the owner with it. Only an access key that opened
+   * this file has it; null for the owner and for files written before submission keys existed.
+   */
+  readonly submissionKey: JazminKey | null;
   /** True when an interrupted append was found at the end of the file and the previous version was used. */
   readonly recovered: boolean;
   readonly sortedBy: string[] | undefined;

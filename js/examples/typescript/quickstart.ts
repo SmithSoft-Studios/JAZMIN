@@ -70,11 +70,13 @@ const bobView = open('shared.jzm', { key: bob.toString() });
 console.log([...bobView.rows()], bobView.hiddenRowCount); // [ { section: 'B' } ] 1
 bobView.close();
 
-// Bob's outbox: records he captures offline, locked with his outbox key; the owner finds his key and opens them.
-write('bob-outbox.jzm', [{ section: 'B', amount: 4 }], { columns: [{ name: 'section', type: 'string' }, { name: 'amount', type: 'int' }], key: bob.outboxKey() });
-const inbox = open('bob-outbox.jzm', { key: accessKeyOf('shared.jzm', owner, bob.id).outboxKey() });
-console.log([...inbox.rows()]); // [ { section: 'B', amount: 4 } ]
-inbox.close();
+// Bob sends records back, locked with the submission key he gets by opening the shared file; the owner derives it too.
+const bobsKey = open('shared.jzm', { key: bob.toString() }).submissionKey!;
+write('bob-records.jzm', [{ section: 'B', amount: 4 }], { columns: [{ name: 'section', type: 'string' }, { name: 'amount', type: 'int' }], key: bobsKey });
+accessKeyOf('shared.jzm', owner, bob.id); // the owner checks Bob still has a grant
+const received = open('bob-records.jzm', { key: owner.submissionKey(bob.id) });
+console.log([...received.rows()]); // [ { section: 'B', amount: 4 } ]
+received.close();
 
 // 6. Owner-only update: rows are merged in sorted order and Bob's grant carries over.
 const result = update('shared.jzm', { key: owner, insert: [{ section: 'B', amount: 3 }] });

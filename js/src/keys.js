@@ -59,6 +59,22 @@ export class JazminKey {
   }
 
   /**
+   * The submission key of an access key (spec 7.8): the key of the files its holder sends back to the owner, such as
+   * records captured offline. The writer seals it into that key's slot of each shared file, so only someone who opens
+   * the shared file with that access key (and its unlock token, for an online grant) gets it; the owner derives it
+   * here. `accessKey`: the key, its text, or its id.
+   */
+  submissionKey(accessKey) {
+    let id = accessKey;
+    if (!(typeof accessKey === 'string' && /^[0-9a-f]{16}$/.test(accessKey))) {
+      const key = parseAnyKey(accessKey);
+      if (!(key instanceof JazminAccessKey)) throw new JazminKeyError('A submission key belongs to an access key: pass the access key (jza1-...) or its id');
+      id = key.id;
+    }
+    return new JazminKey(hkdf(this.#bytes, Buffer.alloc(0), `JAZMIN/1/submission/${id}`));
+  }
+
+  /**
    * Creates a new access key issued by this (owner) key. Grant it rows/columns of a file
    * with the writer's `access.grants` or grantAccess(); on its own it opens nothing.
    */
@@ -107,15 +123,6 @@ export class JazminAccessKey {
 
   get ownerFingerprint() {
     return Buffer.from(this.#fingerprint);
-  }
-
-  /**
-   * The key of this holder's outbox files (spec 7.8): files they write for the owner, such as records captured offline
-   * and sent later. The owner derives the same key from the shared file's grant list (accessKeyOf); it opens nothing
-   * in the shared file.
-   */
-  outboxKey() {
-    return new JazminKey(hkdf(this.#secret, Buffer.alloc(0), 'JAZMIN/1/outbox'));
   }
 
   /** Short public identifier (hex) of this key, safe to log. */

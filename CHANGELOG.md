@@ -133,9 +133,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ### Added
 - **A reference filing service (#13),** in `js/examples/filing-service`.
-  - **`fileBatch()`** files a phone's outbox batch into the shared file.
+  - **`fileBatch()`** files the records a phone sends back into the shared
+    file.
     - **Refused:** unknown, revoked or expired keys; batches that don't open
-      with the sender's outbox key; columns the shared file doesn't have, or
+      with the sender's submission key; columns the shared file doesn't have, or
       has with another type; rows for another person's partition.
     - **Duplicates:** rows already filed are skipped.
   - **`inbox.mjs`** files every batch in a folder on a schedule, then compacts
@@ -144,7 +145,8 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 - **Writing files in the browser (#13).** `JazminBrowser.createWriter(options)`
   and `JazminBrowser.write(rows, options)` write files with one key, a
   password or no key, and return a `Blob` (USER-GUIDE §24.3). They're made for
-  outbox files, the records captured on a phone and sent to the owner later.
+  sending records back: records captured on a phone and sent to the owner
+  later.
   - **What it uses:** only the browser's own encryption, randomness and
     compression, and no other code.
   - **The same file as the library:** given the same rows, options and random
@@ -156,16 +158,19 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     library then reads.
   - **Refused:** shared files (their master key stays off web pages),
     indexes, several tables, embedded files, `sortedBy` and Brotli.
-- **Outbox keys (#13, spec 7.8).** A person writes files for the owner, such
-  as records captured offline, locked with a key derived from their access
-  key. The owner derives the same key and files the records into the shared
-  file. The key opens nothing in the shared file.
-  - **JavaScript:** `accessKey.outboxKey()`, plus
-    `accessKeyOf(path, ownerKey, keyId)` for the owner.
-  - **.NET:** `OutboxKey()` and `JazminFile.AccessKeyOf`.
-  - **Browser:** `JazminBrowser.outboxKey(text)`.
-  - **Checks:** all three derive the same key (fixture `bobOutbox`).
-  - **Docs:** USER-GUIDE §15.6.
+- **Submission keys (#13, spec 7.8).** A person sends records back to the
+  owner in a small file locked with their submission key.
+  - **Where the key comes from:** the writer seals it into that person's key
+    slot of the shared file. So a file locked with it shows the sender opened
+    the shared file with their access key; a leaked access key alone isn't
+    enough. The owner derives the same key.
+  - **JavaScript:** `reader.submissionKey`, `ownerKey.submissionKey(keyId)`,
+    and `accessKeyOf(path, ownerKey, keyId)` to check a sender's grant.
+  - **.NET:** `reader.SubmissionKey`, `ownerKey.SubmissionKey(keyId)` and
+    `JazminFile.AccessKeyOf`.
+  - **Browser:** `reader.submissionKey`, as key text.
+  - **Older shared files** get the key at the owner's next rewrite. Readers
+    that don't know the new key-slot field ignore it.
 - **`columnArrays()` for charts (#19),** in the library and the browser
   reader (USER-GUIDE §9.11).
   - **What it returns:** column values as arrays instead of an object per

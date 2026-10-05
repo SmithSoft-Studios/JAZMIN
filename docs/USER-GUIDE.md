@@ -1297,47 +1297,59 @@ compilation.
   start-up and pass it to `open` / `JazminAccessKey.Parse`. Never log it. The
   key's `id` (`bob.id`, `bob.Id`) is safe to log.
 
-### 15.6 Outbox files: records sent to the owner
+### 15.6 Sending records back to the owner
 
 People in the field capture records, often offline, and the owner files them
-into the shared file. Only the owner's key can change the shared file, so
-records travel in **outbox files** until then:
+into the shared file. Only the owner's key can change the shared file, so a
+person sends their records back in a small file of their own:
 
-- **The outbox file:** an ordinary one-key file, locked with the person's
-  **outbox key**. That key is derived from their access key, so only that
-  person and the owner can make it.
-- **Filing:** the owner finds the person's access key in the shared file's
-  grant list, derives the same outbox key, opens the batch, and appends its
-  rows.
-- **Safety:** the outbox key opens nothing in the shared file, and it can't be
-  turned back into the access key.
+- **The submission key:** each access key has one. It's sealed in that key's
+  slot of the shared file, so a person gets it only by opening the shared file
+  with their access key, plus the unlock token for an online grant
+  (`reader.submissionKey`). The owner derives the same key from the owner key
+  and the access key's id.
+- **What a submitted file proves:** a file locked with that key was made by
+  someone who opened the shared file with that access key. An access key that
+  leaked, without the shared file, isn't enough to send anything.
+- **Filing:** the owner checks that the sender still has a grant, opens the
+  file with the sender's submission key, and appends its rows.
+- **Safety:** the submission key opens nothing in the shared file. Neither
+  the owner key nor the access key can be worked out from it.
 
 ```js
-// The phone or field app (holds Bob's access key only):
-write(null, records, { columns, key: bob.outboxKey() });      // or JazminBrowser.outboxKey(text) in a browser
+// The phone or field app (holds Bob's access key only): open the shared file, then send records back.
+const key = open('shared.jzm', { key: bobKeyText }).submissionKey;    // in a browser: (await JazminBrowser.open(file, { key })).submissionKey
+write(null, records, { columns, key });
 // The filing service (holds the owner key), told the sender's key id with the upload:
-const sender = accessKeyOf('shared.jzm', owner, keyId);       // refuses a key with no grant
-const batch = open(upload, { key: sender.outboxKey() });      // refuses a batch made with another key
-append('shared.jzm', { key: owner, insert: [...batch.rows()].map((r) => ({ ...r, section: 'B' })) });
+accessKeyOf('shared.jzm', owner, keyId);                               // refuses a key with no grant
+const sent = open(upload, { key: owner.submissionKey(keyId) });       // refuses a file made without the sender's key
+append('shared.jzm', { key: owner, insert: [...sent.rows()].map((r) => ({ ...r, section: 'B' })) });
 ```
 
 ```csharp
-var key = bob.OutboxKey();                                             // field app
-var sender = JazminFile.AccessKeyOf("shared.jzm", owner, keyId);       // filing service
-using var batch = JazminReader.Open(upload, new JazminReadOptions { Key = sender.OutboxKey() });
+var key = JazminReader.Open("shared.jzm", new JazminReadOptions { AccessKey = bob }).SubmissionKey;   // field app
+JazminFile.AccessKeyOf("shared.jzm", owner, keyId);                                                  // filing service
+using var sent = JazminReader.Open(upload, new JazminReadOptions { Key = owner.SubmissionKey(keyId) });
 ```
 
-When filing, write each batch's rows into **the sender's own partition**,
-whatever the batch says: a person must not file rows as someone else. Give
-every record an id, so a batch sent twice isn't filed twice. Once a key is
-revoked, `accessKeyOf` no longer finds it, and its batches are refused. The
-design is in `docs/design/browser-writer.md`. The spec's section 7.8 defines
-the key.
+When filing:
+- **Own rows only:** write each file's rows into the sender's own partition,
+  whatever the file says, so a person can't file rows as someone else.
+- **No duplicates:** give every record an id, so a file sent twice isn't
+  filed twice.
+- **Revoked keys:** once a key is revoked, `accessKeyOf` no longer finds it,
+  and its files are refused.
+- **Older shared files:** files written before submission keys existed have
+  none (`submissionKey` is `null`) until the owner's next rewrite or
+  `compact()`.
+
+The design is in `docs/design/browser-writer.md`, and the spec's section 7.8
+defines the key.
 
 **A ready-made filing service** is in `js/examples/filing-service`. Its
 `fileBatch()` applies these rules, and `inbox.mjs` files every batch waiting in
 a folder, then compacts the shared file. Run it on a schedule where the owner
-key is kept. Writing outbox files in a browser is section 24.3.
+key is kept. Writing these files in a browser is section 24.3.
 
 ## 16. Updating files
 
@@ -2495,7 +2507,7 @@ for await (const row of reader.find({ country: 'ZA' })) console.log(row);
 const { rows } = await reader.query({ country: 'ZA' }, { offset: 50, limit: 50, total: false });
 await reader.count({ country: 'ZA' });
 await reader.columnArrays(null, { select: ['at', 'amount'] }); // arrays for charts (section 9.11)
-await JazminBrowser.outboxKey(accessKeyText);          // the key of this person's outbox files (section 15.6)
+reader.submissionKey;                                  // the key to send records back with (section 15.6)
 await reader.explain({ id: 7 }, { analyze: true });    // as in the library (section 9.6)
 const pdf = await reader.readFile('terms.pdf');
 ```
@@ -2544,12 +2556,13 @@ const reader = await JazminBrowser.openUrl('https://files.example.com/statements
 ### 24.3 Writing files in the browser
 
 The browser module also writes files: one table, locked with a key, a
-password, or nothing. It's made for **outbox files**, the records a person
-captures, often offline, and sends to the owner later (section 15.6). Writing
-happens on the device, so nothing is uploaded until the app sends the file.
+password, or nothing. It's made for **sending records back** to the owner:
+records a person captures, often offline, and sends later (section 15.6).
+Writing happens on the device, so nothing is uploaded until the app sends the
+file.
 
 ```js
-const key = await JazminBrowser.outboxKey(accessKeyText);       // or a jzk1- key, or { password }
+const key = (await JazminBrowser.open(sharedFile, { key: accessKeyText })).submissionKey; // or a jzk1- key, or { password }
 const writer = await JazminBrowser.createWriter({ columns, key });
 await writer.writeRows(records);                                 // await each call
 const blob = await writer.finish();                              // a Blob: store it, then upload it when online

@@ -92,6 +92,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         public required (long Offset, int Length, byte[] Section) KeySlots { get; init; }
         public DateTimeOffset? Expires { get; init; }
         public bool Online { get; init; }
+        public byte[]? Submission { get; init; } // this access key's submission key (spec 7.8), when the file has one
         public JsonObject? Directory { get; set; }
         public string? DirectoryText { get; set; }
 
@@ -435,6 +436,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             Expires = bundle["expires"] is { } expires ? DateTimeOffset.Parse((string)expires!, CultureInfo.InvariantCulture) : null,
             Online = (bool?)bundle["online"] ?? false,
             FileSecrets = Secrets(bundle["files"]),
+            Submission = bundle["submission"] is { } submission ? Convert.FromBase64String((string)submission!) : null,
         };
         return (state, AccessCrypto.HeaderKey(headerSecret, salt));
     }
@@ -941,6 +943,14 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     /// <summary>Number of appends since the file was last written in full (compaction resets it to 0).</summary>
     public int AppendCount => _header.AppendCount;
+
+    /// <summary>
+    /// The submission key (spec 7.8): lock the files you send back to the owner with it, such as records captured
+    /// offline. Only an access key that opened this file has it (with its unlock token, for an online grant); the owner
+    /// derives anyone's with <see cref="JazminKey.SubmissionKey(string)"/>. Null for the owner, and for files written
+    /// before submission keys existed, until the owner's next rewrite or compaction adds them.
+    /// </summary>
+    public JazminKey? SubmissionKey => _access?.Submission is { } bytes ? new JazminKey(bytes) : null;
 
     /// <summary>True when the end of the file held an interrupted append, and the previous version was used.</summary>
     public bool Recovered { get; private set; }

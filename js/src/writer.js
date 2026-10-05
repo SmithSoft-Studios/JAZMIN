@@ -949,7 +949,8 @@ export class JazminWriter {
         ...(g.mode === 'online' ? { online: true } : {}),
       };
       const fileSecrets = Object.keys(files).length ? { files } : {};
-      slots.push(sealSlot(g.key.secret, this.#salt, this.#fileId, { header, partitions, partitionNames, columns, ...fileSecrets, ...limits }, g.share));
+      const submission = b64(this.#ownerKey.submissionKey(g.key.id).bytes); // the key of what this holder sends back (spec 7.8)
+      slots.push(sealSlot(g.key.secret, this.#salt, this.#fileId, { header, partitions, partitionNames, columns, submission, ...fileSecrets, ...limits }, g.share));
     }
     return slots;
   }

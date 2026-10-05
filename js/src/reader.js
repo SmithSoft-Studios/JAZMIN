@@ -21,7 +21,7 @@ import { enforceExpiry, toMs } from './expiry.js';
 import { EVERYONE } from './files.js';
 import { answeredExactly, evaluate, indexPlan, mayMatch, mustMatch, normalizeFilter } from './filter.js';
 import { CompositeIndex, LazyTrigramIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
-import { JazminAccessKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
+import { JazminAccessKey, JazminKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
 import { decodeSection, sectionPayloadLength } from './section.js';
 import { decodeBound } from './stats.js';
 import { compareKeys } from './types.js';
@@ -637,6 +637,7 @@ export class JazminReader {
       headerSecret: b(bundle.header),
       expires: bundle.expires,
       online: bundle.online === true,
+      submission: typeof bundle.submission === 'string' ? b(bundle.submission) : null,
       keySecret: secret,
       directory: null,
       keySlots: { ...trailer.keySlots, section: slotsSection },
@@ -960,6 +961,17 @@ export class JazminReader {
   }
 
   /** Number of appends since the file was last written in full (compaction resets it to 0). */
+  /**
+   * The submission key (spec 7.8): the key of the files this access key's holder sends back to the owner, such as
+   * records captured offline. Only an access key that opened this file has it (with its unlock token, for an online
+   * grant); the owner derives anyone's with ownerKey.submissionKey(keyId). Null for the owner, and for files written
+   * before submission keys existed, until the owner's next rewrite or compaction adds them.
+   */
+  get submissionKey() {
+    const bytes = this.#access?.submission;
+    return bytes ? new JazminKey(bytes) : null;
+  }
+
   get appendCount() {
     return this.#header.appendCount;
   }

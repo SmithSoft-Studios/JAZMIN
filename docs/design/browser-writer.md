@@ -11,7 +11,7 @@ Status: **agreed with the owner on 5 October 2026**. Being built in steps (secti
      keeps the master key in a vault.
    - **Phones and web pages** hold only access keys.
 2. **The official browser writer writes one-key and password files only.** A
-   phone uses it for its outbox batches. It refuses master-key work on shared
+   phone uses it for the records it sends back. It refuses master-key work on shared
    files.
 3. **The viewer and the browser reader refuse a master key for a shared
    file.** To browse everything, the owner gives themselves a full-read access
@@ -45,21 +45,21 @@ looks.
 
 ```
 Phone (holds an access key)              Filing service (holds the master key, in a vault)
-  capture ─► outbox batch: a one-key     check the sender ─► append to the shared file
+  capture ─► batch: a one-key .jzm,      check the sender ─► append to the shared file
             .jzm, locked with the        and the fields      compact and regroup now and then
-            outbox key (section 4)
+            submission key (section 4)
           ─► send when online ──────────►
 Readers (access keys) ◄── read the shared file in the browser ◄── storage holds only encrypted data
 ```
 
-- **Outbox batches:** each batch is a small `.jzm` file, made with the official
+- **Batches:** each batch is a small `.jzm` file, made with the official
   browser writer. It's compressed and checked against the fields before it
   leaves the phone.
 - **Sending:** the upload is named with the sender's access key id. That id is
   public, and safe to log.
 - **Filing:**
   1. The service finds that person's access key in the shared file's grant list.
-  2. It derives their outbox key and opens the batch. A batch that doesn't open
+  2. It derives their submission key and opens the batch. A batch that doesn't open
      was not made with that key, so it's refused.
   3. It writes the rows into **that person's own partition**, whatever the
      batch says. A person can't file rows as someone else.
@@ -73,33 +73,43 @@ Readers (access keys) ◄── read the shared file in the browser ◄── st
   without use, unless the app is installed to the home screen. Install it, and
   sync often.
 
-## 4. The outbox key
+## 4. The submission key
 
-A person's **outbox key** is a one-key file key derived from their access key:
+Agreed on 5 October 2026: a file sent back must show that the sender opened the
+shared file, not just that someone holds a (possibly leaked) access key. So
+each access key's **submission key** comes from the owner and is delivered
+inside the shared file:
 
 ```
-outboxKey = HKDF-SHA256(ikm = access key secret, salt = empty, info = "JAZMIN/1/outbox", length = 32)
+submission key = HKDF-SHA256(ikm = owner key, salt = empty, info = "JAZMIN/1/submission/" + access key id, length = 32)
 ```
 
-- **Who can make it:**
-  - **The person:** they hold the access key.
-  - **The owner:** the shared file's grant list holds each access key,
-    encrypted under the master key.
-  - **Nobody else.**
-- **What it can do:** the outbox key opens outbox batches. On its own it opens
-  nothing in the shared file, and it can't be turned back into the access key.
-- **Online access keys** (keys that also need an unlock token to read) can still
-  write outbox batches. Sending records isn't reading.
-- **Where it's defined:** the format spec (RFC), so Node, .NET and the browser
-  all derive the same key. It's a rule for deriving a key, not a change to the
-  file format.
+- **Delivery:** the writer seals it into that access key's slot of the shared
+  file, as the bundle field `submission`.
+- **Who has it:** the holder, only after opening the shared file with their
+  access key (plus the unlock token for an online grant). The owner derives
+  it from the owner key and the key id, and needs no storage.
+- **Proof:** a file locked with it was made by someone who opened the shared
+  file with that key. A leaked access key without the file can't make one.
+  - **What still gets through:** a thief who also has a copy of the file.
+    Against that, use online keys (unlock tokens from your key service, behind
+    sign-in) and keep the shared file behind sign-in.
+- **Stable:** it never changes, so files made offline stay valid across
+  rewrites and compaction. Revoking a key removes its grant, and the filing
+  service then refuses its files.
+- **What it can't do:** it opens nothing in the shared file. Neither the
+  owner key nor the access key can be worked out from it.
+- **Older shared files:** they have no `submission` field until the owner's
+  next rewrite. Readers that don't know the field ignore it.
+- **Format:** it is defined in the spec's section 7.8. It's a key and an
+  optional bundle field, not a change to the file format.
 
 API:
-- **JavaScript:** `accessKey.outboxKey()` returns a `JazminKey`.
-- **.NET:** `accessKey.OutboxKey()`.
-- **Browser:** `JazminBrowser.outboxKey(accessKeyText)`.
-- **Owner side:** `accessKeyOf(path, ownerKey, keyId)` returns a person's access
-  key from the shared file's grant list.
+- **Holder:** `reader.submissionKey` (JS, .NET `SubmissionKey`, and the
+  browser reader as key text), after opening the shared file.
+- **Owner:** `ownerKey.submissionKey(keyId)` (.NET `SubmissionKey(keyId)`).
+- **Grant check:** `accessKeyOf(path, ownerKey, keyId)` finds the key in the
+  grant list.
 
 ## 5. The browser writer
 
@@ -113,7 +123,7 @@ several tables, embedded files, `sortedBy` and appends. The filing service adds
 indexes when it compacts the shared file.
 
 ```js
-const writer = await JazminBrowser.createWriter({ columns, key: outboxKey });
+const writer = await JazminBrowser.createWriter({ columns, key: reader.submissionKey });
 await writer.writeRows(records);
 const blob = await writer.finish();    // upload it as the batch
 ```
@@ -172,7 +182,7 @@ const blob = await writer.finish();    // upload it as the batch
 | Step | What | Size |
 |---|---|---|
 | 1 ✅ | The viewer and browser reader refuse a master key for a shared file (#48) | S |
-| 2 ✅ | Outbox key: spec, JS, .NET, browser; `accessKeyOf` (#49) | S |
+| 2 ✅ | Submission key: spec, JS, .NET, browser; `accessKeyOf` (#49, then sealed in the key slot) | S |
 | 3 ✅ | The browser writer (section 5), with its tests | M |
 | 4 ✅ | A reference filing service (Node sample, `js/examples/filing-service`): master key from a secret, batches checked and appended, regroup | S–M |
 

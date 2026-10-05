@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { JazminAccessKey, JazminKey, accessKeyOf, open, write } from '../src/index.js';
+import { JazminAccessKey, JazminKey, open, write } from '../src/index.js';
 import '../browser/jazmin-browser.js';
 
 // The browser writer (issue #13, docs/design/browser-writer.md): files with one key, a password or no key, written
@@ -110,22 +110,25 @@ test('browser writer: the library reads what it writes, and refuses a wrong key 
   }
 });
 
-test('browser writer: an outbox batch written in the browser opens with the key the owner derives', async () => {
-  const shared = path.join(fixtures, 'js-access.jzm');
-  const outboxKey = await JazminBrowser.outboxKey(keys.bob);
-  const batch = await bytesOf(await JazminBrowser.write([{ id: 1, note: 'captured offline' }], {
-    columns: [{ name: 'id', type: 'int' }, { name: 'note', type: 'string' }], key: outboxKey,
+test('browser writer: a file sent back with the submission key opens with the key the owner derives', async () => {
+  const owner = JazminKey.parse(keys.key);
+  const bob = JazminAccessKey.parse(keys.bob);
+  const shared = write(null, [{ id: 0, person: 'P1' }], {
+    columns: [{ name: 'id', type: 'int' }, { name: 'person', type: 'string' }], key: owner, access: { partitionBy: 'person', grants: [{ key: bob, rows: ['P1'] }] },
+  });
+  const { submissionKey } = await JazminBrowser.open(new Blob([shared]), { key: keys.bob });
+  const batch = await bytesOf(await JazminBrowser.write([{ id: 1, person: 'P1' }], {
+    columns: [{ name: 'id', type: 'int' }, { name: 'person', type: 'string' }], key: submissionKey,
   }));
-  const sender = accessKeyOf(shared, keys.key, JazminAccessKey.parse(keys.bob).id);
-  assert.deepEqual([...open(batch, { key: sender.outboxKey() }).rows()], [{ id: 1, note: 'captured offline' }]);
-  assert.throws(() => open(batch, { key: JazminAccessKey.parse(keys.sally).outboxKey() }), /key/i);
+  assert.deepEqual([...open(batch, { key: owner.submissionKey(bob.id) }).rows()], [{ id: 1, person: 'P1' }]);
+  assert.throws(() => open(batch, { key: owner.submissionKey(JazminAccessKey.parse(keys.sally).id) }), /key/i);
 });
 
 test('browser writer: refuses what browsers must not or cannot write', async () => {
   const one = [{ name: 'id', type: 'int' }];
   const refuses = (options, pattern) => assert.rejects(JazminBrowser.createWriter({ columns: one, ...options }), pattern);
   await refuses({ key: keys.key, access: { partitionBy: 'id' } }, /master key must stay off web pages/);
-  await refuses({ key: keys.bob }, /An access key can't write a file: write an outbox file/);
+  await refuses({ key: keys.bob }, /An access key can't write a file: lock what you send back with your submission key/);
   await refuses({ tables: [] }, /Several tables/);
   await refuses({ files: [] }, /Embedded files/);
   await refuses({ sortedBy: ['id'] }, /sortedBy/);

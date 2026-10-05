@@ -52,13 +52,6 @@ public sealed class JazminAccessKey
 
     internal ReadOnlySpan<byte> OwnerFingerprint => _fingerprint;
 
-    /// <summary>
-    /// The key of this holder's outbox files (spec 7.8): files they write for the owner, such as records captured
-    /// offline and sent later. The owner derives the same key from the shared file's grant list
-    /// (<see cref="JazminFile.AccessKeyOf"/>); it opens nothing in the shared file.
-    /// </summary>
-    public JazminKey OutboxKey() => new(Format.Crypto.Hkdf(_secret, [], "JAZMIN/1/outbox"));
-
     /// <summary>Short public identifier (hex) of this key, safe to log.</summary>
     public string Id => Convert.ToHexString(OwnerSigning.SlotId(_secret)).ToLowerInvariant();
 

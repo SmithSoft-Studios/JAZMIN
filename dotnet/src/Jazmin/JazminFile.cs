@@ -504,8 +504,8 @@ public static class JazminFile
 
     /// <summary>
     /// The access key a shared file grants, found in its grant list by <paramref name="keyId"/>
-    /// (<see cref="JazminAccessKey.Id"/>): for example to derive the outbox key (spec 7.8) of the person who sent an
-    /// outbox file. Owner key required.
+    /// (<see cref="JazminAccessKey.Id"/>): for example to check the grant of the person who sent a file back (spec 7.8).
+    /// Owner key required.
     /// </summary>
     public static JazminAccessKey AccessKeyOf(string path, JazminKey ownerKey, string keyId)
     {

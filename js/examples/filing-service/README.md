@@ -1,8 +1,9 @@
 # Filing service (reference sample)
 
-People in the field capture records, often offline, and send them as **outbox
-files**. Each outbox file is a small `.jzm` written in the browser and locked
-with that person's outbox key. This service holds the shared file's owner
+People in the field capture records, often offline, and send them back as
+small `.jzm` files written in the browser. Each one is locked with the
+person's **submission key**, which they get only by opening the shared file
+with their access key. This service holds the shared file's owner
 (master) key. It checks each batch and files it into the shared file. Phones
 and web pages never hold the owner key.
 
@@ -42,7 +43,7 @@ and stops, and the next run carries on.
 |---|---|
 | The sender | The key id has no grant in the shared file: unknown, or revoked |
 | Expiry | The grant has expired |
-| Proof | The batch doesn't open with that key's outbox key: another key made it, or it was changed |
+| Proof | The batch doesn't open with that key's submission key: it was made without opening the shared file (a leaked key alone isn't enough), or it was changed |
 | Columns | A column isn't in the shared file, or has another type |
 | Partition | A row names a partition the key isn't granted. With a grant of one partition, rows are simply put in it. |
 | Duplicates | Not a rejection: rows whose `id` is already filed are skipped, so a batch sent twice is filed once |

@@ -56,6 +56,22 @@ public sealed class JazminKey
     public JazminAccessKey CreateAccessKey() =>
         new(RandomNumberGenerator.GetBytes(32), OwnerSigning.Fingerprint(OwnerSigning.Derive(_bytes).PublicKey));
 
+    /// <summary>
+    /// The submission key of one of this owner's access keys (spec 7.8): the key of the files its holder sends back,
+    /// such as records captured offline. The writer seals it into that key's slot of each shared file, so only someone
+    /// who opens the shared file with that access key (and its unlock token, for an online grant) gets it
+    /// (<see cref="JazminReader.SubmissionKey"/>); the owner derives it here. <paramref name="keyId"/> is the access
+    /// key's <see cref="JazminAccessKey.Id"/>.
+    /// </summary>
+    public JazminKey SubmissionKey(string keyId)
+    {
+        if (keyId is null || keyId.Length != 16 || !keyId.All(char.IsAsciiHexDigitLower)) throw new JazminValidationException($"'{keyId}' is not an access key id");
+        return new(Format.Crypto.Hkdf(_bytes, [], $"JAZMIN/1/submission/{keyId}"));
+    }
+
+    /// <summary>The submission key of <paramref name="accessKey"/> (see <see cref="SubmissionKey(string)"/>).</summary>
+    public JazminKey SubmissionKey(JazminAccessKey accessKey) => SubmissionKey(accessKey.Id);
+
     public override string ToString()
     {
         var raw = new byte[KeySize + ChecksumSize];
