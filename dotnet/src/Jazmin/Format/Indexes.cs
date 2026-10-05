@@ -99,10 +99,14 @@ internal sealed class KeyComparer : IComparer<object>
 /// <summary>Builds a sorted value index: distinct values in ascending order, each with its row ids.</summary>
 internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
 {
-    // Distinct keys in the order first seen, each with its first row id; later row ids only for keys seen again, so a
-    // column of unique values (ids) needs no list per key. Entries are kept in blocks small enough to stay off the large
-    // object heap: growing one large array would force full garbage collections of the writer's whole heap.
+    // Distinct keys, each with its first row id; later row ids only for keys seen again, so a column of unique values
+    // (ids) needs no list per key. Entries are kept in blocks small enough to stay off the large object heap: growing
+    // one large array would force full garbage collections of the writer's whole heap.
+    // Keys are kept in ascending runs: one while they arrive in order (ids, a sorted column), a few more when some arrive
+    // out of order (rows appended after the rest, partitions regrouped by compaction), merged when the pages are
+    // written. Past MaxRuns runs (keys in no particular order), they move to a lookup table, as first seen.
     private const int BlockSize = 2048;
+    private const int MaxRuns = 32;
     private struct Entry
     {
         public object Key;
@@ -110,9 +114,10 @@ internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
         public List<long>? MoreRows;
     }
 
-    private readonly List<Entry[]> _blocks = new();
+    private List<Entry[]> _blocks = new();
     private int _count;
-    private Dictionary<object, int>? _positions; // made when keys stop arriving in ascending order
+    private readonly List<int> _runStarts = [0]; // first entry of each ascending run
+    private Dictionary<object, int>? _positions; // table mode: key -> entry, once the keys form more than MaxRuns runs
     private readonly List<long> _nulls = new();
 
     private ref Entry At(int i) => ref _blocks[i / BlockSize][i % BlockSize];
@@ -136,7 +141,11 @@ internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
                 (last.MoreRows ??= new List<long>()).Add(rowId);
                 return;
             }
-            if (order >= 0) _positions = Positions();
+            if (order >= 0)
+            {
+                if (_runStarts.Count < MaxRuns) _runStarts.Add(_count); // this key starts a new run
+                else ToTable();
+            }
         }
         if (_positions is not null && _positions.TryGetValue(key, out var at))
         {
@@ -149,15 +158,69 @@ internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
         _count++;
     }
 
-    private Dictionary<object, int> Positions()
+    /// <summary>Table mode: one entry per key, as first seen (the same key in later runs joins it), with a lookup table.</summary>
+    private void ToTable()
     {
-        var positions = new Dictionary<object, int>(_count * 2);
-        for (var i = 0; i < _count; i++) positions.Add(At(i).Key, i);
-        return positions;
+        var blocks = _blocks;
+        var count = _count;
+        _blocks = new List<Entry[]>();
+        _count = 0;
+        _runStarts.Clear();
+        _runStarts.Add(0);
+        var positions = new Dictionary<object, int>(count * 2);
+        for (var i = 0; i < count; i++)
+        {
+            var entry = blocks[i / BlockSize][i % BlockSize];
+            if (positions.TryGetValue(entry.Key, out var at))
+            {
+                var more = At(at).MoreRows ??= new List<long>();
+                more.Add(entry.FirstRow);
+                if (entry.MoreRows is { } later) more.AddRange(later);
+                continue;
+            }
+            if (_count % BlockSize == 0) _blocks.Add(new Entry[BlockSize]);
+            At(_count) = entry;
+            positions.Add(entry.Key, _count++);
+        }
+        _positions = positions;
     }
 
     /// <summary>Row ids of null cells.</summary>
     public IReadOnlyList<long> Nulls => _nulls;
+
+    /// <summary>
+    /// The distinct keys in ascending order, as entry positions: the first, and those of the same key in later runs
+    /// (their row ids follow, in the order they were added). Runs are merged, the oldest first among equal keys.
+    /// </summary>
+    private IEnumerable<(int First, List<int>? Others)> SortedEntries()
+    {
+        if (_positions is not null || _runStarts.Count == 1)
+        {
+            foreach (var at in SortedPositions()) yield return (at, null);
+            yield break;
+        }
+        var runs = _runStarts.Count;
+        var next = _runStarts.ToArray();
+        var ends = new int[runs];
+        for (var r = 0; r < runs; r++) ends[r] = r + 1 < runs ? _runStarts[r + 1] : _count;
+        while (true)
+        {
+            var best = -1; // the run with the smallest key; on a tie, the oldest (first seen)
+            for (var r = 0; r < runs; r++)
+            {
+                if (next[r] < ends[r] && (best < 0 || KeyComparer.Instance.Compare(At(next[r]).Key, At(next[best]).Key) < 0)) best = r;
+            }
+            if (best < 0) yield break;
+            var first = next[best]++;
+            var key = At(first).Key;
+            List<int>? others = null;
+            for (var r = best + 1; r < runs; r++)
+            {
+                if (next[r] < ends[r] && KeyComparer.Instance.Compare(At(next[r]).Key, key) == 0 && At(next[r]).Key.Equals(key)) (others ??= []).Add(next[r]++);
+            }
+            yield return (first, others);
+        }
+    }
 
     /// <summary>
     /// Positions of the distinct keys in ascending key order: as first seen while keys arrived in order; otherwise
@@ -205,7 +268,7 @@ internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
         var postings = new List<long>();
         object? first = null;
         var count = 0;
-        foreach (var at in SortedPositions())
+        foreach (var (at, others) in SortedEntries())
         {
             var entry = At(at);
             if (count == 0) first = entry.Key;
@@ -213,6 +276,11 @@ internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
             postings.Clear();
             postings.Add(entry.FirstRow);
             if (entry.MoreRows is { } more) postings.AddRange(more);
+            foreach (var other in others ?? [])
+            {
+                postings.Add(At(other).FirstRow);
+                if (At(other).MoreRows is { } later) postings.AddRange(later);
+            }
             RowSet.WritePostings(body, postings);
             count++;
             if (body.Length < pageBytes) continue;

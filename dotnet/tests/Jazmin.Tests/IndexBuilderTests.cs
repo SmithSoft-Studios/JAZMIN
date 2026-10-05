@@ -54,7 +54,9 @@ public sealed class IndexBuilderTests
         }
     }
 
-    public static TheoryData<string> Cases() => ["int", "int sorted", "int repeated", "float", "string", "string sorted", "datetime", "bool", "decimal"];
+    public static TheoryData<string> Cases() => ["int", "int sorted", "int repeated", "float", "string", "string sorted", "datetime", "bool", "decimal",
+        "string, appended rows", "string, regrouped", "int, keys repeated across runs", "int, 31 runs", "int, 32 runs", "int, 33 runs", "int, 40 runs",
+        "decimal forms, almost in order", "decimal forms in runs"];
 
     private static (JazminType Type, List<object?> Values) Data(string name)
     {
@@ -71,8 +73,19 @@ public sealed class IndexBuilderTests
             "datetime" => (JazminType.DateTime, Enumerable.Range(0, n).Select(_ => (object?)new DateTime(2025, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMinutes(random.Next(0, 500_000))).ToList()),
             "bool" => (JazminType.Bool, Enumerable.Range(0, n).Select(i => i % 5 == 0 ? null : (object?)(random.Next(2) == 0)).ToList()),
             "decimal" => (JazminType.Decimal, Enumerable.Range(0, n).Select(_ => (object?)(random.Next(0, 2000) / 100m).ToString(random.Next(2) == 0 ? "F2" : "F3", System.Globalization.CultureInfo.InvariantCulture)).ToList()),
+            // Almost in order (sorted runs, merged when the pages are written): rows appended after the rest, partitions
+            // regrouped, the same keys in several runs, and the run count around the limit where the builder uses a table.
+            "string, appended rows" => (JazminType.String, Enumerable.Range(0, n).Select(i => (object?)$"r{i:D6}").Concat(["r000005", "r000010", "a", "zz"]).ToList()),
+            "string, regrouped" => (JazminType.String, Enumerable.Range(0, 30).SelectMany(b => Enumerable.Range(0, 500).Select(i => (object?)$"r{(b * 7 % 30) * 500 + i:D6}")).ToList()),
+            "int, keys repeated across runs" => (JazminType.Int, Enumerable.Range(0, 20).SelectMany(_ => Enumerable.Range(0, 300).Select(i => (object?)(long)(i / 3))).ToList()),
+            "int, 31 runs" or "int, 32 runs" or "int, 33 runs" or "int, 40 runs" => Runs(int.Parse(name[5..7], System.Globalization.CultureInfo.InvariantCulture)),
+            "decimal forms, almost in order" => (JazminType.Decimal, Enumerable.Range(0, n).Select(i => (object?)(i / 2 / 100m).ToString(i % 3 == 0 ? "F2" : "F3", System.Globalization.CultureInfo.InvariantCulture)).Concat(["1.5", "1.50", "1.500", "0.10", "0.1"]).ToList()),
+            "decimal forms in runs" => (JazminType.Decimal, Enumerable.Range(0, 5).SelectMany(r => Enumerable.Range(0, 400).Select(i => (object?)(i / 100m).ToString($"F{2 + (i + r) % 3}", System.Globalization.CultureInfo.InvariantCulture))).ToList()),
             _ => throw new ArgumentOutOfRangeException(nameof(name)),
         };
+
+        static (JazminType, List<object?>) Runs(int runs) =>
+            (JazminType.Int, Enumerable.Range(0, runs).SelectMany(r => Enumerable.Range(0, 100).Select(i => (object?)(long)((i * runs + r) % 2500))).ToList());
     }
 
     [Theory]

@@ -31,8 +31,10 @@ import { compareKeys, normalizeValue, toKey } from './types.js';
 const FLAGS_OFFSET = 4; // preamble: magic (4) | flags u16 | reserved u16 | file id | salt | kdf iterations | reserved
 
 const TINY_SECTION = 256; // raw bytes below which catalog sections are not compressed
-const STAGE_SIZE = 64 * 1024; // small sections (directories, statistics, envelopes) are written in batches
-const STAGE_LIMIT = 8 * 1024;
+// Sections up to STAGE_LIMIT (directories, statistics, most chunks) are written in batches of up to STAGE_SIZE: each
+// write is a system call, slow on some systems (Windows with real-time scanning), and a file is mostly small sections.
+const STAGE_SIZE = 1024 * 1024;
+const STAGE_LIMIT = 256 * 1024;
 
 /**
  * Output: a file (written at explicit positions) or an in-memory list of buffers.

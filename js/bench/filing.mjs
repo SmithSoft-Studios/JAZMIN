@@ -1,8 +1,9 @@
 // Filing benchmark: what it costs a phone to write a batch, and the filing service (js/examples/filing-service) to
 // file it - time, peak memory and how much the shared file grows - for shared files of 10,000, 100,000 and 250,000
 // records (100 people, one partition and one access key each, 6 columns, a sorted index on id).
-// Each filing scenario runs in its own process: one warm-up, then the median of 5 runs, each on a fresh copy of the
-// shared file. Peak memory is that process's peak resident memory above what it used before the first run.
+// Each filing scenario runs in its own process, each run on a fresh copy of the shared file. Peak memory is measured on
+// the first run alone: the process's peak resident memory above what it used before it. Time is the median of 5 more
+// runs. Compaction uses one thread, as the inbox runner does.
 // Run: node bench/filing.mjs [records...]        (default: 10000 100000 250000)
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
@@ -32,13 +33,13 @@ if (process.argv[2] === '--run') {
   const once = () => {
     fs.copyFileSync(s.shared, work);
     const start = process.hrtime.bigint();
-    result = s.compact ? compact(work, { key: owner, regroup: true }) : fileBatch(work, owner, { keyId: s.keyId, batch });
+    result = s.compact ? compact(work, { key: owner, regroup: true, maxDegreeOfParallelism: 1 }) : fileBatch(work, owner, { keyId: s.keyId, batch });
     return msSince(start);
   };
   const before = process.memoryUsage().rss;
-  once(); // warm-up
-  const ms = median(Array.from({ length: RUNS }, once));
+  once(); // the first run: its peak memory (later runs would add garbage not yet collected), and a warm-up
   const peak = process.resourceUsage().maxRSS * 1024 - before;
+  const ms = median(Array.from({ length: RUNS }, once));
   const growth = fs.statSync(work).size - fs.statSync(s.shared).size;
   fs.rmSync(work, { force: true });
   process.stdout.write(JSON.stringify({ ms, peakMb: Math.max(0, peak) / 1048576, growth, result }));

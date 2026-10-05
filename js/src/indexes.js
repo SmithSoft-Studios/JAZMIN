@@ -55,16 +55,24 @@ export function decodePostingsSection(buf, what = 'Postings section') {
 /** Target raw size of a sorted index page (informative, spec 8.1). */
 export const INDEX_PAGE_BYTES = 64 * 1024;
 
+/**
+ * Ascending runs kept before the builder falls back to a lookup table. Keys that arrive almost in order (rows appended
+ * after the rest, partitions regrouped by compaction) form a few runs, merged cheaply when the pages are written; keys
+ * in no particular order would form many, and use the table.
+ */
+const MAX_RUNS = 32;
+
 /** Builds a sorted value index: distinct key forms in ascending order, each with its row ids. */
 export class SortedIndexBuilder {
   constructor(type) {
     this.type = type;
-    // Distinct keys in the order first seen, each with its first row id; later row ids only for keys seen again, so a
-    // column of unique values (ids) needs no array per key.
+    // Distinct keys of the current run in ascending order (in table mode: all of them, as first seen), each with its
+    // first row id; later row ids only for keys seen again, so a column of unique values (ids) needs no array per key.
     this.keys = [];
     this.firstRows = [];
     this.moreRows = [];
-    this.positions = null; // key id -> position, made when keys stop arriving in ascending order
+    this.runs = []; // earlier ascending runs: { keys, firstRows, moreRows }, oldest first
+    this.positions = null; // key id -> position in table mode, used once the keys form more than MAX_RUNS runs
     this.nulls = [];
   }
 
@@ -75,35 +83,100 @@ export class SortedIndexBuilder {
     }
     const key = toKey(this.type, value);
     if (Number.isNaN(key)) return; // NaN is never indexed (it is not equal to anything)
-    const n = this.keys.length;
-    if (this.positions === null && n > 0) {
-      // Keys arriving in ascending order (ids, a sorted column) can only repeat the last one: no lookup needed.
-      const last = this.keys[n - 1];
-      const order = compareKeys(last, key);
-      if (order === 0 && keyId(last) === keyId(key)) {
-        (this.moreRows[n - 1] ??= []).push(rowId);
-        return;
-      }
-      if (!(order < 0)) this.positions = new Map(this.keys.map((k, i) => [keyId(k), i]));
-    }
     if (this.positions !== null) {
       const at = this.positions.get(keyId(key));
       if (at !== undefined) {
         (this.moreRows[at] ??= []).push(rowId);
         return;
       }
-      this.positions.set(keyId(key), n);
+      this.positions.set(keyId(key), this.keys.length);
+    } else if (this.keys.length > 0) {
+      // Keys arriving in ascending order (ids, a sorted column) can only repeat the last one: no lookup needed.
+      const n = this.keys.length;
+      const last = this.keys[n - 1];
+      const order = compareKeys(last, key);
+      if (order === 0 && keyId(last) === keyId(key)) {
+        (this.moreRows[n - 1] ??= []).push(rowId);
+        return;
+      }
+      if (!(order < 0)) {
+        // Out of order: this key starts a new run, or, with too many runs, every key moves to the lookup table.
+        this.runs.push({ keys: this.keys, firstRows: this.firstRows, moreRows: this.moreRows });
+        this.keys = [];
+        this.firstRows = [];
+        this.moreRows = [];
+        if (this.runs.length >= MAX_RUNS) {
+          this.#toTable();
+          this.add(rowId, value);
+          return;
+        }
+      }
     }
     this.keys.push(key);
     this.firstRows.push(rowId);
     this.moreRows.push(undefined);
   }
 
-  /** Positions of the distinct keys in ascending key order (as first seen, while keys arrived in order). */
-  #sortedPositions() {
-    const order = Array.from(this.keys, (_, i) => i);
-    if (this.positions !== null) order.sort((a, b) => compareKeys(this.keys[a], this.keys[b]));
-    return order;
+  /** Table mode: the runs' keys in one list, as first seen, with a lookup table; sorted when the pages are written. */
+  #toTable() {
+    const runs = this.runs;
+    this.runs = [];
+    this.positions = new Map();
+    for (const run of runs) {
+      for (let i = 0; i < run.keys.length; i++) {
+        const at = this.positions.get(keyId(run.keys[i]));
+        if (at === undefined) {
+          this.positions.set(keyId(run.keys[i]), this.keys.length);
+          this.keys.push(run.keys[i]);
+          this.firstRows.push(run.firstRows[i]);
+          this.moreRows.push(run.moreRows[i]);
+        } else {
+          const more = (this.moreRows[at] ??= []);
+          more.push(run.firstRows[i]);
+          if (run.moreRows[i]) for (const id of run.moreRows[i]) more.push(id);
+        }
+      }
+    }
+  }
+
+  /**
+   * The distinct keys in ascending order, as { key, first, more } (first row id, later row ids): one object, updated
+   * for each key, so read it before taking the next. Keys that compare equal keep the order they were first seen in;
+   * a key in several runs is one entry, its row ids in the order they were added.
+   */
+  *#entries() {
+    const entry = { key: undefined, first: 0, more: undefined };
+    const at = (keys, firstRows, moreRows, i) => {
+      entry.key = keys[i];
+      entry.first = firstRows[i];
+      entry.more = moreRows[i];
+      return entry;
+    };
+    if (this.positions !== null || this.runs.length === 0) {
+      const order = Array.from(this.keys, (_, i) => i);
+      if (this.positions !== null) order.sort((a, b) => compareKeys(this.keys[a], this.keys[b]));
+      for (const i of order) yield at(this.keys, this.firstRows, this.moreRows, i);
+      return;
+    }
+    const runs = [...this.runs, { keys: this.keys, firstRows: this.firstRows, moreRows: this.moreRows }];
+    const next = new Array(runs.length).fill(0);
+    for (;;) {
+      let best = -1; // the run with the smallest key; on a tie, the oldest (first seen)
+      for (let r = 0; r < runs.length; r++) {
+        if (next[r] < runs[r].keys.length && (best < 0 || compareKeys(runs[r].keys[next[r]], runs[best].keys[next[best]]) < 0)) best = r;
+      }
+      if (best < 0) return;
+      at(runs[best].keys, runs[best].firstRows, runs[best].moreRows, next[best]++);
+      const { key } = entry;
+      for (let r = best + 1; r < runs.length; r++) {
+        const other = runs[r].keys[next[r]];
+        if (next[r] < runs[r].keys.length && compareKeys(other, key) === 0 && keyId(other) === keyId(key)) {
+          entry.more = [...(entry.more ?? []), runs[r].firstRows[next[r]], ...(runs[r].moreRows[next[r]] ?? [])];
+          next[r]++;
+        }
+      }
+      yield entry;
+    }
   }
 
   /**
@@ -125,11 +198,10 @@ export class SortedIndexBuilder {
       count = 0;
       return result;
     };
-    for (const at of this.#sortedPositions()) {
-      const key = this.keys[at];
-      if (count === 0) first = key;
-      encodeValue(body, this.type, key);
-      writeRowIds(body, this.firstRows[at], this.moreRows[at]);
+    for (const entry of this.#entries()) {
+      if (count === 0) first = entry.key;
+      encodeValue(body, this.type, entry.key);
+      writeRowIds(body, entry.first, entry.more);
       count++;
       if (body.length >= pageBytes) yield page();
     }

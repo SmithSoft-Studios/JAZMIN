@@ -145,36 +145,35 @@ for the runner:
 
 ## Performance
 
-Measured with `npm run bench:filing` (in `js/`) on 5 October 2026: Node 24,
+Measured with `npm run bench:filing` (in `js/`) on 6 October 2026: Node 24,
 Intel i7-12700H, Windows 11. The shared files have 100 people, one partition
-and one access key each, and 6 columns. Each figure is the median of 5 runs,
-each on a fresh copy of the shared file. Memory is the filing process's peak
-above its memory at rest.
+and one access key each, and 6 columns. Each scenario runs in its own
+process, each run on a fresh copy of the shared file. Time is the median of
+5 runs; memory is the process's peak during one run, above its memory at
+rest.
 
 | Records in the shared file | 10,000 | 100,000 | 250,000 |
 |---|---:|---:|---:|
-| File 1 new record | 40 ms, 13 MB | 36 ms, 13 MB | 38 ms, 22 MB |
-| File 50 new records | 41 ms, 13 MB | 42 ms, 20 MB | 41 ms, 20 MB |
-| Change 50 records | 46 ms, 25 MB | 42 ms, 24 MB | 47 ms, 25 MB |
-| The same 50 changes again (nothing changes) | 19 ms, 12 MB | 19 ms, 14 MB | 22 ms, 16 MB |
-| File 10 records with a 200 KB photo each | 89 ms, 58 MB | 99 ms, 55 MB | 92 ms, 58 MB |
-| Change a record to drop its photo | 50 ms, 27 MB | 69 ms, 30 MB | 91 ms, 45 MB |
-| Compact and regroup after 50 appends | 94 ms, 81 MB | 244 ms, 195 MB | 534 ms, 318 MB |
+| File 1 new record | 33 ms, 6 MB | 34 ms, 6 MB | 37 ms, 7 MB |
+| File 50 new records | 38 ms, 6 MB | 37 ms, 7 MB | 40 ms, 8 MB |
+| Change 50 records | 40 ms, 8 MB | 40 ms, 11 MB | 46 ms, 11 MB |
+| The same 50 changes again (nothing changes) | 18 ms, 4 MB | 19 ms, 4 MB | 22 ms, 5 MB |
+| File 10 records with a 200 KB photo each | 85 ms, 19 MB | 90 ms, 20 MB | 90 ms, 21 MB |
+| Change a record to drop its photo | 46 ms, 10 MB | 58 ms, 11 MB | 85 ms, 13 MB |
+| Compact and regroup after 50 appends | 71 ms, 13 MB | 225 ms, 56 MB | 499 ms, 115 MB |
 
 What the numbers mean:
-- **A batch costs about 40 ms, whatever the size of the shared file.** An
-  append writes only the change: a batch grows the file by 1 to 2 KB, plus
-  its photos.
+- **A batch costs about 35 to 45 ms, whatever the size of the shared file.**
+  An append writes only the change: a batch grows the file by 1 to 2 KB,
+  plus its photos.
 - **Most of that time is fixed work per batch:**
   - the append: writing safely to disk, signing the file and re-sealing the
     key slots, about 18 ms;
   - looking up the batch's ids, about 10 ms.
 
   The shared file is opened once per batch, for the grant, the records and
-  the files.
-
-  So 50 records cost about the same as one. Send records in batches when you
-  can.
+  the files. So 50 records cost about the same as one: send records in
+  batches when you can.
 - **Sending the same batch again** is cheap, at about 20 ms: nothing is
   written.
 - **Photos** cost what their bytes cost to check and store. The file grows by
@@ -183,9 +182,10 @@ What the numbers mean:
   is read to make sure no other record still uses it.
 - **Compacting** rewrites the whole file, so it grows with it. Compact on a
   schedule, not after every batch: the inbox runner does it after 50
-  appends.
+  appends, on one thread. In a shared file, the library's default of 2
+  worker threads makes compaction only about 5% faster, for about 35 MB more.
 - **On the phone:** the browser writer makes a 50-record batch, about 1 KB,
-  in about 3 ms. Each 200 KB photo adds about 8 ms. These are Node's figures;
+  in about 3 ms. Each 200 KB photo adds about 9 ms. These are Node's figures;
   phones are slower, but it's still a small fraction of the upload time.
 
 ## Keeping the owner key safe

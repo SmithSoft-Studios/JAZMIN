@@ -39,6 +39,24 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     init"`). It didn't reproduce locally, so CI will confirm the fix.
 
 ### Changed
+- **Faster, leaner index building for rows that arrive almost in order (JS and
+  .NET).** Sorted indexes are built from ascending runs, merged when the
+  index is written. Before, one row out of order switched the builder to a
+  lookup table of every key. Compaction that regroups partitions, and
+  appends after the rest, are the common cases.
+  - **.NET:** compacting a 250,000-record shared file peaks at 68 MB
+    instead of 81 MB, and takes 680 ms instead of 739 ms.
+  - **Unchanged:** keys in no particular order still use the table; the
+    index bytes are identical (checked against the reference builder).
+- **Fewer disk writes (JS):** sections up to 256 KB are written in batches of
+  up to 1 MB, instead of up to 8 KB in batches of 64 KB. Each write is a
+  system call, slow with real-time scanning on Windows. Compacting a
+  250,000-record shared file went from about 600 to 565 ms.
+- **The filing service compacts on one thread:** in a shared file, 2 worker
+  threads made compaction about 5% faster for about 35 MB more.
+- **The filing benchmark measures memory on one run.** It measured the peak
+  over six runs in one process, so it reported 318 MB for a compaction that
+  peaks at 148 MB (115 MB on one thread).
 - **Browsers refuse a shared file's master key (#13).** The viewer and the
   browser reader no longer open an access-controlled file with its master
   (owner) key.
