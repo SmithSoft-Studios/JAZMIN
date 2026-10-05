@@ -2305,8 +2305,13 @@ requested page of rows crosses into the sandbox.
   keys when expiry matters.
 - **The document's files are held in memory** while it is shown. Data rows
   are read a chunk at a time.
-- **Tested** in Chrome, Edge and Firefox (`npm run test:viewer`, and in CI on
-  Linux). Not tested yet: Safari and mobile browsers.
+- **Tested** in Chrome, Edge, Firefox and Safari (`npm run test:viewer`). CI
+  runs Chrome and Firefox on Linux, and Safari on macOS.
+  - **Phones** (Safari on an iPhone, Chrome on Android) are checked by hand
+    before each release. The results are in the release notes.
+  - **Safari and "Save as HTML":** CI opens the saved copy in Safari from a
+    web server, because Safari's automation can't open files from disk. The
+    phone check covers opening it from disk.
 
 For developers, the browser reader on its own is `@smithsoft-studios/jazmin/browser`
 (`js/browser/jazmin-browser.js`). It is read-only, async and has no

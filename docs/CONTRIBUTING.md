@@ -27,6 +27,7 @@ npm test                       # all tests, including interop with .NET-written 
 npm run typecheck              # TypeScript definitions + example
 npm run bench                  # node --expose-gc gives the memory rows
 npm run bench:proposals        # bytes read, rows and time per query (see below)
+npm run test:viewer            # the viewer in every browser found (Safari: run "sudo safaridriver --enable" once)
 node examples/quickstart.mjs
 
 # .NET (in dotnet/)
@@ -250,3 +251,27 @@ request.
 - [ ] Benchmarks re-run; USER-GUIDE section 9 updated if the numbers moved by more than 10%
 - [ ] Versions bumped together (`js/package.json`, `Jazmin.csproj`); `CHANGELOG.md` and RFC change log updated
 - [ ] TASKS.md statuses updated
+- [ ] Phone check of the viewer (below), results in the release notes
+
+### Phone check
+
+CI tests the viewer in Chrome, Firefox and Safari on computers. Before each
+release, check it by hand on one iPhone (Safari) and one Android phone
+(Chrome):
+
+1. **Host the viewer:** put `js/viewer` and `js/browser` side by side on an
+   HTTPS server the phones can reach. Installing needs HTTPS.
+2. **Open a file:** on each phone, open the viewer, then choose
+   `spec/fixtures/js-files-access.jzm` with the file picker.
+3. **Keys:** unlock it with the owner key, then again with bob's access key
+   (both in `spec/fixtures/keys.json`). Owner: 500 rows; bob: 80 rows.
+4. **Data:** the first page of rows shows, and the next page opens.
+5. **Document and files:** the document shows, and `img/logo.svg` opens from
+   the file list.
+6. **Offline:** install the viewer (Add to Home Screen), switch on flight
+   mode, start it from the home screen and open the file again.
+7. **Save as HTML:** save a copy, open it from the phone's files app and
+   unlock it with bob's key.
+
+Record each step's result for both phones in the release notes, including
+anything that didn't work.

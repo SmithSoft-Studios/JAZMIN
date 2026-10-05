@@ -72,6 +72,24 @@ jobs:
           npm ci
           node scripts/viewer-e2e.mjs --browser chrome --browser firefox
 
+  # The same checks in Safari (GitHub issue #9), on macOS, where safaridriver is built in but must be switched on.
+  viewer-safari:
+    name: Viewer (Safari)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: js/package-lock.json
+      - name: Viewer end-to-end
+        working-directory: js
+        run: |
+          sudo safaridriver --enable
+          npm ci
+          node scripts/viewer-e2e.mjs --browser safari
+
   # What each benchmark query reads (GitHub issue #5): bytes and rows are deterministic, so a query that reads more
   # than 10% more bytes than js/bench/proposals-baseline.json, or returns other rows, fails the build. Times are
   # printed only.

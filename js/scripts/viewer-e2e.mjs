@@ -1,8 +1,8 @@
 // End-to-end check of the viewer (TASKS F-2) in real browsers: opens the embedded-files fixtures written by both
 // libraries with each kind of key, checks the data, the files and the rendered document, then saves the page as one
-// HTML file and opens that copy from disk. Drives Chrome and Edge through the DevTools protocol and Firefox through
-// WebDriver BiDi (Node 22+, no packages).
-//   node scripts/viewer-e2e.mjs [--browser chrome|edge|firefox ...]   (default: every browser found)
+// HTML file and opens that copy from disk. Drives Chrome and Edge through the DevTools protocol, Firefox through
+// WebDriver BiDi and Safari (macOS) through WebDriver classic (Node 22+, no packages).
+//   node scripts/viewer-e2e.mjs [--browser chrome|edge|firefox|safari ...]   (default: every browser found)
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -20,6 +20,7 @@ const BROWSERS = {
   chrome: ['C:/Program Files/Google/Chrome/Application/chrome.exe', '/usr/bin/google-chrome', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'],
   edge: ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', '/usr/bin/microsoft-edge', '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'],
   firefox: ['C:/Program Files/Mozilla Firefox/firefox.exe', '/usr/bin/firefox', '/Applications/Firefox.app/Contents/MacOS/firefox'],
+  safari: ['/usr/bin/safaridriver'],
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -188,6 +189,57 @@ async function launchFirefox(exe) {
   };
 }
 
+// Safari through WebDriver classic: plain HTTP calls to safaridriver, which is built into macOS. It must be switched on
+// once with "sudo safaridriver --enable". WebDriver classic reports no page errors, so for Safari the checks alone
+// show problems.
+async function launchSafari(exe) {
+  const port = 4400 + Math.floor(Math.random() * 500);
+  const proc = spawn(exe, ['--port', String(port)], { stdio: 'ignore' });
+  const driver = `http://127.0.0.1:${port}`;
+  const call = async (method, route, body) => {
+    const res = await fetch(driver + route, { method, headers: { 'content-type': 'application/json' }, body: body && JSON.stringify(body) });
+    const { value } = await res.json();
+    if (!res.ok) throw new Error(`${method} ${route}: ${value?.error} ${value?.message}`);
+    return value;
+  };
+  let ready = false;
+  for (let i = 0; i < 150 && !ready; i++) {
+    await sleep(100);
+    try { ready = (await call('GET', '/status')).ready; } catch { /* not listening yet */ }
+  }
+  if (!ready) {
+    proc.kill();
+    throw new Error('safaridriver did not start within 15 seconds');
+  }
+  let session;
+  try {
+    session = `/session/${(await call('POST', '/session', { capabilities: { alwaysMatch: { browserName: 'safari' } } })).sessionId}`;
+  } catch (error) {
+    proc.kill();
+    throw new Error(`${error.message} (switch safaridriver on once with "sudo safaridriver --enable")`);
+  }
+  await call('POST', `${session}/timeouts`, { script: 60000, pageLoad: 60000 });
+  return {
+    problems: [],
+    async navigate(url) {
+      await call('POST', `${session}/url`, { url });
+    },
+    async evaluate(expression) {
+      const r = await call('POST', `${session}/execute/async`, {
+        script: `const done = arguments[arguments.length - 1];
+          (async () => JSON.stringify(await (${expression})))().then((json) => done({ json }), (e) => done({ error: String(e) + ' ' + ((e && e.stack) || '') }));`,
+        args: [],
+      });
+      if (r.error) throw new Error(r.error);
+      return r.json === undefined ? undefined : JSON.parse(r.json);
+    },
+    async close() {
+      await call('DELETE', session).catch(() => {});
+      proc.kill();
+    },
+  };
+}
+
 // ---- the checks ----------------------------------------------------------------------------------------
 const waitFor = async (page, expression, what, ms = 20000) => {
   for (const end = Date.now() + ms; Date.now() < end; await sleep(150)) {
@@ -209,7 +261,11 @@ const SHOWN = `({
 
 /** Types the key (and an unlock token when asked) into the unlock form, as a person would. */
 async function unlock(page, c) {
-  await waitFor(page, `!document.getElementById('jz-unlock').hidden`, 'the unlock form');
+  try {
+    await waitFor(page, `document.getElementById('jz-unlock')?.hidden === false`, 'the unlock form');
+  } catch (error) {
+    throw new Error(`${error.message}: ${JSON.stringify(await page.evaluate(`({ url: location.href, title: document.title, text: (document.body?.innerText ?? '').slice(0, 300) })`))}`);
+  }
   await page.evaluate(`(document.getElementById('jz-key').value = ${JSON.stringify(keys[c.key])}, document.getElementById('jz-unlock').requestSubmit(), true)`);
   if (c.key === 'carol') {
     await waitFor(page, `!document.getElementById('jz-token-row').hidden`, 'the unlock token field');
@@ -242,7 +298,7 @@ for (const name of chosen) {
   }
   let page;
   try {
-    page = name === 'firefox' ? await launchFirefox(exe) : await launchChromium(exe);
+    page = await ({ firefox: launchFirefox, safari: launchSafari }[name] ?? launchChromium)(exe);
   } catch (error) {
     results.push({ browser: name, label: 'start', ok: false, problems: [error.message] });
     continue;
@@ -272,11 +328,13 @@ for (const name of chosen) {
     await page.evaluate(`fetch('/spec/fixtures/${c.file}').then((r) => r.blob()).then((b) => JazminViewer.choose(b, '${c.file}')).then(() => true)`);
     await unlock(page, c);
     const html = await page.evaluate('JazminViewer.exportHtml()');
-    const saved = path.join(os.tmpdir(), `jazmin-viewer-export-${name}.html`);
+    // Safari's WebDriver refuses file:// pages ("outside the sandbox"), so Safari opens the copy from the test server.
+    const fromDisk = name !== 'safari';
+    const saved = path.join(fromDisk ? os.tmpdir() : temp, `jazmin-viewer-export-${name}.html`);
     fs.writeFileSync(saved, html);
-    await page.navigate(pathToFileURL(saved).href);
+    await page.navigate(fromDisk ? pathToFileURL(saved).href : `${base}/e2e/${path.basename(saved)}`);
     const shown = await unlock(page, c);
-    results.push({ browser: name, ...check(c, shown, `saved as HTML (${Math.round(html.length / 1024)} KB), opened from disk with bob's key`) });
+    results.push({ browser: name, ...check(c, shown, `saved as HTML (${Math.round(html.length / 1024)} KB), opened ${fromDisk ? 'from disk' : 'on its own over HTTP'} with bob's key`) });
     fs.rmSync(saved, { force: true });
     if (page.problems.length) results.push({ browser: name, label: 'page errors', ok: false, problems: page.problems });
   } catch (error) {

@@ -75,6 +75,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     each chunk part, which holds every column (#23 would split them).
 
 ### Added
+- **The viewer is tested in Safari (#9).** `npm run test:viewer` drives
+  Safari through `safaridriver`, built into macOS, and CI runs its checks on
+  macOS beside Chrome and Firefox on Linux.
+  - **Phones:** CONTRIBUTING has a phone check for each release, on an
+    iPhone and an Android phone.
+  - **One difference:** Safari's automation can't open files from disk, so in
+    Safari CI opens the "Save as HTML" copy from a web server. The phone
+    check covers opening it from disk.
 - **User guide: fetching many rows by position (#27).** Section 9.9 shows
   why to sort row positions before calling `get()`. On the benchmark,
   fetching one day's 549 rows in time order read 53,815 KB in 673 ms; sorted
