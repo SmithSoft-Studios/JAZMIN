@@ -164,7 +164,7 @@ internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
 /// loader (part <c>page/&lt;n&gt;</c> or <c>nulls</c>), and a few decoded pages are kept, so memory stays bounded
 /// however large the index is.
 /// </summary>
-internal sealed class PagedSortedIndex : ISortedIndex
+internal sealed class PagedSortedIndex : IIndex
 {
     private const int PagesCached = 8;
     private readonly JazminType _type;
@@ -218,81 +218,140 @@ internal sealed class PagedSortedIndex : ISortedIndex
         return lo - 1;
     }
 
-    public long[] Nulls => _nulls is { } at ? RowSet.DecodeSection(_load("nulls", at), "Index null postings") : Array.Empty<long>();
+    /// <summary>The first and last page a lookup reads (last &lt; first: none), from the directory alone.</summary>
+    private (int From, int To) PageSpan(IndexLookup lookup)
+    {
+        var last = _pages.Length - 1;
+        switch (lookup)
+        {
+            case IndexLookup.Eq eq:
+            {
+                if (Values.IsNaN(eq.Value)) return (0, -1);
+                var i = PageFor(eq.Value);
+                return (Math.Max(i, 0), i);
+            }
+            case IndexLookup.Range range:
+                if ((range.Low is not null && Values.IsNaN(range.Low)) || (range.High is not null && Values.IsNaN(range.High))) return (0, -1);
+                return (range.Low is null ? 0 : Math.Max(PageFor(range.Low), 0), range.High is null ? last : PageFor(range.High));
+            case IndexLookup.Prefix prefix:
+            {
+                // Keys starting with the text are contiguous: they continue while the next page may still start with it.
+                var from = Math.Max(PageFor(prefix.Text), 0);
+                var to = from;
+                while (to < last && ((string)_pages[to + 1].First).StartsWith(prefix.Text, StringComparison.Ordinal)) to++;
+                return (from, Math.Min(to, last));
+            }
+            default:
+                return (0, -1);
+        }
+    }
 
-    public long[] Eq(object value)
+    public long? Cost(IndexLookup lookup)
+    {
+        switch (lookup)
+        {
+            case IndexLookup.Contains: return null;
+            case IndexLookup.Nulls: return _nulls?.Length ?? 0;
+        }
+        var pages = new HashSet<int>();
+        void Add((int From, int To) span)
+        {
+            for (var i = span.From; i <= span.To; i++)
+                if (!_cache.ContainsKey(i)) pages.Add(i);
+        }
+        if (lookup is IndexLookup.In @in) foreach (var value in @in.Values) Add(PageSpan(new IndexLookup.Eq(value)));
+        else Add(PageSpan(lookup));
+        return pages.Sum(i => (long)_pages[i].At.Length);
+    }
+
+    public long[] Rows(IndexLookup lookup)
+    {
+        switch (lookup)
+        {
+            case IndexLookup.Eq eq: return EqRows(eq.Value);
+            case IndexLookup.In @in: return RowSet.Union(@in.Values.Select(EqRows).ToList());
+            case IndexLookup.Nulls: return _nulls is { } at ? RowSet.DecodeSection(_load("nulls", at), "Index null postings") : Array.Empty<long>();
+            case IndexLookup.Range or IndexLookup.Prefix:
+            {
+                var (from, to) = PageSpan(lookup);
+                var lists = new List<long[]>();
+                for (var j = from; j <= to; j++)
+                    lists.Add(lookup is IndexLookup.Prefix prefix ? Page(j).Prefix(prefix.Text) : Page(j).Between((IndexLookup.Range)lookup));
+                return RowSet.Union(lists);
+            }
+            default:
+                return Array.Empty<long>();
+        }
+    }
+
+    private long[] EqRows(object value)
     {
         if (Values.IsNaN(value)) return Array.Empty<long>();
         var i = PageFor(value);
         return i < 0 ? Array.Empty<long>() : Page(i).Eq(value);
     }
-
-    /// <summary>Reads only the pages the range spans.</summary>
-    public long[] Range(string op, object value)
-    {
-        if (Values.IsNaN(value)) return Array.Empty<long>();
-        var i = PageFor(value);
-        var lists = new List<long[]>();
-        if (op is "gt" or "gte")
-            for (var j = Math.Max(i, 0); j < _pages.Length; j++) lists.Add(Page(j).Range(op, value));
-        else
-            for (var j = 0; j <= i; j++) lists.Add(Page(j).Range(op, value));
-        return RowSet.Union(lists);
-    }
-
-    public long[] Prefix(string text)
-    {
-        var lists = new List<long[]>();
-        // Keys starting with the text are contiguous: continue while the next page may still start with it.
-        for (var j = Math.Max(PageFor(text), 0); j < _pages.Length; j++)
-        {
-            lists.Add(Page(j).Prefix(text));
-            if (j + 1 >= _pages.Length || !((string)_pages[j + 1].First).StartsWith(text, StringComparison.Ordinal)) break;
-        }
-        return RowSet.Union(lists);
-    }
 }
 
-/// <summary>Lookups a sorted index answers (one segment, or several combined).</summary>
-internal interface ISortedIndex
+/// <summary>
+/// A lookup an index answers, built from filter conditions by <see cref="Query.FilterEngine.IndexPlan"/>. Every index
+/// reports the lookup's <see cref="IIndex.Cost"/> - the bytes of index data it still has to read, from what is already
+/// in memory, without reading anything; null when it cannot answer - and its <see cref="IIndex.Rows"/>.
+/// </summary>
+internal abstract record IndexLookup
 {
-    long[] Nulls { get; }
-    long[] Eq(object value);
-    long[] Range(string op, object value);
-    long[] Prefix(string text);
+    public sealed record Eq(object Value) : IndexLookup;
+
+    public sealed record In(object[] Values) : IndexLookup;
+
+    /// <summary>Keys between Low and High; an absent bound is unbounded on that side.</summary>
+    public sealed record Range(object? Low, bool LowInclusive, object? High, bool HighInclusive) : IndexLookup;
+
+    public sealed record Prefix(string Text) : IndexLookup;
+
+    public sealed record Nulls : IndexLookup;
+
+    public sealed record Contains(string Text, bool CaseInsensitive) : IndexLookup;
 }
 
-/// <summary>Lookups a trigram index answers (one segment, or several combined).</summary>
-internal interface ITrigramIndex
+/// <summary>An index of one column (one segment, or several combined).</summary>
+internal interface IIndex
 {
-    long[]? Candidates(string text, bool caseInsensitive);
+    /// <summary>Bytes of index data the lookup still has to read (nothing is read to answer this), or null when this index cannot answer it.</summary>
+    long? Cost(IndexLookup lookup);
+
+    /// <summary>The sorted row ids the lookup finds (a superset of the matching rows).</summary>
+    long[] Rows(IndexLookup lookup);
 }
 
 /// <summary>Combines the original index with one segment per append (row ids never overlap).</summary>
-internal sealed class CompositeSortedIndex(IReadOnlyList<ISortedIndex> parts) : ISortedIndex
+internal sealed class CompositeIndex(IReadOnlyList<IIndex> parts) : IIndex
 {
-    public long[] Nulls => RowSet.Union(parts.Select(p => p.Nulls).ToList());
-    public long[] Eq(object value) => RowSet.Union(parts.Select(p => p.Eq(value)).ToList());
-    public long[] Range(string op, object value) => RowSet.Union(parts.Select(p => p.Range(op, value)).ToList());
-    public long[] Prefix(string text) => RowSet.Union(parts.Select(p => p.Prefix(text)).ToList());
-}
-
-internal sealed class CompositeTrigramIndex(IReadOnlyList<ITrigramIndex> parts) : ITrigramIndex
-{
-    public long[]? Candidates(string text, bool caseInsensitive)
+    public long? Cost(IndexLookup lookup)
     {
-        var lists = new List<long[]>();
+        long total = 0;
         foreach (var part in parts)
         {
-            var ids = part.Candidates(text, caseInsensitive);
-            if (ids is null) return null;
-            lists.Add(ids);
+            if (part.Cost(lookup) is not { } cost) return null;
+            total += cost;
         }
-        return RowSet.Union(lists);
+        return total;
     }
+
+    public long[] Rows(IndexLookup lookup) => RowSet.Union(parts.Select(p => p.Rows(lookup)).ToList());
 }
 
-internal sealed class SortedIndex : ISortedIndex
+/// <summary>A trigram index read only when a lookup is made: until then a lookup costs the whole index's size.</summary>
+internal sealed class LazyTrigramIndex(long bytes, Func<IIndex> load) : IIndex
+{
+    private IIndex? _index;
+
+    public long? Cost(IndexLookup lookup) =>
+        lookup is IndexLookup.Contains c && TrigramIndex.Answers(c.Text, c.CaseInsensitive) ? (_index is null ? bytes : 0) : null;
+
+    public long[] Rows(IndexLookup lookup) => (_index ??= load()).Rows(lookup);
+}
+
+internal sealed class SortedIndex
 {
     private readonly object[] _keys;
     private readonly long[][] _postings;
@@ -302,8 +361,6 @@ internal sealed class SortedIndex : ISortedIndex
         _keys = keys;
         _postings = postings;
     }
-
-    public long[] Nulls => Array.Empty<long>(); // a page holds no null postings
 
     public int Count => _keys.Length;
 
@@ -354,17 +411,12 @@ internal sealed class SortedIndex : ISortedIndex
         return i < _keys.Length && Values.Compare(_keys[i], value) == 0 ? _postings[i] : Array.Empty<long>();
     }
 
-    public long[] Range(string op, object value)
+    /// <summary>Rows whose key lies within the range (an absent bound: unbounded on that side).</summary>
+    public long[] Between(IndexLookup.Range range)
     {
-        if (Values.IsNaN(value)) return Array.Empty<long>();
-        return op switch
-        {
-            "gt" => Span(Bound(value, true), _keys.Length),
-            "gte" => Span(Bound(value, false), _keys.Length),
-            "lt" => Span(0, Bound(value, false)),
-            "lte" => Span(0, Bound(value, true)),
-            _ => throw new ArgumentOutOfRangeException(nameof(op)),
-        };
+        var from = range.Low is null ? 0 : Bound(range.Low, !range.LowInclusive);
+        var to = range.High is null ? _keys.Length : Bound(range.High, range.HighInclusive);
+        return to > from ? Span(from, to) : Array.Empty<long>();
     }
 
     public long[] Prefix(string text)
@@ -436,7 +488,7 @@ internal sealed class TrigramIndexBuilder : IIndexBuilder
     }
 }
 
-internal sealed class TrigramIndex : ITrigramIndex
+internal sealed class TrigramIndex : IIndex
 {
     private readonly Dictionary<string, long[]> _grams;
 
@@ -458,15 +510,15 @@ internal sealed class TrigramIndex : ITrigramIndex
         return new TrigramIndex(grams);
     }
 
-    /// <summary>
-    /// Superset of rows that may contain the text, or null when the index cannot help
-    /// (text shorter than 3, or case-insensitive search with non-ASCII characters).
-    /// </summary>
-    public long[]? Candidates(string text, bool caseInsensitive)
+    /// <summary>Whether a trigram index can narrow a search for the text: not under 3 characters, nor case-insensitive non-ASCII.</summary>
+    public static bool Answers(string text, bool caseInsensitive) => !(caseInsensitive && text.Any(c => c > 0x7f)) && Trigrams.Of(text).Count > 0;
+
+    public long? Cost(IndexLookup lookup) => lookup is IndexLookup.Contains c && Answers(c.Text, c.CaseInsensitive) ? 0 : null;
+
+    /// <summary>Superset of rows that may contain the text (a search the index <see cref="Answers"/>).</summary>
+    public long[] Rows(IndexLookup lookup)
     {
-        if (caseInsensitive && text.Any(c => c > 0x7f)) return null;
-        var grams = Trigrams.Of(text);
-        if (grams.Count == 0) return null;
+        var grams = Trigrams.Of(((IndexLookup.Contains)lookup).Text);
         long[]? result = null;
         foreach (var gram in grams)
         {
@@ -474,6 +526,6 @@ internal sealed class TrigramIndex : ITrigramIndex
             result = result is null ? ids : RowSet.Intersect(result, ids);
             if (result.Length == 0) return result;
         }
-        return result;
+        return result ?? Array.Empty<long>();
     }
 }

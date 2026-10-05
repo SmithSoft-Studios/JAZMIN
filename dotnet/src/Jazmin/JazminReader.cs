@@ -1232,30 +1232,65 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 if (_cost is not null) _cost.IndexPagesRead++;
                 return ReadSection(at, sectionId, CatalogKey(sectionId, _access?.Secrets?.Owner, FormatConstants.KeyringIndex));
             }
+            static IIndex Combine(List<IIndex> parts) => parts.Count == 1 ? parts[0] : new CompositeIndex(parts);
             // One segment for the original rows plus one per append.
             if (kind == "sorted")
             {
-                var parts = infos.Select(info =>
+                // Only the directory is read now; pages are read (and a few kept) as lookups need them.
+                index = Combine(infos.Select(info =>
                 {
                     var baseId = FormatConstants.IndexSectionId(_tableIndex, column, kind, info.Segment);
-                    // Only the directory is read now; pages are read (and a few kept) as lookups need them.
-                    return (ISortedIndex)new PagedSortedIndex(Catalog.DecodeIndexDirectory(Read(baseId, info.Section)), type, (part, page) => Read($"{baseId}/{part}", page));
-                }).ToList();
-                index = parts.Count == 1 ? parts[0] : new CompositeSortedIndex(parts);
+                    return (IIndex)new PagedSortedIndex(Catalog.DecodeIndexDirectory(Read(baseId, info.Section)), type, (part, page) => Read($"{baseId}/{part}", page));
+                }).ToList());
             }
             else
             {
-                var parts = infos.Select(info => (ITrigramIndex)TrigramIndex.Decode(Read(FormatConstants.IndexSectionId(_tableIndex, column, kind, info.Segment), info.Section))).ToList();
-                index = parts.Count == 1 ? parts[0] : new CompositeTrigramIndex(parts);
+                // Read only when a lookup is made: until then the planner knows its size, and may prefer a scan.
+                index = new LazyTrigramIndex(infos.Sum(info => (long)info.Section.Length),
+                    () => Combine(infos.Select(info => (IIndex)TrigramIndex.Decode(Read(FormatConstants.IndexSectionId(_tableIndex, column, kind, info.Segment), info.Section))).ToList()));
             }
         }
         _indexes[cacheKey] = index;
         return index;
     }
 
-    ISortedIndex? IIndexProvider.Sorted(string column) => LoadIndex(column, "sorted") as ISortedIndex;
+    IIndex? IIndexProvider.Index(string column, string kind) => LoadIndex(column, kind) as IIndex;
 
-    ITrigramIndex? IIndexProvider.Trigram(string column) => LoadIndex(column, "trigram") as ITrigramIndex;
+    private const int SmallLookupBytes = 8 * 1024; // index lookups this small are always made: the bytes are negligible, and rows are not decoded
+
+    /// <summary>The chunks a scan reads for a filter: those its partition, sort range and statistics leave.</summary>
+    private int[] ScanList(BoundFilter? plan) => ScanChunks(plan).Where(o => plan is null || MayMatch(plan, o)).ToArray();
+
+    /// <summary>Bytes of a chunk's parts (every column group).</summary>
+    private long ChunkBytes(int ordinal)
+    {
+        var first = ordinal * _groups.Length;
+        var last = first + _groups.Length - 1;
+        return _partOffset[last] + _partLength[last] - _partOffset[first];
+    }
+
+    /// <summary>
+    /// Row ids indexes narrow a filter to (sorted), or null to scan. Index lookups are planned against what a scan would
+    /// read: small lookups (<see cref="SmallLookupBytes"/>) are always made, and costlier ones only while they read less
+    /// than the scan's chunks, less one chunk (an index answer still reads at least one). Rows are kept only in the
+    /// chunks a scan would read (a sort range, a pinned partition, chunk statistics): nowhere else can a row match.
+    /// </summary>
+    private long[]? Candidates(BoundFilter? plan)
+    {
+        if (plan is null) return null;
+        var scan = ScanList(plan);
+        long scanBytes = 0, smallest = long.MaxValue;
+        foreach (var ordinal in scan)
+        {
+            var bytes = ChunkBytes(ordinal);
+            scanBytes += bytes;
+            smallest = Math.Min(smallest, bytes);
+        }
+        if (FilterEngine.IndexPlan(plan, this, Math.Max(scan.Length > 0 ? scanBytes - smallest : 0, SmallLookupBytes)) is not { } lookup) return null;
+        var inScan = new bool[_rowCount.Length];
+        foreach (var ordinal in scan) inScan[ordinal] = true;
+        return lookup.Rows().Where(rowId => ChunkOrdinalFor(rowId) is var o && o >= 0 && inScan[o]).ToArray();
+    }
 
     // ---- queries ---------------------------------------------------------------------------------
 
@@ -1493,11 +1528,11 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private IEnumerable<JazminRow> FindIterator(BoundFilter? plan, int[] selection, long offset, long limit)
     {
         long skipped = 0, yielded = 0;
-        var rowIds = plan is null ? null : FilterEngine.Candidates(plan, this);
-        if (rowIds is null && _access is null)
+        var rowIds = Candidates(plan);
+        if (_access is null)
         {
-            // No index narrows the rows: decode only the filter's and the selected columns of each chunk.
-            foreach (var row in ScanColumns(plan, selection, offset, limit)) yield return row;
+            // Decode only the filter's and the selected columns, of the chunks the index candidates (or the scan) name.
+            foreach (var row in ScanColumns(plan, selection, offset, limit, rowIds)) yield return row;
             yield break;
         }
         var wanted = WantedColumns(plan, selection); // only the filter's and the selected columns are decoded
@@ -1514,41 +1549,53 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             return true;
         }
 
-        if (rowIds is not null)
-        {
-            EnsureAllChunks(); // index results span every partition
-            foreach (var rowId in rowIds)
-            {
-                if (yielded >= limit) yield break;
-                var ordinal = ChunkOrdinalFor(rowId);
-                if (ordinal < 0) continue;
-                var row = ChunkRows(ordinal, wanted)[rowId - _rowStart[ordinal]];
-                if (!Accept(row)) continue;
-                yielded++;
-                yield return new JazminRow(rowId, _allColumns, selection, row);
-            }
-            yield break;
-        }
-
         var whole = WholeChunkTest(plan);
-        foreach (var ordinal in ScanChunks(plan))
+        foreach (var (ordinal, from, to) in ChunkRuns(plan, rowIds))
         {
             if (yielded >= limit) yield break;
-            if (plan is not null && !MayMatch(plan, ordinal)) continue;
-            if (skipped < offset && offset - skipped >= LiveRows(ordinal) && whole(ordinal))
+            if (rowIds is null && skipped < offset && offset - skipped >= LiveRows(ordinal) && whole(ordinal))
             {
                 skipped += LiveRows(ordinal); // every row matches and lies before the offset: no need to read it
                 continue;
             }
             var rows = ChunkRows(ordinal, wanted);
-            for (var r = 0; r < rows.Length; r++)
+            var start = _rowStart[ordinal];
+            var count = rowIds is null ? rows.Length : to - from;
+            for (var k = 0; k < count; k++)
             {
                 if (yielded >= limit) yield break;
+                var r = rowIds is null ? k : (int)(rowIds[from + k] - start);
                 if (!Accept(rows[r])) continue;
                 yielded++;
-                yield return new JazminRow(_rowStart[ordinal] + r, _allColumns, selection, rows[r]);
+                yield return new JazminRow(start + r, _allColumns, selection, rows[r]);
             }
         }
+    }
+
+    /// <summary>
+    /// The chunks a filtered query reads, in order, each with its index candidates: From to To (exclusive) in
+    /// <paramref name="rowIds"/> (see <see cref="Candidates"/>). Without candidates, the chunks a scan reads (every row
+    /// checked).
+    /// </summary>
+    private List<(int Ordinal, int From, int To)> ChunkRuns(BoundFilter? plan, long[]? rowIds)
+    {
+        var runs = new List<(int, int, int)>();
+        if (rowIds is null)
+        {
+            foreach (var ordinal in ScanChunks(plan))
+                if (plan is null || MayMatch(plan, ordinal)) runs.Add((ordinal, 0, 0));
+            return runs;
+        }
+        for (var i = 0; i < rowIds.Length;)
+        {
+            var ordinal = ChunkOrdinalFor(rowIds[i]);
+            var end = _rowStart[ordinal] + _rowCount[ordinal];
+            var j = i + 1;
+            while (j < rowIds.Length && rowIds[j] < end) j++;
+            runs.Add((ordinal, i, j));
+            i = j;
+        }
+        return runs;
     }
 
     /// <summary>By column position: the columns a query decodes - those its filter reads and those it returns.</summary>
@@ -1559,8 +1606,11 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         return Enumerable.Range(0, _types.Length).Select(used.Contains).ToArray();
     }
 
-    /// <summary>Scan with a filter (one column group): only the columns the filter and the selection use are decoded.</summary>
-    private IEnumerable<JazminRow> ScanColumns(BoundFilter? plan, int[] selection, long offset, long limit)
+    /// <summary>
+    /// A query on a file with one column group: only the columns the filter and the selection use are decoded, and with
+    /// index candidates (<paramref name="rowIds"/>) only their chunks are read and only their rows checked.
+    /// </summary>
+    private IEnumerable<JazminRow> ScanColumns(BoundFilter? plan, int[] selection, long offset, long limit, long[]? rowIds = null)
     {
         var wanted = WantedColumns(plan, selection);
         var all = !wanted.Contains(false);
@@ -1569,14 +1619,21 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         var scratch = new object?[_types.Length];
         long skipped = 0, yielded = 0;
         var deleted = 0;
-        var ordinals = ScanChunks(plan).Where(o => plan is null || MayMatch(plan, o)).ToArray();
+        var runs = ChunkRuns(plan, rowIds);
+        var ordinals = runs.Select(run => run.Ordinal).ToArray();
         var whole = WholeChunkTest(plan);
+        var next = 0; // the run of the chunk being read (chunks come in order; some are skipped)
         foreach (var (ordinal, columns) in Chunks())
         {
-            for (var r = 0; r < _rowCount[ordinal]; r++)
+            while (runs[next].Ordinal != ordinal) next++;
+            var (_, from, to) = runs[next];
+            var start = _rowStart[ordinal];
+            var count = rowIds is null ? _rowCount[ordinal] : to - from;
+            for (var k = 0; k < count; k++)
             {
                 if (yielded >= limit) yield break;
-                var rowId = _rowStart[ordinal] + r;
+                var r = rowIds is null ? k : (int)(rowIds[from + k] - start);
+                var rowId = start + r;
                 while (deleted < _deleted.Length && _deleted[deleted] < rowId) deleted++;
                 if (deleted < _deleted.Length && _deleted[deleted] == rowId) continue; // removed by an append
                 if (plan is not null)
@@ -1604,7 +1661,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             for (; i < ordinals.Length && skipped < offset && yielded < limit; i++)
             {
                 var ordinal = ordinals[i];
-                if (offset - skipped >= LiveRows(ordinal) && whole(ordinal))
+                if (rowIds is null && offset - skipped >= LiveRows(ordinal) && whole(ordinal))
                 {
                     skipped += LiveRows(ordinal);
                     continue;
@@ -1633,7 +1690,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     public JazminPlan Explain(JazminFilter? filter)
     {
         var plan = Plan(filter);
-        var ids = plan is null ? null : FilterEngine.Candidates(plan, this);
+        var ids = Candidates(plan);
         if (ids is not null) return new JazminPlan("index", ids.Length, ChunkCount, 0);
         var scanned = ScanChunks(plan);
         var matching = plan is null ? scanned.Count : scanned.Count(i => MayMatch(plan, i));

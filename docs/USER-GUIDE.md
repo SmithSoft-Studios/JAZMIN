@@ -777,6 +777,41 @@ On 200,000 transactions (`npm run bench:proposals`):
 - **The browser reader** pages without a filter the same way, and its
   `query()` returns `total` without counting row by row.
 
+### 9.8 How a query chooses between indexes and a scan
+
+For each query the reader first works out which chunks a scan would have to
+read. Chunk statistics, the file's sort order and, in access-controlled
+files, the partition a filter names often leave only a few. Then it decides
+whether indexes can do better:
+
+- **Conditions on one column become one lookup.** For example,
+  `{ at: { gte: monday, lt: tuesday } }` reads only the index pages for that
+  day. Before 1.1, each bound read about half the index.
+- **An index is used only when it reads less than the scan would.** The cost
+  of a lookup comes from the index's directory, so it's known before any
+  index page is read. Lookups of up to 8 KB are always made.
+  - On a file sorted by account, a page of one account's rows after a time,
+    `{ account, at: { gt: lastAt } }`, scans that account's one or two chunks
+    instead of reading megabytes of the time index.
+  - When a filter has several conditions, the cheapest lookups are used and
+    the rest are checked row by row.
+- **Index results only narrow the scan.** Only chunks the scan would read are
+  read, and in them only the rows the index names are checked, with the same
+  fast column decoding as a scan.
+
+`explain(filter)` shows the choice (`strategy: 'index'` or `'scan'`), and
+`{ analyze: true }` shows what it read (section 9.6).
+
+On 200,000 transactions sorted by account (`npm run bench:proposals`):
+
+| Query | 1.0.0 | Now |
+|---|---:|---:|
+| A page of one account's rows after a time | 3,785 KB, 109 ms | 102 KB, 2.2 ms |
+| One day across all accounts | 7,467 KB, 206 ms | 4,938 KB, 70 ms |
+
+In .NET, the same changes took a lookup by id from 3.7 to 2.1 ms, and an
+indexed filter from 40 to 12 ms.
+
 ---
 
 ## 10. Security guide

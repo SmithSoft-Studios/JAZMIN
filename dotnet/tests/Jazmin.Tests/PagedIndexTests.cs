@@ -40,11 +40,13 @@ public class PagedIndexTests
         return stream.ToArray();
     }
 
+    private static readonly JazminFilter EveryRowPrefix = JazminFilter.StartsWith("account", "ACC0"); // every account starts with it
+
     private static readonly JazminFilter[] Filters =
     {
         JazminFilter.Eq("account", "ACC0001"), JazminFilter.Eq("account", "ACC9999"), JazminFilter.Eq("account", "A"), JazminFilter.Eq("account", "ZZZ"),
         JazminFilter.In("account", "ACC0001", "ACC0500", "ACC0999", "nope"),
-        JazminFilter.StartsWith("account", "ACC00"), JazminFilter.StartsWith("account", "ACC0"), JazminFilter.StartsWith("account", "X"),
+        JazminFilter.StartsWith("account", "ACC00"), EveryRowPrefix, JazminFilter.StartsWith("account", "X"),
         JazminFilter.IsNull("account"),
         JazminFilter.Eq("amount", -2500L), JazminFilter.Eq("amount", 2499L), JazminFilter.Eq("amount", 0L),
         JazminFilter.Gt("amount", 2400L), JazminFilter.Gte("amount", 2400L), JazminFilter.Lt("amount", -2400L), JazminFilter.Lte("amount", -2400L),
@@ -63,9 +65,11 @@ public class PagedIndexTests
         using var whole = JazminReader.Open(Write(3000));
         using var paged = JazminReader.Open(Write(3000, Small));
         Assert.Equal(whole.Indexes, paged.Indexes); // pages are a storage detail
+        // This prefix matches every row: reading the index's pages as well as every chunk costs more than scanning, so the
+        // planner scans (issue #7).
         foreach (var filter in Filters)
         {
-            Assert.Equal("index", paged.Explain(filter).Strategy);
+            Assert.Equal(ReferenceEquals(filter, EveryRowPrefix) ? "scan" : "index", paged.Explain(filter).Strategy);
             Assert.Equal(Ids(whole, filter), Ids(paged, filter));
         }
     }

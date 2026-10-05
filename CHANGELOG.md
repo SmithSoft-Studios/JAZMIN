@@ -20,6 +20,22 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   - **Browser reader:** it pages without a filter the same way, and `query()`
     without a filter returns `total` from the row count.
 
+- **Query planning (#7):** queries choose between indexes and a scan by what
+  each reads (USER-GUIDE §9.8).
+  - **One lookup per column:** range conditions on one column make one bounded
+    index lookup, instead of one lookup per bound.
+  - **Index only when cheaper:** an index lookup is made only when it reads
+    less than scanning the chunks the filter leaves. Its cost is estimated from
+    the index directory before any page is read, and lookups up to 8 KB are
+    always made. Text-search indexes load only when used.
+  - **Index results narrow the scan:** only the chunks a scan would read are
+    read, and only the candidate rows in them are checked, with the scan's
+    column decoding.
+  - **Measured:** a keyset page within an account went from 3,785 KB / 109 ms
+    to 102 KB / 2.2 ms (.NET: 99 to 2.3 ms). One day across all accounts went
+    from 7,467 KB / 206 ms to 4,938 KB / 70 ms (.NET: 148 to 32 ms).
+  - **.NET main benchmark:** a lookup by id went from 3.7 to 2.1 ms, and an
+    indexed filter from 40 to 12 ms, allocating 1.1 MB instead of 2.5 MB.
 - **Only the columns a query uses are decoded (#11).**
   - **Now everywhere:** index lookups and access-controlled reads now decode
     only the columns the filter uses and those `select` returns, as scans

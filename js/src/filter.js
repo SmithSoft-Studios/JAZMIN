@@ -131,49 +131,101 @@ export function evaluate(node, row) {
   }
 }
 
-function leafCandidates(leaf, indexes) {
-  if (leaf.op === 'contains' || leaf.op === 'icontains') {
-    return indexes.get(leaf.name, 'trigram')?.candidates(leaf.value, leaf.op === 'icontains') ?? null;
-  }
-  const sorted = indexes.get(leaf.name, 'sorted');
-  if (!sorted) return null;
+/** The index lookup a condition can use - [index kind, lookup] (see indexes.js) - or null. */
+function leafLookup(leaf) {
   switch (leaf.op) {
-    case 'eq': return sorted.eq(leaf.value);
-    case 'in': return unionAll(leaf.value.filter((v) => v !== null).map((v) => sorted.eq(v)));
-    case 'startsWith': return sorted.prefix(leaf.value);
-    case 'isNull': return leaf.value ? sorted.nulls : null;
-    case 'gt': case 'gte': case 'lt': case 'lte': return sorted.range(leaf.op, leaf.value);
+    case 'contains': case 'icontains': return ['trigram', { op: 'contains', text: leaf.value, ci: leaf.op === 'icontains' }];
+    case 'eq': return ['sorted', { op: 'eq', value: leaf.value }];
+    case 'in': return ['sorted', { op: 'in', values: leaf.value.filter((v) => v !== null) }];
+    case 'startsWith': return ['sorted', { op: 'prefix', text: leaf.value }];
+    case 'isNull': return leaf.value ? ['sorted', { op: 'nulls' }] : null;
+    case 'gt': case 'gte': return ['sorted', { op: 'range', low: leaf.value, lowInclusive: leaf.op === 'gte' }];
+    case 'lt': case 'lte': return ['sorted', { op: 'range', high: leaf.value, highInclusive: leaf.op === 'lte' }];
     default: return null; // 'ne' cannot be answered efficiently from an index
   }
 }
 
+function lookupPlan(column, kind, lookup, indexes, budget) {
+  const index = indexes.get(column, kind);
+  const cost = index ? index.cost(lookup) : null;
+  return cost === null || cost > budget ? null : { cost, rows: () => index.rows(lookup) };
+}
+
+/** Range conditions of an AND on one column, merged into one bounded lookup (the tightest bounds win). */
+function mergeRange(range, leaf) {
+  const merged = range ?? { op: 'range' };
+  const [, { low, lowInclusive, high, highInclusive }] = leafLookup(leaf);
+  if (low !== undefined && (merged.low === undefined || compareKeys(low, merged.low) > 0 || (compareKeys(low, merged.low) === 0 && !lowInclusive))) {
+    Object.assign(merged, { low, lowInclusive });
+  }
+  if (high !== undefined && (merged.high === undefined || compareKeys(high, merged.high) < 0 || (compareKeys(high, merged.high) === 0 && !highInclusive))) {
+    Object.assign(merged, { high, highInclusive });
+  }
+  return merged;
+}
+
+const isRange = (node) => node.kind === 'leaf' && RANGE_OPS.has(node.op) && !(typeof node.value === 'number' && Number.isNaN(node.value));
+
 /**
- * Uses indexes to compute a sorted superset of matching row ids.
- * Returns null when indexes cannot narrow the search (caller must scan).
- * `indexes.get(columnName, kind)` returns a loaded index or undefined.
+ * How indexes can narrow a filter: { cost, rows() }, where `cost` is the bytes of index data the lookups still have
+ * to read (estimated from index directories: nothing is read yet) and rows() returns a sorted superset of the
+ * matching row ids; or null when indexes cannot narrow it. Within an AND, range conditions on one column become one
+ * bounded lookup, lookups are taken cheapest first, and those that would push the cost over `budget` bytes are left
+ * out (the filter is still checked on every row read).
  */
-export function candidates(node, indexes) {
+export function indexPlan(node, indexes, budget = Infinity) {
   switch (node.kind) {
     case 'and': {
-      let result = null;
+      const parts = [];
+      const ranges = new Map(); // column name -> merged range lookup
       for (const item of node.items) {
-        const ids = candidates(item, indexes);
-        if (ids !== null) result = result === null ? ids : intersect(result, ids);
+        if (isRange(item)) ranges.set(item.name, mergeRange(ranges.get(item.name), item));
+        else parts.push(indexPlan(item, indexes, budget));
       }
-      return result;
+      for (const [name, lookup] of ranges) parts.push(lookupPlan(name, 'sorted', lookup, indexes, budget));
+      const usable = parts.filter(Boolean).sort((a, b) => a.cost - b.cost);
+      const chosen = [];
+      let cost = 0;
+      for (const part of usable) {
+        if (cost + part.cost > budget) break;
+        chosen.push(part);
+        cost += part.cost;
+      }
+      if (!chosen.length) return null;
+      return {
+        cost,
+        rows: () => {
+          let result = chosen[0].rows();
+          for (let i = 1; i < chosen.length && result.length; i++) result = intersect(result, chosen[i].rows());
+          return result;
+        },
+      };
     }
     case 'or': {
-      const lists = [];
+      const parts = [];
+      let cost = 0;
       for (const item of node.items) {
-        const ids = candidates(item, indexes);
-        if (ids === null) return null;
-        lists.push(ids);
+        const part = indexPlan(item, indexes, budget);
+        if (part === null) return null; // a branch no index narrows: every row may match
+        parts.push(part);
+        cost += part.cost;
       }
-      return unionAll(lists);
+      return cost > budget ? null : { cost, rows: () => unionAll(parts.map((p) => p.rows())) };
     }
     case 'not': return null;
-    default: return leafCandidates(node, indexes);
+    default: {
+      const lookup = leafLookup(node);
+      return lookup ? lookupPlan(node.name, lookup[0], lookup[1], indexes, budget) : null;
+    }
   }
+}
+
+/**
+ * Uses indexes to compute a sorted superset of matching row ids, or null when indexes cannot narrow the search
+ * (the caller must scan). `indexes.get(columnName, kind)` returns a loaded index or undefined.
+ */
+export function candidates(node, indexes) {
+  return indexPlan(node, indexes)?.rows() ?? null;
 }
 
 function leafMayMatch(leaf, stat, rowCount) {

@@ -54,8 +54,11 @@ test('a sorted index in many pages answers every lookup like one in a single pag
   assert.deepEqual(pageCounts(wholeBuf, whole), ['account:1', 'amount:1', 'price:1', 'when:1']);
   assert.ok(pageCounts(pagedBuf, paged).every((p) => Number(p.split(':')[1]) > 20), pageCounts(pagedBuf, paged).join());
   assert.deepEqual(paged.indexes, whole.indexes); // pages are a storage detail
+  // This prefix matches every row: reading the index's pages as well as every chunk costs more than scanning, so the
+  // planner scans (issue #7).
+  const scans = new Set([JSON.stringify({ account: { startsWith: 'ACC0' } })]);
   for (const filter of filters) {
-    assert.equal(paged.explain(filter).strategy, 'index', JSON.stringify(filter));
+    assert.equal(paged.explain(filter).strategy, scans.has(JSON.stringify(filter)) ? 'scan' : 'index', JSON.stringify(filter));
     assert.deepEqual(ids(paged, filter), ids(whole, filter), JSON.stringify(filter));
   }
 });

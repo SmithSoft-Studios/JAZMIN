@@ -140,54 +140,107 @@ internal static class FilterEngine
         };
     }
 
-    /// <summary>Sorted superset of matching row ids from indexes, or null when a scan is needed.</summary>
-    public static long[]? Candidates(BoundFilter node, IIndexProvider indexes)
+    /// <summary>
+    /// Uses indexes to compute a sorted superset of matching row ids, or null when indexes cannot narrow the search (the
+    /// caller must scan).
+    /// </summary>
+    public static long[]? Candidates(BoundFilter node, IIndexProvider indexes) => IndexPlan(node, indexes)?.Rows();
+
+    /// <summary>
+    /// How indexes can narrow a filter: (Cost, Rows), where Cost is the bytes of index data the lookups still have to
+    /// read (estimated from index directories: nothing is read yet) and Rows returns a sorted superset of the matching
+    /// row ids; or null when indexes cannot narrow it. Within an AND, range conditions on one column become one bounded
+    /// lookup, lookups are taken cheapest first, and those that would push the cost over <paramref name="budget"/>
+    /// bytes are left out (the filter is still checked on every row read).
+    /// </summary>
+    public static (long Cost, Func<long[]> Rows)? IndexPlan(BoundFilter node, IIndexProvider indexes, long budget = long.MaxValue)
     {
         switch (node)
         {
             case BoundFilter.And a:
             {
-                long[]? result = null;
+                var parts = new List<(long Cost, Func<long[]> Rows)>();
+                var ranges = new Dictionary<string, IndexLookup.Range>(StringComparer.Ordinal); // column -> merged range lookup
                 foreach (var item in a.Items)
                 {
-                    var ids = Candidates(item, indexes);
-                    if (ids is not null) result = result is null ? ids : RowSet.Intersect(result, ids);
+                    if (item is BoundFilter.Leaf { Op: "gt" or "gte" or "lt" or "lte" } leaf && !Values.IsNaN(leaf.Value!))
+                        ranges[leaf.Name] = MergeRange(ranges.GetValueOrDefault(leaf.Name), leaf);
+                    else if (IndexPlan(item, indexes, budget) is { } part) parts.Add(part);
                 }
-                return result;
+                foreach (var (name, range) in ranges)
+                    if (LookupPlan(name, "sorted", range, indexes, budget) is { } part) parts.Add(part);
+                var chosen = new List<Func<long[]>>();
+                long cost = 0;
+                foreach (var part in parts.OrderBy(p => p.Cost))
+                {
+                    if (cost + part.Cost > budget) break;
+                    chosen.Add(part.Rows);
+                    cost += part.Cost;
+                }
+                if (chosen.Count == 0) return null;
+                return (cost, () =>
+                {
+                    var result = chosen[0]();
+                    for (var i = 1; i < chosen.Count && result.Length > 0; i++) result = RowSet.Intersect(result, chosen[i]());
+                    return result;
+                });
             }
             case BoundFilter.Or o:
             {
-                var lists = new List<long[]>();
+                var parts = new List<Func<long[]>>();
+                long cost = 0;
                 foreach (var item in o.Items)
                 {
-                    var ids = Candidates(item, indexes);
-                    if (ids is null) return null;
-                    lists.Add(ids);
+                    if (IndexPlan(item, indexes, budget) is not { } part) return null; // a branch no index narrows: every row may match
+                    parts.Add(part.Rows);
+                    cost += part.Cost;
                 }
-                return RowSet.Union(lists);
+                return cost > budget ? null : (cost, () => RowSet.Union(parts.Select(p => p()).ToList()));
             }
-            case BoundFilter.Leaf l:
-                return LeafCandidates(l, indexes);
+            case BoundFilter.Leaf leaf:
+                return LeafLookup(leaf) is { } lookup ? LookupPlan(leaf.Name, lookup.Kind, lookup.Lookup, indexes, budget) : null;
             default:
                 return null;
         }
     }
 
-    private static long[]? LeafCandidates(BoundFilter.Leaf leaf, IIndexProvider indexes)
+    /// <summary>The index lookup a condition can use, or null ('ne' cannot be answered efficiently from an index).</summary>
+    private static (string Kind, IndexLookup Lookup)? LeafLookup(BoundFilter.Leaf leaf) => leaf.Op switch
     {
-        if (leaf.Op is "contains" or "icontains")
-            return indexes.Trigram(leaf.Name)?.Candidates((string)leaf.Value!, leaf.Op == "icontains");
-        var sorted = indexes.Sorted(leaf.Name);
-        if (sorted is null) return null;
-        return leaf.Op switch
+        "contains" or "icontains" => ("trigram", new IndexLookup.Contains((string)leaf.Value!, leaf.Op == "icontains")),
+        "eq" => ("sorted", new IndexLookup.Eq(leaf.Value!)),
+        "in" => ("sorted", new IndexLookup.In(((object?[])leaf.Value!).Where(v => v is not null).Select(v => v!).ToArray())),
+        "startsWith" => ("sorted", new IndexLookup.Prefix((string)leaf.Value!)),
+        "isNull" when (bool)leaf.Value! => ("sorted", new IndexLookup.Nulls()),
+        "gt" or "gte" => ("sorted", new IndexLookup.Range(leaf.Value, leaf.Op == "gte", null, false)),
+        "lt" or "lte" => ("sorted", new IndexLookup.Range(null, false, leaf.Value, leaf.Op == "lte")),
+        _ => null,
+    };
+
+    private static (long Cost, Func<long[]> Rows)? LookupPlan(string column, string kind, IndexLookup lookup, IIndexProvider indexes, long budget)
+    {
+        var index = indexes.Index(column, kind);
+        return index?.Cost(lookup) is { } cost && cost <= budget ? (cost, () => index.Rows(lookup)) : null;
+    }
+
+    /// <summary>Range conditions of an AND on one column, merged into one bounded lookup (the tightest bounds win).</summary>
+    private static IndexLookup.Range MergeRange(IndexLookup.Range? range, BoundFilter.Leaf leaf)
+    {
+        var merged = range ?? new IndexLookup.Range(null, false, null, false);
+        var value = leaf.Value!;
+        if (leaf.Op is "gt" or "gte")
         {
-            "eq" => sorted.Eq(leaf.Value!),
-            "in" => RowSet.Union(((object?[])leaf.Value!).Where(v => v is not null).Select(v => sorted.Eq(v!)).ToList()),
-            "startsWith" => sorted.Prefix((string)leaf.Value!),
-            "isNull" => (bool)leaf.Value! ? sorted.Nulls : null,
-            "gt" or "gte" or "lt" or "lte" => sorted.Range(leaf.Op, leaf.Value!),
-            _ => null,
-        };
+            var inclusive = leaf.Op == "gte";
+            if (merged.Low is null || Values.Compare(value, merged.Low) > 0 || (Values.Compare(value, merged.Low) == 0 && !inclusive))
+                merged = merged with { Low = value, LowInclusive = inclusive };
+        }
+        else
+        {
+            var inclusive = leaf.Op == "lte";
+            if (merged.High is null || Values.Compare(value, merged.High) < 0 || (Values.Compare(value, merged.High) == 0 && !inclusive))
+                merged = merged with { High = value, HighInclusive = inclusive };
+        }
+        return merged;
     }
 
     /// <summary>False when chunk statistics prove no row in the chunk can match.</summary>
@@ -258,7 +311,6 @@ internal static class FilterEngine
 
 internal interface IIndexProvider
 {
-    ISortedIndex? Sorted(string column);
-
-    ITrigramIndex? Trigram(string column);
+    /// <summary>The column's index of this kind ("sorted" or "trigram"), or null when there is none this reader may use.</summary>
+    IIndex? Index(string column, string kind);
 }

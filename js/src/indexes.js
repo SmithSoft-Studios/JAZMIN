@@ -152,16 +152,11 @@ export class SortedIndex {
     return i < this.keys.length && compareKeys(this.keys[i], value) === 0 ? this.postings[i] : [];
   }
 
-  /** op: 'gt' | 'gte' | 'lt' | 'lte' */
-  range(op, value) {
-    if (Number.isNaN(value)) return [];
-    switch (op) {
-      case 'gt': return this.#span(this.#bound(value, true), this.keys.length);
-      case 'gte': return this.#span(this.#bound(value, false), this.keys.length);
-      case 'lt': return this.#span(0, this.#bound(value, false));
-      case 'lte': return this.#span(0, this.#bound(value, true));
-      default: throw new Error(`Unsupported range op ${op}`);
-    }
+  /** Rows whose key lies between `low` and `high` (either undefined: unbounded on that side). */
+  between(low, lowInclusive, high, highInclusive) {
+    const from = low === undefined ? 0 : this.#bound(low, !lowInclusive);
+    const to = high === undefined ? this.keys.length : this.#bound(high, highInclusive);
+    return to > from ? this.#span(from, to) : [];
   }
 
   prefix(text) {
@@ -173,6 +168,15 @@ export class SortedIndex {
 }
 
 const PAGES_CACHED = 8; // decoded pages kept per index: lookups stay fast, memory stays bounded
+
+/*
+ * Index lookups (built from filter conditions by indexPlan in filter.js):
+ *   { op: 'eq', value } | { op: 'in', values } | { op: 'range', low, lowInclusive, high, highInclusive }
+ *   | { op: 'prefix', text } | { op: 'nulls' } | { op: 'contains', text, ci }
+ * Every index answers cost(lookup) - the bytes of index data the lookup still has to read, from what is already in
+ * memory, without reading anything; null when the index cannot answer it - and rows(lookup), the sorted row ids.
+ */
+const isNaNKey = (value) => typeof value === 'number' && Number.isNaN(value);
 
 /**
  * A sorted index (spec 8.1): only the directory is loaded up front; each lookup reads the pages it needs
@@ -220,37 +224,66 @@ export class PagedSortedIndex {
     return lo - 1;
   }
 
-  eq(value) {
-    if (Number.isNaN(value)) return [];
+  /** The first and last page a lookup reads (last < first: none), from the directory alone. */
+  #pageSpan(lookup) {
+    const last = this.#pages.length - 1;
+    switch (lookup.op) {
+      case 'eq': {
+        if (isNaNKey(lookup.value)) return [0, -1];
+        const i = this.#pageFor(lookup.value);
+        return [Math.max(i, 0), i];
+      }
+      case 'range': {
+        if (isNaNKey(lookup.low) || isNaNKey(lookup.high)) return [0, -1];
+        return [lookup.low === undefined ? 0 : Math.max(this.#pageFor(lookup.low), 0), lookup.high === undefined ? last : this.#pageFor(lookup.high)];
+      }
+      case 'prefix': {
+        // Keys starting with the text are contiguous: they continue while the next page may still start with it.
+        const from = Math.max(this.#pageFor(lookup.text), 0);
+        let to = from;
+        while (to < last && this.#pages[to + 1].first.startsWith(lookup.text)) to++;
+        return [from, Math.min(to, last)];
+      }
+      default: return [0, -1];
+    }
+  }
+
+  cost(lookup) {
+    if (lookup.op === 'contains') return null;
+    if (lookup.op === 'nulls') return this.#nullsAt ? this.#nullsAt.length : 0;
+    const pages = new Set();
+    const add = ([from, to]) => {
+      for (let i = from; i <= to; i++) if (!this.#cache.has(i)) pages.add(i);
+    };
+    if (lookup.op === 'in') for (const value of lookup.values) add(this.#pageSpan({ op: 'eq', value }));
+    else add(this.#pageSpan(lookup));
+    let bytes = 0;
+    for (const i of pages) bytes += this.#pages[i].length;
+    return bytes;
+  }
+
+  rows(lookup) {
+    switch (lookup.op) {
+      case 'eq': return this.#eq(lookup.value);
+      case 'in': return unionAll(lookup.values.map((v) => this.#eq(v)));
+      case 'nulls': return this.#nullsAt ? decodePostingsSection(this.#load('nulls', this.#nullsAt), 'Index null postings') : [];
+      case 'range': case 'prefix': {
+        const [from, to] = this.#pageSpan(lookup);
+        const lists = [];
+        for (let j = from; j <= to; j++) {
+          const page = this.#page(j);
+          lists.push(lookup.op === 'prefix' ? page.prefix(lookup.text) : page.between(lookup.low, lookup.lowInclusive, lookup.high, lookup.highInclusive));
+        }
+        return unionAll(lists);
+      }
+      default: return null;
+    }
+  }
+
+  #eq(value) {
+    if (isNaNKey(value)) return [];
     const i = this.#pageFor(value);
     return i < 0 ? [] : this.#page(i).eq(value);
-  }
-
-  /** op: 'gt' | 'gte' | 'lt' | 'lte'; reads only the pages the range spans. */
-  range(op, value) {
-    if (Number.isNaN(value)) return [];
-    const i = this.#pageFor(value);
-    const lists = [];
-    if (op === 'gt' || op === 'gte') {
-      for (let j = Math.max(i, 0); j < this.#pages.length; j++) lists.push(this.#page(j).range(op, value));
-    } else {
-      for (let j = 0; j <= i; j++) lists.push(this.#page(j).range(op, value));
-    }
-    return unionAll(lists);
-  }
-
-  prefix(text) {
-    const lists = [];
-    // Keys starting with `text` are contiguous: continue while the next page may still start with it.
-    for (let j = Math.max(this.#pageFor(text), 0); j < this.#pages.length; j++) {
-      lists.push(this.#page(j).prefix(text));
-      if (j + 1 >= this.#pages.length || !this.#pages[j + 1].first.startsWith(text)) break;
-    }
-    return unionAll(lists);
-  }
-
-  get nulls() {
-    return this.#nullsAt ? decodePostingsSection(this.#load('nulls', this.#nullsAt), 'Index null postings') : [];
   }
 }
 
@@ -328,14 +361,22 @@ export class TrigramIndex {
     return new TrigramIndex(grams);
   }
 
-  /**
-   * Superset of rows that may contain `text`, or null when the index cannot help
-   * (text shorter than 3, or a case-insensitive search with non-ASCII characters).
-   */
-  candidates(text, caseInsensitive) {
-    if (caseInsensitive && /[^\x00-\x7f]/.test(text)) return null;
+  /** Whether a trigram index can narrow a search for `text`: not under 3 characters, nor case-insensitive non-ASCII. */
+  static answers(text, caseInsensitive) {
+    return !(caseInsensitive && /[^\x00-\x7f]/.test(text)) && trigrams(text).size > 0;
+  }
+
+  cost(lookup) {
+    return lookup.op === 'contains' && TrigramIndex.answers(lookup.text, lookup.ci) ? 0 : null;
+  }
+
+  rows(lookup) {
+    return this.#candidates(lookup.text);
+  }
+
+  /** Superset of rows that may contain `text` (one that TrigramIndex.answers). */
+  #candidates(text) {
     const grams = trigrams(text);
-    if (grams.size === 0) return null;
     let result = null;
     for (const gram of grams) {
       const ids = this.grams.get(gram);
@@ -356,30 +397,43 @@ export class CompositeIndex {
     this.parts = parts;
   }
 
-  eq(value) {
-    return unionAll(this.parts.map((p) => p.eq(value)));
-  }
-
-  range(op, value) {
-    return unionAll(this.parts.map((p) => p.range(op, value)));
-  }
-
-  prefix(text) {
-    return unionAll(this.parts.map((p) => p.prefix(text)));
-  }
-
-  get nulls() {
-    return unionAll(this.parts.map((p) => p.nulls));
-  }
-
-  candidates(text, caseInsensitive) {
-    const lists = [];
+  cost(lookup) {
+    let bytes = 0;
     for (const part of this.parts) {
-      const ids = part.candidates(text, caseInsensitive);
-      if (ids === null) return null;
-      lists.push(ids);
+      const cost = part.cost(lookup);
+      if (cost === null) return null;
+      bytes += cost;
     }
-    return unionAll(lists);
+    return bytes;
+  }
+
+  rows(lookup) {
+    return unionAll(this.parts.map((p) => p.rows(lookup)));
+  }
+}
+
+/**
+ * A trigram index read only when a lookup is made: until then a lookup costs the whole index's size, so a planner
+ * can choose a scan without reading it.
+ */
+export class LazyTrigramIndex {
+  #bytes;
+  #load;
+  #index = null;
+
+  constructor(bytes, load) {
+    this.#bytes = bytes;
+    this.#load = load;
+  }
+
+  cost(lookup) {
+    if (lookup.op !== 'contains' || !TrigramIndex.answers(lookup.text, lookup.ci)) return null;
+    return this.#index ? 0 : this.#bytes;
+  }
+
+  rows(lookup) {
+    this.#index ??= this.#load();
+    return this.#index.rows(lookup);
   }
 }
 

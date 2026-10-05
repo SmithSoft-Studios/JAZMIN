@@ -19,8 +19,8 @@ import {
 import { JazminFormatError, JazminKeyError, JazminValidationError } from './errors.js';
 import { enforceExpiry, toMs } from './expiry.js';
 import { EVERYONE } from './files.js';
-import { candidates, evaluate, mayMatch, mustMatch, normalizeFilter } from './filter.js';
-import { CompositeIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
+import { evaluate, indexPlan, mayMatch, mustMatch, normalizeFilter } from './filter.js';
+import { CompositeIndex, LazyTrigramIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
 import { JazminAccessKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
 import { decodeSection, sectionPayloadLength } from './section.js';
 import { decodeBound } from './stats.js';
@@ -125,6 +125,7 @@ export const FILE_STATE = Symbol('jazmin.fileState');
 
 const NEXT_CHUNK = Symbol('jazmin.nextChunk'); // yielded by internal scans before each chunk is read (findAsync)
 const READ_AHEAD = 2; // chunks read ahead by findAsync
+const SMALL_LOOKUP_BYTES = 8 * 1024; // index lookups this small are always made: the bytes are negligible, and rows are not decoded
 const nextTurn = () => new Promise((resolve) => setImmediate(resolve)); // lets timers and I/O callbacks run
 
 /** Internal: openTable() passes this as the source, with the reader it shares the open file with. */
@@ -350,6 +351,7 @@ export class JazminReader {
   #statLookup = (col) => this.#statAt(col, this.#statOrdinal); // statistics of one chunk, for mayMatch
   #indexRefs = null;
   #indexes = new Map();
+  #indexProvider = { get: (column, kind) => this.#index(column, kind) };
   #cachedChunk = { ordinal: -1, wanted: null, chunk: null }; // the last chunk decoded, and the columns decoded (null: all)
   #sortStatsComplete; // computed on first sorted scan
   #flags = 0;
@@ -1204,13 +1206,19 @@ export class JazminReader {
         return this.#read(ref, sectionId, this.#catalogKey(sectionId, this.#access?.secrets.owner, KEYRING_GROUPS.index));
       };
       // One segment for the original rows plus one per append (section id suffix "/<segment>").
-      const parts = descriptors.map((ix) => {
-        const sectionId = `${this.#tableIndex}/index/${column}/${kind}${ix.segment ? `/${ix.segment}` : ''}`;
-        if (kind === 'trigram') return TrigramIndex.decode(read(sectionId, ix.section));
+      const sectionIdOf = (ix) => `${this.#tableIndex}/index/${column}/${kind}${ix.segment ? `/${ix.segment}` : ''}`;
+      const combine = (parts) => (parts.length === 1 ? parts[0] : new CompositeIndex(parts));
+      if (kind === 'trigram') {
+        // Read only when a lookup is made: until then the planner knows its size, and may prefer a scan.
+        const bytes = descriptors.reduce((sum, ix) => sum + ix.section.length, 0);
+        index = new LazyTrigramIndex(bytes, () => combine(descriptors.map((ix) => TrigramIndex.decode(read(sectionIdOf(ix), ix.section)))));
+      } else {
         // Only the directory is read now; pages are read (and a few kept) as lookups need them.
-        return new PagedSortedIndex(decodeIndexDirectory(read(sectionId, ix.section)), type, (part, ref) => read(`${sectionId}/${part}`, ref));
-      });
-      index = parts.length === 1 ? parts[0] : new CompositeIndex(parts);
+        index = combine(descriptors.map((ix) => {
+          const sectionId = sectionIdOf(ix);
+          return new PagedSortedIndex(decodeIndexDirectory(read(sectionId, ix.section)), type, (part, ref) => read(`${sectionId}/${part}`, ref));
+        }));
+      }
     }
     this.#indexes.set(cacheKey, index);
     return index;
@@ -1399,7 +1407,7 @@ export class JazminReader {
       if (batch.length) yield batch;
       return;
     }
-    const planned = this.#plannedChunks(filter);
+    const planned = this.#plannedChunks(filter, options?.offset ?? 0);
     const position = new Map(Array.from(planned, (ordinal, i) => [this.#span(ordinal).offset, i]));
     const loads = new Map(); // planned index -> pending read
     let requested = 0;
@@ -1451,16 +1459,69 @@ export class JazminReader {
     return this.findAsync(null, options);
   }
 
-  /** The chunks a query reads, in the order it reads them (for reading ahead). */
-  #plannedChunks(filter) {
-    const plan = this.#plan(filter);
-    if (!plan) return [...this.#visibleChunks];
-    const rowIds = candidates(plan, { get: (column, kind) => this.#index(column, kind) });
-    if (rowIds === null) return Array.from(this.#scanChunks(plan)).filter((o) => this.#mayMatch(plan, o));
-    const ordinals = [];
-    for (const rowId of rowIds) {
+  /** The chunks a scan reads for a filter: those its partition, sort range and statistics leave. */
+  #scanList(plan) {
+    return Array.from(this.#scanChunks(plan)).filter((o) => !plan || this.#mayMatch(plan, o));
+  }
+
+  /**
+   * Row ids indexes narrow a filter to (sorted), or null to scan. Index lookups are planned against what a scan would
+   * read: small lookups (SMALL_LOOKUP_BYTES) are always made, and costlier ones only while they read less than the
+   * scan's chunks, less one chunk (an index answer still reads at least one). Rows are kept only in the chunks a
+   * scan would read (a sort range, a pinned partition, chunk statistics): nowhere else can a row match.
+   */
+  #candidates(plan) {
+    if (!plan) return null;
+    const scan = this.#scanList(plan);
+    let scanBytes = 0;
+    let smallest = Infinity;
+    for (const ordinal of scan) {
+      const { length } = this.#span(ordinal);
+      scanBytes += length;
+      smallest = Math.min(smallest, length);
+    }
+    const lookup = indexPlan(plan, this.#indexProvider, Math.max(scan.length ? scanBytes - smallest : 0, SMALL_LOOKUP_BYTES));
+    if (!lookup) return null;
+    const inScan = new Uint8Array(this.#rowCount.length);
+    for (const ordinal of scan) inScan[ordinal] = 1;
+    return lookup.rows().filter((rowId) => {
       const ordinal = this.#chunkOrdinalFor(rowId);
-      if (ordinal !== ordinals[ordinals.length - 1] && this.#isVisibleChunk(ordinal)) ordinals.push(ordinal);
+      return ordinal >= 0 && inScan[ordinal] === 1;
+    });
+  }
+
+  /**
+   * The chunks a filtered query reads, in order, each with its index candidates: `from` to `to` (exclusive) in
+   * `rowIds` (see #candidates). Without candidates, the chunks a scan reads (every row checked).
+   */
+  *#chunkRuns(plan, rowIds) {
+    if (rowIds === null) {
+      for (const ordinal of this.#scanChunks(plan)) if (!plan || this.#mayMatch(plan, ordinal)) yield { ordinal, from: 0, to: 0 };
+      return;
+    }
+    for (let i = 0; i < rowIds.length;) {
+      const ordinal = this.#chunkOrdinalFor(rowIds[i]);
+      const end = this.#rowStart[ordinal] + this.#rowCount[ordinal];
+      let j = i + 1;
+      while (j < rowIds.length && rowIds[j] < end) j++;
+      yield { ordinal, from: i, to: j };
+      i = j;
+    }
+  }
+
+  /**
+   * The chunks a query reads, in the order it reads them (for reading ahead): leading chunks an offset skips whole
+   * (see #iterate) are left out.
+   */
+  #plannedChunks(filter, offset = 0) {
+    const plan = this.#plan(filter);
+    const rowIds = this.#candidates(plan);
+    const whole = this.#wholeChunkTest(plan);
+    const ordinals = [];
+    let skipped = 0;
+    for (const { ordinal } of this.#chunkRuns(plan, rowIds)) {
+      if (!ordinals.length && rowIds === null && offset - skipped >= this.#liveRows(ordinal) && whole(ordinal)) skipped += this.#liveRows(ordinal);
+      else ordinals.push(ordinal);
     }
     return ordinals;
   }
@@ -1470,13 +1531,11 @@ export class JazminReader {
     const plan = this.#plan(filter);
     const selection = this.#selection(select);
     const singleGroup = !this.#access;
+    const rowIds = this.#candidates(plan);
     if (singleGroup && plan) {
-      const rowIds = candidates(plan, { get: (column, kind) => this.#index(column, kind) });
-      if (rowIds === null) {
-        // No index narrows the rows: decode only the filter's and the selected columns of each chunk.
-        yield* this.#scanColumns(plan, selection, offset, limit, ticks);
-        return;
-      }
+      // Decode only the filter's and the selected columns, of the chunks the index candidates (or the scan) name.
+      yield* this.#scanColumns(plan, selection, offset, limit, ticks, rowIds);
+      return;
     }
     const wanted = this.#wantedColumns(plan, selection); // only the filter's and the selected columns are decoded
     const decode = plan ? null : this.#directDecoder(selection);
@@ -1512,7 +1571,7 @@ export class JazminReader {
       return;
     }
     const make = this.#maker(selection);
-    for (const item of this.#iterate(plan, offset, limit, ticks, wanted)) yield item === NEXT_CHUNK ? item : make(item[1]);
+    for (const item of this.#iterate(plan, offset, limit, ticks, wanted, rowIds)) yield item === NEXT_CHUNK ? item : make(item[1]);
   }
 
   /** By column position: the columns a query decodes - those its filter reads and those it returns. */
@@ -1522,8 +1581,11 @@ export class JazminReader {
     return this.#columns.map((_, i) => used.has(i));
   }
 
-  /** Scan with a filter (one column group): only the columns the filter and the selection use are decoded. */
-  *#scanColumns(plan, selection, offset, limit, ticks) {
+  /**
+   * A filtered query on a file with one column group: only the columns the filter and the selection use are decoded,
+   * and with index candidates (`rowIds`) only their chunks are read and only their rows checked.
+   */
+  *#scanColumns(plan, selection, offset, limit, ticks, rowIds) {
     const wanted = this.#wantedColumns(plan, selection);
     const make = this.#maker(selection);
     const row = new Array(this.#columns.length);
@@ -1531,19 +1593,20 @@ export class JazminReader {
     let skipped = 0;
     let yielded = 0;
     let deleted = 0;
-    for (const ordinal of this.#scanChunks(plan)) {
+    for (const { ordinal, from, to } of this.#chunkRuns(plan, rowIds)) {
       if (yielded >= limit) return;
-      if (!this.#mayMatch(plan, ordinal)) continue;
-      if (skipped < offset && offset - skipped >= this.#liveRows(ordinal) && whole(ordinal)) {
+      if (rowIds === null && skipped < offset && offset - skipped >= this.#liveRows(ordinal) && whole(ordinal)) {
         skipped += this.#liveRows(ordinal); // every row matches and lies before the offset: no need to read it
         continue;
       }
       if (ticks) yield NEXT_CHUNK;
-      const rowCount = this.#rowCount[ordinal];
+      const start = this.#rowStart[ordinal];
+      const count = rowIds === null ? this.#rowCount[ordinal] : to - from;
       const columns = this.#decodeChunk(ordinal, wanted);
-      for (let r = 0; r < rowCount; r++) {
+      for (let k = 0; k < count; k++) {
         if (yielded >= limit) return;
-        const rowId = this.#rowStart[ordinal] + r;
+        const r = rowIds === null ? k : rowIds[from + k] - start;
+        const rowId = start + r;
         while (deleted < this.#deleted.length && this.#deleted[deleted] < rowId) deleted++;
         if (deleted < this.#deleted.length && this.#deleted[deleted] === rowId) continue;
         for (let c = 0; c < columns.length; c++) if (wanted[c]) row[c] = columns[c][r];
@@ -1568,18 +1631,18 @@ export class JazminReader {
   /** Internal: [rowId, row object with every visible column] for matching rows. */
   *[ROWS_WITH_IDS](filter) {
     const make = this.#maker(this.#visibleCols);
-    for (const [rowId, row] of this.#iterate(this.#plan(filter), 0, Infinity)) yield [rowId, make(row)];
+    const plan = this.#plan(filter);
+    for (const [rowId, row] of this.#iterate(plan, 0, Infinity, false, null, this.#candidates(plan))) yield [rowId, make(row)];
   }
 
   /**
-   * Yields [rowId, row array] for visible, non-deleted rows matching a normalized filter. `wanted` (by column
-   * position, null: all) limits the columns decoded. The row array is reused for the next row: copy what you keep.
+   * Yields [rowId, row array] for visible, non-deleted rows matching a normalized filter, in the chunks of the
+   * candidate `rowIds` (see #candidates) or of a scan when null. `wanted` (by column position, null: all) limits
+   * the columns decoded. The row array is reused for the next row: copy what you keep.
    */
-  *#iterate(plan, offset, limit, ticks = false, wanted = null) {
+  *#iterate(plan, offset, limit, ticks, wanted, rowIds) {
     let skipped = 0;
     let yielded = 0;
-    const indexes = { get: (column, kind) => this.#index(column, kind) };
-    const rowIds = plan ? candidates(plan, indexes) : null;
     const row = new Array(this.#columns.length).fill(null);
 
     const accept = (chunk, r) => {
@@ -1593,38 +1656,23 @@ export class JazminReader {
       return true;
     };
 
-    if (rowIds !== null) {
-      this.#ensureAllChunks(); // index results span every partition
-      let previous = -1;
-      for (const rowId of rowIds) {
-        if (yielded >= limit) return;
-        const ordinal = this.#chunkOrdinalFor(rowId);
-        if (!this.#isVisibleChunk(ordinal)) continue;
-        if (ticks && ordinal !== previous) yield NEXT_CHUNK;
-        previous = ordinal;
-        if (accept(this.#chunk(ordinal, wanted), rowId - this.#rowStart[ordinal])) {
-          yielded++;
-          yield [rowId, row];
-        }
-      }
-      return;
-    }
-
     const whole = this.#wholeChunkTest(plan);
-    for (const ordinal of this.#scanChunks(plan)) {
+    for (const { ordinal, from, to } of this.#chunkRuns(plan, rowIds)) {
       if (yielded >= limit) return;
-      if (plan && !this.#mayMatch(plan, ordinal)) continue;
-      if (skipped < offset && offset - skipped >= this.#liveRows(ordinal) && whole(ordinal)) {
+      if (rowIds === null && skipped < offset && offset - skipped >= this.#liveRows(ordinal) && whole(ordinal)) {
         skipped += this.#liveRows(ordinal); // every row matches and lies before the offset: no need to read it
         continue;
       }
       if (ticks) yield NEXT_CHUNK;
       const chunk = this.#chunk(ordinal, wanted);
-      for (let r = 0; r < chunk.rowCount; r++) {
+      const start = this.#rowStart[ordinal];
+      const count = rowIds === null ? chunk.rowCount : to - from;
+      for (let k = 0; k < count; k++) {
         if (yielded >= limit) return;
+        const r = rowIds === null ? k : rowIds[from + k] - start;
         if (accept(chunk, r)) {
           yielded++;
-          yield [this.#rowStart[ordinal] + r, row];
+          yield [start + r, row];
         }
       }
     }
@@ -1689,7 +1737,7 @@ export class JazminReader {
 
   #describe(filter) {
     const plan = this.#plan(filter);
-    const ids = plan ? candidates(plan, { get: (column, kind) => this.#index(column, kind) }) : null;
+    const ids = this.#candidates(plan);
     if (ids !== null) return { strategy: 'index', candidateRows: ids.length };
     const scanned = this.#scanChunks(plan);
     const matching = plan ? Array.from(scanned).filter((i) => this.#mayMatch(plan, i)).length : scanned.length;
