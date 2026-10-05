@@ -75,6 +75,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     each chunk part, which holds every column (#23 would split them).
 
 ### Added
+- **User guide: fetching many rows by position (#27).** Section 9.9 shows
+  why to sort row positions before calling `get()`. On the benchmark,
+  fetching one day's 549 rows in time order read 53,815 KB in 673 ms; sorted
+  by position first, 4,895 KB in 62 ms.
 - **The `jazmin` command-line tool (#15):** commands `inspect`, `query`
   (JSON lines, JSON or CSV), `explain --analyze`, `advise`, `convert` and
   `keygen`, installed with the npm package (USER-GUIDE §25).

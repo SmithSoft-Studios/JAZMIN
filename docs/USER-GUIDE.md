@@ -220,7 +220,7 @@ for (const row of reader.find({ country: 'ZA', name: { icontains: 'ndlovu' } }))
   console.log(row);  // { id: 3, name: 'Thabo Ndlovu', country: 'ZA', balance: '0.00', joined: 2025-06-07T00:00:00.000Z }
 }
 
-reader.get(1);                                      // row by position
+reader.get(1);                                      // row by position (many? sort them first: section 9.9)
 reader.count({ country: 'ZA' });                    // 2
 reader.explain({ id: 3 });                          // { strategy: 'index', candidateRows: 1 }
 reader.explain({ id: 3 }, { analyze: true });       // ... plus rows, bytesRead, chunksRead, ... (section 9.6)
@@ -813,6 +813,37 @@ On 200,000 transactions sorted by account (`npm run bench:proposals`):
 
 In .NET, the same changes took a lookup by id from 3.7 to 2.1 ms, and an
 indexed filter from 40 to 12 ms.
+
+### 9.9 Fetching many rows by position
+
+`get(rowId)` reads the chunk that holds the row, and the reader keeps only
+the last chunk it decoded. Fetching rows **in position order** reads each
+chunk once. Fetching them in any other order can read the same chunk again
+and again.
+
+So when you hold a list of row positions, for example from your own pointer
+table or a join between tables, sort it first:
+
+```js
+const ordered = [...rowIds].sort((a, b) => a - b);
+const rows = ordered.map((id) => reader.get(id));    // one pass over the file
+```
+
+```csharp
+var rows = rowIds.Order().Select(reader.Get).ToList();    // one pass over the file
+```
+
+On 200,000 transactions sorted by account, fetching the 549 rows of one day
+(`npm run bench:proposals`):
+
+| Order | Read | Time |
+|---|---:|---:|
+| Time order, as the rows came | 53,815 KB | 673 ms |
+| Sorted by position first | 4,895 KB | 62 ms |
+
+If you need the rows in the original order, sort a copy for fetching and look
+the rows up by position afterwards. When the rows can be described by a
+filter, `find()` is better still: it reads only the chunks that can match.
 
 ---
 
