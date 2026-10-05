@@ -23,11 +23,12 @@ npm install --no-audit --no-fund "$tgz" > /dev/null
 sed "s#'../src/index.js'#'@smithsoft-studios/jazmin'#" "$root/js/examples/quickstart.mjs" > quickstart.mjs
 node quickstart.mjs > /dev/null
 node --input-type=module -e "await import('@smithsoft-studios/jazmin/browser'); if (typeof JazminBrowser.open !== 'function') throw new Error('@smithsoft-studios/jazmin/browser did not load');"
+npx --no-install jazmin --help > /dev/null # the command-line tool is installed with the package
 npm install --no-audit --no-fund --no-save typescript@5 @types/node@22 > /dev/null
 cp "$root/js/examples/typescript/quickstart.ts" .
 printf '{ "compilerOptions": { "target": "ES2022", "module": "NodeNext", "moduleResolution": "NodeNext", "strict": true, "noEmit": true, "types": ["node"] }, "include": ["quickstart.ts"] }\n' > tsconfig.json
 npx tsc -p .
-echo "   $(basename "$tgz"): installs, the quickstart runs, @smithsoft-studios/jazmin/browser loads, the types check"
+echo "   $(basename "$tgz"): installs, the quickstart runs, @smithsoft-studios/jazmin/browser loads, the jazmin command runs, the types check"
 
 echo "== NuGet package"
 cd "$root/dotnet"

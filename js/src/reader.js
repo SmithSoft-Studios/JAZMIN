@@ -1744,6 +1744,107 @@ export class JazminReader {
     return { strategy: 'scan', chunks: this.#visibleChunks.length, chunksSkipped: this.#visibleChunks.length - matching };
   }
 
+  /**
+   * Layout advice, from chunk directories and statistics only (no rows are decoded): how the file is laid out, for
+   * each of `columns` how many chunks the rows of one value lie in (and so what reading one value costs), each
+   * partition's chunks (access-controlled files), and suggestions: a sortedBy or chunkRows that would make lookups of
+   * those columns read less, or partitions that compact() would merge.
+   */
+  advise({ columns = [] } = {}) {
+    this.#ensureAllChunks();
+    const positions = columns.map((name) => this.#visibleIndex(name, 'advise'));
+    this.#ensureStats(new Set(positions));
+    const visible = this.#visibleChunks;
+    const rows = visible.reduce((n, o) => n + this.#liveRows(o), 0);
+    const bytes = visible.reduce((n, o) => n + this.#span(o).length, 0);
+    const largest = visible.reduce((n, o) => Math.max(n, this.#rowCount[o]), 0); // close to the chunkRows written with
+    const bytesPerChunk = visible.length ? bytes / visible.length : 0;
+    const kb = (b) => `${Math.round(b / 1024).toLocaleString('en-US')} KB`;
+    const report = {
+      rows, chunks: visible.length, rowsPerChunk: visible.length ? Math.round(rows / visible.length) : 0, bytesPerChunk: Math.round(bytesPerChunk),
+      sortedBy: this.#table.sortedBy, columns: [], partitions: [], suggestions: [],
+    };
+    for (const [k, col] of positions.entries()) {
+      const name = columns[k];
+      const spread = this.#valueSpread(col);
+      const distinct = this.#table.sortedBy[0] === name ? null : (this.#index(name, 'sorted')?.keyCount ?? null);
+      const rowsPerValue = distinct ? rows / distinct : null;
+      // With an index, a lookup reads only the chunks holding the value's rows: never more chunks than it has rows.
+      const chunksPerValue = spread === null ? null : rowsPerValue === null ? spread : Math.min(spread, Math.max(1, rowsPerValue));
+      report.columns.push({
+        column: name, indexed: distinct !== null, chunksPerValue: chunksPerValue === null ? null : Number(chunksPerValue.toFixed(1)),
+        bytesPerValue: chunksPerValue === null ? null : Math.round(chunksPerValue * bytesPerChunk), distinctValues: distinct,
+      });
+      if (chunksPerValue === null) continue;
+      if (this.#table.sortedBy[0] !== name && chunksPerValue > Math.max(2, visible.length * 0.1)) {
+        const sortedBy = [name, ...this.#table.sortedBy.filter((c) => c !== name)];
+        const after = rowsPerValue === null ? 'a few' : `about ${Math.ceil(rowsPerValue / Math.max(1, largest)) + 1}`;
+        report.suggestions.push(`The rows of one '${name}' value lie in about ${chunksPerValue.toFixed(1)} of ${visible.length} chunks: `
+          + `a lookup reads about ${kb(chunksPerValue * bytesPerChunk)}. Writing the file with sortedBy: ${JSON.stringify(sortedBy)} `
+          + `would put them in ${after} chunks.`);
+      }
+      // In access-controlled files, chunks follow partitions: the largest chunk says nothing about chunkRows.
+      if (!this.#access && rowsPerValue !== null && rowsPerValue * 4 < largest) {
+        const smaller = Math.max(256, 2 ** Math.ceil(Math.log2(rowsPerValue * 2)));
+        if (smaller < largest) {
+          report.suggestions.push(`One '${name}' value has about ${Math.round(rowsPerValue).toLocaleString('en-US')} rows, and a chunk holds `
+            + `${largest.toLocaleString('en-US')}: chunkRows: ${smaller} would cut the chunk data a lookup reads to about `
+            + `${kb(bytesPerChunk * (smaller / largest) * 2)} (files grow a little: smaller chunks compress slightly less well).`);
+        }
+      }
+    }
+    if (this.#access) {
+      const names = this.#access.isOwner
+        ? new Map(this.#ownerDirectory().partitions.map((n) => [this.#access.secrets.partitionId(n), n]))
+        : new Map(Object.entries(this.#access.partitionNames));
+      for (const [id, partition] of this.#partitions) {
+        const ordinals = partition.ordinals.filter((o) => this.#loaded[o]);
+        if (!ordinals.length) continue;
+        const partRows = ordinals.reduce((n, o) => n + this.#liveRows(o), 0);
+        report.partitions.push({ partition: names.get(id) ?? id, chunks: ordinals.length, rows: partRows });
+      }
+      const scattered = report.partitions.filter((p) => p.chunks > Math.ceil(p.rows / Math.max(1, largest)) + 1);
+      if (scattered.length) {
+        report.suggestions.push(`${scattered.length} of ${report.partitions.length} partitions lie in more chunks than their rows need `
+          + `(for example '${scattered[0].partition}': ${scattered[0].chunks} chunks for ${scattered[0].rows} rows): compact() merges them.`);
+      }
+    }
+    return report;
+  }
+
+  /**
+   * About how many chunks the rows of one value of a column lie in: at each chunk's smallest value, the number of
+   * chunks whose statistics range holds it, averaged. Null without statistics.
+   */
+  #valueSpread(col) {
+    const ranges = [];
+    for (const o of this.#visibleChunks) {
+      const s = this.#statAt(col, o);
+      if (s && s.nulls < this.#rowCount[o]) ranges.push({ min: s.min, max: s.max });
+    }
+    if (!ranges.length) return null;
+    const mins = ranges.map((r) => r.min).filter((v) => v !== undefined).sort(compareKeys);
+    const maxs = ranges.map((r) => r.max).filter((v) => v !== undefined).sort(compareKeys);
+    const openLow = ranges.length - mins.length; // ranges with no lower bound hold every value from below
+    const count = (sorted, test) => {
+      let lo = 0;
+      let hi = sorted.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (test(sorted[mid])) lo = mid + 1;
+        else hi = mid;
+      }
+      return lo;
+    };
+    let total = 0;
+    for (const value of mins) {
+      const startedBy = count(mins, (v) => compareKeys(v, value) <= 0) + openLow;
+      const endedBefore = count(maxs, (v) => compareKeys(v, value) < 0);
+      total += startedBy - endedBefore;
+    }
+    return mins.length ? total / mins.length : ranges.length;
+  }
+
   /** Releases the file. Safe to call more than once. */
   close() {
     if (this.#closed) return;

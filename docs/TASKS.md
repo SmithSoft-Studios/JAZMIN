@@ -54,7 +54,7 @@ Status: ✅ done · 🔶 partly done · 🔜 next · ⬜ later
 |---|---|---|---|
 | ✅ R-1 | Publish `@smithsoft-studios/jazmin` to npm and `Jazmin` to NuGet (CI: build, test, pack, sign). **Released 1.0.0 on 2026-10-04** from tag `v1.0.0` by `release.yml`, after approval. The npm package has a signed build record (provenance), and nuget.org signs every package. npm refused the plain name `jazmin` as too close to `jasmine`, hence the scope. **Follow-up:** switch npm and NuGet to trusted publishing and delete the `NPM_TOKEN` and `NUGET_API_KEY` secrets. The NuGet 1.0.0 README still names the npm package `jazmin`; this is fixed in the next release | Both packages installed by name from npmjs.com and nuget.org into empty projects; the JS quickstart, the browser reader, the TypeScript types and the .NET sample all ran | No |
 | ✅ R-2 | CI (GitHub Actions) running both test suites, the interop fixtures, the TypeScript typecheck and the examples on every push and pull request | `.github/workflows/ci.yml` | No |
-| ⬜ R-3 | `jazmin` CLI: `inspect`, `convert`, `query`, `keygen` | CLI tests on the fixtures | No |
+| ✅ R-3 | `jazmin` CLI: `inspect`, `convert`, `query`, `keygen`; also `explain --analyze` and `advise` (issues #15, #14; USER-GUIDE §25). Keys from the environment or files, never printed except by `keygen` | `cli.test.js`: every command on the fixtures, `--help` for each, usage and key errors; the package check runs `jazmin --help` from the installed package | No |
 | ⬜ R-4 | VS Code extension / viewer showing a `.jzm` file as a table | Opens all fixtures | No |
 
 ## Performance (gaps found by the benchmarks)

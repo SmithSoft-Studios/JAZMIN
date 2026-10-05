@@ -65,6 +65,19 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     each chunk part, which holds every column (#23 would split them).
 
 ### Added
+- **The `jazmin` command-line tool (#15):** commands `inspect`, `query`
+  (JSON lines, JSON or CSV), `explain --analyze`, `advise`, `convert` and
+  `keygen`, installed with the npm package (USER-GUIDE §25).
+  - **Keys** come from the environment or files, and are never printed except
+    by `keygen`.
+- **Layout advice (#14):** `reader.advise({ columns })` and `jazmin advise`
+  read only directories and statistics.
+  - **What they report:** how many chunks the rows of one value lie in, and
+    what a lookup costs.
+  - **What they suggest:** a `sortedBy` or `chunkRows` that would make those
+    lookups read less, and partitions `compact()` would merge.
+  - **On the benchmark's time-sorted file,** they recommend sorting by
+    account, then time, for account lookups.
 - **Open files by URL in the browser (#12):** `JazminBrowser.openUrl(url, {
   key, headers })` reads a file from a web server or object storage with HTTP
   range requests (USER-GUIDE §24).

@@ -46,6 +46,7 @@ They read and write exactly the same files.
 22. [Async: servers and streaming sources](#22-async-servers-and-streaming-sources)
 23. [Several tables in one file](#23-several-tables-in-one-file)
 24. [The viewer: open .jzm files in a browser](#24-the-viewer-open-jzm-files-in-a-browser)
+25. [The command-line tool](#25-the-command-line-tool)
 
 ---
 
@@ -2328,3 +2329,62 @@ const reader = await JazminBrowser.openUrl('https://files.example.com/statements
 - **Any other source:** `open()` also accepts any
   `{ size, read(offset, length) }` object, where `read` returns the bytes or a
   promise of them.
+
+---
+
+## 25. The command-line tool
+
+The npm package includes `jazmin`, a command-line tool for looking into,
+querying and converting files without writing code:
+
+```bash
+npx @smithsoft-studios/jazmin --help          # or, installed in a project: npx jazmin --help
+```
+
+| Command | What it does |
+|---|---|
+| `jazmin inspect <file>` | What the file holds, as JSON: format, encryption, tables, rows, chunks, sort order, columns, indexes, access and embedded files |
+| `jazmin query <file> --filter '<json>' --select a,b --offset n --limit n --format jsonl\|json\|csv` | The matching rows, as JSON lines (the default), a JSON array or CSV |
+| `jazmin explain <file> --filter '<json>' --analyze` | How the query runs and, with `--analyze`, what it read (section 9.6) |
+| `jazmin advise <file> --column account` | Layout advice for lookups of a column (below) |
+| `jazmin convert <input> <output>` | JSON, JSON Lines, CSV or XML to `.jzm` (`--sorted-by a,b`), or `.jzm` to JSON, CSV or XML (`--filter`) |
+| `jazmin keygen [--access]` | A new key or, with `--access`, an access key issued from the owner key |
+
+Every command takes `--help`. `--table <name>` picks a table in a file with
+several.
+
+**Keys** come from the environment, `JAZMIN_KEY`, `JAZMIN_PASSWORD` and
+`JAZMIN_UNLOCK_TOKEN`, or from files (`--key-file`, `--password-file`,
+`--unlock-token-file`). That way they don't end up in your shell history.
+The tool never prints a key, except `keygen`:
+
+```bash
+export JAZMIN_KEY="$(cat owner.key)"
+jazmin query statements.jzm --filter '{"account":"ACC-100250"}' --select at,amount --limit 20
+jazmin convert statements.jzm march.csv --filter '{"at":{"gte":"2025-03-01","lt":"2025-04-01"}}'
+```
+
+**Exit codes:** 0 on success, 1 when the file or key is the problem (the
+message says why), and 2 when the command line is wrong.
+
+### 25.1 Layout advice
+
+`jazmin advise` (`reader.advise({ columns })` in code) reads only the chunk
+directories and statistics, not rows. It shows how the file's layout serves
+lookups of the columns you name. On 200,000 transactions sorted by time,
+looking up accounts:
+
+```text
+$ jazmin advise transactions-by-time.jzm --column account
+200,000 rows in 49 chunks (about 4,082 rows, 96 KB each), sorted by at
+account: one value's rows lie in about 49 chunk(s), about 4,708 KB to read (indexed)
+- The rows of one 'account' value lie in about 49.0 of 49 chunks: a lookup reads about 4,708 KB. Writing the file with sortedBy: ["account","at"] would put them in about 2 chunks.
+- One 'account' value has about 400 rows, and a chunk holds 4,096: chunkRows: 1024 would cut the chunk data a lookup reads to about 48 KB (files grow a little: smaller chunks compress slightly less well).
+```
+
+- **Following the first suggestion** cut an account page from 439 KB to
+  101 KB, and an account count from 4,766 KB to 101 KB (section 9.6 shows how
+  to measure this).
+- **In access-controlled files,** the advice also lists each partition's
+  chunks, and suggests `compact()` when appends have spread a partition over
+  more chunks than its rows need.

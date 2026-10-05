@@ -22,6 +22,9 @@
   "author": "SmithSoft Pty Ltd",
   "type": "module",
   "main": "src/index.js",
+  "bin": {
+    "jazmin": "bin/jazmin.mjs"
+  },
   "exports": {
     ".": {
       "types": "./src/index.d.ts",
@@ -31,7 +34,8 @@
   },
   "files": [
     "src",
-    "browser"
+    "browser",
+    "bin"
   ],
   "engines": {
     "node": ">=22"

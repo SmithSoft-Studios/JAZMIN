@@ -242,6 +242,21 @@ export type QueryPlan =
   | { strategy: 'index'; candidateRows: number }
   | { strategy: 'scan'; chunks: number; chunksSkipped: number };
 
+/** reader.advise(): layout advice from chunk directories and statistics (no rows decoded). */
+export interface LayoutAdvice {
+  rows: number;
+  chunks: number;
+  rowsPerChunk: number;
+  bytesPerChunk: number;
+  sortedBy: string[];
+  /** Per requested column: how many chunks the rows of one value lie in, and what reading one value costs. */
+  columns: { column: string; indexed: boolean; chunksPerValue: number | null; bytesPerValue: number | null; distinctValues: number | null }[];
+  /** Access-controlled files: each partition's chunks and rows. */
+  partitions: { partition: string; chunks: number; rows: number }[];
+  /** A sortedBy or chunkRows that would make those lookups read less, partitions compact() would merge. */
+  suggestions: string[];
+}
+
 /** What a query read: explain(filter, { analyze: true }). */
 export interface QueryCost {
   /** Rows the query returned. */
@@ -411,6 +426,8 @@ export class JazminReader implements Iterable<JazminRow> {
   findBatchesAsync(filter: Filter | null | undefined, options?: QueryOptions): AsyncGenerator<JazminRow[]>;
   rowsAsync(options?: QueryOptions): AsyncGenerator<JazminRow>;
   count(filter?: Filter): number;
+  /** Layout advice for lookups of these columns (chunk directories and statistics only). */
+  advise(options?: { columns?: string[] }): LayoutAdvice;
   explain(filter: Filter): QueryPlan;
   /**
    * Runs the query (with any find() options) and reports what it read. Indexes and the last chunk this reader

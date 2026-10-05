@@ -248,6 +248,11 @@ export class PagedSortedIndex {
     }
   }
 
+  /** Distinct keys in the index (from its directory). */
+  get keyCount() {
+    return this.#pages.reduce((n, p) => n + p.count, 0);
+  }
+
   cost(lookup) {
     if (lookup.op === 'contains') return null;
     if (lookup.op === 'nulls') return this.#nullsAt ? this.#nullsAt.length : 0;
@@ -409,6 +414,11 @@ export class CompositeIndex {
 
   rows(lookup) {
     return unionAll(this.parts.map((p) => p.rows(lookup)));
+  }
+
+  /** Distinct keys, at most (a key found in several segments counts once per segment). */
+  get keyCount() {
+    return this.parts.reduce((n, p) => n + (p.keyCount ?? 0), 0);
   }
 }
 

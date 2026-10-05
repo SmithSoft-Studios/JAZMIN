@@ -63,6 +63,7 @@ dotnet add package Jazmin               # .NET 10
 cd js && npm test && npm run typecheck          # JavaScript + TypeScript
 cd dotnet && dotnet test                        # needs the .NET 10 SDK
 JAZMIN_WRITE_FIXTURES=1 dotnet test             # also refresh the dotnet-*.jzm interop fixtures
+npx @smithsoft-studios/jazmin --help           # the command-line tool: inspect, query, explain, advise, convert, keygen
 ```
 
 ## Licence
