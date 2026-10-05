@@ -1334,6 +1334,11 @@ revoked, `accessKeyOf` no longer finds it, and its batches are refused. The
 design is in `docs/design/browser-writer.md`. The spec's section 7.8 defines
 the key.
 
+**A ready-made filing service** is in `js/examples/filing-service`. Its
+`fileBatch()` applies these rules, and `inbox.mjs` files every batch waiting in
+a folder, then compacts the shared file. Run it on a schedule where the owner
+key is kept. Writing outbox files in a browser is section 24.3.
+
 ## 16. Updating files
 
 JAZMIN files are written once and **updated by rewriting**:

@@ -132,6 +132,15 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     each chunk part, which holds every column (#23 would split them).
 
 ### Added
+- **A reference filing service (#13),** in `js/examples/filing-service`.
+  - **`fileBatch()`** files a phone's outbox batch into the shared file.
+    - **Refused:** unknown, revoked or expired keys; batches that don't open
+      with the sender's outbox key; columns the shared file doesn't have, or
+      has with another type; rows for another person's partition.
+    - **Duplicates:** rows already filed are skipped.
+  - **`inbox.mjs`** files every batch in a folder on a schedule, then compacts
+    and regroups.
+  - **The owner key** comes from a secret, never a page or a phone.
 - **Writing files in the browser (#13).** `JazminBrowser.createWriter(options)`
   and `JazminBrowser.write(rows, options)` write files with one key, a
   password or no key, and return a `Blob` (USER-GUIDE §24.3). They're made for
