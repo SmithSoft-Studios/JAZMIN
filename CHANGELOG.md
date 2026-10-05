@@ -22,6 +22,15 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     init"`). It didn't reproduce locally, so CI will confirm the fix.
 
 ### Changed
+- **Writing indexes is faster (TASKS P-5).** On the benchmark, a write with
+  3 indexes went from 164 to 94 ms in .NET, now faster than Newtonsoft's
+  103 ms, and from 343 to 309 ms in Node.
+  - **Sorted index builder:** no list per key, and no lookups while keys
+    arrive in order (ids, a sorted column). In .NET its entries stay off the
+    large object heap, which had forced a full garbage collection on every
+    write with a unique-key index.
+  - **.NET:** index pages are compressed in parallel.
+  - **Output:** index pages are byte-for-byte the same as before.
 - **`count()` reads as little as it can (#16),** in both libraries and the
   browser reader (USER-GUIDE §9.10).
   - **From an index alone:** when sorted indexes answer the filter exactly

@@ -99,8 +99,23 @@ internal sealed class KeyComparer : IComparer<object>
 /// <summary>Builds a sorted value index: distinct values in ascending order, each with its row ids.</summary>
 internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
 {
-    private readonly Dictionary<object, List<long>> _entries = new();
+    // Distinct keys in the order first seen, each with its first row id; later row ids only for keys seen again, so a
+    // column of unique values (ids) needs no list per key. Entries are kept in blocks small enough to stay off the large
+    // object heap: growing one large array would force full garbage collections of the writer's whole heap.
+    private const int BlockSize = 2048;
+    private struct Entry
+    {
+        public object Key;
+        public long FirstRow;
+        public List<long>? MoreRows;
+    }
+
+    private readonly List<Entry[]> _blocks = new();
+    private int _count;
+    private Dictionary<object, int>? _positions; // made when keys stop arriving in ascending order
     private readonly List<long> _nulls = new();
+
+    private ref Entry At(int i) => ref _blocks[i / BlockSize][i % BlockSize];
 
     public void Add(long rowId, object? internalValue)
     {
@@ -111,17 +126,71 @@ internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
         }
         var key = Values.ToKey(type, internalValue);
         if (Values.IsNaN(key)) return; // NaN is never indexed
-        if (!_entries.TryGetValue(key, out var ids)) _entries[key] = ids = new List<long>();
-        ids.Add(rowId);
+        if (_positions is null && _count > 0)
+        {
+            // Keys arriving in ascending order (ids, a sorted column) can only repeat the last one: no lookup needed.
+            ref var last = ref At(_count - 1);
+            var order = KeyComparer.Instance.Compare(last.Key, key);
+            if (order == 0 && last.Key.Equals(key))
+            {
+                (last.MoreRows ??= new List<long>()).Add(rowId);
+                return;
+            }
+            if (order >= 0) _positions = Positions();
+        }
+        if (_positions is not null && _positions.TryGetValue(key, out var at))
+        {
+            (At(at).MoreRows ??= new List<long>()).Add(rowId);
+            return;
+        }
+        if (_count % BlockSize == 0) _blocks.Add(new Entry[BlockSize]);
+        At(_count) = new Entry { Key = key, FirstRow = rowId };
+        _positions?.Add(key, _count);
+        _count++;
+    }
+
+    private Dictionary<object, int> Positions()
+    {
+        var positions = new Dictionary<object, int>(_count * 2);
+        for (var i = 0; i < _count; i++) positions.Add(At(i).Key, i);
+        return positions;
     }
 
     /// <summary>Row ids of null cells.</summary>
     public IReadOnlyList<long> Nulls => _nulls;
 
-    private object[] SortedKeys()
+    /// <summary>
+    /// Positions of the distinct keys in ascending key order: as first seen while keys arrived in order; otherwise
+    /// sorted, numbers and strings as typed arrays (the same order as <see cref="KeyComparer"/>: -0 is folded into 0 and
+    /// NaN is never indexed), other keys with the comparer.
+    /// </summary>
+    private IEnumerable<int> SortedPositions()
     {
-        var keys = _entries.Keys.ToArray();
-        Array.Sort(keys, KeyComparer.Instance);
+        if (_positions is null) return Enumerable.Range(0, _count);
+        var order = new int[_count];
+        for (var i = 0; i < order.Length; i++) order[i] = i;
+        switch (At(0).Key)
+        {
+            case long:
+                Array.Sort(KeysAs<long>(), order);
+                break;
+            case double:
+                Array.Sort(KeysAs<double>(), order);
+                break;
+            case string:
+                Array.Sort(KeysAs<string>(), order, StringComparer.Ordinal);
+                break;
+            default:
+                Array.Sort(KeysAs<object>(), order, KeyComparer.Instance);
+                break;
+        }
+        return order;
+    }
+
+    private T[] KeysAs<T>()
+    {
+        var keys = new T[_count];
+        for (var i = 0; i < _count; i++) keys[i] = (T)At(i).Key;
         return keys;
     }
 
@@ -133,13 +202,18 @@ internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
     public IEnumerable<(byte[] First, int Count, byte[] Raw)> Pages(int pageBytes)
     {
         var body = new ByteWriter(Math.Min(pageBytes * 2, 1 << 20));
+        var postings = new List<long>();
         object? first = null;
         var count = 0;
-        foreach (var key in SortedKeys())
+        foreach (var at in SortedPositions())
         {
-            if (count == 0) first = key;
-            Values.Encode(body, type, key);
-            RowSet.WritePostings(body, _entries[key]);
+            var entry = At(at);
+            if (count == 0) first = entry.Key;
+            Values.Encode(body, type, entry.Key);
+            postings.Clear();
+            postings.Add(entry.FirstRow);
+            if (entry.MoreRows is { } more) postings.AddRange(more);
+            RowSet.WritePostings(body, postings);
             count++;
             if (body.Length < pageBytes) continue;
             yield return (Bounds.Encode(type, first!), count, PageBytes(count, body));

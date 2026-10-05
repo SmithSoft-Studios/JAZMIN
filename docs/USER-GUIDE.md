@@ -620,7 +620,7 @@ rows and time per query); docs/CONTRIBUTING.md explains it.
 | Filter `Country == "NA" && Age > 80` | 276 ms | | **13 ms** |
 | Memory allocated for one lookup | 196 MB | | **1.1 MB** |
 | Deserialize every record | 211 ms | 91 ms | **32 ms** |
-| Serialize every record | 103 ms | 57 ms | **42 ms** (164 ms with 3 indexes) |
+| Serialize every record | 103 ms | 57 ms | **42 ms** (94 ms with 3 indexes) |
 
 ### 9.2 Node.js 24 (vs native JSON)
 
@@ -629,7 +629,7 @@ rows and time per query); docs/CONTRIBUTING.md explains it.
 | File size | 31,307 KB (gzip: 3,338 KB) | **1,292 KB** (deflate) / **838 KB** (brotli) |
 | Find one record by id | 109 ms | **1.7 ms** (1.7 ms encrypted) |
 | Read every record | 109 ms | **45 ms** |
-| Write every record | 277 ms | **174 ms** (343 ms with 3 indexes) |
+| Write every record | 277 ms | **169 ms** (309 ms with 3 indexes) |
 | Broad filter matching 1 row in 8, spread through the file | 116 ms | **13 ms** |
 | Text search (`contains`) | 112 ms | **21 ms** |
 | Memory to answer a lookup (`--expose-gc`) | 42 MB | **under 0.1 MB** |
@@ -649,9 +649,12 @@ the filter from 56 to 13 ms and from 40 to 13 ms.
 - **Finding specific records:** 55–139× faster than parsing JSON in .NET, and
   about 64× in Node.
 - **Reading a whole file:** faster than `JSON.parse` and System.Text.Json.
-- **Writing:** faster than `JSON.stringify` in Node, and faster than both .NET
-  serializers without indexes. Indexes are built as the file is written: with
-  3 indexes, a .NET write takes about 1.6× Newtonsoft and 3× System.Text.Json.
+- **Writing:** without indexes, faster than `JSON.stringify` in Node and
+  than both .NET serializers. Indexes are built as the file is written:
+  - **.NET, with 3 indexes:** a little faster than Newtonsoft, and about
+    1.6× System.Text.Json.
+  - **Node, with 3 indexes:** about 1.1× `JSON.stringify`.
+
   JAZMIN also compresses as it writes; the JSON serializers do not.
 - **Indexes** are now the largest part of an indexed file, and smaller
   indexes are on the roadmap.

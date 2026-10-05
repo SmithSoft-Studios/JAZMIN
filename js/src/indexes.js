@@ -59,7 +59,12 @@ export const INDEX_PAGE_BYTES = 64 * 1024;
 export class SortedIndexBuilder {
   constructor(type) {
     this.type = type;
-    this.entries = new Map(); // key id -> { key, ids }
+    // Distinct keys in the order first seen, each with its first row id; later row ids only for keys seen again, so a
+    // column of unique values (ids) needs no array per key.
+    this.keys = [];
+    this.firstRows = [];
+    this.moreRows = [];
+    this.positions = null; // key id -> position, made when keys stop arriving in ascending order
     this.nulls = [];
   }
 
@@ -70,10 +75,35 @@ export class SortedIndexBuilder {
     }
     const key = toKey(this.type, value);
     if (Number.isNaN(key)) return; // NaN is never indexed (it is not equal to anything)
-    const id = keyId(key);
-    let entry = this.entries.get(id);
-    if (!entry) this.entries.set(id, (entry = { key, ids: [] }));
-    entry.ids.push(rowId);
+    const n = this.keys.length;
+    if (this.positions === null && n > 0) {
+      // Keys arriving in ascending order (ids, a sorted column) can only repeat the last one: no lookup needed.
+      const last = this.keys[n - 1];
+      const order = compareKeys(last, key);
+      if (order === 0 && keyId(last) === keyId(key)) {
+        (this.moreRows[n - 1] ??= []).push(rowId);
+        return;
+      }
+      if (!(order < 0)) this.positions = new Map(this.keys.map((k, i) => [keyId(k), i]));
+    }
+    if (this.positions !== null) {
+      const at = this.positions.get(keyId(key));
+      if (at !== undefined) {
+        (this.moreRows[at] ??= []).push(rowId);
+        return;
+      }
+      this.positions.set(keyId(key), n);
+    }
+    this.keys.push(key);
+    this.firstRows.push(rowId);
+    this.moreRows.push(undefined);
+  }
+
+  /** Positions of the distinct keys in ascending key order (as first seen, while keys arrived in order). */
+  #sortedPositions() {
+    const order = Array.from(this.keys, (_, i) => i);
+    if (this.positions !== null) order.sort((a, b) => compareKeys(this.keys[a], this.keys[b]));
+    return order;
   }
 
   /**
@@ -82,7 +112,6 @@ export class SortedIndexBuilder {
    * A small index is one page. Row ids of null cells are in `nulls`.
    */
   *pages(pageBytes = INDEX_PAGE_BYTES) {
-    const sorted = [...this.entries.values()].sort((a, b) => compareKeys(a.key, b.key));
     const body = new ByteWriter(Math.min(pageBytes * 2, 1 << 20));
     let first;
     let count = 0;
@@ -96,14 +125,27 @@ export class SortedIndexBuilder {
       count = 0;
       return result;
     };
-    for (const { key, ids } of sorted) {
+    for (const at of this.#sortedPositions()) {
+      const key = this.keys[at];
       if (count === 0) first = key;
       encodeValue(body, this.type, key);
-      writePostings(body, ids);
+      writeRowIds(body, this.firstRows[at], this.moreRows[at]);
       count++;
       if (body.length >= pageBytes) yield page();
     }
     if (count > 0) yield page();
+  }
+}
+
+/** Postings (as writePostings) of a key's first row id and its later ones. */
+function writeRowIds(writer, first, more) {
+  writer.varUint(1 + (more?.length ?? 0));
+  writer.varUint(first);
+  if (!more) return;
+  let previous = first;
+  for (const id of more) {
+    writer.varUint(id - previous);
+    previous = id;
   }
 }
 

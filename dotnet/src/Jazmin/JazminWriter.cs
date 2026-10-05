@@ -549,9 +549,12 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     /// (statistics and directories of small partitions) are stored uncompressed: compression would save a few bytes at
     /// most, and each call costs time and memory.
     /// </summary>
-    private SectionRef WriteSection(ReadOnlySpan<byte> raw, string sectionId, byte[]? key, JazminCodec? codec = null)
+    private SectionRef WriteSection(ReadOnlySpan<byte> raw, string sectionId, byte[]? key, JazminCodec? codec = null) =>
+        WriteEncoded(Section(raw, sectionId, key, codec ?? (raw.Length < TinySection ? JazminCodec.None : null)));
+
+    /// <summary>Writes an encoded section and returns its reference (with its digest in access-controlled files).</summary>
+    private SectionRef WriteEncoded(byte[] section)
     {
-        var section = Section(raw, sectionId, key, codec ?? (raw.Length < TinySection ? JazminCodec.None : null));
         var at = new SectionRef(_position, section.Length, _access is not null ? AccessCrypto.Digest(section) : null);
         Write(section);
         return at;
@@ -889,14 +892,27 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                 refs.Add(new IndexRef(ix.Column, ix.Kind, WriteSection(trigram.Encode(), baseId, IndexKey(baseId)), segment));
                 continue;
             }
-            // Pages are written as they are built: one page of keys is held at a time.
+            // Pages are built a batch at a time (one page per thread) and compressed in parallel, then written in order:
+            // only one batch of pages is held at a time.
             var sorted = (SortedIndexBuilder)ix.Builder;
             var pages = new List<IndexPageRef>();
-            foreach (var (first, count, raw) in sorted.Pages(_options.IndexPageBytes))
+            var batch = new List<(byte[] First, int Count, byte[] Raw)>();
+            void WriteBatch()
             {
-                var sectionId = $"{baseId}/page/{pages.Count}";
-                pages.Add(new IndexPageRef(first, count, WriteSection(raw, sectionId, IndexKey(sectionId))));
+                var ids = batch.Select((_, i) => $"{baseId}/page/{pages.Count + i}").ToArray();
+                var keys = ids.Select(IndexKey).ToArray(); // derived here: key derivation is not shared between threads
+                var sections = new byte[batch.Count][];
+                Parallel.For(0, batch.Count, new ParallelOptions { MaxDegreeOfParallelism = _options.MaxDegreeOfParallelism }, i =>
+                    sections[i] = Section(batch[i].Raw, ids[i], keys[i], batch[i].Raw.Length < TinySection ? JazminCodec.None : null));
+                for (var i = 0; i < batch.Count; i++) pages.Add(new IndexPageRef(batch[i].First, batch[i].Count, WriteEncoded(sections[i])));
+                batch.Clear();
             }
+            foreach (var page in sorted.Pages(_options.IndexPageBytes))
+            {
+                batch.Add(page);
+                if (batch.Count >= _options.MaxDegreeOfParallelism) WriteBatch();
+            }
+            if (batch.Count > 0) WriteBatch();
             SectionRef? nulls = null;
             if (sorted.Nulls.Count > 0) nulls = WriteSection(RowSet.EncodeSection(sorted.Nulls), $"{baseId}/nulls", IndexKey($"{baseId}/nulls"));
             var directory = Catalog.EncodeIndexDirectory(pages, nulls, _access is not null);
