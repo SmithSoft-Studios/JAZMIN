@@ -1266,6 +1266,20 @@ JazminFile.RevokeAccess("statements.jzm", owner, bob);
 
 (`bench/access.js` grants one client key; the .NET benchmark grants 5,000.)
 
+**Owner lookups by an index** (an id, a few values) read only the partitions
+that hold the matching records. The file keeps a small chunk map for the
+owner: which partition each chunk of records is in. So the time doesn't grow
+with the number of partitions. Finding one record by id in a file of 250,000
+records:
+
+| Partitions | JavaScript | .NET |
+|---:|---:|---:|
+| 100 | 1.7 ms (4.9 ms without the map) | 3.1 ms (5.0 ms without) |
+| 1,000 | 2.0 ms (49 ms without) | 2.7 ms (28 ms without) |
+
+Files written before the map existed get one at their next compaction or
+full rewrite; until then they read every partition's chunk directory.
+
 Opening reads only what the key needs: a short signed list of key-slot pages,
 the one page that holds its slot, the header, and its own partitions' chunk
 directories. So a client's open stays about the same however many keys the

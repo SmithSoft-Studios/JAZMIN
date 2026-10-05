@@ -7,7 +7,7 @@
 import { append, JazminError, open, write } from '../src/index.js';
 import { crc32 } from '../src/binary.js';
 import {
-  decodeChunkDirectoryLists, decodeColumnDefinitions, decodeDelta, decodeHeader, decodeIndexDirectory, decodeOwnerCatalog,
+  decodeChunkDirectoryLists, decodeChunkMap, decodeColumnDefinitions, decodeDelta, decodeHeader, decodeIndexDirectory, decodeOwnerCatalog, joinChunkMaps,
   decodePartitionTable, decodeStatistics, findPartitions,
 } from '../src/catalog.js';
 import { decodeColumnar } from '../src/columnar.js';
@@ -226,6 +226,7 @@ export function exerciseDecoders(input, rnd) {
     () => findPartitions(input, [input.subarray(0, 12)]),
     () => decodeDelta(input),
     () => decodeOwnerCatalog(input),
+    () => joinChunkMaps(decodeChunkMap(input), decodeChunkMap(input.subarray(input.length >> 1))),
     () => decodeColumnDefinitions(input),
     () => decodeColumnar(input, Array.from({ length: 1 + rnd.int(4) }, () => rnd.pick(types)), rnd.int(300), 0),
     () => SortedIndex.decodePage(input, rnd.pick(types)),

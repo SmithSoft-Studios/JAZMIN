@@ -8,7 +8,7 @@ import {
 } from './access.js';
 import { crc32, parseJsonText } from './binary.js';
 import {
-  decodeChunkDirectoryLists, decodeColumnDefinitions, decodeDelta, decodeHeader, decodeIndexDirectory, decodeOwnerCatalog,
+  decodeChunkDirectoryLists, decodeChunkMap, decodeColumnDefinitions, decodeDelta, decodeHeader, decodeIndexDirectory, decodeOwnerCatalog, joinChunkMaps,
   decodePartitionTable, decodeStatistics, findPartitions,
 } from './catalog.js';
 import { decodeColumnar } from './columnar.js';
@@ -184,6 +184,11 @@ export const FILE_STATE = Symbol('jazmin.fileState');
 const NEXT_CHUNK = Symbol('jazmin.nextChunk'); // yielded by internal scans before each chunk is read (findAsync)
 const READ_AHEAD = 2; // chunks read ahead by findAsync
 const SMALL_LOOKUP_BYTES = 8 * 1024; // index lookups this small are always made: the bytes are negligible, and rows are not decoded
+/**
+ * What an owner's index lookup may cost (bytes of index pages) to be made before reading every partition: the
+ * alternative reads at least a section per partition (chunk directories, statistics).
+ */
+const ownerLookupBudget = (partitions) => SMALL_LOOKUP_BYTES * Math.max(1, partitions);
 // Many catalog sections read together (an owner's chunk directories and statistics: one per partition) are read in
 // ranges: from READ_AHEAD_SECTIONS sections, those at most READ_AHEAD_GAP apart share a read of at most READ_AHEAD_MAX
 // bytes. A read is a system call; the gaps are other small catalog sections.
@@ -433,6 +438,7 @@ export class JazminReader {
   #indexes = new Map();
   #indexProvider = { get: (column, kind) => this.#index(column, kind) };
   #readAheads = []; // ranges read ahead (#readAhead) while they are held
+  #map; // the owner's chunk map (#chunkMap): undefined until looked up, null when there is none
   #cachedChunk = { ordinal: -1, wanted: null, chunk: null }; // the last chunk decoded, and the columns decoded (null: all)
   #sortStatsComplete; // computed on first sorted scan
   #flags = 0;
@@ -1081,8 +1087,82 @@ export class JazminReader {
 
   /** Owner only: the indexes of every table (spec 7.6.5). */
   #ownerCatalog() {
-    const sectionId = 'owner/catalog';
-    return decodeOwnerCatalog(this.#read(this.#header.access.ownerCatalog, sectionId, sectionKeyFrom(this.#access.secrets.owner, this.#salt, sectionId)));
+    if (!this.#access.catalog) {
+      const sectionId = 'owner/catalog';
+      this.#access.catalog = decodeOwnerCatalog(this.#read(this.#header.access.ownerCatalog, sectionId, sectionKeyFrom(this.#access.secrets.owner, this.#salt, sectionId)));
+    }
+    return this.#access.catalog;
+  }
+
+  /**
+   * Owner: this table's chunk map (spec 7.6.5) as { rowStarts, rowCounts, partitionOf, partitions }, or null when the
+   * file has none or it does not cover the table's chunks. It only says where to look: the chunk directories, read
+   * after it, are checked against it.
+   */
+  #chunkMap() {
+    if (this.#map !== undefined) return this.#map;
+    this.#map = null;
+    const parts = this.#chunkMapParts();
+    const map = parts && (parts.appended ? joinChunkMaps(parts.base, parts.appended) : parts.base);
+    const n = this.#table.chunkCount;
+    if (!map || map.rowCounts.length !== n || map.partitionOf.length !== n || map.partitionOf.some((p) => p >= map.partitions.length)) return null;
+    const rowStarts = new Float64Array(n);
+    let total = 0;
+    for (let o = 0; o < n; o++) {
+      rowStarts[o] = total;
+      total += map.rowCounts[o];
+    }
+    if (total !== this.#table.rowCount) return null;
+    this.#map = { rowStarts, rowCounts: map.rowCounts, partitionOf: map.partitionOf, partitions: map.partitions };
+    return this.#map;
+  }
+
+  /**
+   * Owner: this table's chunk map sections (spec 7.6.5), read: { base, baseRef, appended }, or null when it has none.
+   */
+  #chunkMapParts() {
+    const entry = this.#ownerCatalog().find((t) => t.table === this.#tableIndex);
+    if (!entry?.chunkMap) return null;
+    const read = (ref, sectionId) => decodeChunkMap(this.#read(ref, sectionId, sectionKeyFrom(this.#access.secrets.owner, this.#salt, sectionId)));
+    const base = read(entry.chunkMap, `${this.#tableIndex}/chunkmap`);
+    // The appended chunks' section is named after the append that wrote it.
+    const appended = entry.chunkMapAppended ? read(entry.chunkMapAppended, `${this.#tableIndex}/chunkmap/${entry.chunkMapSegment}`) : null;
+    return { base, baseRef: entry.chunkMap, appended };
+  }
+
+  /** Owner, appending: the chunk map so far ({ base: ref, appended, chunks }), or null when the file has none. */
+  #chunkMapState() {
+    const parts = this.#chunkMapParts();
+    if (!parts) return null;
+    return { base: parts.baseRef, appended: parts.appended, chunks: parts.base.rowCounts.length + (parts.appended?.rowCounts.length ?? 0) };
+  }
+
+  /**
+   * Owner: loads only the partitions the chunk map puts these rows in, and checks their chunk directories agree with
+   * it. False when there is no map or a row is not in it, or the directories disagree: the caller then loads every
+   * partition.
+   */
+  #loadPartitionsOf(rowIds) {
+    const map = this.#chunkMap();
+    if (!map) return false;
+    const ordinals = new Set();
+    for (const rowId of rowIds) {
+      let lo = 0;
+      let hi = map.rowStarts.length - 1;
+      if (hi < 0) return false;
+      while (lo < hi) {
+        const mid = (lo + hi + 1) >>> 1;
+        if (map.rowStarts[mid] <= rowId) lo = mid;
+        else hi = mid - 1;
+      }
+      if (!(rowId >= map.rowStarts[lo] && rowId < map.rowStarts[lo] + map.rowCounts[lo])) return false;
+      ordinals.add(lo);
+    }
+    this.#ensurePartitions([...new Set([...ordinals].map((o) => map.partitions[map.partitionOf[o]]))]);
+    for (const o of ordinals) {
+      if (!this.#loaded[o] || this.#rowStart[o] !== map.rowStarts[o] || this.#rowCount[o] !== map.rowCounts[o]) return false;
+    }
+    return true;
   }
 
   /** Names of the file's tables, in order (spec 6.2). */
@@ -1447,11 +1527,20 @@ export class JazminReader {
     // only those, and the partition column's statistics are not needed.
     const partitionCol = this.#access ? this.#partitionCol() : -1;
     const names = partitionCol >= 0 ? partitionLookup(plan, partitionCol) : null;
-    if (names && this.#access.isOwner && !this.#allLoaded) this.#ensurePartitions(names.map((n) => this.#access.secrets.partitionId(n)));
-    else this.#ensureAllChunks();
-    // An owner's statistics are one section per partition and column. A small index lookup (an id, a few values)
-    // already narrows the rows to check, so statistics would not narrow them further: they are not read.
-    if (!names && this.#access?.isOwner && this.#partitions.size > 1 && indexPlan(plan, this.#indexProvider, SMALL_LOOKUP_BYTES)) return plan;
+    if (names && this.#access.isOwner && !this.#allLoaded) {
+      this.#ensurePartitions(names.map((n) => this.#access.secrets.partitionId(n)));
+    } else if (!names && this.#access?.isOwner && !this.#allLoaded) {
+      // An index lookup: the chunk map says which partitions hold its rows, so only those are loaded.
+      const map = this.#chunkMap();
+      const lookup = map && indexPlan(plan, this.#indexProvider, ownerLookupBudget(map.partitions.length));
+      if (lookup && this.#loadPartitionsOf(lookup.rows())) return plan;
+      this.#ensureAllChunks();
+    } else {
+      this.#ensureAllChunks();
+    }
+    // An owner's statistics are one section per partition and column. An index lookup that costs less already narrows
+    // the rows to check, so statistics would not narrow them further: they are not read.
+    if (!names && this.#access?.isOwner && this.#partitions.size > 1 && indexPlan(plan, this.#indexProvider, ownerLookupBudget(this.#partitions.size))) return plan;
     const cols = planColumns(plan);
     const leading = this.#table.sortedBy[0];
     if (leading !== undefined) cols.add(this.#columns.findIndex((c) => c.name === leading));
@@ -1512,7 +1601,7 @@ export class JazminReader {
   /** Reads one row by its zero-based row id. */
   get(rowId) {
     if (!Number.isInteger(rowId) || rowId < 0 || rowId >= this.#table.rowCount) throw new JazminValidationError(`Row ${rowId} is out of range`);
-    this.#ensureAllChunks();
+    if (!(this.#access?.isOwner && !this.#allLoaded && this.#loadPartitionsOf([rowId]))) this.#ensureAllChunks();
     const ordinal = this.#chunkOrdinalFor(rowId);
     if (!this.#isVisibleChunk(ordinal) || this.#visibleCols.length === 0) throw new JazminKeyError(`Row ${rowId} is not visible with this key`);
     const chunk = this.#chunk(ordinal);
@@ -1872,6 +1961,7 @@ export class JazminReader {
       table: this.#table,
       tableIndex: this.#tableIndex,
       ownerCatalog: isOwner ? this.#ownerCatalog() : null,
+      chunkMap: isOwner ? this.#chunkMapState() : null,
       fileId: this.#fileId,
       salt: this.#salt,
       flags: this.#flags,

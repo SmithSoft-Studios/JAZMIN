@@ -138,7 +138,10 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         HeaderDef Header, TableDef Table, byte[] FileId, byte[] Salt, ushort Flags, KeySchedule? Keys, FileSecrets? OwnerSecrets,
         JsonObject? Directory, string? DirectoryText, SectionRef? DirectoryRef, (long Offset, int Length, byte[] Section)? KeySlots,
         List<IndexRef> Indexes, Dictionary<string, int> SegmentCounts, long[] Deleted, long ValidEnd, object?[]? LastRow, FileState? Files = null,
-        int TableIndex = 0, List<(int Table, List<IndexRef> Indexes)>? OwnerCatalog = null);
+        int TableIndex = 0, List<OwnerTable>? OwnerCatalog = null, ChunkMapState? ChunkMap = null);
+
+    /// <summary>Owner, appending: the table's chunk map so far - the whole one's section, the chunks appended since, and how many chunks they cover.</summary>
+    internal sealed record ChunkMapState(SectionRef Base, ChunkMap? Appended, int Chunks);
 
     /// <summary>The open stream, shared by the readers of a file's tables (<see cref="OpenTable"/>): reads take turns, the last reader closes it.</summary>
     private sealed class SharedStream
@@ -186,6 +189,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private readonly Dictionary<string, object?> _indexes = new(StringComparer.Ordinal);
     private int[] _visibleChunks = [];
     private bool _allLoaded;
+    private List<OwnerTable>? _ownerCatalog;
+    private MapInfo? _map;
+    private bool _mapLooked;
     private List<IndexRef>? _indexRefs;
     private bool? _sortStatsComplete;
     private ushort _flags;
@@ -980,17 +986,89 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         else if (!_access.IsOwner) _indexRefs = new List<IndexRef>(); // indexes reveal every partition's values
         else
         {
-            _indexRefs = OwnerCatalog().FirstOrDefault(t => t.Table == _tableIndex).Indexes ?? new List<IndexRef>();
+            _indexRefs = OwnerCatalog().FirstOrDefault(t => t.Table == _tableIndex)?.Indexes ?? new List<IndexRef>();
         }
         return _indexRefs;
     }
 
-    /// <summary>Owner only: the indexes of every table (spec 7.6.5).</summary>
-    private List<(int Table, List<IndexRef> Indexes)> OwnerCatalog()
+    /// <summary>Owner only: the indexes and chunk maps of every table (spec 7.6.5), read once.</summary>
+    private List<OwnerTable> OwnerCatalog()
     {
+        if (_ownerCatalog is not null) return _ownerCatalog;
         const string sectionId = "owner/catalog";
         var at = _header.Access?.OwnerCatalog ?? throw new JazminFormatException("Owner catalog is missing");
-        return Catalog.DecodeOwnerCatalog(ReadSection(at, sectionId, AccessCrypto.SectionKey(_access!.Secrets!.Owner, _salt, sectionId)));
+        return _ownerCatalog = Catalog.DecodeOwnerCatalog(ReadSection(at, sectionId, AccessCrypto.SectionKey(_access!.Secrets!.Owner, _salt, sectionId)));
+    }
+
+    /// <summary>A table's chunk map, with each chunk's first row id.</summary>
+    private sealed record MapInfo(long[] RowStarts, List<long> RowCounts, List<long> PartitionOf, List<string> Partitions);
+
+    /// <summary>
+    /// Owner: this table's chunk map (spec 7.6.5), or null when the file has none or it does not cover the table's
+    /// chunks. It only says where to look: the chunk directories, read after it, are checked against it.
+    /// </summary>
+    private MapInfo? ChunkMapInfo()
+    {
+        if (_mapLooked) return _map;
+        _mapLooked = true;
+        var parts = ChunkMapParts();
+        var map = parts is null ? null : parts.Value.Appended is null ? parts.Value.Base : Catalog.JoinChunkMaps(parts.Value.Base, parts.Value.Appended);
+        var n = _table.ChunkCount;
+        if (map is null || map.RowCounts.Count != n || map.PartitionOf.Count != n || map.PartitionOf.Any(p => p >= map.Partitions.Count)) return null;
+        var rowStarts = new long[n];
+        long total = 0;
+        for (var o = 0; o < n; o++)
+        {
+            rowStarts[o] = total;
+            total += map.RowCounts[o];
+        }
+        if (total != _table.RowCount) return null;
+        return _map = new MapInfo(rowStarts, map.RowCounts, map.PartitionOf, map.Partitions);
+    }
+
+    /// <summary>Owner: this table's chunk map sections (spec 7.6.5), read, or null when it has none.</summary>
+    private (ChunkMap Base, SectionRef BaseRef, ChunkMap? Appended)? ChunkMapParts()
+    {
+        var entry = OwnerCatalog().FirstOrDefault(t => t.Table == _tableIndex);
+        if (entry?.ChunkMap is not { } baseRef) return null;
+        ChunkMap Read(SectionRef at, string sectionId) =>
+            Catalog.DecodeChunkMap(ReadSection(at, sectionId, AccessCrypto.SectionKey(_access!.Secrets!.Owner, _salt, sectionId)));
+        var baseMap = Read(baseRef, $"{_tableIndex}/chunkmap");
+        // The appended chunks' section is named after the append that wrote it.
+        var appended = entry.ChunkMapAppended is { } at ? Read(at, $"{_tableIndex}/chunkmap/{entry.ChunkMapSegment}") : null;
+        return (baseMap, baseRef, appended);
+    }
+
+    /// <summary>Owner, appending: the chunk map so far, or null when the file has none.</summary>
+    private ChunkMapState? ChunkMapStateOf()
+    {
+        if (ChunkMapParts() is not { } parts) return null;
+        return new ChunkMapState(parts.BaseRef, parts.Appended, parts.Base.RowCounts.Count + (parts.Appended?.RowCounts.Count ?? 0));
+    }
+
+    /// <summary>
+    /// Owner: loads only the partitions the chunk map puts these rows in, and checks their chunk directories agree with
+    /// it. False when there is no map or a row is not in it, or the directories disagree: the caller then loads every
+    /// partition.
+    /// </summary>
+    private bool LoadPartitionsOf(IEnumerable<long> rowIds)
+    {
+        if (ChunkMapInfo() is not { } map || map.RowStarts.Length == 0) return false;
+        var ordinals = new HashSet<int>();
+        foreach (var rowId in rowIds)
+        {
+            int lo = 0, hi = map.RowStarts.Length - 1;
+            while (lo < hi)
+            {
+                var mid = (lo + hi + 1) >>> 1;
+                if (map.RowStarts[mid] <= rowId) lo = mid;
+                else hi = mid - 1;
+            }
+            if (rowId < map.RowStarts[lo] || rowId >= map.RowStarts[lo] + map.RowCounts[lo]) return false;
+            ordinals.Add(lo);
+        }
+        EnsurePartitions(ordinals.Select(o => map.Partitions[(int)map.PartitionOf[o]]).Distinct(StringComparer.Ordinal).ToList());
+        return ordinals.All(o => _loaded[o] && _rowStart[o] == map.RowStarts[o] && _rowCount[o] == map.RowCounts[o]);
     }
 
     /// <summary>Indexes this reader may use (none for access keys: indexes reveal every partition's values).</summary>
@@ -1288,6 +1366,12 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     private const int SmallLookupBytes = 8 * 1024; // index lookups this small are always made: the bytes are negligible, and rows are not decoded
 
+    /// <summary>
+    /// What an owner's index lookup may cost (bytes of index pages) to be made before reading every partition: the
+    /// alternative reads at least a section per partition (chunk directories, statistics).
+    /// </summary>
+    private static long OwnerLookupBudget(int partitions) => (long)SmallLookupBytes * Math.Max(1, partitions);
+
     /// <summary>The chunks a scan reads for a filter: those its partition, sort range and statistics leave.</summary>
     private int[] ScanList(BoundFilter? plan) => ScanChunks(plan).Where(o => plan is null || MayMatch(plan, o)).ToArray();
 
@@ -1375,11 +1459,21 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         // only those, and the partition column's statistics are not needed.
         var partitionCol = _access is null ? -1 : PartitionCol();
         var names = partitionCol >= 0 ? PartitionLookup(plan, partitionCol) : null;
-        if (names is not null && _access is { IsOwner: true } && !_allLoaded) EnsurePartitions(names.Select(n => _access.Secrets!.PartitionId(n)).ToList());
+        if (names is not null && _access is { IsOwner: true } && !_allLoaded)
+        {
+            EnsurePartitions(names.Select(n => _access.Secrets!.PartitionId(n)).ToList());
+        }
+        else if (names is null && _access is { IsOwner: true } && !_allLoaded)
+        {
+            // An index lookup: the chunk map says which partitions hold its rows, so only those are loaded.
+            var map = ChunkMapInfo();
+            if (map is not null && FilterEngine.IndexPlan(plan, this, OwnerLookupBudget(map.Partitions.Count)) is { } lookup && LoadPartitionsOf(lookup.Rows())) return plan;
+            EnsureAllChunks();
+        }
         else EnsureAllChunks();
-        // An owner's statistics are one section per partition and column. A small index lookup (an id, a few values)
-        // already narrows the rows to check, so statistics would not narrow them further: they are not read.
-        if (names is null && _access is { IsOwner: true } && _partitions.Count > 1 && FilterEngine.IndexPlan(plan, this, SmallLookupBytes) is not null) return plan;
+        // An owner's statistics are one section per partition and column. An index lookup that costs less already narrows
+        // the rows to check, so statistics would not narrow them further: they are not read.
+        if (names is null && _access is { IsOwner: true } && _partitions.Count > 1 && FilterEngine.IndexPlan(plan, this, OwnerLookupBudget(_partitions.Count)) is not null) return plan;
         var used = new HashSet<int>();
         CollectColumns(plan, used);
         if (_table.SortedBy.Count > 0) used.Add(Array.FindIndex(_allColumns, c => c.Name == _table.SortedBy[0]));
@@ -1517,7 +1611,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     public JazminRow Get(long rowId)
     {
         if (rowId < 0 || rowId >= _table.RowCount) throw new JazminValidationException($"Row {rowId} is out of range");
-        EnsureAllChunks();
+        if (!(_access is { IsOwner: true } && !_allLoaded && LoadPartitionsOf([rowId]))) EnsureAllChunks();
         var ordinal = ChunkOrdinalFor(rowId);
         if (ordinal < 0 || _visibleCols.Length == 0) throw new JazminKeyException($"Row {rowId} is not visible with this key");
         var values = ChunkRows(ordinal)[rowId - _rowStart[ordinal]]
@@ -1925,7 +2019,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         return new AppendStateInfo(_header, _table, _fileId, _salt, _flags, _keys, _access?.Secrets,
             isOwner ? OwnerDirectory() : null, isOwner ? _access!.DirectoryText : null, isOwner ? _header.Access?.OwnerDirectory : null,
             isOwner ? _access!.KeySlots : null, IndexList(), _partitions.Values.ToDictionary(p => p.Id, p => p.Segments.Count, StringComparer.Ordinal),
-            _deleted, _validEnd, lastRow, FileState(), _tableIndex, isOwner ? OwnerCatalog() : null);
+            _deleted, _validEnd, lastRow, FileState(), _tableIndex, isOwner ? OwnerCatalog() : null, isOwner ? ChunkMapStateOf() : null);
     }
 
     public void Dispose()

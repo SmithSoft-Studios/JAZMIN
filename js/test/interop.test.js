@@ -6,6 +6,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { JazminAccessKey, issueUnlockToken, open, toJSON } from '../src/index.js';
+import { APPEND_STATE } from '../src/reader.js';
 import {
   ACCESS_VIEWS, COUNTRY_COLUMNS, COUNTRY_VIEWS, FILES_VIEWS, FIXTURE_EXPIRY, FIXTURE_PACKAGE, PARTITIONS_SPLIT, PARTITION_VIEWS, appendedLive,
   countryRows, fixtureFiles, toCanonical,
@@ -88,6 +89,38 @@ test('interop: browser-files-key.jzm opened with the owner key shows its files',
     reader.close();
   }
 });
+
+// The owner's chunk map (spec 7.6.5): written by either library, read by both; older files without one read as before.
+for (const writer of ['js', 'dotnet']) {
+  for (const [file, hasMap] of [
+    [`${writer}-access.jzm`, true], [`${writer}-appended-access.jzm`, true], [`${writer}-many-partitions-access.jzm`, true],
+    [`${writer}-tables-access.jzm`, true], [`${writer}-files-access.jzm`, false],
+  ]) {
+    test(`interop: ${file} ${hasMap ? 'has' : 'has no'} owner chunk map, and owner lookups by id find the rows`, () => {
+      const full = path.join(dir, file);
+      const all = (() => {
+        const reader = open(full, { key: keys.key });
+        try {
+          const map = reader[APPEND_STATE].chunkMap;
+          assert.equal(map !== null, hasMap);
+          if (map) assert.equal(map.chunks, reader.chunkCount);
+          return [...reader.rows()];
+        } finally {
+          reader.close();
+        }
+      })();
+      const ids = [all[0].id, all[Math.floor(all.length / 2)].id, all[all.length - 1].id, -1];
+      for (const id of ids) {
+        const reader = open(full, { key: keys.key });
+        try {
+          assert.deepEqual([...reader.find({ id })], all.filter((r) => r.id === id), `id ${id}`);
+        } finally {
+          reader.close();
+        }
+      }
+    });
+  }
+}
 
 // Several tables (D-3): the first table is the dataset (checked above); the second is a lookup table of countries.
 const expectedCountries = countryRows(dataset.rows);

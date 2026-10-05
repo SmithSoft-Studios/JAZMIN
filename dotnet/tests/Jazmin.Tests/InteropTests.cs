@@ -261,6 +261,40 @@ public class InteropTests
         AssertFilesViews(file, OutDir, accessControlled);
     }
 
+    /// <summary>
+    /// The owner's chunk map (spec 7.6.5): written by either library, read by both; older files without one read as
+    /// before. Owner lookups by id find the rows either way.
+    /// </summary>
+    [Theory]
+    [InlineData("js-access.jzm", true)]
+    [InlineData("js-appended-access.jzm", true)]
+    [InlineData("js-many-partitions-access.jzm", true)]
+    [InlineData("js-tables-access.jzm", true)]
+    [InlineData("js-files-access.jzm", false)]
+    [InlineData("dotnet-access.jzm", true)]
+    [InlineData("dotnet-appended-access.jzm", true)]
+    [InlineData("dotnet-many-partitions-access.jzm", true)]
+    [InlineData("dotnet-tables-access.jzm", true)]
+    [InlineData("dotnet-files-access.jzm", false)]
+    public void Owner_chunk_maps_are_read_across_libraries(string file, bool hasMap)
+    {
+        var owner = JazminKey.Parse((string)Keys["key"]!);
+        var path = Path.Combine(Dir, file);
+        List<JazminRow> all;
+        using (var reader = JazminReader.Open(path, new JazminReadOptions { Key = owner }))
+        {
+            var map = reader.AppendState().ChunkMap;
+            Assert.Equal(hasMap, map is not null);
+            if (map is not null) Assert.Equal(reader.ChunkCount, map.Chunks);
+            all = reader.Rows().ToList();
+        }
+        foreach (var id in new[] { (long)all[0]["id"]!, (long)all[all.Count / 2]["id"]!, (long)all[^1]["id"]!, -1L })
+        {
+            using var reader = JazminReader.Open(path, new JazminReadOptions { Key = owner });
+            Assert.Equal(all.Where(r => (long)r["id"]! == id).Select(r => r.RowId), reader.Find(JazminFilter.Eq("id", id)).Select(r => r.RowId));
+        }
+    }
+
     /// <summary>Opens an access fixture with each key and checks it shows exactly that key's grant.</summary>
     private static void AssertAccessViews(string file, string? dir = null)
     {

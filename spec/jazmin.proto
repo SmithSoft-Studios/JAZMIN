@@ -192,4 +192,18 @@ message OwnerCatalog {
 message TableIndexes {
   uint32 table = 1;
   repeated IndexRef indexes = 2;
+  // Optional (spec 7.6.5): the table's chunk map, in a "<t>/chunkmap" section written by its last full write, and the
+  // chunks appended since, in a "<t>/chunkmap/<s>" section written by the append numbered chunk_map_segment.
+  SectionRef chunk_map = 3;
+  SectionRef chunk_map_appended = 4;
+  uint32 chunk_map_segment = 5;
+}
+
+// Sections "<t>/chunkmap" and "<t>/chunkmap/<s>": chunks in ordinal order, the rows each holds and its partition. The
+// owner finds the partition of a row without reading every partition's chunk directory. A chunk's first row id is the
+// sum of the earlier chunks' row counts.
+message ChunkMap {
+  repeated uint64 row_counts = 1 [packed = true];   // per chunk ordinal
+  repeated bytes partitions = 2;                     // partition ids, each listed once
+  repeated uint32 partition_of = 3 [packed = true];  // per chunk ordinal: an index into partitions
 }

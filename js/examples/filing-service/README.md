@@ -154,24 +154,24 @@ rest.
 
 | Records in the shared file | 10,000 | 100,000 | 250,000 |
 |---|---:|---:|---:|
-| File 1 new record | 34 ms, 6 MB | 33 ms, 6 MB | 27 ms, 6 MB |
-| File 50 new records | 33 ms, 7 MB | 31 ms, 6 MB | 28 ms, 6 MB |
-| Change 50 records | 34 ms, 7 MB | 37 ms, 12 MB | 36 ms, 11 MB |
-| The same 50 changes again (nothing changes) | 17 ms, 4 MB | 20 ms, 4 MB | 22 ms, 5 MB |
-| File 10 records with a 200 KB photo each | 84 ms, 20 MB | 80 ms, 20 MB | 88 ms, 18 MB |
-| Change a record to drop its photo | 34 ms, 11 MB | 52 ms, 11 MB | 74 ms, 13 MB |
-| Compact and regroup after 50 appends | 64 ms, 12 MB | 232 ms, 55 MB | 496 ms, 109 MB |
+| File 1 new record | 31 ms, 5 MB | 33 ms, 5 MB | 26 ms, 5 MB |
+| File 50 new records | 28 ms, 5 MB | 31 ms, 5 MB | 25 ms, 5 MB |
+| Change 50 records | 29 ms, 7 MB | 36 ms, 9 MB | 35 ms, 8 MB |
+| The same 50 changes again (nothing changes) | 14 ms, 4 MB | 13 ms, 4 MB | 16 ms, 5 MB |
+| File 10 records with a 200 KB photo each | 75 ms, 16 MB | 78 ms, 17 MB | 83 ms, 20 MB |
+| Change a record to drop its photo | 36 ms, 11 MB | 58 ms, 10 MB | 100 ms, 12 MB |
+| Compact and regroup after 50 appends | 75 ms, 12 MB | 259 ms, 56 MB | 534 ms, 115 MB |
 
 What the numbers mean:
-- **A batch costs about 30 to 35 ms, whatever the size of the shared file.**
+- **A batch costs about 25 to 35 ms, whatever the size of the shared file.**
   An append writes only the change: a batch grows the file by 1 to 2 KB,
   plus its photos.
 - **Most of that time is fixed work per batch:**
   - the append: writing safely to disk, signing the file and re-sealing the
     key slots, about 13 ms;
-  - looking up the batch's ids, about 5 ms. Most of it is reading every
-    partition's chunk directory (100 here), which says where each record
-    is.
+  - looking up the batch's ids, about 2 ms: the owner's chunk map says
+    which partition holds each record, so only that partition's chunk
+    directory is read, however many people the file has.
 
   The shared file is opened once per batch, for the grant, the records and
   the files. So 50 records cost about the same as one: send records in

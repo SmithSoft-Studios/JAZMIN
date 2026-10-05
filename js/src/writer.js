@@ -9,7 +9,7 @@ import {
 } from './access.js';
 import { crc32 } from './binary.js';
 import {
-  encodeChunkDirectory, encodeColumnDefinitions, encodeDelta, encodeHeader, encodeIndexDirectory, encodeOwnerCatalog,
+  encodeChunkDirectory, encodeChunkMap, encodeColumnDefinitions, encodeDelta, encodeHeader, encodeIndexDirectory, encodeOwnerCatalog, joinChunkMaps,
   encodePartitionTable, encodeStatistics,
 } from './catalog.js';
 import { columnBuffer, encodeColumnBuffers } from './columnar.js';
@@ -137,6 +137,9 @@ export const CONTINUE = Symbol('jazmin.continue');
 
 /** Internal: overrides the sorted-index page size ({ pageBytes }), so tests and fixtures can use many small pages. */
 export const PAGING = Symbol('jazmin.paging');
+
+/** Internal: `[CHUNK_MAP]: false` writes no owner chunk map, as writers before it did (tests of older files). */
+export const CHUNK_MAP = Symbol('jazmin.chunkMap');
 
 /** Orders two rows by the `sortedBy` columns; nulls sort first. */
 function compareSortKeys(a, b) {
@@ -279,6 +282,7 @@ export class JazminWriter {
       metadata, codec, level, kdfIterations: password ? kdfIterations : 0, now: toMs(now),
       pageBytes: options[PAGING]?.pageBytes ?? INDEX_PAGE_BYTES,
       keySlotPageBytes: options[PAGING]?.keySlotPageBytes ?? KEY_SLOT_PAGE_BYTES,
+      chunkMap: options[CHUNK_MAP] !== false,
     };
     const cont = options[CONTINUE];
     this.#continue = cont ?? null;
@@ -455,7 +459,37 @@ export class JazminWriter {
       const sectionId = `${t}/deletes/${cont.deleted.length}`; // the count only grows, so the id is unique
       table.deletes = this.#writeSection(encodePostingsSection(cont.deleted), sectionId, this.#key(sectionId, this.#secrets?.header));
     }
-    this.#written[t] = { table, indexes };
+    this.#written[t] = { table, indexes, ...(this.#access ? this.#writeChunkMap(segment) : {}) };
+  }
+
+  /**
+   * The table's chunk map (spec 7.6.5): every chunk's row count and partition, by ordinal, so the owner finds a row's
+   * partition without reading every partition's chunk directory. A full write writes it whole (section
+   * `<t>/chunkmap`); an append writes the chunks appended since (`<t>/chunkmap/<segment>`: the earlier appends' and
+   * its own) and keeps the whole one. A file without one gets none until its next full write.
+   * Returns the owner catalog's { chunkMap, chunkMapAppended } refs.
+   */
+  #writeChunkMap(segment) {
+    if (!this.#options.chunkMap) return {};
+    const cont = this.#continue;
+    // This writer's chunks.
+    const partitions = [...new Set(this.#chunks.map((c) => c.partition))];
+    const index = new Map(partitions.map((id, i) => [id, i]));
+    const written = { rowCounts: this.#chunks.map((c) => c.rowCount), partitions, partitionOf: this.#chunks.map((c) => index.get(c.partition)) };
+    const ownerKey = (sectionId) => sectionKeyFrom(this.#secrets.owner, this.#salt, sectionId);
+    if (!cont) {
+      const sectionId = `${this.#tableIndex}/chunkmap`;
+      return { chunkMap: this.#writeSection(encodeChunkMap(written), sectionId, ownerKey(sectionId)) };
+    }
+    const state = cont.chunkMap;
+    if (!state || state.chunks !== this.#firstOrdinal) return {}; // the file has none, or it does not cover every chunk
+    const appended = state.appended ? joinChunkMaps(state.appended, written) : written;
+    const sectionId = `${this.#tableIndex}/chunkmap/${segment}`;
+    return {
+      chunkMap: state.base,
+      chunkMapAppended: this.#writeSection(encodeChunkMap(appended), sectionId, ownerKey(sectionId)),
+      chunkMapSegment: segment,
+    };
   }
 
   get rowCount() {
@@ -699,9 +733,12 @@ export class JazminWriter {
     if (this.#access) {
       const catalogId = 'owner/catalog';
       // Indexes of every table; when appending, the other tables' come from the file.
+      const entry = (table, w) => ({
+        table, indexes: w.indexes, chunkMap: w.chunkMap ?? null, chunkMapAppended: w.chunkMapAppended ?? null, chunkMapSegment: w.chunkMapSegment ?? 0,
+      });
       const catalog = cont
-        ? cont.ownerCatalog.filter((c) => c.table !== this.#tableIndex).concat({ table: this.#tableIndex, indexes: this.#written[this.#tableIndex].indexes })
-        : this.#written.map((w, table) => ({ table, indexes: w.indexes }));
+        ? cont.ownerCatalog.filter((c) => c.table !== this.#tableIndex).concat(entry(this.#tableIndex, this.#written[this.#tableIndex]))
+        : this.#written.map((w, table) => entry(table, w));
       catalog.sort((a, b) => a.table - b.table);
       const ownerCatalog = this.#writeSection(encodeOwnerCatalog(catalog), catalogId, sectionKeyFrom(this.#secrets.owner, this.#salt, catalogId));
       const directoryText = this.#ownerDirectoryText();

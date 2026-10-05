@@ -238,6 +238,7 @@ knows its identifier without extra fields:
 | Sorted index null postings       | `<t>/index/<column>/sorted[/<s>]/nulls`      |
 | Append delta                     | `delta/<d>`                                 |
 | Owner directory / owner catalog  | `owner` / `owner/catalog`                   |
+| Chunk map / chunks appended since | `<t>/chunkmap` / `<t>/chunkmap/<s>` (7.6.5) |
 | Embedded-file directory / block  | `files/dir[/<group>][/<s>]` / `file/<id>/<b>` (6.8) |
 | Key-slot list / key-slot page *n* / signature | `keyslots` / `keyslots/<n>` / `signature` |
 
@@ -685,7 +686,7 @@ unless stated):
 | Chunk directory segments of partition *p* | `P(p)` |
 | Chunk parts, and statistics blocks, of partition *p* and column group *g* | `P(p) \|\| C(g)` |
 | Column definitions of group *g* | `C(g)` |
-| Indexes, index pages, owner catalog | `O` |
+| Indexes, index pages, owner catalog, chunk map | `O` |
 | Owner directory | `O`, with `info = "JAZMIN/1/owner"` |
 
 So:
@@ -766,6 +767,29 @@ covers the whole file.
 - Indexes are listed in the owner catalog (`AccessInfo.owner_catalog`),
   not in the table, because they describe every partition and their column
   names could reveal restricted columns. Only the owner uses indexes.
+- **Chunk map.** A table's entry in the owner catalog MAY reference a
+  chunk map: for every chunk ordinal, its row count and its partition (a
+  `ChunkMap` message). A chunk's first row id is the sum of the earlier
+  chunks' row counts. With it, the owner finds the partition holding a row
+  an index names and reads only that partition's chunk directory, instead
+  of every partition's. Only the owner reads it (key `O`), because it
+  reveals every partition's size.
+  - **Sections:** a full write writes the table's whole map as section
+    `<t>/chunkmap` (`chunk_map`). An append keeps it, and writes the chunks
+    appended since the full write, the earlier appends' and its own, as
+    `<t>/chunkmap/<s>` (`chunk_map_appended`, with `chunk_map_segment` =
+    *s*). So a reader reads at most two map sections, and an append writes
+    only the appended chunks, not the whole map.
+  - **Writers** that write one MUST cover every chunk of the table. An
+    append to a file without one, or with one that does not cover its
+    chunks, writes none.
+  - **Readers** join the two sections, and MUST ignore a map whose chunk
+    count or total row count differs from the table's. A map only says
+    where to look: readers MUST check the chunk directories they then read
+    against it, and on any difference read every partition's directory
+    instead.
+  - **Files without a map** remain valid; readers then read every
+    partition's chunk directory, as before.
 - The owner directory (`owner`, UTF-8 JSON) holds `{ "partitions": [names],
   "fileGroups": [names], "grants": [ { "key": "jza1-...", "rows": "*" |
   [partition names], "columns": "*" | [names], "files": ..., "label": "...", "expires":
@@ -785,7 +809,10 @@ covers the whole file.
 4. For each table, find the key's partitions (their ids are in the bundle)
    in the header's partitions and the partition table (6.3), and add the
    segments that deltas list for them. Read only their directory segments,
-   and the definitions of the granted column groups.
+   and the definitions of the granted column groups. The owner reads a
+   partition's directory segments when a query needs that partition; with a
+   chunk map (7.6.5), an index lookup needs only the partitions holding the
+   rows it names.
 5. Apply what the key may see. Readers MUST NOT return other partitions'
    rows or other groups' columns, and SHOULD report how many rows are
    hidden. A filter or projection naming a column the key cannot see MUST
@@ -1093,8 +1120,10 @@ opened.
    when the file already has deltas, or when listing them in the header would
    exceed the writer's limit; otherwise the new segments are listed in the
    header;
-6. in access-controlled files: a new owner catalog, and new key-slot pages,
-   key-slot list and owner directory only when grants or partitions changed;
+6. in access-controlled files: when the file has a chunk map, a section of
+   the chunks appended since its last full write (7.6.5); a new owner
+   catalog; and new key-slot pages, key-slot list and owner directory only
+   when grants or partitions changed;
 7. a new header with `append_count` = *s*, `modified`, the updated counts,
    indexes, deletes and the deltas; the signature (access-controlled files);
    and a new trailer.
@@ -1293,6 +1322,10 @@ indexes, embedded files) written by both reference implementations.
     Security Considerations (13).
 - **Since format 1.0, without changing the format:** submission keys (7.8),
   carried in a new optional field of the access bundle (7.6.4).
+- **Since format 1.0, new optional fields:** the owner's chunk map (7.6.5),
+  sections referenced from `TableIndexes.chunk_map` and
+  `chunk_map_appended` in the owner catalog. Readers that don't know them
+  ignore them, as Protocol Buffers readers do with unknown fields.
 
 ## Appendix C. Design Notes (informative)
 

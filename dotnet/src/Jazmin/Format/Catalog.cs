@@ -57,6 +57,22 @@ internal sealed class FilesInfo
 
 internal sealed record AccessRefs(SectionRef OwnerDirectory, SectionRef OwnerCatalog);
 
+/// <summary>
+/// A chunk map section (spec 7.6.5): chunks in ordinal order, each with its row count and partition (an index into
+/// <see cref="Partitions"/>: partition ids as text, each listed once). The owner finds a row's partition with it,
+/// without every partition's chunk directory.
+/// </summary>
+internal sealed record ChunkMap(List<long> RowCounts, List<string> Partitions, List<long> PartitionOf)
+{
+    public static ChunkMap Empty() => new(new List<long>(), new List<string>(), new List<long>());
+}
+
+/// <summary>
+/// A table in the owner catalog: its indexes, and its chunk map sections when the file has them - the one its last full
+/// write wrote, and the chunks appended since (written by the append numbered <see cref="ChunkMapSegment"/>).
+/// </summary>
+internal sealed record OwnerTable(int Table, List<IndexRef> Indexes, SectionRef? ChunkMap = null, SectionRef? ChunkMapAppended = null, int ChunkMapSegment = 0);
+
 internal sealed class HeaderDef
 {
     public List<string> ReaderFeatures { get; set; } = new();
@@ -548,16 +564,18 @@ internal static class Catalog
         return tables;
     }
 
-    /// <summary>The owner catalog (spec 7.6.5): the indexes of every table.</summary>
-    public static byte[] EncodeOwnerCatalog(IEnumerable<(int Table, List<IndexRef> Indexes)> tables)
+    /// <summary>The owner catalog (spec 7.6.5): the indexes of every table, and its chunk map sections.</summary>
+    public static byte[] EncodeOwnerCatalog(IEnumerable<OwnerTable> tables)
     {
         var w = new ProtoWriter();
-        foreach (var (table, indexes) in tables)
+        foreach (var t in tables)
         {
             w.Message(1, tw =>
             {
-                tw.UInt(1, (ulong)table);
-                foreach (var ix in indexes) tw.Message(2, WriteIndexRef(ix), true);
+                tw.UInt(1, (ulong)t.Table);
+                foreach (var ix in t.Indexes) tw.Message(2, WriteIndexRef(ix), true);
+                if (t.ChunkMap is { } map) tw.Message(3, WriteRef(map));
+                if (t.ChunkMapAppended is { } appended) tw.Message(4, WriteRef(appended)).UInt(5, (ulong)t.ChunkMapSegment);
             }, true);
         }
         return w.ToArray();
@@ -565,11 +583,11 @@ internal static class Catalog
 
     /// <summary>The indexes of one table in the owner catalog.</summary>
     public static List<IndexRef> DecodeOwnerCatalog(byte[] raw, int table) =>
-        DecodeOwnerCatalog(raw).FirstOrDefault(t => t.Table == table).Indexes ?? new List<IndexRef>();
+        DecodeOwnerCatalog(raw).FirstOrDefault(t => t.Table == table)?.Indexes ?? new List<IndexRef>();
 
-    public static List<(int Table, List<IndexRef> Indexes)> DecodeOwnerCatalog(byte[] raw)
+    public static List<OwnerTable> DecodeOwnerCatalog(byte[] raw)
     {
-        var tables = new List<(int Table, List<IndexRef> Indexes)>();
+        var tables = new List<OwnerTable>();
         var r = new ProtoReader(raw);
         while (r.Next(out var f))
         {
@@ -580,16 +598,67 @@ internal static class Catalog
             }
             var number = 0;
             var indexes = new List<IndexRef>();
+            SectionRef? map = null, appended = null;
+            var segment = 0;
             var t = new ProtoReader(r.Bytes());
             while (t.Next(out var tf))
             {
                 if (tf == 1) number = t.Int32();
                 else if (tf == 2) indexes.Add(ReadIndexRef(t.Bytes()));
+                else if (tf == 3) map = ReadRef(t.Bytes());
+                else if (tf == 4) appended = ReadRef(t.Bytes());
+                else if (tf == 5) segment = t.Int32();
                 else t.Skip();
             }
-            tables.Add((number, indexes));
+            tables.Add(new OwnerTable(number, indexes, map, appended, segment));
         }
         return tables;
+    }
+
+    /// <summary>A chunk map section (spec 7.6.5).</summary>
+    public static byte[] EncodeChunkMap(ChunkMap map)
+    {
+        var w = new ProtoWriter();
+        w.Packed(1, map.RowCounts);
+        foreach (var id in map.Partitions) w.Always(2, Base64Url.Decode(id));
+        w.Packed(3, map.PartitionOf);
+        return w.ToArray();
+    }
+
+    public static ChunkMap DecodeChunkMap(byte[] raw)
+    {
+        var map = ChunkMap.Empty();
+        var r = new ProtoReader(raw);
+        while (r.Next(out var f))
+        {
+            if (f == 1) r.Packed(map.RowCounts);
+            else if (f == 2) map.Partitions.Add(Base64Url.Encode(r.ByteArray()));
+            else if (f == 3) r.Packed(map.PartitionOf);
+            else r.Skip();
+        }
+        return map;
+    }
+
+    /// <summary>Chunk maps joined: the second's chunks follow the first's (partition indexes made to point at one list). Null if the second is not valid.</summary>
+    public static ChunkMap? JoinChunkMaps(ChunkMap first, ChunkMap second)
+    {
+        var joined = new ChunkMap(new List<long>(first.RowCounts), new List<string>(first.Partitions), new List<long>(first.PartitionOf));
+        var at = new Dictionary<string, int>(StringComparer.Ordinal);
+        for (var i = 0; i < joined.Partitions.Count; i++) at.TryAdd(joined.Partitions[i], i);
+        foreach (var p in second.PartitionOf)
+        {
+            if (p < 0 || p >= second.Partitions.Count) return null;
+            var id = second.Partitions[(int)p];
+            if (!at.TryGetValue(id, out var index))
+            {
+                index = joined.Partitions.Count;
+                at[id] = index;
+                joined.Partitions.Add(id);
+            }
+            joined.PartitionOf.Add(index);
+        }
+        joined.RowCounts.AddRange(second.RowCounts);
+        return joined;
     }
 
     // ---- Chunk directories and statistics (spec 6.3, 6.4) ---------------------------------------------

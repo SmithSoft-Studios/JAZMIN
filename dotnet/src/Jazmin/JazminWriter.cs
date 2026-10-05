@@ -58,6 +58,9 @@ public sealed class JazminWriteOptions
     /// <summary>Target raw size of a key-slot page (spec 7.6.4); tests and fixtures lower it to get many pages.</summary>
     internal int KeySlotPageBytes { get; set; } = AccessCrypto.KeySlotPageBytes;
 
+    /// <summary>False writes no owner chunk map, as writers before it did (tests of older files).</summary>
+    internal bool ChunkMap { get; set; } = true;
+
     /// <summary>
     /// Several tables, written one after another (<see cref="JazminWriter.StartTable"/>), instead of the columns,
     /// <see cref="SortedBy"/> and <see cref="JazminAccessOptions.PartitionBy"/> / ColumnGroups. Keys and grants stay file-wide.
@@ -141,7 +144,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     private readonly FileSecrets? _secrets; // access mode
     private readonly TableSpec[] _tables; // the tables to write
     private readonly List<string> _allGroupNames; // column groups of every table (grants of all columns get them all)
-    private readonly Dictionary<int, (TableDef Table, List<IndexRef> Indexes)> _written = new(); // by table number, once written
+    private readonly Dictionary<int, (TableDef Table, List<IndexRef> Indexes, OwnerTable? Map)> _written = new(); // by table number, once written
     private readonly List<SectionRef> _deltas; // append deltas (spec 11.2)
     private TableSpec _current = null!; // the table rows go to
     private int _tableIndex; // its number in the file
@@ -497,7 +500,45 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             var sectionId = $"{_tableIndex}/deletes/{cont.Deleted.Length}"; // the count only grows, so the id is unique
             table.Deletes = WriteSection(RowSet.EncodeSection(cont.Deleted), sectionId, Key(sectionId, _secrets?.Header));
         }
-        _written[_tableIndex] = (table, indexes);
+        _written[_tableIndex] = (table, indexes, _access is null ? null : WriteChunkMap(segment));
+    }
+
+    /// <summary>
+    /// The table's chunk map (spec 7.6.5): every chunk's row count and partition, by ordinal, so the owner finds a row's
+    /// partition without reading every partition's chunk directory. A full write writes it whole (section
+    /// <c>&lt;t&gt;/chunkmap</c>); an append writes the chunks appended since (<c>&lt;t&gt;/chunkmap/&lt;segment&gt;</c>:
+    /// the earlier appends' and its own) and keeps the whole one. A file without one gets none until its next full write.
+    /// Returns the owner catalog's entry for the table, less its indexes.
+    /// </summary>
+    private OwnerTable WriteChunkMap(int segment)
+    {
+        var none = new OwnerTable(_tableIndex, new List<IndexRef>());
+        if (!_options.ChunkMap) return none;
+        // This writer's chunks.
+        var written = ChunkMap.Empty();
+        var index = new Dictionary<string, int>(StringComparer.Ordinal);
+        foreach (var chunk in _chunks)
+        {
+            if (!index.TryGetValue(chunk.Partition, out var at))
+            {
+                at = written.Partitions.Count;
+                index[chunk.Partition] = at;
+                written.Partitions.Add(chunk.Partition);
+            }
+            written.RowCounts.Add(chunk.RowCount);
+            written.PartitionOf.Add(at);
+        }
+        byte[] OwnerKey(string sectionId) => AccessCrypto.SectionKey(_secrets!.Owner, _salt, sectionId);
+        var cont = _continue;
+        if (cont is null)
+        {
+            var sectionId = $"{_tableIndex}/chunkmap";
+            return none with { ChunkMap = WriteSection(Catalog.EncodeChunkMap(written), sectionId, OwnerKey(sectionId)) };
+        }
+        if (cont.ChunkMap is not { } state || state.Chunks != _firstOrdinal) return none; // the file has none, or it does not cover every chunk
+        var appended = state.Appended is null ? written : Catalog.JoinChunkMaps(state.Appended, written)!;
+        var appendedId = $"{_tableIndex}/chunkmap/{segment}";
+        return none with { ChunkMap = state.Base, ChunkMapAppended = WriteSection(Catalog.EncodeChunkMap(appended), appendedId, OwnerKey(appendedId)), ChunkMapSegment = segment };
     }
 
     /// <summary>Grants left out because they had already expired (access-controlled files).</summary>
@@ -795,8 +836,9 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             const string catalogId = "owner/catalog";
             // Indexes of every table; when appending, the other tables' come from the file.
             var catalog = cont is null
-                ? _written.OrderBy(w => w.Key).Select(w => (w.Key, w.Value.Indexes)).ToList()
-                : cont.OwnerCatalog!.Where(c => c.Table != _tableIndex).Append((_tableIndex, _written[_tableIndex].Indexes)).OrderBy(c => c.Item1).ToList();
+                ? _written.OrderBy(w => w.Key).Select(w => w.Value.Map! with { Indexes = w.Value.Indexes }).ToList()
+                : cont.OwnerCatalog!.Where(c => c.Table != _tableIndex)
+                    .Append(_written[_tableIndex].Map! with { Indexes = _written[_tableIndex].Indexes }).OrderBy(c => c.Table).ToList();
             var ownerCatalog = WriteSection(Catalog.EncodeOwnerCatalog(catalog), catalogId, AccessCrypto.SectionKey(_secrets!.Owner, _salt, catalogId));
             var directoryText = OwnerDirectoryText();
             var directoryChanged = cont is null || directoryText != cont.DirectoryText;

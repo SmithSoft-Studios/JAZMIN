@@ -346,13 +346,19 @@ export function decodeDelta(buf) {
   return tables;
 }
 
-/** OwnerCatalog: [{ table, indexes }] */
+/**
+ * OwnerCatalog: [{ table, indexes, chunkMap?, chunkMapAppended?, chunkMapSegment }]. The two refs are the table's chunk
+ * map sections (spec 7.6.5): the one its last full write wrote, and the chunks appended since, written by the append
+ * numbered `chunkMapSegment`.
+ */
 export function encodeOwnerCatalog(tables) {
   const w = new ProtoWriter();
   for (const t of tables) {
     w.message(1, (tw) => {
       tw.uint(1, t.table);
       for (const ix of t.indexes) tw.message(2, writeIndexRef(ix), true);
+      if (t.chunkMap) tw.message(3, writeRef(t.chunkMap));
+      if (t.chunkMapAppended) tw.message(4, writeRef(t.chunkMapAppended)).uint(5, t.chunkMapSegment);
     }, true);
   }
   return w.toBuffer();
@@ -362,14 +368,56 @@ export function decodeOwnerCatalog(buf) {
   const tables = [];
   readMessage(buf, (f, v) => {
     if (f !== 1) return;
-    const t = { table: 0, indexes: [] };
+    const t = { table: 0, indexes: [], chunkMap: null, chunkMapAppended: null, chunkMapSegment: 0 };
     readMessage(v, (tf, tv) => {
       if (tf === 1) t.table = num(tv);
       else if (tf === 2) t.indexes.push(readIndexRef(tv));
+      else if (tf === 3) t.chunkMap = readRef(tv);
+      else if (tf === 4) t.chunkMapAppended = readRef(tv);
+      else if (tf === 5) t.chunkMapSegment = num(tv);
     });
     tables.push(t);
   });
   return tables;
+}
+
+/**
+ * A ChunkMap section (spec 7.6.5): { rowCounts, partitions, partitionOf } - chunks in ordinal order, each with its row
+ * count and its partition (an index into `partitions`: partition ids as text, each listed once).
+ */
+export function encodeChunkMap(map) {
+  const w = new ProtoWriter();
+  w.packed(1, map.rowCounts);
+  for (const id of map.partitions) w.always(2, Buffer.from(id, 'base64url'));
+  w.packed(3, map.partitionOf);
+  return w.toBuffer();
+}
+
+export function decodeChunkMap(buf) {
+  const map = { rowCounts: [], partitions: [], partitionOf: [] };
+  readMessage(buf, (f, v) => {
+    if (f === 1) readPacked(v, map.rowCounts);
+    else if (f === 2) map.partitions.push(bytesOf(v).toString('base64url'));
+    else if (f === 3) readPacked(v, map.partitionOf);
+  });
+  return map;
+}
+
+/** Chunk maps joined: the second's chunks follow the first's (partition indexes made to point at one list). */
+export function joinChunkMaps(first, second) {
+  const partitions = [...first.partitions];
+  const at = new Map(partitions.map((id, i) => [id, i]));
+  const partitionOf = [...first.partitionOf];
+  for (const p of second.partitionOf) {
+    const id = second.partitions[p];
+    if (id === undefined) return null; // not a valid map
+    if (!at.has(id)) {
+      at.set(id, partitions.length);
+      partitions.push(id);
+    }
+    partitionOf.push(at.get(id));
+  }
+  return { rowCounts: [...first.rowCounts, ...second.rowCounts], partitions, partitionOf };
 }
 
 // ---- Chunk directories and statistics (spec 6.3, 6.4) ------------------------------------------

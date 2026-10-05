@@ -455,6 +455,7 @@ internal static class Fuzzing
             () => Catalog.FindPartitions(input, [first12]),
             () => Catalog.DecodeDelta(input),
             () => Catalog.DecodeOwnerCatalog(input, 0),
+            () => Catalog.JoinChunkMaps(Catalog.DecodeChunkMap(input), Catalog.DecodeChunkMap(input.AsSpan(input.Length / 2).ToArray())),
             () => Catalog.DecodeColumnDefinitions(input),
             () => Columnar.Decode(input, Enumerable.Range(0, 1 + rnd.Int(4)).Select(_ => rnd.Pick(types)).ToArray(), rnd.Int(300), 0),
             () => Columnar.DecodeTyped(input, input.Length, Enumerable.Range(0, 1 + rnd.Int(4)).Select(_ => rnd.Pick(types)).ToArray(), rnd.Int(300), 0),

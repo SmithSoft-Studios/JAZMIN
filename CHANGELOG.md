@@ -46,6 +46,26 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     init"`). It didn't reproduce locally, so CI will confirm the fix.
 
 ### Changed
+- **Owner lookups in shared files no longer read every partition (JS and
+  .NET; a new optional part of the format, spec 7.6.5).** The file keeps a
+  chunk map for the owner: which partition each chunk of records is in. An
+  owner's index lookup reads only the partitions holding its records.
+  - **Finding one record by id, 250,000 records:** 1,000 partitions, JS 49
+    -> 2.0 ms and .NET 28 -> 2.7 ms; 100 partitions, JS 4.9 -> 1.7 ms and
+    .NET 5.0 -> 3.1 ms. `get(rowId)` uses the map too.
+  - **The map is written whole by a full write or compaction.** An append
+    writes only the chunks appended since, so a batch grows the file by a
+    few hundred bytes, not the whole map.
+  - **Only the owner reads it** (it reveals every partition's size). Readers
+    check the chunk directories against it, and read every partition when
+    they differ.
+  - **Older files** get a map at their next compaction or full rewrite;
+    until then they read as before. Readers that don't know the map ignore
+    it.
+  - **Lookups the index answers** were limited to index lookups of under
+    8 KB. The limit now grows with the number of partitions (8 KB each),
+    since the alternative reads a section per partition: an id lookup in a
+    large file now skips every partition's statistics, as intended.
 - **Faster owner lookups and appends in shared files (JS and .NET).**
   - **Lookups through a small index match** (an id, a few values) no longer
     read the statistics of every partition: the index already narrows the
