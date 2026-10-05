@@ -1,5 +1,5 @@
 // TypeScript quick start - type-checked by `npm run typecheck`.
-import { JAZMIN, JazminKey, JazminKeyError, append, compact, importJSONFile, open, toCSV, update, write, type Filter, type JazminColumnInput } from '@smithsoft-studios/jazmin';
+import { JAZMIN, JazminKey, JazminKeyError, accessKeyOf, append, compact, importJSONFile, open, toCSV, update, write, type Filter, type JazminColumnInput } from '@smithsoft-studios/jazmin';
 import fs from 'node:fs';
 
 interface Customer {
@@ -69,6 +69,12 @@ write('shared.jzm', [{ section: 'A', amount: 1 }, { section: 'B', amount: 2 }], 
 const bobView = open('shared.jzm', { key: bob.toString() });
 console.log([...bobView.rows()], bobView.hiddenRowCount); // [ { section: 'B' } ] 1
 bobView.close();
+
+// Bob's outbox: records he captures offline, locked with his outbox key; the owner finds his key and opens them.
+write('bob-outbox.jzm', [{ section: 'B', amount: 4 }], { columns: [{ name: 'section', type: 'string' }, { name: 'amount', type: 'int' }], key: bob.outboxKey() });
+const inbox = open('bob-outbox.jzm', { key: accessKeyOf('shared.jzm', owner, bob.id).outboxKey() });
+console.log([...inbox.rows()]); // [ { section: 'B', amount: 4 } ]
+inbox.close();
 
 // 6. Owner-only update: rows are merged in sorted order and Bob's grant carries over.
 const result = update('shared.jzm', { key: owner, insert: [{ section: 'B', amount: 3 }] });

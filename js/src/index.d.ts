@@ -304,6 +304,11 @@ export class JazminAccessKey {
   readonly ownerFingerprint: Buffer;
   /** Short public identifier, safe to log. */
   readonly id: string;
+  /**
+   * The key of this holder's outbox files (spec 7.8), such as records captured offline and sent to the owner later.
+   * The owner derives the same key with accessKeyOf(); it opens nothing in the shared file.
+   */
+  outboxKey(): JazminKey;
   toString(): string;
 }
 
@@ -369,6 +374,8 @@ export function append(path: string, options: AppendOptions): AppendResult;
 
 /** Key service: the unlock token for an online grant, if it exists and has not expired (owner key required). */
 export function issueUnlockToken(path: string, ownerKey: KeyInput, accessKey: JazminAccessKey | string, options?: { now?: Date | number }): string;
+/** The access key a shared file grants, by its id or the key itself, from the grant list (owner key required). */
+export function accessKeyOf(path: string, ownerKey: KeyInput, accessKey: JazminAccessKey | string): JazminAccessKey;
 /** Key service: every online grant's token, for services that store them. */
 export function listUnlockTokens(path: string, ownerKey: KeyInput): { keyId: string; label?: string; expires?: string; token: string }[];
 /** What can be read without a key: the file id (send it with a key id to your key service) and its features. */

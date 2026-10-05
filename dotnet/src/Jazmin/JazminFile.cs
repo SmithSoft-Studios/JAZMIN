@@ -502,6 +502,19 @@ public static class JazminFile
         return UnlockTokens.Encode(Convert.FromBase64String((string)grant["share"]!));
     }
 
+    /// <summary>
+    /// The access key a shared file grants, found in its grant list by <paramref name="keyId"/>
+    /// (<see cref="JazminAccessKey.Id"/>): for example to derive the outbox key (spec 7.8) of the person who sent an
+    /// outbox file. Owner key required.
+    /// </summary>
+    public static JazminAccessKey AccessKeyOf(string path, JazminKey ownerKey, string keyId)
+    {
+        var grant = OwnerGrantList(path, ownerKey, "Access keys are listed only in access-controlled files, and only for the owner key")
+            .FirstOrDefault(g => JazminAccessKey.Parse((string)g!["key"]!).Id == keyId)
+            ?? throw new JazminValidationException($"Key {keyId} has no grant in this file");
+        return JazminAccessKey.Parse((string)grant["key"]!);
+    }
+
     /// <summary>Key service: every online grant's unlock token, for services that store them.</summary>
     public static IReadOnlyList<JazminUnlockTokenInfo> ListUnlockTokens(string path, JazminKey ownerKey) =>
         OwnerGrantList(path, ownerKey)
@@ -532,10 +545,10 @@ public static class JazminFile
             (flags & FormatConstants.FlagAppended) != 0);
     }
 
-    private static JsonArray OwnerGrantList(string path, JazminKey ownerKey)
+    private static JsonArray OwnerGrantList(string path, JazminKey ownerKey, string need = "Unlock tokens exist only for access-controlled files, and need the owner key")
     {
         using var reader = JazminReader.Open(path, new JazminReadOptions { Key = ownerKey });
-        return reader.OwnerGrants ?? throw new JazminValidationException("Unlock tokens exist only for access-controlled files, and need the owner key");
+        return reader.OwnerGrants ?? throw new JazminValidationException(need);
     }
 
     /// <summary>

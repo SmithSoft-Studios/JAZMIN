@@ -115,6 +115,16 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     each chunk part, which holds every column (#23 would split them).
 
 ### Added
+- **Outbox keys (#13, spec 7.8).** A person writes files for the owner, such
+  as records captured offline, locked with a key derived from their access
+  key. The owner derives the same key and files the records into the shared
+  file. The key opens nothing in the shared file.
+  - **JavaScript:** `accessKey.outboxKey()`, plus
+    `accessKeyOf(path, ownerKey, keyId)` for the owner.
+  - **.NET:** `OutboxKey()` and `JazminFile.AccessKeyOf`.
+  - **Browser:** `JazminBrowser.outboxKey(text)`.
+  - **Checks:** all three derive the same key (fixture `bobOutbox`).
+  - **Docs:** USER-GUIDE §15.6.
 - **`columnArrays()` for charts (#19),** in the library and the browser
   reader (USER-GUIDE §9.11).
   - **What it returns:** column values as arrays instead of an object per

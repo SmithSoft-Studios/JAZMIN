@@ -219,6 +219,17 @@
     throw new JazminKeyError("A key starts with 'jzk1-' (master or owner key) or 'jza1-' (access key)");
   }
 
+  /**
+   * The outbox key (spec 7.8) of an access key, as key text ("jzk1-..."): the key of files its holder writes for the
+   * owner, such as records captured offline. The owner derives the same key; it opens nothing in the shared file.
+   */
+  async function outboxKey(accessKeyText) {
+    const key = await parseKey(accessKeyText);
+    if (key.kind !== 'access') throw new JazminKeyError("An outbox key is made from an access key ('jza1-...')");
+    const bytes = await hkdf(key.secret, new Uint8Array(0), 'JAZMIN/1/outbox');
+    return `jzk1-${bytesToBase64Url(concat(bytes, await checksum(bytes)))}`;
+  }
+
   async function parseUnlockToken(text) {
     const t = typeof text === 'string' ? text.trim() : '';
     if (!t.startsWith('jzu1-')) throw new JazminKeyError("An unlock token starts with 'jzu1-'");
@@ -2239,6 +2250,7 @@
   global.JazminBrowser = {
     open,
     openUrl,
+    outboxKey,
     compileFilter,
     base64ToBytes,
     JazminError,

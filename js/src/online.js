@@ -7,15 +7,27 @@ import { DRAFT_MAGIC, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD,
 import { JazminFormatError } from './errors.js';
 import fs from 'node:fs';
 
-function ownerGrants(path, ownerKey) {
+function ownerGrants(path, ownerKey, need = 'Unlock tokens exist only for access-controlled files, and need the owner key') {
   const reader = new JazminReader(path, { key: ownerKey });
   try {
     const owner = reader[OWNER_GRANTS];
-    if (!owner) throw new JazminValidationError('Unlock tokens exist only for access-controlled files, and need the owner key');
+    if (!owner) throw new JazminValidationError(need);
     return { grants: owner.grants };
   } finally {
     reader.close();
   }
+}
+
+/**
+ * The access key a shared file grants, found by its id (or by the key itself) in the grant list: for example to derive
+ * the outbox key (spec 7.8) of the person who sent an outbox file. Owner key required.
+ */
+export function accessKeyOf(path, ownerKey, accessKey) {
+  const keyId = typeof accessKey === 'string' && /^[0-9a-f]{16}$/.test(accessKey) ? accessKey : parseAnyKey(accessKey).id;
+  const { grants } = ownerGrants(path, ownerKey, 'Access keys are listed only in access-controlled files, and only for the owner key');
+  const grant = grants.find((g) => JazminAccessKey.parse(g.key).id === keyId);
+  if (!grant) throw new JazminValidationError(`Key ${keyId} has no grant in this file`);
+  return JazminAccessKey.parse(grant.key);
 }
 
 /**

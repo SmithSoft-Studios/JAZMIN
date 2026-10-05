@@ -838,6 +838,31 @@ machine can delete the last-seen record or use a modified reader. Online
 expiry prevents new opens after expiry, but not the use of data already
 obtained.
 
+### 7.8. Outbox Keys
+
+An access key's holder can write files for the owner, for example records
+captured offline and sent later, without holding any key that opens the
+owner's shared file. Such a file is an ordinary file encrypted with a key
+(7.3). Its master key is the holder's **outbox key**:
+
+```
+outbox key = HKDF-SHA256(ikm = access key secret, salt = "", info = "JAZMIN/1/outbox", L = 32)
+```
+
+The owner can derive the same key from the access key in its owner directory
+(7.6.5). The outbox key opens nothing in the shared file, and the access key
+cannot be worked out from it.
+
+Software that files outbox files into a shared file:
+- SHOULD identify the sender by the access key's slot id (7.6.1), and open
+  the file with that key's outbox key;
+- SHOULD refuse a file that does not open with it;
+- SHOULD write the rows only into the partitions granted to that key;
+- SHOULD refuse the outbox files of revoked keys.
+
+Test vector: for the access key secret `00 01 02 ... 1f`, the outbox key is
+`8e729d9585b59bce5cd951fb3b5f4f81df22fbbb3088e382bd2b490c98309596`.
+
 ## 8. Indexes
 
 **Postings** are lists of ascending row ids, written as `varint count,
@@ -1252,6 +1277,7 @@ indexes, embedded files) written by both reference implementations.
     (7.2), key-slot and signature sections only as stored (7.6.4), digests
     required (7.6.5), appends may not narrow grants (11.2), and more in
     Security Considerations (13).
+- **Since format 1.0, without changing the format:** outbox keys (7.8).
 
 ## Appendix C. Design Notes (informative)
 

@@ -109,6 +109,15 @@ export class JazminAccessKey {
     return Buffer.from(this.#fingerprint);
   }
 
+  /**
+   * The key of this holder's outbox files (spec 7.8): files they write for the owner, such as records captured offline
+   * and sent later. The owner derives the same key from the shared file's grant list (accessKeyOf); it opens nothing
+   * in the shared file.
+   */
+  outboxKey() {
+    return new JazminKey(hkdf(this.#secret, Buffer.alloc(0), 'JAZMIN/1/outbox'));
+  }
+
   /** Short public identifier (hex) of this key, safe to log. */
   get id() {
     return slotId(this.#secret).toString('hex');

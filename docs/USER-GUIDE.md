@@ -1297,6 +1297,43 @@ compilation.
   start-up and pass it to `open` / `JazminAccessKey.Parse`. Never log it. The
   key's `id` (`bob.id`, `bob.Id`) is safe to log.
 
+### 15.6 Outbox files: records sent to the owner
+
+People in the field capture records, often offline, and the owner files them
+into the shared file. Only the owner's key can change the shared file, so
+records travel in **outbox files** until then:
+
+- **The outbox file:** an ordinary one-key file, locked with the person's
+  **outbox key**. That key is derived from their access key, so only that
+  person and the owner can make it.
+- **Filing:** the owner finds the person's access key in the shared file's
+  grant list, derives the same outbox key, opens the batch, and appends its
+  rows.
+- **Safety:** the outbox key opens nothing in the shared file, and it can't be
+  turned back into the access key.
+
+```js
+// The phone or field app (holds Bob's access key only):
+write(null, records, { columns, key: bob.outboxKey() });      // or JazminBrowser.outboxKey(text) in a browser
+// The filing service (holds the owner key), told the sender's key id with the upload:
+const sender = accessKeyOf('shared.jzm', owner, keyId);       // refuses a key with no grant
+const batch = open(upload, { key: sender.outboxKey() });      // refuses a batch made with another key
+append('shared.jzm', { key: owner, insert: [...batch.rows()].map((r) => ({ ...r, section: 'B' })) });
+```
+
+```csharp
+var key = bob.OutboxKey();                                             // field app
+var sender = JazminFile.AccessKeyOf("shared.jzm", owner, keyId);       // filing service
+using var batch = JazminReader.Open(upload, new JazminReadOptions { Key = sender.OutboxKey() });
+```
+
+When filing, write each batch's rows into **the sender's own partition**,
+whatever the batch says: a person must not file rows as someone else. Give
+every record an id, so a batch sent twice isn't filed twice. Once a key is
+revoked, `accessKeyOf` no longer finds it, and its batches are refused. The
+design is in `docs/design/browser-writer.md`. The spec's section 7.8 defines
+the key.
+
 ## 16. Updating files
 
 JAZMIN files are written once and **updated by rewriting**:
@@ -2452,6 +2489,7 @@ for await (const row of reader.find({ country: 'ZA' })) console.log(row);
 const { rows } = await reader.query({ country: 'ZA' }, { offset: 50, limit: 50, total: false });
 await reader.count({ country: 'ZA' });
 await reader.columnArrays(null, { select: ['at', 'amount'] }); // arrays for charts (section 9.11)
+await JazminBrowser.outboxKey(accessKeyText);          // the key of this person's outbox files (section 15.6)
 await reader.explain({ id: 7 }, { analyze: true });    // as in the library (section 9.6)
 const pdf = await reader.readFile('terms.pdf');
 ```
