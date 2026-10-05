@@ -39,6 +39,7 @@ test('the owner sees every row and column, with indexes and the grant list', () 
   assert.equal(r.access.isOwner, true);
   assert.deepEqual(r.access.grants.map((g) => [g.label, g.keyId, g.rows, g.columns]),
     [['Bob', bob.id, ['ZA'], ['*']], ['Sally', sally.id, ['BW', 'NA'], '*']]);
+  assert.deepEqual(r.access.groupColumns, { '*': ['id', 'country', 'name'], pii: ['salary', 'idNumber'] });
   assert.equal(r.explain({ id: 7 }).strategy, 'index');
 });
 
@@ -51,6 +52,7 @@ test('Bob sees only his rows, and not the restricted columns', () => {
   assert.equal(r.hiddenRowCount, 30);
   assert.deepEqual(r.access.visiblePartitions, ['ZA']);
   assert.equal(r.access.grants, undefined); // only the owner sees who has access
+  assert.equal(r.access.groupColumns, undefined); // and which columns each group holds
   assert.deepEqual(r.indexes, []); // indexes would reveal other groups' values
   assert.deepEqual([...r.find({ name: { contains: '12' } })].map((x) => x.id), [12]);
   // Hidden columns' names are locked too (spec 7.6.5): to Bob, 'salary' does not exist.

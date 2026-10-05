@@ -107,6 +107,9 @@ public sealed record JazminAccessInfo(
 
     /// <summary>Access keys: when access ends (null: never).</summary>
     public DateTimeOffset? Expires { get; init; }
+
+    /// <summary>Owner only: the columns of each column group ("*" holds the columns of no named group).</summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<string>>? GroupColumns { get; init; }
 }
 
 /// <summary>What can be read without a key (see <see cref="JazminFile.Inspect"/>).</summary>

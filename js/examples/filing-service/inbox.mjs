@@ -17,22 +17,23 @@ import { RejectedBatch, fileBatch } from './filing.mjs';
 /**
  * Files the batches in `inboxDir` (oldest name first), then compacts the shared file when it has `compactAfter` or
  * more appends: regrouped, so each person's rows are stored together, when its sort order allows that. A batch's file
- * modified time is when it arrived. Other options (idColumn, filesColumn, fileTypes, maxFileBytes,
+ * modified time is when it arrived. Other options (idColumn, onDuplicate, filesColumn, fileTypes, maxFileBytes,
  * maxBatchFileBytes) go to fileBatch.
- * Returns { batches, filed, duplicates, files, rejected: [{ batch, reason }], compacted }.
+ * Returns { batches, filed, updated, duplicates, files, rejected: [{ batch, reason }], compacted }.
  */
 export function processInbox(sharedPath, inboxDir, ownerKey, { compactAfter = 50, ...rules } = {}) {
   const filedDir = path.join(inboxDir, 'filed');
   const rejectedDir = path.join(inboxDir, 'rejected');
   fs.mkdirSync(filedDir, { recursive: true });
   fs.mkdirSync(rejectedDir, { recursive: true });
-  const report = { batches: 0, filed: 0, duplicates: 0, files: 0, rejected: [], compacted: false };
+  const report = { batches: 0, filed: 0, updated: 0, duplicates: 0, files: 0, rejected: [], compacted: false };
   for (const name of fs.readdirSync(inboxDir).filter((n) => n.endsWith('.jzm')).sort()) {
     const from = path.join(inboxDir, name);
     try {
       const result = fileBatch(sharedPath, ownerKey, { ...rules, keyId: name.split('.')[0], batch: fs.readFileSync(from), receivedAt: fs.statSync(from).mtimeMs });
       report.batches++;
       report.filed += result.filed;
+      report.updated += result.updated;
       report.duplicates += result.duplicates;
       report.files += result.files;
       fs.renameSync(from, path.join(filedDir, name));

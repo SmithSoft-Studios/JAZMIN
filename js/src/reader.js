@@ -1033,8 +1033,9 @@ export class JazminReader {
 
   /**
    * Access-control details, or null for ordinary files:
-   *   { isOwner, partitionBy, columnGroups, visiblePartitions, visibleColumnGroups, grants? }
-   * `grants` (owner only) lists who can see what, without any secrets.
+   *   { isOwner, partitionBy, columnGroups, visiblePartitions, visibleColumnGroups, grants?, groupColumns? }
+   * `grants` (owner only) lists who can see what, without any secrets; `groupColumns` (owner only) names the columns
+   * of each column group.
    */
   get access() {
     if (!this.#access) return null;
@@ -1057,6 +1058,7 @@ export class JazminReader {
         mode: g.mode ?? 'offline',
         ...(g.expires ? { expires: g.expires } : {}),
       }));
+      info.groupColumns = Object.fromEntries(this.#groups.map((g) => [g.name, g.cols.map((i) => this.#columns[i].name)]));
     }
     return info;
   }

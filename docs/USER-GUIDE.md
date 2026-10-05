@@ -1200,6 +1200,8 @@ view.columns;          // no salary / idNumber
 [...view.rows()];      // only section ACC000123
 view.hiddenRowCount;   // how many rows Bob may not see
 view.access;           // { isOwner: false, visiblePartitions: ['ACC000123'], visibleColumnGroups: ['*'], ... }
+// The owner's view also lists the grants and, in groupColumns, the columns of each column group:
+// { '*': ['section', 'name', ...], pii: ['salary', 'idNumber'] }
 
 grantAccess('statements.jzm', owner, carol, { rows: '*', columns: ['*', 'pii'], label: 'Auditor' });
 revokeAccess('statements.jzm', owner, bob);  // Bob cannot open the new version
@@ -1335,8 +1337,17 @@ using var sent = JazminReader.Open(upload, new JazminReadOptions { Key = owner.S
 When filing:
 - **Own rows only:** write each file's rows into the sender's own partition,
   whatever the file says, so a person can't file rows as someone else.
-- **No duplicates:** give every record an id, so a file sent twice isn't
-  filed twice.
+- **Records sent again:** give every record an id. A record whose id is
+  already filed replaces the filed one, so corrections made on a phone reach
+  the shared file.
+  - **Last arrival wins:** if two people change the same record, the change
+    that arrives last is kept.
+  - **Who may change it:** anyone whose grant covers the record's partition.
+    A change can't move a record to another partition.
+  - **Columns the sender can't see** keep their filed values.
+  - **A file sent twice** changes nothing.
+  - **The ready-made service** does this by default. Pass
+    `onDuplicate: 'skip'` to keep the first version instead.
 - **Revoked keys:** once a key is revoked, `accessKeyOf` no longer finds it,
   and its files are refused.
 - **Keys that expire:** a file is filed only if it was both written and
@@ -1378,6 +1389,10 @@ The filing service then:
 - **Rewrites the list:** the record's `attachments` becomes
   `[{ path, name, type, size }]`, so a reader opens a file with
   `readFile(path)`.
+- **When a record is changed:** to keep a file, leave its entry in the
+  list, as it was read from the shared file. To add one, list its path in
+  the batch. To remove one, leave it out. A file no record lists any more is
+  removed from the shared file.
 
 The design is in `docs/design/browser-writer.md`, and the spec's section 7.8
 defines the key.

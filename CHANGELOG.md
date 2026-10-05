@@ -138,7 +138,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     - **Refused:** unknown or revoked keys; batches that don't open
       with the sender's submission key; columns the shared file doesn't have, or
       has with another type; rows for another person's partition.
-    - **Duplicates:** rows already filed are skipped.
+    - **Records sent again (#55):** a row whose id is already filed
+      replaces the filed record; the last to arrive wins. Allowed for anyone
+      whose grant covers the record's partition. A change can't move a record
+      to another partition, and columns the sender can't see keep their
+      values. A row that changes nothing (a batch sent twice) counts as a
+      duplicate. A record keeps, adds or drops files through its list; files
+      no record lists any more are removed. `onDuplicate: 'skip'` keeps the
+      first version instead.
     - **Keys that expire:** a batch is filed only if it was written (by the
       phone's clock) and received (by the server's clock, `receivedAt`)
       before the expiry. The first write after the expiry removes the grant,
@@ -172,6 +179,9 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     with two attachments in each browser, which the library then reads.
   - **Refused:** shared files (their master key stays off web pages),
     indexes, several tables, viewer package settings, `sortedBy` and Brotli.
+- **Which columns each column group holds: `access.groupColumns`** (owner
+  only; .NET `Access.GroupColumns`). The filing service uses it to keep the
+  columns a sender can't see when they change a record.
 - **When a file was written: `reader.writtenAt`** (.NET `WrittenAt`, and in
   the browser reader). It is the last append or, without one, when the file
   was written, by the writer's clock. The filing service uses it to refuse

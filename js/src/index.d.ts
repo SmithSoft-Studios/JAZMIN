@@ -101,6 +101,8 @@ export interface AccessInfo {
   expires?: string;
   /** Owner only. */
   grants?: { keyId: string; rows: '*' | string[]; columns: '*' | string[]; label?: string; mode: 'offline' | 'online'; expires?: string }[];
+  /** Owner only: the columns of each column group ('*' holds the columns of no named group). */
+  groupColumns?: Record<string, string[]>;
 }
 
 /** One table of a file with several (WriteOptions.tables; docs/design/several-tables.md). */

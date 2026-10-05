@@ -50,6 +50,8 @@ public class AccessTests
         Assert.True(r.Access!.IsOwner);
         Assert.Equal(new[] { ("Bob", Bob.Id), ("Sally", Sally.Id) }, r.Access.Grants!.Select(g => (g.Label!, g.KeyId)));
         Assert.Null(r.Access.Grants![1].Columns); // "*"
+        Assert.Equal(["id", "country", "name"], r.Access.GroupColumns!["*"]);
+        Assert.Equal(["salary", "idNumber"], r.Access.GroupColumns["pii"]);
         Assert.Equal("index", r.Explain(JazminFilter.Eq("id", 7)).Strategy);
     }
 
@@ -63,6 +65,7 @@ public class AccessTests
         Assert.Equal(30, r.HiddenRowCount);
         Assert.Equal(new[] { "ZA" }, r.Access!.VisiblePartitions);
         Assert.Null(r.Access.Grants);
+        Assert.Null(r.Access.GroupColumns);
         Assert.Empty(r.Indexes);
         Assert.Equal(new[] { 12L }, Ids(r.Find(JazminFilter.Contains("name", "12"))));
         Assert.Throws<JazminValidationException>(() => r.Find(JazminFilter.Gt("salary", 0.0)));

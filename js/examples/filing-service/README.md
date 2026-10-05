@@ -24,7 +24,7 @@ import { RejectedBatch, fileBatch } from './filing.mjs';
 
 // keyId: the sender's access key id, sent with the upload (the phone knows it, for example bob.id); body: the batch
 try {
-  const result = fileBatch('shared.jzm', process.env.JAZMIN_KEY, { keyId, batch: body }); // { filed, duplicates, files }
+  const result = fileBatch('shared.jzm', process.env.JAZMIN_KEY, { keyId, batch: body }); // { filed, updated, duplicates, files }
   // reply 200 with the result
 } catch (error) {
   if (error instanceof RejectedBatch) { /* reply 422 with error.message, so the phone can show why */ }
@@ -68,7 +68,7 @@ file locked and stops, and the next run carries on.
 | Proof | The batch doesn't open with that key's submission key: it was made without opening the shared file (a leaked key alone isn't enough), or it was changed |
 | Columns | A column isn't in the shared file, or has another type |
 | Partition | A row names a partition the key isn't granted. With a grant of one partition, rows are simply put in it. |
-| Duplicates | Not a rejection: rows whose `id` is already filed are skipped, so a batch sent twice is filed once |
+| Changing a record | A row whose `id` is already filed replaces the filed record (see below). Rejected when the record is in a partition the key isn't granted, or the change would move it to another partition. |
 | Files listed | A row lists a file the batch doesn't hold, or the batch holds a file no row lists |
 | Kind of file | A file's first bytes don't show an allowed kind: PDF, JPEG, PNG or WebP by default. The name and type the phone gives are ignored. |
 | File size | A file is over 10 MB, or the batch's files are over 50 MB together (identical files count once) |
@@ -91,11 +91,39 @@ When the record is filed:
 - **The record's list** becomes `[{ path, name, type, size }]`. `name` is the
   name the phone gave, for display.
 
-The rows and their files go into the shared file in one append, so a run that
-stops halfway leaves neither. Files of rows already filed (duplicates) aren't
-stored again.
+**When a record is changed**, its list says which files it keeps:
+- **To keep a file:** leave its entry (`{ path, ... }`, as read from the shared
+  file) in the list. A record can keep only files it already lists.
+- **To add one:** list its path in the batch, as for a new record.
+- **To remove one:** leave it out. A file no record lists any more is removed
+  from the shared file.
 
-**Options**, to `fileBatch` or `processInbox`:
+The rows and their files go into the shared file in one append, so a run that
+stops halfway leaves neither.
+
+## Changing records
+
+A record sent again, with an `id` that's already filed, replaces the filed
+record. This is how corrections made on a phone reach the shared file.
+
+- **Last arrival wins:** if two people change the same record, the change
+  that arrives last is kept, without a warning. Within one batch, the last
+  row with that `id` counts.
+- **Who may change it:** anyone whose key's grant covers the record's
+  partition. A change can't move a record to another partition.
+- **Hidden columns are kept:** only the columns the batch has and the
+  sender's grant covers change. A key that can't see a column can't change
+  it, even by sending it.
+- **Nothing changed:** a row identical to the filed record, such as a batch
+  sent twice, changes nothing and counts as a duplicate.
+- **To keep the first version instead:** pass `onDuplicate: 'skip'`. A
+  record sent again is then skipped, as a duplicate. Pass it to `fileBatch()` in
+  your upload handler, and to `processInbox()` for the runner.
+
+## Options
+
+Pass them to `fileBatch()` in your upload handler, and to `processInbox()`
+for the runner:
 
 | Option | Default | |
 |---|---|---|
@@ -104,6 +132,7 @@ stored again.
 | `maxFileBytes` | 10 MB | Per file |
 | `maxBatchFileBytes` | 50 MB | All of a batch's files |
 | `idColumn` | `'id'` | The column that tells records apart |
+| `onDuplicate` | `'replace'` | `'replace'`: a record sent again replaces the filed one. `'skip'`: it is skipped. |
 | `receivedAt` | now | When the batch arrived, by the server's clock. The inbox runner uses each file's modified time. |
 
 ## Keeping the owner key safe
