@@ -221,7 +221,7 @@ for (const row of reader.find({ country: 'ZA', name: { icontains: 'ndlovu' } }))
 }
 
 reader.get(1);                                      // row by position (many? sort them first: section 9.9)
-reader.count({ country: 'ZA' });                    // 2
+reader.count({ country: 'ZA' });                    // 2 (reads as little as it can: section 9.10)
 reader.explain({ id: 3 });                          // { strategy: 'index', candidateRows: 1 }
 reader.explain({ id: 3 }, { analyze: true });       // ... plus rows, bytesRead, chunksRead, ... (section 9.6)
 [...reader.rows({ offset: 1, limit: 1 })];          // paging
@@ -844,6 +844,36 @@ On 200,000 transactions sorted by account, fetching the 549 rows of one day
 If you need the rows in the original order, sort a copy for fetching and look
 the rows up by position afterwards. When the rows can be described by a
 filter, `find()` is better still: it reads only the chunks that can match.
+
+### 9.10 Counting
+
+`count(filter)` returns the number of matching rows. It reads as little as
+it can, in this order:
+
+- **From an index alone.** When sorted indexes answer the filter exactly, the
+  count is the number of rows the index names, and no rows are read. That
+  holds for one condition (`eq`, `in`, a range or `isNull: true`), or range
+  conditions on one column, on an indexed column. `startsWith` and text
+  search still check rows.
+- **Whole chunks by their row counts.** A chunk whose statistics prove every
+  row matches is counted without being read. For example, a date range on
+  the file's first `sortedBy` column reads only the chunks at either end.
+- **Only the filter's columns** of the other chunks are decoded.
+
+So a dashboard that counts rows per month, or per status, reads a fraction
+of the file. On 200,000 transactions (`npm run bench:proposals`):
+
+| Query | 1.0.0 | Now |
+|---|---:|---:|
+| 12 monthly counts over a year (file sorted by time) | 5,771 KB, 104 ms | 1,062 KB, 15 ms |
+| One account's count (file sorted by time, `account` indexed) | 4,766 KB, 81 ms | 57 KB, 1.2 ms |
+
+- **.NET** counts the same way. The 12 monthly counts took 82 ms in 1.0.0
+  and 27 ms now. On 1,000,000 rows, they took 323 ms and now take 25 ms.
+- **The browser reader** counts the same way, and `query()` uses it for
+  `total`.
+- **Access keys** don't use indexes (only the owner can read them), so they
+  count from chunk statistics and the partitions a filter names.
 
 ---
 

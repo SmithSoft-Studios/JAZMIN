@@ -1136,6 +1136,16 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         }
     }
 
+    /// <summary>Whether a chunk decoded with the columns <paramref name="have"/> (null: all) holds every column <paramref name="need"/> asks for.</summary>
+    private static bool DecodedAll(bool[]? have, bool[]? need)
+    {
+        if (have is null) return true;
+        if (need is null) return false;
+        for (var c = 0; c < need.Length; c++)
+            if (need[c] && !have[c]) return false;
+        return true;
+    }
+
     /// <summary>
     /// A chunk's rows as arrays by column position; deleted rows are null. <paramref name="wanted"/> (by column position)
     /// limits the columns decoded - the others stay null - and a column group none of whose columns is wanted is not
@@ -1143,7 +1153,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// </summary>
     private object?[][] ChunkRows(int ordinal, bool[]? wanted = null)
     {
-        if (_cachedOrdinal == ordinal && (_cachedWanted is null || ReferenceEquals(_cachedWanted, wanted))) return _cachedRows!;
+        if (_cachedOrdinal == ordinal && DecodedAll(_cachedWanted, wanted)) return _cachedRows!;
         var width = _allColumns.Length;
         var rowCount = _rowCount[ordinal];
         object?[][]? rows = null; // made after a part is decoded: Columnar checks the directory's row count against the part's size
@@ -1684,7 +1694,83 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         return n;
     }
 
-    public long Count(JazminFilter? filter = null) => filter is null ? RowCount : Find(filter).LongCount();
+    /// <summary>
+    /// Counts matching visible rows. Without a filter this reads only the header. When sorted indexes answer the filter
+    /// exactly (one condition, or a range on one column), their row count is the answer and no rows are read. Otherwise
+    /// chunks whose statistics prove every row matches are counted by their row counts without being read, and in the
+    /// others only the filter's columns are decoded.
+    /// </summary>
+    public long Count(JazminFilter? filter = null)
+    {
+        var plan = Plan(filter);
+        if (plan is null) return RowCount;
+        var rowIds = Candidates(plan);
+        if (rowIds is not null && FilterEngine.AnsweredExactly(plan)) return rowIds.Length - DeletedAmong(rowIds);
+        var whole = WholeChunkTest(plan);
+        long n = 0;
+        var runs = new List<(int Ordinal, int From, int To)>();
+        foreach (var run in ChunkRuns(plan, rowIds))
+        {
+            if (rowIds is null && whole(run.Ordinal)) n += LiveRows(run.Ordinal);
+            else runs.Add(run);
+        }
+        return n + CountMatches(plan, runs, rowIds);
+    }
+
+    /// <summary>How many of these row ids (ascending) appends have deleted.</summary>
+    private long DeletedAmong(long[] rowIds)
+    {
+        long n = 0;
+        for (int i = 0, d = 0; i < rowIds.Length && d < _deleted.Length; i++)
+        {
+            while (d < _deleted.Length && _deleted[d] < rowIds[i]) d++;
+            if (d < _deleted.Length && _deleted[d] == rowIds[i]) n++;
+        }
+        return n;
+    }
+
+    /// <summary>
+    /// Rows matching a filter in these chunk runs (see <see cref="ChunkRuns"/>), decoding only the filter's columns: read
+    /// ahead and in parallel, as a scan reads them, in files without access control.
+    /// </summary>
+    private long CountMatches(BoundFilter plan, List<(int Ordinal, int From, int To)> runs, long[]? rowIds)
+    {
+        var wanted = WantedColumns(plan, []);
+        long n = 0;
+        if (_access is not null)
+        {
+            foreach (var (ordinal, from, to) in runs)
+            {
+                var rows = ChunkRows(ordinal, wanted);
+                var start = _rowStart[ordinal];
+                var count = rowIds is null ? rows.Length : to - from;
+                for (var k = 0; k < count; k++)
+                    if (rows[rowIds is null ? k : (int)(rowIds[from + k] - start)] is { } row && FilterEngine.Evaluate(plan, row)) n++;
+            }
+            return n;
+        }
+        var planColumns = Enumerable.Range(0, wanted.Length).Where(c => wanted[c]).ToArray();
+        var scratch = new object?[_types.Length];
+        var deleted = 0;
+        var next = 0; // the run of the chunk being counted (chunks come in run order)
+        foreach (var (ordinal, columns) in DecodeAhead(runs.Select(run => run.Ordinal), _types, wanted))
+        {
+            while (runs[next].Ordinal != ordinal) next++;
+            var (_, from, to) = runs[next];
+            var start = _rowStart[ordinal];
+            var count = rowIds is null ? _rowCount[ordinal] : to - from;
+            for (var k = 0; k < count; k++)
+            {
+                var r = rowIds is null ? k : (int)(rowIds[from + k] - start);
+                var rowId = start + r;
+                while (deleted < _deleted.Length && _deleted[deleted] < rowId) deleted++;
+                if (deleted < _deleted.Length && _deleted[deleted] == rowId) continue; // removed by an append
+                foreach (var c in planColumns) scratch[c] = columns[c]!.Get(r);
+                if (FilterEngine.Evaluate(plan, scratch)) n++;
+            }
+        }
+        return n;
+    }
 
     /// <summary>Describes how a filter executes: "index" (with the candidate row count) or "scan" (with chunks skipped).</summary>
     public JazminPlan Explain(JazminFilter? filter)

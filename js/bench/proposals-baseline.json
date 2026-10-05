@@ -4,15 +4,15 @@
     "rows": 0
   },
   "id lookup": {
-    "bytes": 153902,
+    "bytes": 153903,
     "rows": 1
   },
   "account page, first account": {
-    "bytes": 103603,
+    "bytes": 103604,
     "rows": 50
   },
   "account page, last account": {
-    "bytes": 87074,
+    "bytes": 87075,
     "rows": 50
   },
   "account page, time-sorted file": {
@@ -20,19 +20,23 @@
     "rows": 50
   },
   "account count, time-sorted file": {
-    "bytes": 4880212,
+    "bytes": 58870,
     "rows": 755
   },
   "account count, account-sorted file": {
-    "bytes": 103603,
+    "bytes": 103604,
     "rows": 755
   },
+  "monthly counts over a year": {
+    "bytes": 1087717,
+    "rows": 200000
+  },
   "keyset page within an account": {
-    "bytes": 104857,
+    "bytes": 104858,
     "rows": 50
   },
   "one day, all accounts": {
-    "bytes": 5056260,
+    "bytes": 5056261,
     "rows": 549
   },
   "one day, time-sorted file": {
@@ -60,43 +64,43 @@
     "rows": 755
   },
   "reference lookup, select": {
-    "bytes": 147387,
+    "bytes": 147388,
     "rows": 1
   },
   "access file: account amounts": {
-    "bytes": 53036,
+    "bytes": 53035,
     "rows": 755
   },
   "access file: all amounts": {
-    "bytes": 6071276,
+    "bytes": 6071275,
     "rows": 200000
   },
   "get() one day, time order": {
-    "bytes": 55106228,
+    "bytes": 55106229,
     "rows": 549
   },
   "get() one day, position order": {
-    "bytes": 5012203,
+    "bytes": 5012204,
     "rows": 549
   },
   "browser: open": {
-    "bytes": 797,
+    "bytes": 798,
     "rows": 0
   },
   "browser: id lookup": {
-    "bytes": 153902,
+    "bytes": 153903,
     "rows": 1
   },
   "browser: account page, first account": {
-    "bytes": 103603,
+    "bytes": 103604,
     "rows": 50
   },
   "browser: account page, last account": {
-    "bytes": 87074,
+    "bytes": 87075,
     "rows": 50
   },
   "browser: query() deep page with total": {
-    "bytes": 102404,
+    "bytes": 102405,
     "rows": 50
   }
 }

@@ -2,10 +2,11 @@
 // the shared fixtures written by both libraries: every key, embedded files, several tables, appended files.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { JazminAccessKey, JazminKey, issueUnlockToken, open, write } from '../src/index.js';
+import { JazminAccessKey, JazminKey, append, issueUnlockToken, open, write } from '../src/index.js';
 import '../browser/jazmin-browser.js';
 
 const { JazminBrowser } = globalThis;
@@ -138,6 +139,41 @@ test('browser reader: NaN never equals or orders against a value, as in the libr
     assert.deepEqual(await browserRows(reader, filter), rowsOf([...library.find(filter)]), JSON.stringify(filter));
     assert.equal(await reader.count(filter), library.count(filter), JSON.stringify(filter));
   }
+});
+
+test('browser reader: count() takes exact index answers without reading rows, as the library does (issue #16)', async () => {
+  const columns = [
+    { name: 'id', type: 'int', nullable: false, index: 'sorted' },
+    { name: 'section', type: 'string', nullable: false, index: 'sorted' },
+    { name: 'score', type: 'float', index: 'sorted' },
+  ];
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-browser-count-')), 'indexed.jzm');
+  write(file, Array.from({ length: 1000 }, (_, i) => ({ id: i, section: `S${Math.floor(i / 100)}`, score: i % 7 === 0 ? NaN : i / 10 })), { columns, sortedBy: ['id'], chunkRows: 64 });
+  append(file, { delete: { section: 'S5', id: { lt: 520 } } });
+  const bytes = fs.readFileSync(file);
+  let read = 0;
+  class CountingBlob extends Blob {
+    slice(start = 0, end = this.size, type) {
+      read += Math.max(0, Math.min(end, this.size) - start);
+      return super.slice(start, end, type);
+    }
+  }
+  const reader = await JazminBrowser.open(new CountingBlob([bytes]));
+  const library = open(file);
+  for (const filter of [
+    { section: 'S5' }, { section: { in: ['S3', 'S10', null] } }, { section: { gte: 'S3', lt: 'S6' } }, { section: { startsWith: 'S1' } },
+    { section: { ne: 'S2' } }, { score: 0 }, { score: { gte: 10, lt: 20 } }, { score: { gt: NaN } }, { section: 'S5', score: { gt: 55 } },
+  ]) assert.equal(await reader.count(filter), library.count(filter), JSON.stringify(filter));
+  library.close();
+  const filter = { section: { in: ['S2', 'S7'] } };
+  const counter = await JazminBrowser.open(new CountingBlob([bytes]));
+  read = 0;
+  assert.equal(await counter.count(filter), 200);
+  const counted = read;
+  const finder = await JazminBrowser.open(new CountingBlob([bytes]));
+  read = 0;
+  assert.equal((await browserRows(finder, filter)).length, 200);
+  assert.ok(counted < read / 2, `count read ${counted} bytes, find ${read}`);
 });
 
 test('browser reader: keys are checked, and an online key asks for its unlock token', async () => {

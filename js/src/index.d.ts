@@ -425,6 +425,10 @@ export class JazminReader implements Iterable<JazminRow> {
   /** findAsync() yielding each chunk's rows as one array: as fast as find(), still non-blocking. */
   findBatchesAsync(filter: Filter | null | undefined, options?: QueryOptions): AsyncGenerator<JazminRow[]>;
   rowsAsync(options?: QueryOptions): AsyncGenerator<JazminRow>;
+  /**
+   * Matching rows. Exact index answers and chunks whose statistics prove every row matches are counted without
+   * reading rows; elsewhere only the filter's columns are decoded.
+   */
   count(filter?: Filter): number;
   /** Layout advice for lookups of these columns (chunk directories and statistics only). */
   advise(options?: { columns?: string[] }): LayoutAdvice;

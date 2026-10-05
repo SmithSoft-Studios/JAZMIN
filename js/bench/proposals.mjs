@@ -141,6 +141,7 @@ const keysetCursor = midRows[Math.floor(midRows.length / 2)].at;
 const dayStart = new Date(Date.UTC(2025, 4, 31));
 const dayEnd = new Date(Date.UTC(2025, 5, 1));
 const inDay = (r) => r.at >= dayStart && r.at < dayEnd;
+const months = Array.from({ length: 12 }, (_, m) => ({ gte: new Date(Date.UTC(2025, m, 1)), lt: new Date(Date.UTC(2025, m + 1, 1)) }));
 // Positions in the account-sorted file of one day's rows, in time order (as a pointer table would list them).
 const positionOf = new Map(byAccount.map((r, p) => [r.id, p]));
 const dayPositions = rows.filter(inDay).map((r) => positionOf.get(r.id));
@@ -159,6 +160,7 @@ const scenarios = [
   ['account page, time-sorted file', '#14', 'time.jzm', (r) => take(r.find({ account: firstAccount }, { limit: 50 }))],
   ['account count, time-sorted file', '#14', 'time.jzm', (r) => r.count({ account: firstAccount })],
   ['account count, account-sorted file', '#14', 'account.jzm', (r) => r.count({ account: firstAccount })],
+  ['monthly counts over a year', '#16', 'time.jzm', (r) => months.reduce((n, at) => n + r.count({ at }), 0)],
   ['keyset page within an account', '#7', 'account.jzm', (r) => take(r.find({ account: midAccount, at: { gt: keysetCursor } }, { limit: 50 }))],
   ['one day, all accounts', '#7', 'account.jzm', (r) => take(r.find({ at: { gte: dayStart, lt: dayEnd } }))],
   ['one day, time-sorted file', '#7', 'time.jzm', (r) => take(r.find({ at: { gte: dayStart, lt: dayEnd } }))],

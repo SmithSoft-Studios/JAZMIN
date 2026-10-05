@@ -220,6 +220,20 @@ export function indexPlan(node, indexes, budget = Infinity) {
   }
 }
 
+const EXACT_OPS = new Set(['eq', 'in', 'isNull', ...RANGE_OPS]);
+const hasNaN = (leaf) => (Array.isArray(leaf.value) ? leaf.value : [leaf.value]).some((v) => typeof v === 'number' && Number.isNaN(v));
+
+/**
+ * Whether the rows sorted indexes return for this filter are exactly its matches, so count() can take their number
+ * without checking rows: one condition, or range conditions on one column, answered by the same key comparison rows
+ * are checked with. Prefixes and text search are answered with a superset; NaN compares unlike other values.
+ */
+export function answeredExactly(node) {
+  const leaves = node.kind === 'leaf' ? [node] : node.kind === 'and' && node.items.every((i) => i.kind === 'leaf') ? node.items : [];
+  if (!leaves.length || leaves.some((l) => !EXACT_OPS.has(l.op) || !ORDERED_TYPES.has(l.type) || hasNaN(l))) return false;
+  return leaves.length === 1 || leaves.every((l) => isRange(l) && l.col === leaves[0].col);
+}
+
 /**
  * Uses indexes to compute a sorted superset of matching row ids, or null when indexes cannot narrow the search
  * (the caller must scan). `indexes.get(columnName, kind)` returns a loaded index or undefined.

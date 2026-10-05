@@ -926,6 +926,14 @@
     return { ...leaf, value: keyOf(column.type, operand) };
   }
 
+  /** As answeredExactly in the library's filter.js: whether the rows sorted indexes return are exactly the matches. */
+  function answeredExactly(plan) {
+    const leaves = plan.kind === 'leaf' ? [plan] : plan.kind === 'and' && plan.items.every((i) => i.kind === 'leaf') ? plan.items : [];
+    const nan = (l) => (Array.isArray(l.value) ? l.value : [l.value]).some((v) => typeof v === 'number' && Number.isNaN(v));
+    if (!leaves.length || leaves.some((l) => !['eq', 'in', 'isNull', ...RANGE_OPS].includes(l.op) || !ORDERED_TYPES.has(l.column.type) || nan(l))) return false;
+    return leaves.length === 1 || leaves.every((l) => RANGE_OPS.has(l.op) && l.column.position === leaves[0].column.position);
+  }
+
   function planColumns(plan, into = new Set()) {
     if (!plan) return into;
     if (plan.kind === 'leaf') into.add(plan.column.position);
@@ -2094,12 +2102,16 @@
         for await (const row of matches(filter, { offset, limit, select })) rows.push(row);
         return total ? { rows, total: await this.count(filter) } : { rows };
       },
-      /** Rows matching a filter. Chunks whose every row matches are counted by their row count, without reading them. */
+      /**
+       * Rows matching a filter. When sorted indexes answer it exactly, their row count is the answer; otherwise chunks
+       * whose every row matches are counted by their row count, without reading them.
+       */
       async count(filter) {
         if (!filter) return visibleRows;
         const match = compileFilter(filter, visibleColumns);
         const plan = planOf(filter, planColumnsList);
         const { runs, rowIds } = await route(plan);
+        if (rowIds !== null && answeredExactly(plan)) return rowIds.filter((id) => !deletedSet.has(id)).length;
         const wanted = wantedColumns(plan, []);
         let n = 0;
         for (const { chunk, from, to } of runs) {

@@ -19,7 +19,7 @@ import {
 import { JazminFormatError, JazminKeyError, JazminValidationError } from './errors.js';
 import { enforceExpiry, toMs } from './expiry.js';
 import { EVERYONE } from './files.js';
-import { evaluate, indexPlan, mayMatch, mustMatch, normalizeFilter } from './filter.js';
+import { answeredExactly, evaluate, indexPlan, mayMatch, mustMatch, normalizeFilter } from './filter.js';
 import { CompositeIndex, LazyTrigramIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
 import { JazminAccessKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
 import { decodeSection, sectionPayloadLength } from './section.js';
@@ -67,12 +67,16 @@ function sortBounds(plan, col) {
 
 /**
  * Row `r` of a decoded chunk (see #chunk), written by column position into `into`, an array of nulls: only the
- * decoded columns are written, so reusing it for the rows of chunks decoded with the same columns is safe.
+ * decoded columns are written. A chunk may hold more columns than asked for (see decodedAll), so reuse `into` across
+ * chunks only when reading just the columns asked for.
  */
 function chunkRow(chunk, r, into) {
   for (const c of chunk.decoded) into[c] = chunk.columns[c][r];
   return into;
 }
+
+/** Whether a chunk decoded with the columns `have` (by position; null: all) holds every column `need` asks for. */
+const decodedAll = (have, need) => have === null || (need !== null && need.every((wanted, c) => !wanted || have[c]));
 
 /** Positions of the columns a normalized filter reads. */
 function planColumns(plan) {
@@ -780,6 +784,16 @@ export class JazminReader {
     return view;
   }
 
+  /** How many of these row ids (ascending) appends have deleted. */
+  #deletedAmong(rowIds) {
+    let n = 0;
+    for (let i = 0, d = 0; i < rowIds.length && d < this.#deleted.length; i++) {
+      while (d < this.#deleted.length && this.#deleted[d] < rowIds[i]) d++;
+      if (this.#deleted[d] === rowIds[i]) n++;
+    }
+    return n;
+  }
+
   /** Rows of a chunk that appends have not deleted. */
   #liveRows(ordinal) {
     const count = this.#rowCount[ordinal];
@@ -1155,7 +1169,7 @@ export class JazminReader {
    */
   #chunk(ordinal, wanted = null) {
     const cached = this.#cachedChunk;
-    if (cached.ordinal === ordinal && (cached.wanted === null || cached.wanted === wanted)) return cached.chunk;
+    if (cached.ordinal === ordinal && decodedAll(cached.wanted, wanted)) return cached.chunk;
     const rowCount = this.#rowCount[ordinal];
     const columns = new Array(this.#columns.length).fill(null);
     const partitionSecret = this.#access ? this.#partitionSecret(this.#chunkPartition[ordinal]) : null;
@@ -1707,11 +1721,37 @@ export class JazminReader {
     };
   }
 
-  /** Counts matching visible rows. Without a filter this reads only the header. */
+  /**
+   * Counts matching visible rows. Without a filter this reads only the header. When sorted indexes answer the filter
+   * exactly (one condition, or a range on one column), their row count is the answer and no rows are read. Otherwise
+   * chunks whose statistics prove every row matches are counted by their row counts without being read, and in the
+   * others only the filter's columns are decoded.
+   */
   count(filter) {
     if (filter == null) return this.rowCount;
+    const plan = this.#plan(filter);
+    if (!plan) return this.rowCount;
+    const rowIds = this.#candidates(plan);
+    if (rowIds !== null && answeredExactly(plan)) return rowIds.length - this.#deletedAmong(rowIds);
+    const whole = this.#wholeChunkTest(plan);
+    const wanted = this.#wantedColumns(plan, []);
+    const row = new Array(this.#columns.length).fill(null);
     let n = 0;
-    for (const _ of this.find(filter)) n++;
+    for (const { ordinal, from, to } of this.#chunkRuns(plan, rowIds)) {
+      if (rowIds === null && whole(ordinal)) {
+        n += this.#liveRows(ordinal);
+        continue;
+      }
+      const chunk = this.#chunk(ordinal, wanted);
+      const start = this.#rowStart[ordinal];
+      const count = rowIds === null ? chunk.rowCount : to - from;
+      for (let k = 0; k < count; k++) {
+        const r = rowIds === null ? k : rowIds[from + k] - start;
+        if (chunk.deleted?.has(r)) continue;
+        chunkRow(chunk, r, row);
+        if (evaluate(plan, row)) n++;
+      }
+    }
     return n;
   }
 

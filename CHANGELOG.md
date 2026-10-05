@@ -22,6 +22,20 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     init"`). It didn't reproduce locally, so CI will confirm the fix.
 
 ### Changed
+- **`count()` reads as little as it can (#16),** in both libraries and the
+  browser reader (USER-GUIDE §9.10).
+  - **From an index alone:** when sorted indexes answer the filter exactly
+    (one condition, or a range on one column), no rows are read.
+  - **Whole chunks:** chunks whose statistics prove every row matches are
+    counted by their row counts, without being read.
+  - **Fewer columns:** elsewhere only the filter's columns are decoded.
+    Before, `count()` ran a full `find()`.
+  - **Measured:** 12 monthly counts over a year went from 5,771 KB read in
+    104 ms to 1,062 KB in 15 ms, and one account's count in a time-sorted
+    file from 4,766 KB in 81 ms to 57 KB in 1.2 ms.
+  - **Also:** the last decoded chunk is reused by the next query whenever it
+    holds the columns that query needs. Before, reuse needed the exact same
+    column set.
 - **Paging reads only what the page needs (#8).** Chunks wholly before the
   `offset` are counted by their row counts instead of being read and decoded
   (USER-GUIDE §9.7).

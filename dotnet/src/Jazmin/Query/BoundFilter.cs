@@ -141,6 +141,29 @@ internal static class FilterEngine
     }
 
     /// <summary>
+    /// Whether the rows sorted indexes return for this filter are exactly its matches, so Count can take their number
+    /// without checking rows: one condition, or range conditions on one column, answered by the same key comparison rows
+    /// are checked with. Prefixes and text search are answered with a superset; NaN compares unlike other values.
+    /// </summary>
+    public static bool AnsweredExactly(BoundFilter node)
+    {
+        BoundFilter.Leaf[] leaves = node switch
+        {
+            BoundFilter.Leaf leaf => [leaf],
+            BoundFilter.And a when a.Items.All(i => i is BoundFilter.Leaf) => a.Items.Cast<BoundFilter.Leaf>().ToArray(),
+            _ => [],
+        };
+        if (leaves.Length == 0 || leaves.Any(l => l.Op is not ("eq" or "in" or "isNull" or "gt" or "gte" or "lt" or "lte") || !IsOrdered(l.Type) || HasNaN(l))) return false;
+        return leaves.Length == 1 || leaves.All(l => l.Op is "gt" or "gte" or "lt" or "lte" && l.Col == leaves[0].Col);
+    }
+
+    private static bool IsOrdered(JazminType type) =>
+        type is JazminType.Bool or JazminType.Int or JazminType.Float or JazminType.Decimal or JazminType.String or JazminType.DateTime;
+
+    private static bool HasNaN(BoundFilter.Leaf leaf) =>
+        leaf.Value is object?[] values ? values.Any(v => v is not null && Values.IsNaN(v)) : leaf.Value is not null && Values.IsNaN(leaf.Value);
+
+    /// <summary>
     /// Uses indexes to compute a sorted superset of matching row ids, or null when indexes cannot narrow the search (the
     /// caller must scan).
     /// </summary>
