@@ -65,6 +65,13 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     each chunk part, which holds every column (#23 would split them).
 
 ### Added
+- **Open files by URL in the browser (#12):** `JazminBrowser.openUrl(url, {
+  key, headers })` reads a file from a web server or object storage with HTTP
+  range requests (USER-GUIDE §24).
+  - **What's downloaded:** only the parts a query needs. On a 3 MB file,
+    opening it and reading one account's page took 3 requests and 256 KB.
+  - **Any source:** `open()` also accepts any `{ size, read(offset, length) }`
+    object.
 - **`explain(filter, { analyze: true })` (#6):** runs a query and reports
   what it read (USER-GUIDE §9.6): rows, bytes, chunks, index pages and column
   streams decoded, plus the time. In .NET it's

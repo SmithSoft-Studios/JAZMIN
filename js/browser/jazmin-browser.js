@@ -1325,7 +1325,129 @@
     if (typeof Blob !== 'undefined' && input instanceof Blob) {
       return { size: input.size, read: async (offset, length) => new Uint8Array(await input.slice(offset, offset + length).arrayBuffer()) };
     }
-    throw new JazminError('Open a File, Blob, ArrayBuffer or Uint8Array');
+    // Any other source: { size, read(offset, length) -> Uint8Array or a promise of one }.
+    if (input && Number.isSafeInteger(input.size) && input.size >= 0 && typeof input.read === 'function') {
+      return {
+        size: input.size,
+        read: async (offset, length) => {
+          const bytes = await input.read(offset, length);
+          if (!(bytes instanceof Uint8Array) || bytes.length !== length) throw new JazminFormatError('The source returned the wrong number of bytes');
+          return bytes;
+        },
+      };
+    }
+    throw new JazminError('Open a File, Blob, ArrayBuffer, Uint8Array or { size, read(offset, length) }');
+  }
+
+  const BLOCK_SIZE = 64 * 1024; // bytes fetched per range request, at least
+  const BLOCKS_CACHED = 64; // fetched blocks kept per file (4 MiB with the default block size)
+
+  /**
+   * A file on a web server read with HTTP range requests. The first request fetches the last block (the trailer,
+   * header and directories of most files, and the size from Content-Range); later reads fetch whole aligned blocks,
+   * kept in a small cache, and reads of the same block wait for one request. A server that answers with the whole
+   * file instead (no range support) is read from memory. Cross-origin servers must expose Content-Range (CORS).
+   */
+  async function urlSource(url, { headers = {}, blockSize = BLOCK_SIZE } = {}) {
+    if (!(Number.isSafeInteger(blockSize) && blockSize >= 1024)) throw new JazminError('blockSize must be at least 1024 bytes');
+    const get = async (range) => {
+      let response;
+      try {
+        response = await fetch(url, { headers: { ...headers, Range: range } });
+      } catch (error) {
+        throw new JazminError(`Could not read ${url}: ${error.message}`);
+      }
+      if (response.status !== 206 && response.status !== 200) throw new JazminError(`Could not read ${url}: HTTP ${response.status}`);
+      return response;
+    };
+    const tail = await get(`bytes=-${blockSize}`);
+    const body = new Uint8Array(await tail.arrayBuffer());
+    if (tail.status === 200) return sourceOf(body); // no range support: the whole file came back
+    const total = /\/(\d+)\s*$/.exec(tail.headers.get('Content-Range') ?? '');
+    if (!total) throw new JazminError(`${url}: the server's answer has no readable Content-Range header (cross-origin servers must expose it)`);
+    const size = Number(total[1]);
+    const blocks = new Map(); // block number -> bytes (least recently used first), or a pending fetch
+    const keep = (n, bytes) => {
+      blocks.delete(n);
+      blocks.set(n, bytes);
+      if (blocks.size > BLOCKS_CACHED) blocks.delete(blocks.keys().next().value);
+    };
+    // The tail block: the bytes it holds, cut at block boundaries (its start need not be one).
+    const tailStart = size - body.length;
+    for (let n = Math.ceil(tailStart / blockSize); n * blockSize < size; n++) {
+      const start = n * blockSize - tailStart;
+      keep(n, body.subarray(start, Math.min(start + blockSize, body.length)));
+    }
+    const fetchBlocks = async (first, last) => {
+      const start = first * blockSize;
+      const end = Math.min((last + 1) * blockSize, size) - 1;
+      const response = await get(`bytes=${start}-${end}`);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      const from = response.status === 200 ? start : 0; // a server may answer a range with the whole file
+      if (bytes.length < from + end - start + 1) throw new JazminFormatError(`${url}: the server returned fewer bytes than asked for`);
+      for (let n = first; n <= last; n++) keep(n, bytes.subarray(from + (n - first) * blockSize, from + Math.min((n - first + 1) * blockSize, end - start + 1)));
+    };
+    return {
+      size,
+      async read(offset, length) {
+        const first = Math.floor(offset / blockSize);
+        const last = Math.floor((offset + Math.max(length, 1) - 1) / blockSize);
+        if (last - first + 1 > BLOCKS_CACHED / 2) {
+          // A large read (a big index, say) would push its own blocks out of the cache: fetch it as it is.
+          const response = await get(`bytes=${offset}-${offset + length - 1}`);
+          const bytes = new Uint8Array(await response.arrayBuffer());
+          const from = response.status === 200 ? offset : 0;
+          if (bytes.length < from + length) throw new JazminFormatError(`${url}: the server returned fewer bytes than asked for`);
+          return bytes.subarray(from, from + length);
+        }
+        // One request for the blocks still missing (from the first missing to the last), shared by concurrent reads.
+        let missingFrom = -1;
+        let missingTo = -1;
+        for (let n = first; n <= last; n++) {
+          if (!blocks.has(n)) {
+            if (missingFrom < 0) missingFrom = n;
+            missingTo = n;
+          }
+        }
+        if (missingFrom >= 0) {
+          const pending = fetchBlocks(missingFrom, missingTo);
+          const waiting = [];
+          for (let n = missingFrom; n <= missingTo; n++) {
+            if (!blocks.has(n)) {
+              blocks.set(n, pending);
+              waiting.push(n);
+            }
+          }
+          try {
+            await pending;
+          } catch (error) {
+            for (const n of waiting) if (blocks.get(n) === pending) blocks.delete(n); // a later read tries again
+            throw error;
+          }
+        }
+        for (let n = first; n <= last; n++) if (blocks.get(n) instanceof Promise) await blocks.get(n);
+        const out = new Uint8Array(length);
+        for (let n = first; n <= last; n++) {
+          const block = blocks.get(n);
+          keep(n, block);
+          const blockStart = n * blockSize;
+          const from = Math.max(offset, blockStart);
+          const to = Math.min(offset + length, blockStart + block.length);
+          out.set(block.subarray(from - blockStart, to - blockStart), from - offset);
+        }
+        return out;
+      },
+    };
+  }
+
+  /**
+   * Opens a JAZMIN file on a web server, reading only the parts a query needs (HTTP range requests). options: those
+   * of open(), plus { headers } (sent with every request, e.g. Authorization) and { blockSize } (bytes per request,
+   * at least; default 64 KiB).
+   */
+  async function openUrl(url, options = {}) {
+    const { headers, blockSize, ...openOptions } = options;
+    return open(await urlSource(url, { headers, blockSize }), openOptions);
   }
 
   // ---- the reader ---------------------------------------------------------------------------------
@@ -2049,6 +2171,7 @@
 
   global.JazminBrowser = {
     open,
+    openUrl,
     compileFilter,
     base64ToBytes,
     JazminError,
