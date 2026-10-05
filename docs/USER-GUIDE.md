@@ -616,33 +616,38 @@ rows and time per query); docs/CONTRIBUTING.md explains it.
 | File size | 30,529 KB | not measured | **1,297 KB** (deflate) / **838 KB** (brotli) |
 | File size, gzipped JSON for comparison | 3,324 KB | | |
 | File size with 3 indexes + AES-256 encryption | | | 2,235 KB |
-| Find one record by id (open file → result) | 264 ms | 101 ms | **3.7 ms** (3.8 ms encrypted) |
-| Filter `Country == "NA" && Age > 80` | 273 ms | | **40 ms** |
-| Memory allocated for one lookup | 196 MB | | **2.5 MB** |
-| Deserialize every record | 221 ms | 95 ms | **33 ms** |
-| Serialize every record | 118 ms | 62 ms | **42 ms** (186 ms with 3 indexes) |
+| Find one record by id (open file → result) | 265 ms | 104 ms | **1.9 ms** (2.0 ms encrypted) |
+| Filter `Country == "NA" && Age > 80` | 276 ms | | **13 ms** |
+| Memory allocated for one lookup | 196 MB | | **1.1 MB** |
+| Deserialize every record | 211 ms | 91 ms | **32 ms** |
+| Serialize every record | 103 ms | 57 ms | **42 ms** (164 ms with 3 indexes) |
 
 ### 9.2 Node.js 24 (vs native JSON)
 
 | Measure | JSON | **JAZMIN** |
 |---|---:|---:|
 | File size | 31,307 KB (gzip: 3,338 KB) | **1,292 KB** (deflate) / **838 KB** (brotli) |
-| Find one record by id | 108 ms | **2.7 ms** (2.8 ms encrypted) |
-| Read every record | 107 ms | **51 ms** |
-| Write every record | 275 ms | **199 ms** (389 ms with 3 indexes) |
-| Broad filter matching 1 row in 8, spread through the file | 111 ms | **56 ms** |
-| Text search (`contains`) | 112 ms | **69 ms** |
+| Find one record by id | 109 ms | **1.7 ms** (1.7 ms encrypted) |
+| Read every record | 109 ms | **45 ms** |
+| Write every record | 277 ms | **174 ms** (343 ms with 3 indexes) |
+| Broad filter matching 1 row in 8, spread through the file | 116 ms | **13 ms** |
+| Text search (`contains`) | 112 ms | **21 ms** |
+| Memory to answer a lookup (`--expose-gc`) | 42 MB | **under 0.1 MB** |
 
-On Node 26 (same day), JAZMIN takes 3.0 ms per lookup and 57 ms to read every
-record; `JSON.parse` is about 15% faster there than on Node 24.
+On Node 26 (same day), JAZMIN takes 1.8 ms per lookup and 58 ms to read every
+record; `JSON.parse` is about 10% faster there than on Node 24.
+
+Measured on 5 October 2026. Since 1.0.0, query planning (sections 9.7 and 9.8)
+took lookups from 2.7 to 1.7 ms in Node and from 3.7 to 1.9 ms in .NET, and
+the filter from 56 to 13 ms and from 40 to 13 ms.
 
 ### 9.3 What the numbers mean
 
 - **Size:** about 24× smaller than JSON and 61% smaller than *gzipped* JSON
   with deflate. With Brotli, 75% smaller than gzipped JSON. These numbers come
   from regular benchmark data; expect less on very varied data.
-- **Finding specific records:** 27–71× faster than parsing JSON in .NET, and
-  about 40× in Node.
+- **Finding specific records:** 55–139× faster than parsing JSON in .NET, and
+  about 64× in Node.
 - **Reading a whole file:** faster than `JSON.parse` and System.Text.Json.
 - **Writing:** faster than `JSON.stringify` in Node, and faster than both .NET
   serializers without indexes. Indexes are built as the file is written: with

@@ -25,9 +25,9 @@ Measured on 200,000 records (details and caveats in the user guide):
 | Measure | Result |
 |---|---|
 | File size | About **24× smaller than JSON**, and 61% smaller than gzipped JSON (75% with Brotli) |
-| Find a record by id | **27–71× faster** than System.Text.Json or Newtonsoft; **40× faster** than `JSON.parse` |
-| Read a whole file | **3× faster** than System.Text.Json, 6.7× faster than Newtonsoft and 2× faster than `JSON.parse` |
-| Memory per lookup | **21–78× less** |
+| Find a record by id | **55–139× faster** than System.Text.Json or Newtonsoft; **64× faster** than `JSON.parse` |
+| Read a whole file | **2.8× faster** than System.Text.Json, 6.6× faster than Newtonsoft and 2.4× faster than `JSON.parse` |
+| Memory per lookup | **178× less** than Newtonsoft (1.1 MB against 196 MB); under 0.1 MB in Node, against 42 MB for `JSON.parse` |
 | Encryption | AES-256-GCM on every section, with a typo-safe key format and tamper detection, at near-zero extra cost |
 | Conversion | Lossless JSON round trip, plus CSV and XML. **Export shapes** turn rows into nested JSON/XML (one entry per client with its transactions and totals), validated and streamed |
 | Access control | One file, many keys: each access key sees only its rows and columns. Files are signed by the owner, and only the owner can update them |

@@ -131,7 +131,7 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   - **What they report:** how many chunks the rows of one value lie in, and
     what a lookup costs.
   - **What they suggest:** a `sortedBy` or `chunkRows` that would make those
-    lookups read less, and partitions `compact()` would merge.
+    lookups read less, and partitions `compact({ regroup: true })` would merge.
   - **On the benchmark's time-sorted file,** they recommend sorting by
     account, then time, for account lookups.
 - **Open files by URL in the browser (#12):** `JazminBrowser.openUrl(url, {
