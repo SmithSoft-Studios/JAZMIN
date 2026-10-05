@@ -61,7 +61,8 @@ export class ByteWriter {
   /** Unsigned LEB128 varint. Accepts a non-negative safe integer or BigInt. */
   varUint(value) {
     if (typeof value === 'bigint') {
-      this.#ensure(10);
+      // A BigInt can need any number of bytes (a 256-digit decimal needs 122): make room for all of them.
+      this.#ensure(Math.ceil(value.toString(2).length / 7));
       while (value >= 0x80n) {
         this.buf[this.length++] = Number(value & 0x7fn) | 0x80;
         value >>= 7n;

@@ -6,6 +6,23 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Fixed
+- **JS writer: long decimals could be written damaged (data loss).** A
+  decimal's integer part is written as a variable-length number. For values
+  with more than about 20 significant digits, the 1.0.0 JS writer could
+  drop the end of it without any error.
+  - **Statistics (from about 33 digits):** a chunk's min/max bounds could
+    not be read, so a range query such as `{ d: { lt: '1000' } }` failed with
+    "Unexpected end of data". The Node and browser readers were affected.
+  - **The rows themselves (longer values):** depending on where a value fell
+    in the write buffer, the stored data was damaged. A file with 80-digit
+    decimals could not be read back ("Varint too long").
+  - **Fix:** the writer makes room for the whole number. Values up to the
+    format's 256-digit maximum are tested: rows, statistics, sorted indexes,
+    filters, encryption, the browser reader, and .NET reading the files.
+  - **Not affected:** the .NET writer and the readers.
+  - **What to do:** open any file written with JS 1.0.0 that holds such
+    decimals. If it reads, `compact()` it with this version, which writes its
+    statistics again. If it doesn't, write it again from its source data.
 - **Browser reader: NaN no longer matches filters on float columns.**
   - **The bug:** a row whose float value was `NaN` matched `eq`, `in`,
     `gte` and `lte` conditions on any value. `{ score: 5 }` returned it,
