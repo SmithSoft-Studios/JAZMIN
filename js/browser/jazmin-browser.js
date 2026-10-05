@@ -853,11 +853,11 @@
     if (op === 'in') {
       if (!Array.isArray(operand)) throw new JazminError(`'in' takes an array`);
       const keys = operand.filter((v) => v !== null).map((v) => keyOf(type, v));
-      return (row) => row[name] != null && keys.some((k) => compare(type, keyOf(type, row[name]), k) === 0);
+      return (row) => row[name] != null && keys.some((k) => keyCompare(type, keyOf(type, row[name]), k) === 0);
     }
     const key = keyOf(type, operand);
     const test = { eq: (c) => c === 0, ne: (c) => c !== 0, gt: (c) => c > 0, gte: (c) => c >= 0, lt: (c) => c < 0, lte: (c) => c <= 0 }[op];
-    return (row) => row[name] != null && test(compare(type, keyOf(type, row[name]), key));
+    return (row) => row[name] != null && test(keyCompare(type, keyOf(type, row[name]), key)); // NaN matches no comparison but ne
   }
 
   // ---- query planning: statistics, sort order and indexes (as the library does, spec 6.4, 8, 9) --------

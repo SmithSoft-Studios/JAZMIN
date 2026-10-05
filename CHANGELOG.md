@@ -6,6 +6,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Fixed
+- **Browser reader: NaN no longer matches filters on float columns.**
+  - **The bug:** a row whose float value was `NaN` matched `eq`, `in`,
+    `gte` and `lte` conditions on any value. `{ score: 5 }` returned it,
+    and `count()` counted it. The library has never matched it.
+  - **Now:** the browser reader compares as the library does. NaN matches
+    no comparison except `ne`.
 - **Parallel JS writes stop their worker threads gracefully.**
   - **The change:** a finished or aborted write used to terminate its
     compression workers straight away, sometimes mid-compression. Each worker

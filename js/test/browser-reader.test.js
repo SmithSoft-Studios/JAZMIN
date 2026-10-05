@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { JazminAccessKey, JazminKey, issueUnlockToken, open } from '../src/index.js';
+import { JazminAccessKey, JazminKey, issueUnlockToken, open, write } from '../src/index.js';
 import '../browser/jazmin-browser.js';
 
 const { JazminBrowser } = globalThis;
@@ -126,6 +126,18 @@ test('browser reader: query({ total: false }) reads only the page, and count() m
     for await (const _ of reader.find(null, { select: ['nope'] }));
   }, /Unknown column 'nope' in select/);
   library.close();
+});
+
+test('browser reader: NaN never equals or orders against a value, as in the library', async () => {
+  const bytes = write(null, [{ id: 1, score: 5 }, { id: 2, score: NaN }, { id: 3, score: 7 }, { id: 4, score: null }], {
+    columns: [{ name: 'id', type: 'int' }, { name: 'score', type: 'float' }],
+  });
+  const reader = await JazminBrowser.open(new Blob([bytes]));
+  const library = open(bytes);
+  for (const filter of [{ score: 5 }, { score: { ne: 5 } }, { score: { gte: 6 } }, { score: { lte: 6 } }, { score: { in: [5, 7] } }, { score: { gt: 0, lt: 10 } }]) {
+    assert.deepEqual(await browserRows(reader, filter), rowsOf([...library.find(filter)]), JSON.stringify(filter));
+    assert.equal(await reader.count(filter), library.count(filter), JSON.stringify(filter));
+  }
 });
 
 test('browser reader: keys are checked, and an online key asks for its unlock token', async () => {
