@@ -36,7 +36,7 @@ const FILES = {
 const CASES = [];
 for (const writer of ['js', 'dotnet']) {
   CASES.push({ file: `${writer}-files-key.jzm`, key: 'key', files: FILES.key });
-  for (const key of ['key', 'bob', 'sally', 'carol']) CASES.push({ file: `${writer}-files-access.jzm`, key, files: FILES[key] });
+  for (const key of ['bob', 'sally', 'carol']) CASES.push({ file: `${writer}-files-access.jzm`, key, files: FILES[key] }); // never the master key: see below
 }
 
 // A package whose template uses the API: count, a sorted page of rows (queried in the viewer), all rows, and ready().
@@ -316,6 +316,19 @@ for (const name of chosen) {
       const shown = await unlock(page, c);
       results.push({ browser: name, ...check(c, shown, `${c.file} with ${c.key === 'key' ? 'the owner/master' : c.key} key`) });
     }
+    // A shared file refuses its master key, and the viewer clears it from the page.
+    for (const writer of ['js', 'dotnet']) {
+      const file = `${writer}-files-access.jzm`;
+      await page.navigate(`${base}/js/viewer/index.html`);
+      await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+      await page.evaluate(`fetch('/spec/fixtures/${file}').then((r) => r.blob()).then((b) => JazminViewer.choose(b, '${file}')).then(() => true)`);
+      await waitFor(page, `document.getElementById('jz-unlock')?.hidden === false`, 'the unlock form');
+      await page.evaluate(`(document.getElementById('jz-key').value = ${JSON.stringify(keys.key)}, document.getElementById('jz-unlock').requestSubmit(), true)`);
+      const shown = await waitFor(page, `document.getElementById('jz-error').textContent && ({ error: document.getElementById('jz-error').textContent, key: document.getElementById('jz-key').value })`, 'the refusal');
+      const ok = /master key can't be used/.test(shown.error) && shown.key === '';
+      results.push({ browser: name, label: `${file}: the master key is refused and cleared`, ok, problems: ok ? [] : [JSON.stringify(shown)] });
+    }
+
     // A template that queries the data through the viewer.
     await page.navigate(`${base}/js/viewer/index.html`);
     await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');

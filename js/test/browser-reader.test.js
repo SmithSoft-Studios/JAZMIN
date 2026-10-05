@@ -37,9 +37,10 @@ function nodeOptions(name, keyName) {
 
 const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jzm') && !f.includes('brotli'));
 for (const name of files) {
-  const keyNames = !name.endsWith('-access.jzm') ? [null] : name.includes('many-partitions') ? ['key', 'bob', 'sally'] : ['key', 'bob', 'sally', 'carol', 'erin'];
+  // A master key is refused for shared files in browsers (see below): those are read with access keys.
+  const keyNames = !name.endsWith('-access.jzm') ? [null] : name.includes('many-partitions') ? ['bob', 'sally'] : ['bob', 'sally', 'carol', 'erin'];
   for (const keyName of keyNames) {
-    test(`browser reader: ${name}${keyName ? ` with the ${keyName === 'key' ? 'owner' : keyName} key` : ''} matches the library`, async () => {
+    test(`browser reader: ${name}${keyName ? ` with ${keyName}'s key` : ''} matches the library`, async () => {
       const options = nodeOptions(name, keyName);
       const expected = open(path.join(dir, name), options);
       // A Blob is read in slices, as a File from a file picker is.
@@ -84,6 +85,14 @@ test('browser reader: filters give the same rows as the library', async () => {
   expected.close();
 });
 
+test('browser reader: a master key is refused for every shared file, and one-key files still open with theirs', async () => {
+  for (const name of files.filter((f) => f.endsWith('-access.jzm'))) {
+    await assert.rejects(JazminBrowser.open(new Blob([fixture(name)]), { key: keys.key }), /A master key can't be used in a browser for a shared file/, name);
+  }
+  const keyFile = await JazminBrowser.open(new Blob([fixture('js-key.jzm')]), { key: keys.key });
+  assert.ok(keyFile.rowCount > 0);
+});
+
 test('browser reader: plans queries as the library does, reading the same chunks (issue #10)', async () => {
   // explain({ analyze }) in both readers, each freshly opened: index lookups, statistics, scans and offsets.
   for (const [name, filter, options] of [
@@ -98,7 +107,7 @@ test('browser reader: plans queries as the library does, reading the same chunks
     ['js-access.jzm', null, { offset: 100, limit: 10 }],
   ]) {
     const access = name.endsWith('-access.jzm');
-    const libraryOptions = nodeOptions(name, access ? 'key' : null);
+    const libraryOptions = nodeOptions(name, access ? 'bob' : null);
     const library = open(path.join(dir, name), libraryOptions);
     const { ms: libraryMs, ...expected } = library.explain(filter, { analyze: true, ...options });
     library.close();
@@ -181,7 +190,7 @@ test('browser reader: keys are checked, and an online key asks for its unlock to
   await assert.rejects(JazminBrowser.open(fixture('js-key.jzm')), JazminKeyError);
   await assert.rejects(JazminBrowser.open(fixture('js-key.jzm'), { key: `${keys.key.slice(0, -2)}xx` }), /checksum|wrong length/);
   await assert.rejects(JazminBrowser.open(fixture('js-plain.jzm'), { key: keys.key }), /not encrypted/);
-  await assert.rejects(JazminBrowser.open(fixture('js-access.jzm'), { key: JazminKey.generate().toString() }), /not signed by the owner of this key/);
+  await assert.rejects(JazminBrowser.open(fixture('js-access.jzm'), { key: JazminKey.generate().toString() }), /A master key can't be used in a browser/);
   await assert.rejects(JazminBrowser.open(fixture('js-access.jzm'), { key: JazminKey.generate().createAccessKey().toString() }), /not signed by the owner/);
   const error = await JazminBrowser.open(fixture('js-access.jzm'), { key: keys.carol }).catch((e) => e);
   assert.ok(error instanceof JazminUnlockRequiredError);

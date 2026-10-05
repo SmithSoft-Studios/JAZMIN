@@ -949,6 +949,13 @@ slows down guessing, but a weak password is still weak.
 **Sharing one file with many people:** give each person an access key that opens only their rows and
 columns. See [section 15](#15-access-control-one-file-many-keys).
 
+**Keep a shared file's master key off web pages.** It reads everything,
+changes the file, and gives and takes away access, and it can't be revoked.
+- **Where it belongs:** servers and tools you control. Keep it in a secret
+  manager.
+- **Browsers:** they refuse it (section 24). For browsing, use a full-read
+  access key.
+
 **Tampering:** any change to an encrypted file is detected. This covers
 editing bytes, swapping chunks, copying sections from another file, and
 stripping encryption. Plain files have CRC checks, which catch accidental
@@ -2367,9 +2374,19 @@ repeated values once. The bigger gains are elsewhere:
 The viewer opens a `.jzm` file in a browser and shows its **document** (the
 package's entry page, section 19), its **data** and its **files**. The file
 is read on the person's own device: nothing is uploaded, and only the parts
-needed are read from disk. Keys work as in the libraries: a master key, a
-password, an owner key, or an access key (with its unlock token for online
-access).
+needed are read from disk.
+
+**Keys:**
+- **Files with one key or a password** open with that key or password.
+- **Shared files** (section 15) open only with an access key, plus its unlock
+  token for online access. **The viewer and the browser reader refuse a
+  shared file's master (owner) key.**
+  - **Why:** that key controls the whole file, and a web page is the easiest
+    place to steal a key from (browser extensions, injected scripts, whoever
+    serves the page).
+  - **To see everything in a browser,** the owner gives themselves a full-read
+    access key: `grantAccess(file, owner, key, { rows: '*', columns: '*' })`.
+    It reads every row and column but changes nothing, and it can be revoked.
 
 It comes in three forms:
 

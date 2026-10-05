@@ -72,6 +72,7 @@
         $('jz-key-id').textContent = error.keyId;
         $('jz-token').focus();
       }
+      if (error.masterKeyRefused) $('jz-key').value = ''; // don't leave a master key in the page
       $('jz-error').textContent = error.message || String(error);
       status('');
     }

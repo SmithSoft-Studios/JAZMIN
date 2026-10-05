@@ -29,7 +29,6 @@
   const ONLINE_SLOT = 0x80000000;
   const WHOLE_TABLE = '*';
   const EVERYONE = '*';
-  const P256_ORDER = 0xffffffff00000000ffffffffffffffffbce6faada7179e84f3b9cac2fc632551n;
   const subtle = global.crypto.subtle;
   const utf8 = new TextEncoder();
   const fromUtf8 = new TextDecoder('utf-8', { fatal: false });
@@ -186,30 +185,17 @@
    * public point in every browser, so d is imported with the file's point and a challenge is signed: the signature
    * verifies against that point only when the point is d's.
    */
-  async function isOwnerKey(master, publicKey) {
-    if (publicKey.length !== 65 || publicKey[0] !== 4) return false;
-    const okm = await hkdf(master, new Uint8Array(0), 'JAZMIN/1/owner-signing', 384);
-    const d = (BigInt('0x' + toHex(okm)) % (P256_ORDER - 1n)) + 1n;
-    const jwk = {
-      kty: 'EC', crv: 'P-256', ext: true, d: bytesToBase64Url(hexToBytes(d.toString(16).padStart(64, '0'))),
-      x: bytesToBase64Url(publicKey.subarray(1, 33)), y: bytesToBase64Url(publicKey.subarray(33, 65)),
-    };
-    let key;
-    try {
-      key = await subtle.importKey('jwk', jwk, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['sign']);
-    } catch {
-      return false; // some browsers refuse a private key that does not match its point
-    }
-    const challenge = global.crypto.getRandomValues(new Uint8Array(32));
-    return verifySignature(publicKey, challenge, new Uint8Array(await subtle.sign({ name: 'ECDSA', hash: 'SHA-256' }, key, challenge)));
-  }
-
   async function verifySignature(publicKey, message, signature) {
     const key = await subtle.importKey('raw', publicKey, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
     return subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, signature, message);
   }
 
   // ---- keys ---------------------------------------------------------------------------------------
+
+  // A master (owner) key controls the whole of a shared file: in a page it could be stolen, so browsers never take one.
+  const MASTER_KEY_REFUSED = "A master key can't be used in a browser for a shared file: it controls the whole file, and a page could leak it. "
+    + "Open the file with an access key. To see everything, the owner can create a full-read access key "
+    + "(grantAccess(file, ownerKey, key, { rows: '*', columns: '*' }) in the library).";
 
   async function checksum(bytes) {
     return (await sha256(bytes)).subarray(0, 4);
@@ -1582,16 +1568,16 @@
     if (flags & FLAG_ACCESS) {
       if (options.password || !options.key) throw new JazminKeyError('This file is access-controlled - enter an owner key or access key');
       const key = await parseKey(options.key);
+      if (key.kind === 'owner') throw Object.assign(new JazminKeyError(MASTER_KEY_REFUSED), { masterKeyRefused: true });
       if (!trailer.keySlots.length || !trailer.signature.length) throw new JazminFormatError('Key-slot or signature section is missing');
       const slotsSection = await read(trailer.keySlots.offset, trailer.keySlots.length);
       const signature = await plainSection(await read(trailer.signature.offset, trailer.signature.length), 'signature');
       if (signature.length !== 65 + 64) throw new JazminFormatError('Signature section has the wrong length');
       const owner = signature.subarray(0, 65);
-      const ownerOk = key.kind === 'access' ? equal((await sha256(owner)).subarray(0, 8), key.fingerprint) : await isOwnerKey(key.bytes, owner);
-      if (!ownerOk) throw new JazminKeyError('This file was not signed by the owner of this key');
+      if (!equal((await sha256(owner)).subarray(0, 8), key.fingerprint)) throw new JazminKeyError('This file was not signed by the owner of this key');
       const message = concat(utf8.encode('JAZMIN/1/signature'), fileId, await sha256(slotsSection), await sha256(headerSection));
       if (!(await verifySignature(owner, message, signature.subarray(65)))) throw new JazminFormatError("The file's owner signature is invalid - the file was modified");
-      const secret = key.kind === 'access' ? key.secret : key.bytes;
+      const secret = key.secret;
       const id = await slotId(secret);
       const list = await plainSection(slotsSection, 'keyslots');
       const page = findPage(list, id);

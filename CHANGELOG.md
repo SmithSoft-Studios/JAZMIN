@@ -22,6 +22,17 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     init"`). It didn't reproduce locally, so CI will confirm the fix.
 
 ### Changed
+- **Browsers refuse a shared file's master key (#13).** The viewer and the
+  browser reader no longer open an access-controlled file with its master
+  (owner) key.
+  - **The message:** it says to use an access key, and how to create a
+    full-read one (`grantAccess(file, owner, key, { rows: '*', columns: '*' })`).
+  - **The viewer** also clears the key box after refusing, so the master key
+    isn't left in the page.
+  - **Unchanged:** one-key and password files open as before. The Node and
+    .NET libraries still take master keys, on servers and in tools.
+  - **Breaking:** pages that opened shared files with the master key must
+    switch to an access key. See `docs/design/browser-writer.md`.
 - **Writing indexes is faster (TASKS P-5).** On the benchmark, a write with
   3 indexes went from 164 to 94 ms in .NET, now faster than Newtonsoft's
   103 ms, and from 343 to 309 ms in Node.
