@@ -6,6 +6,26 @@ import { JazminError } from './errors.js';
 const STALL_MS = 120_000; // a worker that has not answered for this long is treated as failed
 const STOP_MS = 10_000; // a worker that has not stopped this long after being asked is terminated
 
+/**
+ * Node options for the workers: the process's own, less code given on the command line (`node -e`, `-p`,
+ * `--input-type`). Workers inherit those by default and would run that code - the caller's script, which writes
+ * again and starts more workers - instead of their own file.
+ */
+function workerExecArgv() {
+  const options = [];
+  const args = process.execArgv;
+  for (let i = 0; i < args.length; i++) {
+    const option = args[i];
+    if (/^(-e|-p|--eval|--print|-pe|-ep|--input-type)$/.test(option)) {
+      i++; // and the code or input type that follows it
+      continue;
+    }
+    if (/^(--eval|--print|--input-type)=/.test(option)) continue;
+    options.push(option);
+  }
+  return options;
+}
+
 export class SectionPool {
   #workers = [];
   #signal;
@@ -23,6 +43,7 @@ export class SectionPool {
       const worker = new Worker(new URL('./section-worker.js', import.meta.url), {
         workerData: { port: port2, signal: this.#signal, slot: i },
         transferList: [port2],
+        execArgv: workerExecArgv(),
       });
       worker.unref(); // an unfinished writer must not keep the process alive
       this.#workers.push({ worker, port: port1 });

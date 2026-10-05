@@ -6,6 +6,13 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Fixed
+- **JS: parallel writes hung in code run with `node -e` or `node -p`.**
+  - **The bug:** worker threads take the process's Node options, so they ran
+    the command-line code instead of their own file. That code wrote again
+    and started more workers, until the writer gave up two minutes later
+    with an error. Scripts in files were not affected.
+  - **Now:** the workers get the process's options without the code given on
+    the command line (`-e`, `-p`, `--eval`, `--print`, `--input-type`).
 - **JS writer: long decimals could be written damaged (data loss).** A
   decimal's integer part is written as a variable-length number. For values
   with more than about 20 significant digits, the 1.0.0 JS writer could

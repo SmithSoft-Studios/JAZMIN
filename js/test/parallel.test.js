@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -70,5 +71,20 @@ test('an aborted parallel write removes the file; bad settings are rejected', ()
   assert.equal(fs.existsSync(file), false);
   for (const bad of [0, -1, 1.5, '2']) {
     assert.throws(() => new JazminWriter(null, { columns, maxDegreeOfParallelism: bad }), JazminValidationError);
+  }
+});
+
+test('parallel writes work in code given on the command line (node -e, node -p)', () => {
+  // Workers inherit the process's Node options; given -e or -p, they ran that code instead of their own file, which
+  // wrote again and started more workers until the pool gave up (two minutes later).
+  const index = new URL('../src/index.js', import.meta.url).href;
+  const code = `const { write, open } = await import(${JSON.stringify(index)});`
+    + "const rows = Array.from({ length: 20000 }, (_, i) => ({ id: i, s: 'x' + i }));"
+    + "const bytes = write(null, rows, { columns: [{ name: 'id', type: 'int' }, { name: 's', type: 'string' }], chunkRows: 1000, maxDegreeOfParallelism: 2 });"
+    + "console.log('rows', open(bytes).rowCount);";
+  for (const args of [['--input-type=module', '-e', code], ['--input-type', 'module', '--eval', code], ['-p', `(async () => { ${code} })().then(() => '')`]]) {
+    const result = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 60_000 });
+    assert.equal(result.status, 0, `${args[0]}: ${result.stderr || result.error}`);
+    assert.match(result.stdout, /rows 20000/, args[0]);
   }
 });
