@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { JazminAccessKey, JazminKey, issueUnlockToken, write } from '../src/index.js';
+import { JazminAccessKey, JazminKey, issueUnlockToken, open, write } from '../src/index.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const fixtures = path.join(root, 'spec/fixtures');
@@ -338,6 +338,27 @@ for (const name of chosen) {
     const ready = await waitFor(page, 'JazminViewer.state.lastReady && JazminViewer.state.lastReady.info', 'the template to call jazmin.ready()');
     const expected = { total: 120, top: [119, 118, 117], all: 120, columns: ['n', 'label'] };
     results.push({ browser: name, label: 'template API: count, sorted query, rows, ready', ok: JSON.stringify(ready) === JSON.stringify(expected), problems: JSON.stringify(ready) === JSON.stringify(expected) ? [] : [JSON.stringify(ready)] });
+
+    // The browser writer: an outbox file written in the page, read back in the page and by the library here.
+    await page.navigate(`${base}/js/viewer/index.html`);
+    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+    const written = await page.evaluate(`(async () => {
+      const key = await JazminBrowser.outboxKey(${JSON.stringify(keys.bob)});
+      const rows = Array.from({ length: 300 }, (_, i) => ({ id: i, note: 'row ' + i, at: new Date(Date.UTC(2025, 0, 1) + i * 60000), amount: i / 4 }));
+      const columns = [{ name: 'id', type: 'int' }, { name: 'note', type: 'string' }, { name: 'at', type: 'datetime' }, { name: 'amount', type: 'float' }];
+      const blob = await JazminBrowser.write(rows, { columns, key, chunkRows: 64 });
+      const reader = await JazminBrowser.open(blob, { key });
+      let matches = 0;
+      for await (const r of reader.find({ amount: { gte: 50 } })) matches++;
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      return { rowCount: reader.rowCount, matches, file: btoa(binary) };
+    })()`);
+    const library = open(Buffer.from(written.file, 'base64'), { key: JazminAccessKey.parse(keys.bob).outboxKey() });
+    const back = [...library.rows()];
+    const writeOk = written.rowCount === 300 && written.matches === 100 && back.length === 300 && back[299].note === 'row 299' && library.count({ amount: { gte: 50 } }) === 100;
+    results.push({ browser: name, label: `browser writer: an encrypted outbox file (${Math.round(written.file.length * 0.75 / 1024)} KB) read back here and by the library`, ok: writeOk, problems: writeOk ? [] : [JSON.stringify({ ...written, file: undefined, library: back.length })] });
 
     // Save as HTML, then open the copy from disk (file://), as a double-click would.
     const c = CASES.find((x) => x.file === 'js-files-access.jzm' && x.key === 'bob');

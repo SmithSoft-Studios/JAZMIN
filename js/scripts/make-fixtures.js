@@ -75,6 +75,15 @@ const withFiles = { ...base, files: fixtureFiles(), package: FIXTURE_PACKAGE };
 write(path.join(dir, 'js-files-key.jzm'), rows, { ...withFiles, key: keys.key });
 write(path.join(dir, 'js-files-access.jzm'), rows, { ...withFiles, key: keys.key, access: filesAccessFixture(keys) });
 
+// Written by the browser writer (js/browser/jazmin-browser.js), as a page would: without indexes, which browsers don't
+// write. The other library reads them in its interop tests.
+await import('../browser/jazmin-browser.js');
+const browserColumns = dataset.columns.map(({ index, ...column }) => column);
+for (const [name, lock] of [['browser-plain.jzm', {}], ['browser-key.jzm', { key: keys.key }], ['browser-password.jzm', { password: keys.password, kdfIterations: keys.kdfIterations }]]) {
+  const blob = await globalThis.JazminBrowser.write(rows, { columns: browserColumns, metadata: dataset.metadata, chunkRows: 64, ...lock });
+  fs.writeFileSync(path.join(dir, name), Buffer.from(await blob.arrayBuffer()));
+}
+
 // Appended fixtures (spec 11.2): 400 rows written, then the last 100 appended and ids < 10 deleted.
 for (const [name, options] of [
   ['js-appended.jzm', {}],

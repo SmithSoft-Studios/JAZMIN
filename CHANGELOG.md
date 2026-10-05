@@ -132,6 +132,21 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     each chunk part, which holds every column (#23 would split them).
 
 ### Added
+- **Writing files in the browser (#13).** `JazminBrowser.createWriter(options)`
+  and `JazminBrowser.write(rows, options)` write files with one key, a
+  password or no key, and return a `Blob` (USER-GUIDE §24.3). They're made for
+  outbox files, the records captured on a phone and sent to the owner later.
+  - **What it uses:** only the browser's own encryption, randomness and
+    compression, and no other code.
+  - **The same file as the library:** given the same rows, options and random
+    bytes, it writes exactly the library's bytes. Tests check this with and
+    without a key or password, and with and without compression.
+  - **Read by both libraries:** the new fixtures `browser-plain.jzm`,
+    `browser-key.jzm` and `browser-password.jzm` are read in the Node and .NET
+    interop tests. The viewer CI jobs write a file in each browser, which the
+    library then reads.
+  - **Refused:** shared files (their master key stays off web pages),
+    indexes, several tables, embedded files, `sortedBy` and Brotli.
 - **Outbox keys (#13, spec 7.8).** A person writes files for the owner, such
   as records captured offline, locked with a key derived from their access
   key. The owner derives the same key and files the records into the shared

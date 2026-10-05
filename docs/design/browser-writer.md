@@ -171,9 +171,9 @@ const blob = await writer.finish();    // upload it as the batch
 
 | Step | What | Size |
 |---|---|---|
-| 1 | The viewer and browser reader refuse a master key for a shared file | S |
-| 2 | Outbox key: spec, JS, .NET, browser; `accessKeyOf` | S |
-| 3 | The browser writer (section 5), with its tests | M |
+| 1 ✅ | The viewer and browser reader refuse a master key for a shared file (#48) | S |
+| 2 ✅ | Outbox key: spec, JS, .NET, browser; `accessKeyOf` (#49) | S |
+| 3 ✅ | The browser writer (section 5), with its tests | M |
 | 4 | A reference filing service (Node sample): master key from a secret, batches checked and appended, regroup | S–M |
 
 ## 9. What the hosted Collect demo showed (for the record)

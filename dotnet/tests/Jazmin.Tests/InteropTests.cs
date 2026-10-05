@@ -439,6 +439,9 @@ public class InteropTests
     [InlineData("js-key.jzm")]
     [InlineData("js-password.jzm")]
     [InlineData("js-paged-key.jzm")]
+    [InlineData("browser-plain.jzm")] // written by the browser writer (js/browser), without indexes
+    [InlineData("browser-key.jzm")]
+    [InlineData("browser-password.jzm")]
     public void ReadsFilesWrittenByJavaScript(string file) => AssertMatchesDataset(file);
 
     /// <summary>Sorted indexes in many small pages (spec 8.1), read back by the JavaScript tests.</summary>

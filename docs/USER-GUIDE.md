@@ -2480,8 +2480,9 @@ requested page of rows crosses into the sandbox.
     phone check covers opening it from disk.
 
 For developers, the browser reader on its own is `@smithsoft-studios/jazmin/browser`
-(`js/browser/jazmin-browser.js`). It is read-only, async and has no
-dependencies:
+(`js/browser/jazmin-browser.js`). It is async and has no dependencies. It
+reads every kind of file, and writes files with one key or a password
+(section 24.3):
 
 ```js
 const reader = await JazminBrowser.open(file, { key });   // a File, Blob or bytes
@@ -2533,6 +2534,42 @@ const reader = await JazminBrowser.openUrl('https://files.example.com/statements
 - **Any other source:** `open()` also accepts any
   `{ size, read(offset, length) }` object, where `read` returns the bytes or a
   promise of them.
+
+
+### 24.3 Writing files in the browser
+
+The browser module also writes files: one table, locked with a key, a
+password, or nothing. It's made for **outbox files**, the records a person
+captures, often offline, and sends to the owner later (section 15.6). Writing
+happens on the device, so nothing is uploaded until the app sends the file.
+
+```js
+const key = await JazminBrowser.outboxKey(accessKeyText);       // or a jzk1- key, or { password }
+const writer = await JazminBrowser.createWriter({ columns, key });
+await writer.writeRows(records);                                 // await each call
+const blob = await writer.finish();                              // a Blob: store it, then upload it when online
+// or in one call:
+const file = await JazminBrowser.write(records, { columns, key });
+```
+
+- **Options:** as in the library's `write()`: `columns`, `key` or
+  `password` (with `kdfIterations`), `metadata`, `codec` (`'deflate'` or
+  `'none'`), `chunkRows` and `chunkBytes`.
+- **Not written in browsers:**
+  - **Shared files.** Their master key stays off web pages (section 24).
+  - **Indexes.** The owner's service adds them when it compacts the shared
+    file.
+  - **Also:** several tables, embedded files, `sortedBy` and Brotli.
+
+  Each of these is refused with a message that says why.
+- **The same file as the library:** given the same rows, options and random
+  bytes, it writes exactly the bytes the library writes, and CI checks this.
+  It uses only the browser's own encryption (`crypto.subtle`), randomness and
+  compression (`CompressionStream`), and no other code.
+- **Requirements:**
+  - **Encryption** needs a secure page (`https://` or `localhost`).
+  - **Compression** needs Chrome 103, Firefox 113 or Safari 16.4 or later.
+    Elsewhere, pass `codec: 'none'`.
 
 ---
 

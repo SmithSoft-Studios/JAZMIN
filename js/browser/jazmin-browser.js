@@ -2247,15 +2247,828 @@
     };
   }
 
+  // ---- writing: files with one key, a password or no key ------------------------------------------------------
+  // The library's writer (js/src/writer.js and the modules it uses) for this subset, on the browser's own crypto
+  // (WebCrypto) and compression (CompressionStream). Shared files are never written in a browser: their master key
+  // must stay off web pages (docs/design/browser-writer.md). CI checks this writer writes the same bytes as the
+  // library for the same rows, options and random bytes.
+
+  const MAGIC = utf8.encode('JZM1');
+  const WRITE_DEFAULTS = { chunkRows: 4096, chunkBytes: 1024 * 1024, codec: 'deflate', kdfIterations: 600000 };
+  const WRITE_OPTIONS = new Set(['columns', 'metadata', 'codec', 'chunkRows', 'chunkBytes', 'key', 'password', 'kdfIterations', 'now']);
+  const NOT_IN_BROWSERS = {
+    access: "Shared (access-controlled) files are written only by the owner's own service: their master key must stay off web pages",
+    tables: 'Several tables are not written in browsers yet',
+    files: 'Embedded files are not written in browsers yet',
+    package: 'Embedded files are not written in browsers yet',
+    sortedBy: 'sortedBy is not written in browsers yet',
+    level: "Browsers compress at one level: leave out 'level'",
+  };
+  const TYPE_IDS = new Map(TYPE_NAMES.map((name, i) => [name, i]));
+  const WRITE_TYPES = TYPE_NAMES.slice(1);
+  const INT64_MIN = -(2n ** 63n);
+  const INT64_MAX = 2n ** 63n - 1n;
+  const MAX_SAFE_BIG = BigInt(Number.MAX_SAFE_INTEGER);
+  const MAX_WRITE_SCALE = 15;
+  const MAX_STRING_STAT = 64;
+  const TINY_SECTION = 256; // raw bytes below which catalog sections are stored uncompressed
+  const DECIMAL_TEXT = /^(-?)(\d+)(?:\.(\d+))?$/;
+
+  class JazminValidationError extends JazminError {
+    constructor(message) {
+      super(message);
+      this.name = 'JazminValidationError';
+    }
+  }
+
+  /** Secure random bytes: the browser's generator, never anything weaker. */
+  function randomBytes(n) {
+    if (typeof global.crypto?.getRandomValues !== 'function') throw new JazminError('This browser has no secure random generator (crypto.getRandomValues)');
+    return global.crypto.getRandomValues(new Uint8Array(n));
+  }
+
+  /** A growable byte buffer: the library's ByteWriter. */
+  class ByteWriter {
+    constructor(size = 1024) {
+      this.buf = new Uint8Array(size);
+      this.length = 0;
+    }
+
+    ensure(extra) {
+      const needed = this.length + extra;
+      if (needed <= this.buf.length) return;
+      let size = Math.max(this.buf.length * 2, 64);
+      while (size < needed) size *= 2;
+      const next = new Uint8Array(size);
+      next.set(this.buf.subarray(0, this.length));
+      this.buf = next;
+    }
+
+    byte(v) {
+      this.ensure(1);
+      this.buf[this.length++] = v;
+    }
+
+    bytes(src) {
+      this.ensure(src.length);
+      this.buf.set(src, this.length);
+      this.length += src.length;
+    }
+
+    float64(v) {
+      this.ensure(8);
+      new DataView(this.buf.buffer).setFloat64(this.length, v, true);
+      this.length += 8;
+    }
+
+    /** Unsigned LEB128 varint: a non-negative safe integer or BigInt. */
+    varUint(value) {
+      if (typeof value === 'bigint') {
+        this.ensure(Math.ceil(value.toString(2).length / 7));
+        while (value >= 0x80n) {
+          this.buf[this.length++] = Number(value & 0x7fn) | 0x80;
+          value >>= 7n;
+        }
+        this.buf[this.length++] = Number(value);
+        return;
+      }
+      this.ensure(10);
+      while (value >= 0x80) {
+        this.buf[this.length++] = (value % 128) | 0x80;
+        value = Math.floor(value / 128);
+      }
+      this.buf[this.length++] = value;
+    }
+
+    /** Signed varint (ZigZag, 64-bit range). */
+    varInt(value) {
+      if (typeof value === 'number' && Math.abs(value) < 2 ** 52) {
+        this.varUint(value >= 0 ? value * 2 : -value * 2 - 1);
+        return;
+      }
+      const big = BigInt(value);
+      this.varUint(big >= 0n ? big << 1n : ((-big) << 1n) - 1n);
+    }
+
+    string(value) {
+      const bytes = utf8.encode(value);
+      this.varUint(bytes.length);
+      this.bytes(bytes);
+    }
+
+    blob(value) {
+      this.varUint(value.length);
+      this.bytes(value);
+    }
+
+    result() {
+      return this.buf.slice(0, this.length);
+    }
+  }
+
+  /** One Protocol Buffers message (spec 6), as the library's ProtoWriter: fields holding their default are left out. */
+  class ProtoWriter {
+    constructor() {
+      this.w = new ByteWriter(256);
+    }
+
+    tag(field, wire) {
+      this.w.varUint(field * 8 + wire);
+    }
+
+    uint(field, value) {
+      if (!value) return this;
+      this.tag(field, 0);
+      this.w.varUint(typeof value === 'boolean' ? 1 : value);
+      return this;
+    }
+
+    int64(field, value) {
+      if (!value) return this;
+      this.tag(field, 0);
+      this.w.varUint(value < 0 ? BigInt.asUintN(64, BigInt(value)) : value);
+      return this;
+    }
+
+    bytes(field, value) {
+      if (!value || value.length === 0) return this;
+      return this.always(field, value);
+    }
+
+    string(field, value) {
+      return value ? this.bytes(field, utf8.encode(value)) : this;
+    }
+
+    always(field, value) {
+      const bytes = value instanceof ProtoWriter ? value.result() : value;
+      this.tag(field, 2);
+      this.w.varUint(bytes.length);
+      this.w.bytes(bytes);
+      return this;
+    }
+
+    message(field, build, always = false) {
+      if (build === undefined || build === null) return this;
+      const inner = new ProtoWriter();
+      build(inner);
+      if (inner.w.length === 0 && !always) return this;
+      return this.always(field, inner);
+    }
+
+    packed(field, values) {
+      if (!values || values.length === 0) return this;
+      const inner = new ByteWriter(values.length * 2 + 8);
+      for (const v of values) inner.varUint(v);
+      this.tag(field, 2);
+      this.w.varUint(inner.length);
+      this.w.bytes(inner.result());
+      return this;
+    }
+
+    result() {
+      return this.w.result();
+    }
+  }
+
+  // -- values (the library's types.js and decimal.js) --
+
+  const validation = (column, message) => new JazminValidationError(`Column '${column}': ${message}`);
+  const normalizeBigInt = (v) => (v >= -MAX_SAFE_BIG && v <= MAX_SAFE_BIG ? Number(v) : v);
+
+  function parseDecimalText(value, column) {
+    const t = typeof value === 'number' ? String(value) : value;
+    const match = typeof t === 'string' ? DECIMAL_TEXT.exec(t) : null;
+    if (!match) throw validation(column, `expected a decimal string like '-12.50', got '${value}'`);
+    const [, sign, whole, fraction = ''] = match;
+    if (fraction.length > 255) throw validation(column, 'more than 255 digits after the point');
+    const digits = (whole + fraction).replace(/^0+(?=\d)/, '');
+    if (digits.length > 256) throw validation(column, 'more than 256 significant digits');
+    const m = BigInt(digits);
+    return { m: sign && m !== 0n ? -m : m, s: fraction.length };
+  }
+
+  /** A decimal's key form: trailing zeros removed, compared numerically (12.5 and 12.50 are equal). */
+  function decimalKeyOf(text) {
+    let { m, s } = parseDecimalText(text, 'decimal');
+    while (s > 0 && m % 10n === 0n) {
+      m /= 10n;
+      s--;
+    }
+    return { m, s };
+  }
+
+  function compareDecimalKeys(a, b) {
+    const x = a.s < b.s ? a.m * 10n ** BigInt(b.s - a.s) : a.m;
+    const y = b.s < a.s ? b.m * 10n ** BigInt(a.s - b.s) : b.m;
+    return x < y ? -1 : x > y ? 1 : 0;
+  }
+
+  /** A decimal (text, or key form { m, s }): varint scale, then the integer as a zigzag varint (spec 5.1). */
+  function writeDecimal(w, value) {
+    const { m, s } = typeof value === 'string' ? parseDecimalText(value, 'decimal') : value;
+    w.varUint(s);
+    w.varUint(m >= 0n ? m << 1n : ((-m) << 1n) - 1n);
+  }
+
+  function dateMs(value, column) {
+    let ms;
+    if (value instanceof Date) ms = value.getTime();
+    else if (typeof value === 'string') ms = Date.parse(value);
+    else if (typeof value === 'number' && Number.isInteger(value)) ms = value;
+    else throw validation(column, 'expected a Date, ISO-8601 string or epoch milliseconds');
+    if (!Number.isFinite(ms)) throw validation(column, `invalid date '${value}'`);
+    return ms;
+  }
+
+  /** A value in its stored form: datetime as milliseconds, decimals as canonical text, ints as numbers or BigInts. */
+  function normalizeWriteValue(type, value, column) {
+    if (value === null || value === undefined) return null;
+    switch (type) {
+      case 'bool':
+        if (typeof value !== 'boolean') throw validation(column, `expected a boolean, got ${typeof value}`);
+        return value;
+      case 'int': {
+        let v = value;
+        if (typeof v === 'number') {
+          if (!Number.isInteger(v)) throw validation(column, `expected an integer, got ${v}`);
+          if (Number.isSafeInteger(v)) return v;
+          v = BigInt(v);
+        }
+        if (typeof v !== 'bigint') throw validation(column, `expected an integer, got ${typeof value}`);
+        if (v < INT64_MIN || v > INT64_MAX) throw validation(column, 'integer is outside the 64-bit range');
+        return normalizeBigInt(v);
+      }
+      case 'float':
+        if (typeof value !== 'number') throw validation(column, `expected a number, got ${typeof value}`);
+        return value;
+      case 'decimal': {
+        const { m, s } = parseDecimalText(value, column);
+        return formatDecimal(m, s);
+      }
+      case 'string':
+        if (typeof value !== 'string') throw validation(column, `expected a string, got ${typeof value}`);
+        return value;
+      case 'datetime':
+        return dateMs(value, column);
+      case 'binary':
+        if (!(value instanceof Uint8Array)) throw validation(column, 'expected a Uint8Array');
+        return value;
+      case 'json':
+        if (JSON.stringify(value) === undefined) throw validation(column, 'value is not JSON-serialisable');
+        return value;
+      default:
+        throw validation(column, `unknown type '${type}'`);
+    }
+  }
+
+  /** Approximate stored size of a value, to cap chunks at chunkBytes (as the library). */
+  function estimateSize(type, v) {
+    if (v === null) return 0;
+    switch (type) {
+      case 'decimal':
+      case 'string':
+      case 'json': return v.length + 1;
+      case 'binary': return v.length + 2;
+      case 'float': return 8;
+      case 'bool': return 1;
+      default: return 5;
+    }
+  }
+
+  // -- columnar chunks (the library's encodeColumnar) --
+
+  function varIntSize(v) {
+    if (typeof v === 'bigint') {
+      let z = v >= 0n ? v << 1n : ((-v) << 1n) - 1n;
+      let n = 1;
+      while (z >= 0x80n) {
+        z >>= 7n;
+        n++;
+      }
+      return n;
+    }
+    let z = v >= 0 ? v * 2 : -v * 2 - 1;
+    let n = 1;
+    while (z >= 0x80) {
+      z = Math.floor(z / 128);
+      n++;
+    }
+    return n;
+  }
+
+  const subtract = (a, b) => (typeof a === 'number' && typeof b === 'number' && Number.isSafeInteger(a - b) ? a - b : BigInt(a) - BigInt(b));
+
+  function scaleOf(v) {
+    if (Object.is(v, -0)) return -1;
+    for (let s = 0; s <= MAX_WRITE_SCALE; s++) {
+      const m = Math.round(v * POW10[s]);
+      if (!Number.isSafeInteger(m)) return -1;
+      if (Object.is(m / POW10[s], v)) return s;
+    }
+    return -1;
+  }
+
+  function writePlainValues(w, type, values) {
+    for (const v of values) {
+      switch (type) {
+        case 'bool': w.byte(v ? 1 : 0); break;
+        case 'int':
+        case 'datetime': w.varInt(v); break;
+        case 'float': w.float64(v); break;
+        case 'binary': w.blob(v); break;
+        case 'decimal': writeDecimal(w, v); break;
+        default: w.string(v); // string, and json (already stringified)
+      }
+    }
+  }
+
+  /** Chooses one column's encoding for its non-null values and writes them (spec 5.4). */
+  function writeColumnBody(w, type, values) {
+    switch (type) {
+      case 'bool': {
+        const bits = new Uint8Array((values.length + 7) >> 3);
+        values.forEach((v, i) => {
+          if (v) bits[i >> 3] |= 1 << (i & 7);
+        });
+        w.bytes(bits);
+        return ENCODING.bitmap;
+      }
+      case 'int':
+      case 'datetime': {
+        if (values.length > 1) {
+          let plain = 0;
+          let delta = varIntSize(values[0]);
+          const deltas = [];
+          let fits = true;
+          for (let i = 0; i < values.length; i++) {
+            plain += varIntSize(values[i]);
+            if (i === 0) continue;
+            const d = subtract(values[i], values[i - 1]);
+            if (typeof d === 'bigint' && (d < INT64_MIN || d > INT64_MAX)) {
+              fits = false;
+              break;
+            }
+            deltas.push(typeof d === 'bigint' ? normalizeBigInt(d) : d);
+            delta += varIntSize(d);
+          }
+          if (fits && delta < plain) {
+            w.varInt(values[0]);
+            for (const d of deltas) w.varInt(d);
+            return ENCODING.delta;
+          }
+        }
+        writePlainValues(w, type, values);
+        return ENCODING.plain;
+      }
+      case 'float': {
+        const scales = values.map(scaleOf);
+        let scaledSize = 0;
+        for (let i = 0; i < values.length; i++) scaledSize += scales[i] < 0 ? 9 : 1 + varIntSize(Math.round(values[i] * POW10[scales[i]]));
+        if (scaledSize < values.length * 8) {
+          for (let i = 0; i < values.length; i++) {
+            if (scales[i] < 0) {
+              w.byte(255);
+              w.float64(values[i]);
+            } else {
+              w.byte(scales[i]);
+              w.varInt(Math.round(values[i] * POW10[scales[i]]));
+            }
+          }
+          return ENCODING.scaled;
+        }
+        writePlainValues(w, type, values);
+        return ENCODING.plain;
+      }
+      case 'decimal':
+      case 'string': {
+        const ids = new Map();
+        for (const v of values) if (!ids.has(v)) ids.set(v, ids.size);
+        if (values.length > 0 && ids.size * 2 <= values.length) {
+          w.varUint(ids.size);
+          for (const v of ids.keys()) {
+            if (type === 'decimal') writeDecimal(w, v);
+            else w.string(v);
+          }
+          for (const v of values) w.varUint(ids.get(v));
+          return ENCODING.dictionary;
+        }
+        writePlainValues(w, type, values);
+        return ENCODING.plain;
+      }
+      default:
+        writePlainValues(w, type, values);
+        return ENCODING.plain;
+    }
+  }
+
+  /** One chunk's payload in the columnar layout: `columnValues[j]` holds column j's `rowCount` stored values. */
+  function encodeColumnar(types, columnValues, rowCount) {
+    const out = new ByteWriter(64 * 1024);
+    for (let j = 0; j < types.length; j++) {
+      const all = columnValues[j];
+      let nulls = null;
+      const values = [];
+      for (let r = 0; r < rowCount; r++) {
+        if (all[r] === null) {
+          nulls ??= new Uint8Array((rowCount + 7) >> 3);
+          nulls[r >> 3] |= 1 << (r & 7);
+        } else {
+          values.push(all[r]);
+        }
+      }
+      const body = new ByteWriter(1024);
+      const encoding = writeColumnBody(body, types[j], values);
+      const stream = body.result();
+      out.varUint(1 + (nulls ? nulls.length : 0) + stream.length);
+      out.byte(encoding | (nulls ? HAS_NULLS : 0));
+      if (nulls) out.bytes(nulls);
+      out.bytes(stream);
+    }
+    return out.result();
+  }
+
+  // -- statistics (the library's stats.js) --
+
+  /** Key-form bytes of a bound (spec 6.5): the value encoding, except strings, which are bare UTF-8. */
+  function encodeBound(type, key) {
+    if (type === 'string') return utf8.encode(key);
+    const w = new ByteWriter(16);
+    switch (type) {
+      case 'bool': w.byte(key ? 1 : 0); break;
+      case 'int':
+      case 'datetime': w.varInt(key); break;
+      case 'float': w.float64(key); break;
+      case 'decimal': writeDecimal(w, key); break;
+      default: throw new JazminValidationError(`No bounds for type '${type}'`);
+    }
+    return w.result();
+  }
+
+  /** One chunk's null count and min/max for one column (spec 6.4). */
+  class ColumnStats {
+    constructor(type) {
+      this.type = type;
+      this.nulls = 0;
+      this.min = undefined;
+      this.max = undefined;
+    }
+
+    add(value) {
+      if (value === null) {
+        this.nulls++;
+        return;
+      }
+      const type = this.type;
+      if (type === 'bool' || type === 'int' || type === 'float' || type === 'string' || type === 'datetime') {
+        const key = value === 0 ? 0 : value; // fold -0 into 0
+        if (key !== key) return; // NaN
+        if (this.min === undefined) this.min = this.max = key;
+        else if (key < this.min) this.min = key;
+        else if (key > this.max) this.max = key;
+        return;
+      }
+      if (type !== 'decimal') return; // binary and json are not ordered
+      const key = decimalKeyOf(value);
+      if (this.min === undefined || compareDecimalKeys(key, this.min) < 0) this.min = key;
+      if (this.max === undefined || compareDecimalKeys(key, this.max) > 0) this.max = key;
+    }
+
+    bounds() {
+      const none = new Uint8Array(0);
+      if (this.min === undefined) return { min: none, max: none };
+      if (this.type === 'float' && (!Number.isFinite(this.min) || !Number.isFinite(this.max))) return { min: none, max: none };
+      if (this.type === 'string') {
+        // A prefix is still a lower bound; a cut max would not be an upper bound.
+        let min = this.min;
+        if (min.length > MAX_STRING_STAT) {
+          let end = MAX_STRING_STAT;
+          const code = min.charCodeAt(end - 1);
+          if (code >= 0xd800 && code <= 0xdbff) end--;
+          min = min.substring(0, end);
+        }
+        return { min: utf8.encode(min), max: this.max.length > MAX_STRING_STAT ? none : utf8.encode(this.max) };
+      }
+      return { min: encodeBound(this.type, this.min), max: encodeBound(this.type, this.max) };
+    }
+  }
+
+  // -- catalog (the library's catalog.js) --
+
+  function differences(values) {
+    let previous = 0;
+    return values.map((v) => {
+      const d = v - previous;
+      previous = v;
+      return d;
+    });
+  }
+
+  const writeRef = (ref) => (w) => w.uint(1, ref.offset).uint(2, ref.length);
+
+  function writeColumnDefinition(c) {
+    return (w) => {
+      w.uint(1, c.position).string(2, c.name).uint(3, TYPE_IDS.get(c.type)).uint(4, c.required ? 1 : 0)
+        .string(5, c.description).string(6, c.attributes);
+    };
+  }
+
+  function encodeStatisticsBlock(columns) {
+    const w = new ProtoWriter();
+    for (const c of columns) {
+      w.message(1, (cw) => {
+        cw.packed(1, c.nullCounts);
+        for (const b of c.min) cw.always(2, b);
+        for (const b of c.max) cw.always(3, b);
+      }, true);
+    }
+    return w.result();
+  }
+
+  function encodeDirectory(chunks, statistics) {
+    const w = new ProtoWriter();
+    w.packed(1, differences(chunks.map((c) => c.ordinal)));
+    w.packed(2, differences(chunks.map((c) => c.rowStart)));
+    w.packed(3, chunks.map((c) => c.rowCount));
+    w.packed(4, differences(chunks.map((c) => c.offset)));
+    w.packed(5, chunks.map((c) => c.length));
+    for (const s of statistics) w.message(7, (sw) => sw.packed(1, s.columns).message(2, writeRef(s.section)), true);
+    return w.result();
+  }
+
+  function encodeFileHeader({ created, metadata, table, keyring }) {
+    const w = new ProtoWriter();
+    w.int64(3, created).string(6, metadata);
+    w.message(7, (tw) => {
+      tw.string(1, table.name).uint(2, table.columns.length);
+      tw.message(3, (gw) => {
+        gw.string(1, '*');
+        for (const c of table.columns) gw.message(2, writeColumnDefinition(c), true);
+      }, true);
+      tw.uint(6, table.rowCount).uint(8, table.chunkCount);
+      for (const p of table.partitions) {
+        tw.message(9, (pw) => {
+          for (const s of p.segments) pw.message(2, writeRef(s), true);
+        }, true);
+      }
+    }, true);
+    if (keyring) w.message(8, (k) => k.bytes(1, keyring.data).bytes(2, keyring.index));
+    return w.result();
+  }
+
+  // -- sections --
+
+  async function deflateRaw(bytes) {
+    const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'));
+    return new Uint8Array(await new Response(stream).arrayBuffer());
+  }
+
+  /** AES-256-GCM with a fresh random nonce: nonce || ciphertext || tag, as the library writes. */
+  async function encrypt(keyBytes, plaintext, aad) {
+    const nonce = randomBytes(12);
+    const key = await subtle.importKey('raw', keyBytes, 'AES-GCM', false, ['encrypt']);
+    const sealed = new Uint8Array(await subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData: aad, tagLength: 128 }, key, plaintext));
+    return concat(nonce, sealed);
+  }
+
+  /** Normalized column definitions (the library's normalizeColumns), refusing indexes. */
+  function writerColumns(columns) {
+    if (!Array.isArray(columns) || columns.length === 0) throw new JazminValidationError('At least one column is required');
+    const seen = new Set();
+    return columns.map((c) => {
+      if (!c || typeof c.name !== 'string' || c.name.length === 0) throw new JazminValidationError('Every column needs a non-empty name');
+      if (seen.has(c.name)) throw new JazminValidationError(`Duplicate column '${c.name}'`);
+      seen.add(c.name);
+      if (!WRITE_TYPES.includes(c.type)) throw new JazminValidationError(`Column '${c.name}' has unknown type '${c.type}'`);
+      if (c.index !== undefined && [].concat(c.index).length) {
+        throw new JazminValidationError(`Column '${c.name}': indexes are not written in browsers (the owner's service adds them when it compacts)`);
+      }
+      return {
+        name: c.name, type: c.type, nullable: c.nullable !== false,
+        description: c.description === undefined ? undefined : String(c.description),
+        attributes: c.attributes === undefined ? undefined : JSON.stringify(c.attributes),
+      };
+    });
+  }
+
+  /**
+   * Starts writing a file in the browser: one table, locked with a key ("jzk1-...", for example an outbox key), a
+   * password, or nothing. options: { columns, key | password, kdfIterations, metadata, codec: 'deflate' | 'none',
+   * chunkRows, chunkBytes, now }. Rows go in with writeRows / writeRow (await each call); finish() returns the file as
+   * a Blob. Shared (access-controlled) files, indexes, several tables, embedded files and sortedBy are not written in
+   * browsers.
+   */
+  async function createWriter(options = {}) {
+    if (options === null || typeof options !== 'object') throw new JazminValidationError('options must be an object');
+    for (const name of Object.keys(options)) {
+      if (NOT_IN_BROWSERS[name]) throw new JazminValidationError(NOT_IN_BROWSERS[name]);
+      if (!WRITE_OPTIONS.has(name)) throw new JazminValidationError(`Unknown option '${name}'`);
+    }
+    const {
+      metadata = {}, codec = WRITE_DEFAULTS.codec, chunkRows = WRITE_DEFAULTS.chunkRows, chunkBytes = WRITE_DEFAULTS.chunkBytes,
+      key, password, kdfIterations = WRITE_DEFAULTS.kdfIterations, now,
+    } = options;
+    const columns = writerColumns(options.columns);
+    if (metadata === null || typeof metadata !== 'object' || Array.isArray(metadata)) throw new JazminValidationError('metadata must be a plain object');
+    if (codec !== 'deflate' && codec !== 'none') {
+      throw new JazminValidationError(codec === 'brotli' ? "Browsers can't compress with Brotli: use 'deflate'" : `Unknown codec '${codec}'`);
+    }
+    if (codec === 'deflate') {
+      try {
+        new CompressionStream('deflate-raw'); // eslint-disable-line no-new
+      } catch {
+        throw new JazminError("This browser can't compress (CompressionStream 'deflate-raw' needs Chrome 103, Firefox 113 or Safari 16.4): pass codec: 'none'");
+      }
+    }
+    for (const [name, value] of [['chunkRows', chunkRows], ['chunkBytes', chunkBytes]]) {
+      if (!Number.isInteger(value) || value < 1) throw new JazminValidationError(`${name} must be a positive integer`);
+    }
+    if (key && password) throw new JazminValidationError('Supply either key or password, not both');
+    if (password !== undefined && (typeof password !== 'string' || password.length === 0)) throw new JazminValidationError('password must be a non-empty string');
+    if (password && (!Number.isInteger(kdfIterations) || kdfIterations < MIN_KDF_ITERATIONS || kdfIterations > MAX_KDF_ITERATIONS)) {
+      throw new JazminValidationError(`kdfIterations must be from ${MIN_KDF_ITERATIONS} to ${MAX_KDF_ITERATIONS}`);
+    }
+    const encrypted = Boolean(key || password);
+    if (encrypted && !subtle) throw new JazminError("Encrypting needs the browser's built-in cryptography (crypto.subtle), which pages on plain http:// don't have");
+    let keyBytes = null;
+    if (key) {
+      const parsed = await parseKey(typeof key === 'string' ? key : String(key));
+      if (parsed.kind !== 'owner') throw new JazminKeyError("An access key can't write a file: write an outbox file with its outbox key (JazminBrowser.outboxKey)");
+      keyBytes = parsed.bytes;
+    }
+    const created = now === undefined || now === null ? Date.now() : now instanceof Date ? now.getTime() : typeof now === 'string' ? Date.parse(now) : now;
+    if (!Number.isFinite(created)) throw new JazminValidationError(`Invalid time '${now}'`);
+
+    // Random bytes are drawn in the library's order: file id, salt, keyring, then one nonce per section.
+    const fileId = randomBytes(16);
+    const salt = encrypted ? randomBytes(32) : new Uint8Array(32);
+    const master = password ? await pbkdf2(password, salt, kdfIterations) : keyBytes;
+    const keyring = encrypted ? { data: randomBytes(32), index: randomBytes(32) } : null;
+    const sectionKey = (sectionId) => (master ? hkdf(master, keyring.data, `JAZMIN/1/${sectionId}`) : null);
+
+    const parts = [];
+    let position = 0;
+    const emit = (bytes) => {
+      parts.push(bytes);
+      position += bytes.length;
+    };
+    /** A section: 16-byte envelope, then the payload, compressed (when that helps) and encrypted (spec 5.3, 7). */
+    const section = async (raw, sectionId, sectionKeyBytes, sectionCodec = codec) => {
+      let codecId = sectionCodec === 'deflate' ? CODEC_DEFLATE : CODEC_NONE;
+      let body = raw;
+      if (codecId === CODEC_DEFLATE) {
+        body = await deflateRaw(raw);
+        if (body.length >= raw.length) {
+          codecId = CODEC_NONE; // compression did not help: stored as is
+          body = raw;
+        }
+      }
+      const envelope = new Uint8Array(ENVELOPE);
+      const v = view(envelope);
+      envelope[0] = codecId;
+      envelope[1] = sectionKeyBytes ? 1 : 0;
+      v.setUint32(4, raw.length, true);
+      if (sectionKeyBytes) body = await encrypt(sectionKeyBytes, body, concat(fileId, envelope.subarray(0, 8), utf8.encode(sectionId)));
+      v.setUint32(8, body.length, true);
+      v.setUint32(12, crc32(body), true);
+      return concat(envelope, body);
+    };
+    /** A catalog section; tiny ones are stored uncompressed, as the library does. */
+    const writeSection = async (raw, sectionId) => {
+      const s = await section(raw, sectionId, await sectionKey(sectionId), raw.length < TINY_SECTION ? 'none' : codec);
+      const ref = { offset: position, length: s.length };
+      emit(s);
+      return ref;
+    };
+
+    const preamble = new Uint8Array(PREAMBLE);
+    preamble.set(MAGIC, 0);
+    view(preamble).setUint16(4, (encrypted ? FLAG_ENCRYPTED : 0) | (password ? FLAG_PASSWORD : 0), true);
+    preamble.set(fileId, 8);
+    preamble.set(salt, 24);
+    view(preamble).setUint32(56, password ? kdfIterations : 0, true);
+    emit(preamble);
+
+    const types = columns.map((c) => c.type);
+    const names = new Set(columns.map((c) => c.name));
+    const chunks = []; // { ordinal, rowStart, rowCount, offset, length, stats }
+    let values = types.map(() => []);
+    let stats = types.map((t) => new ColumnStats(t));
+    let inChunk = 0;
+    let chunkSize = 0;
+    let rowCount = 0;
+    let busy = false;
+    let finished = false;
+
+    const flushChunk = async () => {
+      if (inChunk === 0) return;
+      const ordinal = chunks.length;
+      const sectionId = `0/chunk/${ordinal}/*`;
+      const s = await section(encodeColumnar(types, values, inChunk), sectionId, await sectionKey(sectionId));
+      chunks.push({ ordinal, rowStart: rowCount - inChunk, rowCount: inChunk, offset: position, length: s.length, stats });
+      emit(s);
+      values = types.map(() => []);
+      stats = types.map((t) => new ColumnStats(t));
+      inChunk = 0;
+      chunkSize = 0;
+    };
+
+    const addRow = async (row) => {
+      if (row === null || typeof row !== 'object') throw new JazminValidationError('Each row must be an object');
+      for (const name in row) if (!names.has(name)) throw new JazminValidationError(`Row ${rowCount}: unknown column '${name}'`);
+      const normalized = columns.map((c) => {
+        const v = normalizeWriteValue(c.type, row[c.name], c.name);
+        if (v === null && !c.nullable) throw new JazminValidationError(`Row ${rowCount}: column '${c.name}' is not nullable`);
+        return v;
+      });
+      for (let i = 0; i < types.length; i++) {
+        let v = normalized[i];
+        if (v !== null && types[i] === 'json') v = JSON.stringify(v);
+        values[i].push(v);
+        chunkSize += estimateSize(types[i], v);
+        stats[i].add(normalized[i]);
+      }
+      rowCount++;
+      inChunk++;
+      if (inChunk >= chunkRows || chunkSize >= chunkBytes) await flushChunk();
+    };
+
+    /** Runs one call at a time: each must be awaited before the next. */
+    const step = async (work) => {
+      if (finished) throw new JazminValidationError('Writer is already finished');
+      if (busy) throw new JazminValidationError('Await the previous call before the next one');
+      busy = true;
+      try {
+        return await work();
+      } finally {
+        busy = false;
+      }
+    };
+
+    return {
+      columns: columns.map((c) => ({ name: c.name, type: c.type, nullable: c.nullable })),
+      get rowCount() {
+        return rowCount;
+      },
+      /** Adds one row. */
+      writeRow: (row) => step(() => addRow(row)),
+      /** Adds rows (any iterable, or an async one). */
+      writeRows: (rows) => step(async () => {
+        for await (const row of rows) await addRow(row);
+      }),
+      /** Writes the statistics, directory, header and trailer; returns the file as a Blob. */
+      finish: () => step(async () => {
+        await flushChunk();
+        const partitions = [];
+        if (chunks.length) {
+          // One statistics block per column (spec 6.4), then the chunk directory.
+          const statistics = [];
+          for (let col = 0; col < types.length; col++) {
+            const bounds = chunks.map((c) => c.stats[col].bounds());
+            const raw = encodeStatisticsBlock([{ nullCounts: chunks.map((c) => c.stats[col].nulls), min: bounds.map((b) => b.min), max: bounds.map((b) => b.max) }]);
+            statistics.push({ columns: [col], section: await writeSection(raw, `0/stats/*/${col}`) });
+          }
+          partitions.push({ segments: [await writeSection(encodeDirectory(chunks, statistics), '0/dir/*')] });
+        }
+        const table = {
+          name: '', rowCount, chunkCount: chunks.length, partitions,
+          columns: columns.map((c, position) => ({ position, name: c.name, type: c.type, required: !c.nullable, description: c.description, attributes: c.attributes })),
+        };
+        const headerKey = master ? await hkdf(master, salt, 'JAZMIN/1/header') : null;
+        const header = await section(encodeFileHeader({ created, metadata: JSON.stringify(metadata), table, keyring }), 'header', headerKey);
+        const headerOffset = position;
+        emit(header);
+        const trailer = new Uint8Array(TRAILER);
+        const t = view(trailer);
+        t.setBigUint64(0, BigInt(headerOffset), true);
+        t.setUint32(8, header.length, true);
+        t.setUint32(36, crc32(trailer.subarray(0, 36)), true);
+        trailer.set(MAGIC, 40);
+        emit(trailer);
+        finished = true;
+        return new Blob(parts, { type: 'application/octet-stream' });
+      }),
+    };
+  }
+
+  /** Writes rows into a new file in one call: createWriter(options), writeRows(rows), finish(). Returns a Blob. */
+  async function write(rows, options) {
+    const writer = await createWriter(options);
+    await writer.writeRows(rows);
+    return writer.finish();
+  }
+
   global.JazminBrowser = {
     open,
     openUrl,
     outboxKey,
+    createWriter,
+    write,
     compileFilter,
     base64ToBytes,
     JazminError,
     JazminFormatError,
     JazminKeyError,
     JazminUnlockRequiredError,
+    JazminValidationError,
   };
 })(globalThis);
