@@ -139,6 +139,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
       with the sender's submission key; columns the shared file doesn't have, or
       has with another type; rows for another person's partition.
     - **Duplicates:** rows already filed are skipped.
+    - **Files with records:** each row lists its files (photos, PDFs) in an
+      `attachments` column. Refused: files a row lists that the batch doesn't
+      hold, files no row lists, files whose first bytes aren't PDF, JPEG, PNG
+      or WebP, and files over 10 MB (50 MB per batch). Each file is stored at
+      `attachments/<key id>/<sha256>.<ext>`, for the keys that see the row's
+      partition, and the row's list becomes `[{ path, name, type, size }]`.
   - **`inbox.mjs`** files every batch in a folder on a schedule, then compacts
     and regroups.
   - **The owner key** comes from a secret, never a page or a phone.
@@ -152,12 +158,15 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   - **The same file as the library:** given the same rows, options and random
     bytes, it writes exactly the library's bytes. Tests check this with and
     without a key or password, and with and without compression.
+  - **Embedded files:** `writer.addFile({ path, content })` or the `files`
+    option, with a `File`, `Blob`, bytes or text. Several files per record,
+    and identical content stored once.
   - **Read by both libraries:** the new fixtures `browser-plain.jzm`,
-    `browser-key.jzm` and `browser-password.jzm` are read in the Node and .NET
-    interop tests. The viewer CI jobs write a file in each browser, which the
-    library then reads.
+    `browser-key.jzm`, `browser-password.jzm` and `browser-files-key.jzm` are
+    read in the Node and .NET interop tests. The viewer CI jobs write a file
+    with two attachments in each browser, which the library then reads.
   - **Refused:** shared files (their master key stays off web pages),
-    indexes, several tables, embedded files, `sortedBy` and Brotli.
+    indexes, several tables, viewer package settings, `sortedBy` and Brotli.
 - **Submission keys (#13, spec 7.8).** A person sends records back to the
   owner in a small file locked with their submission key.
   - **Where the key comes from:** the writer seals it into that person's key

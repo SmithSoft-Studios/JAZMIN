@@ -47,6 +47,41 @@ and stops, and the next run carries on.
 | Columns | A column isn't in the shared file, or has another type |
 | Partition | A row names a partition the key isn't granted. With a grant of one partition, rows are simply put in it. |
 | Duplicates | Not a rejection: rows whose `id` is already filed are skipped, so a batch sent twice is filed once |
+| Files listed | A row lists a file the batch doesn't hold, or the batch holds a file no row lists |
+| Kind of file | A file's first bytes don't show an allowed kind: PDF, JPEG, PNG or WebP by default. The name and type the phone gives are ignored. |
+| File size | A file is over 10 MB, or the batch's files are over 50 MB together (identical files count once) |
+
+## Files with records
+
+A record can have several files: photos, PDFs. The phone embeds them in the
+batch and lists each record's files in the `attachments` column, a `json`
+column of the shared file:
+
+```js
+{ id: 'v-17', note: 'site visit', attachments: ['v-17/receipt.pdf', 'v-17/photo.jpg'] }
+```
+
+When the record is filed:
+- **Where each file goes:** `attachments/<key id>/<sha256>.<ext>`, a path the
+  service chooses. Nothing the phone names becomes a path.
+- **Who can open it:** the keys that see the record's partition, and the owner.
+- **Copies:** identical files are stored once.
+- **The record's list** becomes `[{ path, name, type, size }]`. `name` is the
+  name the phone gave, for display.
+
+The rows and their files go into the shared file in one append, so a run that
+stops halfway leaves neither. Files of rows already filed (duplicates) aren't
+stored again.
+
+**Options**, to `fileBatch` or `processInbox`:
+
+| Option | Default | |
+|---|---|---|
+| `filesColumn` | `'attachments'` | The column that lists a row's files. Leave it out of the shared file to refuse every file. |
+| `fileTypes` | all of `FILE_KINDS` | The kinds accepted. Add a kind to `FILE_KINDS` in `filing.mjs`, with a test of its first bytes. |
+| `maxFileBytes` | 10 MB | Per file |
+| `maxBatchFileBytes` | 50 MB | All of a batch's files |
+| `idColumn` | `'id'` | The column that tells records apart |
 
 ## Keeping the owner key safe
 
@@ -57,5 +92,10 @@ and stops, and the next run carries on.
   file, never in a web page or on a phone.
 - **Who runs it:** run the service on machines you control. Whoever runs it
   can read all the data.
-- **Uploads:** limit their size and rate. A batch can't be forged, but the
-  endpoint can still be flooded.
+- **Uploads:** limit their size and rate, a little above
+  `maxBatchFileBytes`. A batch can't be forged, but the endpoint can still be
+  flooded.
+- **Files people send:** a PDF can carry scripts, and an image can be crafted
+  to attack a viewer. The kind check stops files disguised as another kind,
+  not harmful content. Open them as you'd open any upload, and scan them first
+  if your policy asks for it.

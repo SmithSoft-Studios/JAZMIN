@@ -77,6 +77,18 @@ for (const writer of ['js', 'dotnet']) {
   }
 }
 
+// Embedded files written by the browser writer: the same files; browsers write no package settings.
+test('interop: browser-files-key.jzm opened with the owner key shows its files', () => {
+  const reader = open(path.join(dir, 'browser-files-key.jzm'), { key: keys.key });
+  try {
+    assert.deepEqual(reader.files.map((f) => f.path).sort(), FILES_VIEWS.key);
+    for (const p of FILES_VIEWS.key) assert.ok(reader.readFile(p).equals(expectedFiles.get(p)), p);
+    assert.equal(reader.package, undefined);
+  } finally {
+    reader.close();
+  }
+});
+
 // Several tables (D-3): the first table is the dataset (checked above); the second is a lookup table of countries.
 const expectedCountries = countryRows(dataset.rows);
 for (const writer of ['js', 'dotnet']) {

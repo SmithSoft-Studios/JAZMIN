@@ -115,11 +115,13 @@ API:
 
 **What it writes:**
 - One table: columns of any type, rows and metadata.
+- Embedded files (added 5 October 2026): photos and PDFs captured with the
+  records, several per record, from a `File`, `Blob`, bytes or text.
 - Locking: a key, a password, or none.
 - Compression: deflate or none.
 
-It refuses an access-controlled file. Not in the first version: indexes,
-several tables, embedded files, `sortedBy` and appends. The filing service adds
+It refuses an access-controlled file. Not written: indexes, several tables,
+viewer package settings, `sortedBy` and appends. The filing service adds
 indexes when it compacts the shared file.
 
 ```js
@@ -185,6 +187,7 @@ const blob = await writer.finish();    // upload it as the batch
 | 2 ✅ | Submission key: spec, JS, .NET, browser; `accessKeyOf` (#49, then sealed in the key slot) | S |
 | 3 ✅ | The browser writer (section 5), with its tests | M |
 | 4 ✅ | A reference filing service (Node sample, `js/examples/filing-service`): master key from a secret, batches checked and appended, regroup | S–M |
+| 5 ✅ | Files with records: the browser writer embeds files; the filing service checks each record's list, the kind of file (first bytes) and sizes, and stores them at paths it chooses, for the record's partition | M |
 
 ## 9. What the hosted Collect demo showed (for the record)
 

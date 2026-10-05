@@ -83,6 +83,9 @@ for (const [name, lock] of [['browser-plain.jzm', {}], ['browser-key.jzm', { key
   const blob = await globalThis.JazminBrowser.write(rows, { columns: browserColumns, metadata: dataset.metadata, chunkRows: 64, ...lock });
   fs.writeFileSync(path.join(dir, name), Buffer.from(await blob.arrayBuffer()));
 }
+// Embedded files written in the browser (no viewer package settings: browsers don't write them).
+const browserFiles = await globalThis.JazminBrowser.write(rows, { columns: browserColumns, metadata: dataset.metadata, chunkRows: 64, key: keys.key, files: fixtureFiles() });
+fs.writeFileSync(path.join(dir, 'browser-files-key.jzm'), Buffer.from(await browserFiles.arrayBuffer()));
 
 // Appended fixtures (spec 11.2): 400 rows written, then the last 100 appended and ids < 10 deleted.
 for (const [name, options] of [

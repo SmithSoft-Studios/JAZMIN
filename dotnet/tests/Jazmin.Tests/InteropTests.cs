@@ -224,6 +224,19 @@ public class InteropTests
     [InlineData("js-files-access.jzm", true)]
     public void ReadsEmbeddedFilesWrittenByJavaScript(string file, bool accessControlled) => AssertFilesViews(file, null, accessControlled);
 
+    /// <summary>Embedded files written by the browser writer (js/browser): the same files, and no package settings.</summary>
+    [Fact]
+    public void ReadsEmbeddedFilesWrittenInTheBrowser()
+    {
+        const string file = "browser-files-key.jzm";
+        AssertMatchesDataset(file);
+        var expected = FixtureFiles().ToDictionary(f => f.Path, f => f.Content!);
+        using var reader = JazminReader.Open(Path.Combine(Dir, file), new JazminReadOptions { Key = JazminKey.Parse((string)Keys["key"]!) });
+        Assert.Equal(FilesViews["key"], reader.Files.Select(f => f.Path).Order(StringComparer.Ordinal));
+        foreach (var p in FilesViews["key"]) Assert.Equal(expected[p], reader.ReadFile(p));
+        Assert.Null(reader.Package);
+    }
+
     [Theory]
     [InlineData("dotnet-files-key.jzm", false)]
     [InlineData("dotnet-files-access.jzm", true)]

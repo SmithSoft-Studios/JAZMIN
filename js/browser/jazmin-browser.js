@@ -2257,12 +2257,11 @@
 
   const MAGIC = utf8.encode('JZM1');
   const WRITE_DEFAULTS = { chunkRows: 4096, chunkBytes: 1024 * 1024, codec: 'deflate', kdfIterations: 600000 };
-  const WRITE_OPTIONS = new Set(['columns', 'metadata', 'codec', 'chunkRows', 'chunkBytes', 'key', 'password', 'kdfIterations', 'now']);
+  const WRITE_OPTIONS = new Set(['columns', 'metadata', 'codec', 'chunkRows', 'chunkBytes', 'key', 'password', 'kdfIterations', 'now', 'files']);
   const NOT_IN_BROWSERS = {
     access: "Shared (access-controlled) files are written only by the owner's own service: their master key must stay off web pages",
     tables: 'Several tables are not written in browsers yet',
-    files: 'Embedded files are not written in browsers yet',
-    package: 'Embedded files are not written in browsers yet',
+    package: 'Viewer package settings are not written in browsers yet',
     sortedBy: 'sortedBy is not written in browsers yet',
     level: "Browsers compress at one level: leave out 'level'",
   };
@@ -2275,6 +2274,14 @@
   const MAX_STRING_STAT = 64;
   const TINY_SECTION = 256; // raw bytes below which catalog sections are stored uncompressed
   const DECIMAL_TEXT = /^(-?)(\d+)(?:\.(\d+))?$/;
+  const FILE_BLOCK_SIZE = 256 * 1024; // raw bytes per stored block of an embedded file, as the library writes
+  const MIME = {
+    '.html': 'text/html', '.htm': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.mjs': 'text/javascript',
+    '.json': 'application/json', '.txt': 'text/plain', '.csv': 'text/csv', '.xml': 'application/xml', '.svg': 'image/svg+xml',
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.ico': 'image/x-icon',
+    '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.otf': 'font/otf', '.pdf': 'application/pdf',
+    '.mp4': 'video/mp4', '.webm': 'video/webm', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.wav': 'audio/wav', '.zip': 'application/zip',
+  };
 
   class JazminValidationError extends JazminError {
     constructor(message) {
@@ -2287,6 +2294,42 @@
   function randomBytes(n) {
     if (typeof global.crypto?.getRandomValues !== 'function') throw new JazminError('This browser has no secure random generator (crypto.getRandomValues)');
     return global.crypto.getRandomValues(new Uint8Array(n));
+  }
+
+  function bytesToBase64(bytes) {
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return global.btoa(bin);
+  }
+
+  /** A file to store (the library's fileSource): { path, content: Blob | File | Uint8Array | ArrayBuffer | string, type?, groups? }. */
+  async function fileInput(entry) {
+    if (entry === null || typeof entry !== 'object') throw new JazminValidationError('Each file must be an object { path, content }');
+    const p = entry.path;
+    if (typeof p !== 'string' || p.length === 0 || p.length > 1024) throw new JazminValidationError('A file path must be a string of 1 to 1024 characters');
+    if (p.includes('\\') || p.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) {
+      throw new JazminValidationError(`Invalid file path '${p}': use relative paths with '/' and no empty, '.' or '..' segments`);
+    }
+    const dot = p.lastIndexOf('.');
+    const type = entry.type === undefined ? (dot > p.lastIndexOf('/') + 1 && MIME[p.slice(dot).toLowerCase()]) || 'application/octet-stream' : String(entry.type);
+    let groups = ['*'];
+    if (entry.groups !== undefined && entry.groups !== '*') {
+      if (!Array.isArray(entry.groups) || entry.groups.length === 0) throw new JazminValidationError(`File '${p}': groups must be '*' or a non-empty array`);
+      const names = [...new Set(entry.groups.map((g) => String(g)))];
+      for (const g of names) if (g.length === 0 || g.length > 256) throw new JazminValidationError(`File '${p}': invalid group name '${g}'`);
+      groups = names.includes('*') ? ['*'] : names.sort();
+    }
+    if (entry.file !== undefined) throw new JazminValidationError(`File '${p}': browsers have no file paths - pass the File or Blob as content`);
+    const c = entry.content;
+    const bytes = typeof c === 'string' ? utf8.encode(c)
+      : c instanceof Uint8Array ? c
+        : ArrayBuffer.isView(c) ? new Uint8Array(c.buffer, c.byteOffset, c.byteLength)
+          : c instanceof ArrayBuffer ? new Uint8Array(c)
+            : typeof Blob !== 'undefined' && c instanceof Blob ? new Uint8Array(await c.arrayBuffer())
+              : null;
+    if (!bytes) throw new JazminValidationError(`File '${p}': content must be a Blob, File, Uint8Array, ArrayBuffer or string`);
+    if (!subtle) throw new JazminError("Embedded files need the browser's built-in cryptography (crypto.subtle), which pages on plain http:// don't have");
+    return { path: p, type, groups, bytes, sha256: toHex(await sha256(bytes)) };
   }
 
   /** A growable byte buffer: the library's ByteWriter. */
@@ -2797,7 +2840,7 @@
     return w.result();
   }
 
-  function encodeFileHeader({ created, metadata, table, keyring }) {
+  function encodeFileHeader({ created, metadata, table, keyring, files }) {
     const w = new ProtoWriter();
     w.int64(3, created).string(6, metadata);
     w.message(7, (tw) => {
@@ -2813,7 +2856,13 @@
         }, true);
       }
     }, true);
-    if (keyring) w.message(8, (k) => k.bytes(1, keyring.data).bytes(2, keyring.index));
+    if (keyring) w.message(8, (k) => k.bytes(1, keyring.data).bytes(2, keyring.index).bytes(3, keyring.files));
+    if (files) {
+      w.message(9, (fw) => {
+        for (const d of files.directories) fw.message(1, (dw) => dw.string(1, d.group).message(2, writeRef(d.section)), true);
+        fw.uint(2, files.nextContent);
+      }, true);
+    }
     return w.result();
   }
 
@@ -2855,9 +2904,9 @@
   /**
    * Starts writing a file in the browser: one table, locked with a key ("jzk1-...", for example a submission key), a
    * password, or nothing. options: { columns, key | password, kdfIterations, metadata, codec: 'deflate' | 'none',
-   * chunkRows, chunkBytes, now }. Rows go in with writeRows / writeRow (await each call); finish() returns the file as
-   * a Blob. Shared (access-controlled) files, indexes, several tables, embedded files and sortedBy are not written in
-   * browsers.
+   * chunkRows, chunkBytes, now, files }. Rows go in with writeRows / writeRow and files with addFile (await each call);
+   * finish() returns the file as a Blob. Shared (access-controlled) files, indexes, several tables, viewer package
+   * settings and sortedBy are not written in browsers.
    */
   async function createWriter(options = {}) {
     if (options === null || typeof options !== 'object') throw new JazminValidationError('options must be an object');
@@ -2905,7 +2954,7 @@
     const salt = encrypted ? randomBytes(32) : new Uint8Array(32);
     const master = password ? await pbkdf2(password, salt, kdfIterations) : keyBytes;
     const keyring = encrypted ? { data: randomBytes(32), index: randomBytes(32) } : null;
-    const sectionKey = (sectionId) => (master ? hkdf(master, keyring.data, `JAZMIN/1/${sectionId}`) : null);
+    const sectionKey = (sectionId, group = 'data') => (master ? hkdf(master, keyring[group], `JAZMIN/1/${sectionId}`) : null);
 
     const parts = [];
     let position = 0;
@@ -2935,8 +2984,8 @@
       return concat(envelope, body);
     };
     /** A catalog section; tiny ones are stored uncompressed, as the library does. */
-    const writeSection = async (raw, sectionId) => {
-      const s = await section(raw, sectionId, await sectionKey(sectionId), raw.length < TINY_SECTION ? 'none' : codec);
+    const writeSection = async (raw, sectionId, group) => {
+      const s = await section(raw, sectionId, await sectionKey(sectionId, group), raw.length < TINY_SECTION ? 'none' : codec);
       const ref = { offset: position, length: s.length };
       emit(s);
       return ref;
@@ -2960,6 +3009,31 @@
     let rowCount = 0;
     let busy = false;
     let finished = false;
+
+    // Embedded files (spec 6.8): path -> entry, and each distinct content stored once (by SHA-256).
+    const fileEntries = new Map();
+    const fileContents = new Map();
+    const storeFile = async (entry) => {
+      const src = await fileInput(entry);
+      if (fileEntries.has(src.path)) throw new JazminValidationError(`File '${src.path}' is added twice`);
+      let stored = fileContents.get(src.sha256);
+      if (!stored) {
+        const id = fileContents.size;
+        const contentKey = encrypted ? randomBytes(32) : null; // one random key per stored content
+        const blocks = [];
+        for (let offset = 0, b = 0; offset < src.bytes.length; offset += FILE_BLOCK_SIZE, b++) {
+          const sectionId = `file/${id}/${b}`;
+          const s = await section(src.bytes.subarray(offset, offset + FILE_BLOCK_SIZE), sectionId, contentKey ? await hkdf(contentKey, salt, `JAZMIN/1/${sectionId}`) : null);
+          blocks.push({ offset: position, length: s.length });
+          emit(s);
+        }
+        stored = { id, size: src.bytes.length, sha256: src.sha256, blockSize: FILE_BLOCK_SIZE, ...(contentKey ? { key: bytesToBase64(contentKey) } : {}), blocks };
+        fileContents.set(src.sha256, stored);
+      }
+      fileEntries.set(src.path, { path: src.path, type: src.type, groups: src.groups, content: stored.id });
+    };
+    if (options.files !== undefined && !Array.isArray(options.files)) throw new JazminValidationError('files must be an array');
+    for (const f of options.files ?? []) await storeFile(f);
 
     const flushChunk = async () => {
       if (inChunk === 0) return;
@@ -3017,6 +3091,12 @@
       writeRows: (rows) => step(async () => {
         for await (const row of rows) await addRow(row);
       }),
+      /**
+       * Stores a file: addFile({ path, content, type, groups }) or addFile(path, content, { type, groups }). content is a
+       * File, Blob, Uint8Array, ArrayBuffer or string; the type defaults from the path's extension. Identical content is
+       * stored once; adding a path twice is an error.
+       */
+      addFile: (entryOrPath, content, fileOptions = {}) => step(() => storeFile(typeof entryOrPath === 'string' ? { ...fileOptions, path: entryOrPath, content } : entryOrPath)),
       /** Writes the statistics, directory, header and trailer; returns the file as a Blob. */
       finish: () => step(async () => {
         await flushChunk();
@@ -3035,8 +3115,20 @@
           name: '', rowCount, chunkCount: chunks.length, partitions,
           columns: columns.map((c, position) => ({ position, name: c.name, type: c.type, required: !c.nullable, description: c.description, attributes: c.attributes })),
         };
+        let files = null;
+        if (fileEntries.size) {
+          // One directory: every file, with its groups, and the contents they use (the library's #writeFileDirectories).
+          if (keyring) keyring.files = randomBytes(32);
+          const entries = [...fileEntries.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+          const byId = new Map([...fileContents.values()].map((c) => [c.id, c]));
+          const directory = {
+            files: entries.map((e) => ({ path: e.path, type: e.type, content: e.content, groups: e.groups })),
+            contents: [...new Set(entries.map((e) => e.content))].sort((a, b) => a - b).map((id) => byId.get(id)),
+          };
+          files = { directories: [{ group: '*', section: await writeSection(utf8.encode(JSON.stringify(directory)), 'files/dir', 'files') }], nextContent: fileContents.size };
+        }
         const headerKey = master ? await hkdf(master, salt, 'JAZMIN/1/header') : null;
-        const header = await section(encodeFileHeader({ created, metadata: JSON.stringify(metadata), table, keyring }), 'header', headerKey);
+        const header = await section(encodeFileHeader({ created, metadata: JSON.stringify(metadata), table, keyring, files }), 'header', headerKey);
         const headerOffset = position;
         emit(header);
         const trailer = new Uint8Array(TRAILER);

@@ -13,22 +13,24 @@ import { RejectedBatch, fileBatch } from './filing.mjs';
 
 /**
  * Files the batches in `inboxDir` (oldest name first), then compacts the shared file when it has `compactAfter` or
- * more appends: regrouped, so each person's rows are stored together, when its sort order allows that.
- * Returns { batches, filed, duplicates, rejected: [{ batch, reason }], compacted }.
+ * more appends: regrouped, so each person's rows are stored together, when its sort order allows that. Other options
+ * (idColumn, filesColumn, fileTypes, maxFileBytes, maxBatchFileBytes) go to fileBatch.
+ * Returns { batches, filed, duplicates, files, rejected: [{ batch, reason }], compacted }.
  */
-export function processInbox(sharedPath, inboxDir, ownerKey, { compactAfter = 50, now } = {}) {
+export function processInbox(sharedPath, inboxDir, ownerKey, { compactAfter = 50, now, ...rules } = {}) {
   const filedDir = path.join(inboxDir, 'filed');
   const rejectedDir = path.join(inboxDir, 'rejected');
   fs.mkdirSync(filedDir, { recursive: true });
   fs.mkdirSync(rejectedDir, { recursive: true });
-  const report = { batches: 0, filed: 0, duplicates: 0, rejected: [], compacted: false };
+  const report = { batches: 0, filed: 0, duplicates: 0, files: 0, rejected: [], compacted: false };
   for (const name of fs.readdirSync(inboxDir).filter((n) => n.endsWith('.jzm')).sort()) {
     const from = path.join(inboxDir, name);
     try {
-      const result = fileBatch(sharedPath, ownerKey, { keyId: name.split('.')[0], batch: fs.readFileSync(from), now });
+      const result = fileBatch(sharedPath, ownerKey, { ...rules, keyId: name.split('.')[0], batch: fs.readFileSync(from), now });
       report.batches++;
       report.filed += result.filed;
       report.duplicates += result.duplicates;
+      report.files += result.files;
       fs.renameSync(from, path.join(filedDir, name));
     } catch (error) {
       if (!(error instanceof RejectedBatch)) throw error; // anything else (a busy file, a full disk) stops the run: try again later

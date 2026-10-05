@@ -346,7 +346,8 @@ for (const name of chosen) {
     const expected = { total: 120, top: [119, 118, 117], all: 120, columns: ['n', 'label'] };
     results.push({ browser: name, label: 'template API: count, sorted query, rows, ready', ok: JSON.stringify(ready) === JSON.stringify(expected), problems: JSON.stringify(ready) === JSON.stringify(expected) ? [] : [JSON.stringify(ready)] });
 
-    // The browser writer: a file sent back with the submission key, written in the page, read back here and by the library.
+    // The browser writer: a file sent back with the submission key, with two attachments (a File of three blocks and a
+    // string), written in the page, read back here and by the library.
     await page.navigate(`${base}/js/viewer/index.html`);
     await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
     const written = await page.evaluate(`(async () => {
@@ -354,19 +355,31 @@ for (const name of chosen) {
       const key = (await JazminBrowser.open(shared, { key: ${JSON.stringify(keys.bob)} })).submissionKey;
       const rows = Array.from({ length: 300 }, (_, i) => ({ id: i, note: 'row ' + i, at: new Date(Date.UTC(2025, 0, 1) + i * 60000), amount: i / 4 }));
       const columns = [{ name: 'id', type: 'int' }, { name: 'note', type: 'string' }, { name: 'at', type: 'datetime' }, { name: 'amount', type: 'float' }];
-      const blob = await JazminBrowser.write(rows, { columns, key, chunkRows: 64 });
+      const photo = new Uint8Array(600000);
+      for (let i = 0; i < photo.length; i++) photo[i] = i < 3 ? [0xff, 0xd8, 0xff][i] : (i * 31 + 7) & 255;
+      const writer = await JazminBrowser.createWriter({ columns, key, chunkRows: 64 });
+      await writer.writeRows(rows);
+      await writer.addFile({ path: 'r0/photo.jpg', content: new File([photo], 'photo.jpg', { type: 'image/jpeg' }) });
+      await writer.addFile('r0/receipt.pdf', '%PDF-1.4 receipt');
+      const blob = await writer.finish();
       const reader = await JazminBrowser.open(blob, { key });
       let matches = 0;
       for await (const r of reader.find({ amount: { gte: 50 } })) matches++;
+      const listed = (await reader.files()).map((f) => f.path + ':' + f.type + ':' + f.size).join(',');
+      const back = await reader.readFile('r0/photo.jpg');
+      const photoOk = back.length === photo.length && back.every((b, i) => b === photo[i]);
       const bytes = new Uint8Array(await blob.arrayBuffer());
       let binary = '';
       for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
-      return { rowCount: reader.rowCount, matches, file: btoa(binary) };
+      return { rowCount: reader.rowCount, matches, listed, photoOk, file: btoa(binary) };
     })()`);
     const library = open(Buffer.from(written.file, 'base64'), { key: JazminKey.parse(keys.key).submissionKey(JazminAccessKey.parse(keys.bob).id) });
     const back = [...library.rows()];
-    const writeOk = written.rowCount === 300 && written.matches === 100 && back.length === 300 && back[299].note === 'row 299' && library.count({ amount: { gte: 50 } }) === 100;
-    results.push({ browser: name, label: `browser writer: a file sent back with the submission key (${Math.round(written.file.length * 0.75 / 1024)} KB) read back here and by the library`, ok: writeOk, problems: writeOk ? [] : [JSON.stringify({ ...written, file: undefined, library: back.length })] });
+    const libraryPhoto = library.readFile('r0/photo.jpg');
+    const writeOk = written.rowCount === 300 && written.matches === 100 && back.length === 300 && back[299].note === 'row 299' && library.count({ amount: { gte: 50 } }) === 100
+      && written.photoOk && written.listed === 'r0/photo.jpg:image/jpeg:600000,r0/receipt.pdf:application/pdf:16'
+      && libraryPhoto.length === 600000 && libraryPhoto[0] === 0xff && libraryPhoto[599999] === ((599999 * 31 + 7) & 255) && library.readFile('r0/receipt.pdf').toString() === '%PDF-1.4 receipt';
+    results.push({ browser: name, label: `browser writer: a file sent back with the submission key and two attachments (${Math.round(written.file.length * 0.75 / 1024)} KB) read back here and by the library`, ok: writeOk, problems: writeOk ? [] : [JSON.stringify({ ...written, file: undefined, library: back.length })] });
 
     // Save as HTML, then open the copy from disk (file://), as a double-click would.
     const c = CASES.find((x) => x.file === 'js-files-access.jzm' && x.key === 'bob');

@@ -1343,6 +1343,33 @@ When filing:
   none (`submissionKey` is `null`) until the owner's next rewrite or
   `compact()`.
 
+**Files with records** (photos, PDFs): a record can have several. The phone
+embeds them in the file it sends, and lists each record's files in a `json`
+column, `attachments` in the filing service:
+
+```js
+await JazminBrowser.write([
+  { id: 'v-17', note: 'site visit', attachments: ['v-17/receipt.pdf', 'v-17/photo.jpg'] },
+], { columns, key, files: [
+  { path: 'v-17/receipt.pdf', content: receiptFile },
+  { path: 'v-17/photo.jpg', content: photoFile },
+] });
+```
+
+The filing service then:
+- **Checks the list:** every file a record lists must be in the batch, and
+  every file in the batch must be listed.
+- **Checks the kind of file:** it reads each file's first bytes. Only PDF,
+  JPEG, PNG and WebP are accepted by default; the name and type the phone
+  gives are ignored.
+- **Checks the size:** 10 MB per file and 50 MB per batch by default.
+- **Stores each file** at a path it chooses,
+  `attachments/<key id>/<sha256>.<ext>`. Only keys that see the record's
+  partition can open it. Identical files are stored once.
+- **Rewrites the list:** the record's `attachments` becomes
+  `[{ path, name, type, size }]`, so a reader opens a file with
+  `readFile(path)`.
+
 The design is in `docs/design/browser-writer.md`, and the spec's section 7.8
 defines the key.
 
@@ -2555,8 +2582,9 @@ const reader = await JazminBrowser.openUrl('https://files.example.com/statements
 
 ### 24.3 Writing files in the browser
 
-The browser module also writes files: one table, locked with a key, a
-password, or nothing. It's made for **sending records back** to the owner:
+The browser module also writes files: one table, with any embedded files
+(photos, PDFs), locked with a key, a password, or nothing. It's made for
+**sending records back** to the owner:
 records a person captures, often offline, and sends later (section 15.6).
 Writing happens on the device, so nothing is uploaded until the app sends the
 file.
@@ -2565,19 +2593,32 @@ file.
 const key = (await JazminBrowser.open(sharedFile, { key: accessKeyText })).submissionKey; // or a jzk1- key, or { password }
 const writer = await JazminBrowser.createWriter({ columns, key });
 await writer.writeRows(records);                                 // await each call
+await writer.addFile({ path: 'r1/receipt.pdf', content: fileInput.files[0] });   // a File, Blob, bytes or text
 const blob = await writer.finish();                              // a Blob: store it, then upload it when online
 // or in one call:
-const file = await JazminBrowser.write(records, { columns, key });
+const file = await JazminBrowser.write(records, { columns, key, files: [{ path: 'r1/photo.jpg', content: photoBlob }] });
 ```
 
 - **Options:** as in the library's `write()`: `columns`, `key` or
   `password` (with `kdfIterations`), `metadata`, `codec` (`'deflate'` or
-  `'none'`), `chunkRows` and `chunkBytes`.
+  `'none'`), `chunkRows`, `chunkBytes` and `files`.
+- **Embedded files** (section 19): `addFile({ path, content, type, groups })`
+  or the `files` option, as in the library.
+  - **Content:** a `File` (from a file input or the camera), a `Blob`, a
+    `Uint8Array`, an `ArrayBuffer` or text.
+  - **Type:** when you leave it out, it comes from the path's extension, as in
+    the library.
+  - **Copies:** identical content is stored once, however many paths use it.
+  - **Memory:** each file is read whole once, to hash it. The finished file
+    is held in memory until you store it, so keep a batch's files to tens of
+    megabytes.
+  - **Records that use files:** list each record's files in a column. The
+    filing service checks and stores them (section 15.6).
 - **Not written in browsers:**
   - **Shared files.** Their master key stays off web pages (section 24).
   - **Indexes.** The owner's service adds them when it compacts the shared
     file.
-  - **Also:** several tables, embedded files, `sortedBy` and Brotli.
+  - **Also:** several tables, viewer package settings, `sortedBy` and Brotli.
 
   Each of these is refused with a message that says why.
 - **The same file as the library:** given the same rows, options and random
