@@ -1858,6 +1858,25 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <summary>Internal: (rowId, row) for visible, non-deleted rows matching a filter (used by Append).</summary>
     internal IEnumerable<JazminRow> RowsWithIds(JazminFilter? filter) => Find(filter);
 
+    /// <summary>
+    /// Every visible row, partition by partition (in directory order) and in file order within each, a chunk at a time:
+    /// a compaction with regroup writes each partition's rows together.
+    /// </summary>
+    internal IEnumerable<JazminRow> RowsByPartition()
+    {
+        EnsureAllChunks();
+        foreach (var partition in _partitions.Values.ToList())
+        {
+            foreach (var ordinal in partition.Ordinals.Order().ToList())
+            {
+                var rows = ChunkRows(ordinal);
+                var start = _rowStart[ordinal];
+                for (var r = 0; r < rows.Length; r++)
+                    if (rows[r] is { } values) yield return new JazminRow(start + r, _allColumns, _visibleCols, values);
+            }
+        }
+    }
+
     /// <summary>Internal: what <see cref="JazminFile.Append"/> needs to continue this file (owner / single key only).</summary>
     internal AppendStateInfo AppendState()
     {

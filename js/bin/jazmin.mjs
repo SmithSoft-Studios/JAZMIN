@@ -37,7 +37,7 @@ rows, bytesRead, chunksRead, indexPagesRead, columnsDecoded and ms.`,
   advise: `Usage: jazmin advise <file> --column <name> [--column <name> ...] [--json] [--table <name>]
 
 For each column: how many chunks the rows of one value lie in, and what reading one value costs. Suggests a sortedBy
-or chunkRows that would make those lookups read less, and partitions that compact() would merge.
+or chunkRows that would make those lookups read less, and partitions that compact({ regroup: true }) would merge.
 Reads only chunk directories and statistics, not rows.`,
   convert: `Usage: jazmin convert <input> <output> [--filter <json>] [--sorted-by a,b] [--table <name>]
 

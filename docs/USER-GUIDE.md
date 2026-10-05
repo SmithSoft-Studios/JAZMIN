@@ -1348,6 +1348,7 @@ r.deletedRowCount;   // rows waiting to be removed by compact()
 r.close();
 
 compact('statements.jzm', { key: owner });         // { rowCount, bytesBefore, bytesAfter }
+compact('visits.jzm', { key: owner, regroup: true }); // access-controlled: each partition's rows together (17.4)
 ```
 
 ### 17.2 .NET
@@ -1366,6 +1367,7 @@ using (var r = JazminReader.Open("statements.jzm", new JazminReadOptions { Key =
     Console.WriteLine($"{r.AppendCount} appends, {r.DeletedRowCount} deleted rows waiting");
 
 var compacted = JazminFile.Compact("statements.jzm", owner);   // RowCount, BytesBefore, BytesAfter
+JazminFile.Compact("visits.jzm", owner, regroup: true);         // each partition's rows together (17.4)
 ```
 
 ### 17.3 Good to know
@@ -1373,9 +1375,15 @@ var compacted = JazminFile.Compact("statements.jzm", owner);   // RowCount, Byte
 - **File growth.** Each append writes only what changed: the new rows, a
   chunk directory for each partition it added rows to, and a small new header.
   Key slots are written again only when grants or partitions change. On a file
-  with 5,000 chunks that is under 1 KB per append, on top of the data. Deleted
-  rows keep their space until `compact()`. Pick an `autoCompact` threshold
-  that suits how often you append and delete.
+  with 5,000 chunks that is under 1 KB per append, on top of the data.
+  - **Many appends:** the header also lists every earlier append's
+    directories, so what an append adds grows with the appends since the
+    last compaction. In a test with one-row appends, the 600th append
+    added 2.2 KB to an encrypted file, and 25 KB to an access-controlled
+    file with 50 partitions.
+  - **Deleted rows** keep their space until `compact()`.
+  - **So pick an `autoCompact` threshold** that suits how often you append
+    and delete. For example, `appends: 100` keeps both in check.
 - **Crash safety.** If the process dies during an append, readers ignore the
   incomplete part and use the previous version (`reader.recovered` is
   `true`). The next append removes the incomplete part. A failed append, for
@@ -1394,6 +1402,32 @@ var compacted = JazminFile.Compact("statements.jzm", owner);   // RowCount, Byte
   offline to online. An append keeps the file's secrets, and the key already
   holds them, so it could still read the new data. `append` refuses with
   *"The grant for … is narrower than before"*.
+
+### 17.4 Regrouping partitions
+
+In an access-controlled file, each append starts new chunks: a chunk holds
+one partition's rows from one append. When many people sync small batches
+all day, a person's rows end up in hundreds of small chunks. `compact()`
+keeps the rows in file order, so it keeps those chunks too.
+
+`compact({ key, regroup: true })` writes each partition's rows together
+instead, in their file order. Each partition then spans as few chunks as its
+rows need. `reader.advise()` suggests it when partitions are spread out
+(section 25.1).
+
+A simulated year of syncs, with 50 people, 3 syncs a day for 250 days, and
+4 rows per sync (150,000 rows, 37,500 appends):
+
+| | Compacted | Compacted with `regroup` |
+|---|---:|---:|
+| File | 7,241 KB, 37,500 chunks | 538 KB, 50 chunks |
+| One person's rows (3,000) | 125 KB read, 23 ms | 10 KB read, 2 ms |
+| One person's month | 58 KB read | 11 KB read |
+
+- **The compaction itself** took 0.8 seconds.
+- **Sort order:** regrouping needs a file without `sortedBy`, or one sorted
+  by the partition column first (then rows are already grouped). Otherwise
+  it would break the sort order, and it refuses.
 
 ## 18. Time-limited access
 
@@ -2452,5 +2486,5 @@ account: one value's rows lie in about 49 chunk(s), about 4,708 KB to read (inde
   101 KB, and an account count from 4,766 KB to 101 KB (section 9.6 shows how
   to measure this).
 - **In access-controlled files,** the advice also lists each partition's
-  chunks, and suggests `compact()` when appends have spread a partition over
-  more chunks than its rows need.
+  chunks, and suggests `compact({ regroup: true })` when appends have spread
+  a partition over more chunks than its rows need (section 17.4).

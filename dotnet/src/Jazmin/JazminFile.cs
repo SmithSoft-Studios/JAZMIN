@@ -81,7 +81,7 @@ public sealed class JazminAppend
 
     public JsonObject? Metadata { get; set; }
 
-    /// <summary>Access-controlled files: grants to add. Revoking needs <see cref="JazminFile.Compact"/> or Update.</summary>
+    /// <summary>Access-controlled files: grants to add. Revoking needs <see cref="JazminFile.Compact(string, JazminKey, string, DateTimeOffset?)"/> or Update.</summary>
     public List<JazminGrant> Grant { get; set; } = new();
 
     public JazminCodec Codec { get; set; } = JazminCodec.Deflate;
@@ -133,7 +133,7 @@ public static class JazminFile
     /// </summary>
     public static JazminUpdateResult Update(string path, JazminUpdate update) => WithLock(path, () => UpdateUnlocked(path, update));
 
-    private static JazminUpdateResult UpdateUnlocked(string path, JazminUpdate update)
+    private static JazminUpdateResult UpdateUnlocked(string path, JazminUpdate update, bool regroup = false)
     {
         ArgumentNullException.ThrowIfNull(update);
         if (update.Upsert.Count > 0 && (update.KeyColumns is null || update.KeyColumns.Count == 0))
@@ -155,6 +155,12 @@ public static class JazminFile
                 foreach (var name in reader.Tables)
                     readers.Add(name == reader.TableName ? reader : reader.OpenTable(name));
             }
+
+            var partitionBy = ownerGrants is null ? null : reader.AccessLayout.PartitionBy;
+            if (regroup && partitionBy is null) throw new JazminValidationException("Regroup applies to access-controlled files with PartitionBy");
+            if (regroup && reader.SortedBy is { } order && order[0] != partitionBy)
+                throw new JazminValidationException($"Regroup would break the file's SortedBy order [{string.Join(", ", order)}]: it needs no SortedBy, " +
+                    $"or one that starts with the partition column '{partitionBy}' (then rows are already grouped)");
 
             var shape = new RowShape(ColumnsWithIndexes(reader));
             var columns = shape.Columns;
@@ -245,7 +251,7 @@ public static class JazminFile
                 }
                 else
                 {
-                    foreach (var row in reader.Rows())
+                    foreach (var row in regroup ? reader.RowsByPartition() : reader.Rows())
                     {
                         var values = row.RawValues;
                         var key = pending.Count > 0 ? KeyText(values) : null;
@@ -295,7 +301,7 @@ public static class JazminFile
     /// Applies changes by appending them to the end of the file instead of rewriting it (spec 11.2).
     /// Existing bytes are never modified, so open readers keep working, and the cost is proportional
     /// to the change, not the file. Deleted and replaced rows are recorded as deletions;
-    /// <see cref="Compact"/> removes them and the superseded headers. In a file with SortedBy, appended
+    /// <see cref="Compact(string, JazminKey, string, DateTimeOffset?)"/> removes them and the superseded headers. In a file with SortedBy, appended
     /// rows must sort after the existing rows (use <see cref="Update"/> to insert in the middle).
     /// </summary>
     public static JazminAppendResult Append(string path, JazminAppend append) => WithLock(path, () => AppendUnlocked(path, append));
@@ -463,10 +469,22 @@ public static class JazminFile
     /// Rewrites the file in full: removes deleted rows and superseded data, merges index segments and
     /// (for access-controlled files) re-locks it with fresh secrets. Same as an update with no changes.
     /// </summary>
-    public static JazminCompactResult Compact(string path, JazminKey? key = null, string? password = null, DateTimeOffset? now = null) => WithLock(path, () =>
+    public static JazminCompactResult Compact(string path, JazminKey? key = null, string? password = null, DateTimeOffset? now = null) =>
+        Compact(path, key, password, now, regroup: false);
+
+    /// <summary>
+    /// Compacts an access-controlled file, and with <paramref name="regroup"/> writes each partition's rows together (in
+    /// their file order): appends from many people leave one chunk per append, and after regrouping each partition spans
+    /// as few chunks as its rows need. Regrouping needs a file without SortedBy, or one sorted by the partition column
+    /// first. Owner key required.
+    /// </summary>
+    public static JazminCompactResult Compact(string path, JazminKey key, bool regroup, DateTimeOffset? now = null) =>
+        Compact(path, key, null, now, regroup);
+
+    private static JazminCompactResult Compact(string path, JazminKey? key, string? password, DateTimeOffset? now, bool regroup) => WithLock(path, () =>
     {
         var before = new FileInfo(path).Length;
-        var result = UpdateUnlocked(path, new JazminUpdate { Key = key, Password = password, Now = now });
+        var result = UpdateUnlocked(path, new JazminUpdate { Key = key, Password = password, Now = now }, regroup);
         return new JazminCompactResult(result.RowCount, before, new FileInfo(path).Length) { ExpiredGrantsRemoved = result.ExpiredGrantsRemoved };
     });
 

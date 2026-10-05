@@ -123,6 +123,7 @@ export const ROWS_WITH_IDS = Symbol('jazmin.rowsWithIds');
 
 /** Internal: lets update() carry an access-controlled file's grants into its next version. */
 export const OWNER_GRANTS = Symbol('jazmin.ownerGrants');
+export const ROWS_BY_PARTITION = Symbol('jazmin.rowsByPartition');
 
 /** Internal: lets update() and append() carry a file's embedded files into its next version. */
 export const FILE_STATE = Symbol('jazmin.fileState');
@@ -1642,6 +1643,23 @@ export class JazminReader {
     return this.#makers.get(cacheKey);
   }
 
+  /**
+   * Internal: every visible row, partition by partition (in directory order) and in file order within each, a chunk at
+   * a time: compact({ regroup: true }) writes each partition's rows together.
+   */
+  *[ROWS_BY_PARTITION]() {
+    this.#ensureAllChunks();
+    const make = this.#maker(this.#visibleCols);
+    const row = new Array(this.#columns.length).fill(null);
+    for (const { ordinals } of this.#partitions.values()) {
+      for (const ordinal of [...ordinals].sort((a, b) => a - b)) {
+        if (!this.#loaded[ordinal]) continue;
+        const chunk = this.#chunk(ordinal);
+        for (let r = 0; r < chunk.rowCount; r++) if (!chunk.deleted?.has(r)) yield make(chunkRow(chunk, r, row));
+      }
+    }
+  }
+
   /** Internal: [rowId, row object with every visible column] for matching rows. */
   *[ROWS_WITH_IDS](filter) {
     const make = this.#maker(this.#visibleCols);
@@ -1788,7 +1806,7 @@ export class JazminReader {
    * Layout advice, from chunk directories and statistics only (no rows are decoded): how the file is laid out, for
    * each of `columns` how many chunks the rows of one value lie in (and so what reading one value costs), each
    * partition's chunks (access-controlled files), and suggestions: a sortedBy or chunkRows that would make lookups of
-   * those columns read less, or partitions that compact() would merge.
+   * those columns read less, or partitions that compact({ regroup: true }) would merge.
    */
   advise({ columns = [] } = {}) {
     this.#ensureAllChunks();
@@ -1837,16 +1855,24 @@ export class JazminReader {
       const names = this.#access.isOwner
         ? new Map(this.#ownerDirectory().partitions.map((n) => [this.#access.secrets.partitionId(n), n]))
         : new Map(Object.entries(this.#access.partitionNames));
+      const scattered = [];
       for (const [id, partition] of this.#partitions) {
-        const ordinals = partition.ordinals.filter((o) => this.#loaded[o]);
+        const ordinals = partition.ordinals.filter((o) => this.#loaded[o]).sort((x, y) => x - y);
         if (!ordinals.length) continue;
         const partRows = ordinals.reduce((n, o) => n + this.#liveRows(o), 0);
-        report.partitions.push({ partition: names.get(id) ?? id, chunks: ordinals.length, rows: partRows });
+        const entry = { partition: names.get(id) ?? id, chunks: ordinals.length, rows: partRows };
+        report.partitions.push(entry);
+        // Appends put each partition's new rows after everyone else's: its chunks end up apart, in many places.
+        const places = ordinals.filter((o, i) => i === 0 || o !== ordinals[i - 1] + 1).length;
+        if (places > 2) scattered.push(entry);
       }
-      const scattered = report.partitions.filter((p) => p.chunks > Math.ceil(p.rows / Math.max(1, largest)) + 1);
       if (scattered.length) {
-        report.suggestions.push(`${scattered.length} of ${report.partitions.length} partitions lie in more chunks than their rows need `
-          + `(for example '${scattered[0].partition}': ${scattered[0].chunks} chunks for ${scattered[0].rows} rows): compact() merges them.`);
+        const { partitionBy, sortedBy } = this.#table;
+        const regroup = !sortedBy.length || sortedBy[0] === partitionBy
+          ? "compact({ regroup: true }) puts each partition's rows together."
+          : `compact({ regroup: true }) would put each partition's rows together, but needs a file without sortedBy, or sorted by '${partitionBy}' first.`;
+        report.suggestions.push(`${scattered.length} of ${report.partitions.length} partitions are spread through the file in separate chunks `
+          + `(for example '${scattered[0].partition}': ${scattered[0].rows} rows in ${scattered[0].chunks} chunks): ${regroup}`);
       }
     }
     return report;

@@ -95,6 +95,20 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     each chunk part, which holds every column (#23 would split them).
 
 ### Added
+- **`compact({ regroup: true })` (#17):** each partition's rows are written
+  together in an access-controlled file (.NET:
+  `JazminFile.Compact(path, owner, regroup: true)`).
+  - **Why:** appends from many people leave one chunk per append, and plain
+    compaction keeps them.
+  - **Measured:** on a simulated year of syncs (50 people, 37,500
+    appends), the file went from 7,241 KB to 538 KB. One person's rows went
+    from 125 KB read to 10 KB (USER-GUIDE §17.4).
+  - **Limits:** it needs a file without `sortedBy`, or sorted by the
+    partition column first.
+  - **Advice:** `advise()` now suggests it, and spots spread-out partitions
+    by where their chunks lie. Before, it compared chunk sizes, which missed
+    files where every chunk is small, and it suggested plain `compact()`,
+    which doesn't merge them.
 - **The viewer is tested in Safari (#9).** `npm run test:viewer` drives
   Safari through `safaridriver`, built into macOS, and CI runs its checks on
   macOS beside Chrome and Firefox on Linux.

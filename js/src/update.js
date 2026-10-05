@@ -5,7 +5,7 @@ import { compileFilter } from './filter.js';
 import { grantExpiry, toMs } from './expiry.js';
 import { JazminAccessKey, parseAnyKey } from './keys.js';
 import { FILE_SOURCE } from './files.js';
-import { FILE_STATE, JazminReader, OWNER_GRANTS } from './reader.js';
+import { FILE_STATE, JazminReader, OWNER_GRANTS, ROWS_BY_PARTITION } from './reader.js';
 import { compareKeys, normalizeValue, toKey } from './types.js';
 import { withLock } from './lock.js';
 import { JazminWriter } from './writer.js';
@@ -77,7 +77,7 @@ export function updateUnlocked(path, options = {}) {
   const {
     key, password, insert = [], upsert = [], keyColumns, delete: deleteWhere, metadata,
     grant = [], revoke = [], codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, now, layout,
-    addFiles = [], removeFiles = [], package: packageSettings, table,
+    addFiles = [], removeFiles = [], package: packageSettings, table, regroup = false,
   } = options;
   if (upsert.length && (!Array.isArray(keyColumns) || keyColumns.length === 0)) {
     throw new JazminValidationError('upsert needs keyColumns, e.g. { keyColumns: ["id"] }');
@@ -94,6 +94,12 @@ export function updateUnlocked(path, options = {}) {
     if (reader.tables.length > 1) {
       readers.length = 0;
       for (const name of reader.tables) readers.push(name === reader.table ? reader : new JazminReader(path, { key, password, table: name }));
+    }
+
+    if (regroup && !owner?.partitionBy) throw new JazminValidationError('regroup applies to access-controlled files with partitionBy');
+    if (regroup && reader.sortedBy && reader.sortedBy[0] !== owner.partitionBy) {
+      throw new JazminValidationError(`regroup would break the file's sortedBy order [${reader.sortedBy.join(', ')}]: `
+        + `it needs no sortedBy, or one that starts with the partition column '${owner.partitionBy}' (then rows are already grouped)`);
     }
 
     const columns = columnsWithIndexes(reader);
@@ -156,7 +162,7 @@ export function updateUnlocked(path, options = {}) {
         }
         while (next < incoming.length) writer.writeRow(incoming[next++].row);
       } else {
-        for (const row of reader.rows()) {
+        for (const row of regroup ? reader[ROWS_BY_PARTITION]() : reader.rows()) {
           const hit = pending.size ? pending.get(keyOf(row)) : undefined;
           if (hit && !hit.matched) {
             hit.matched = true;

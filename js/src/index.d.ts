@@ -253,7 +253,7 @@ export interface LayoutAdvice {
   columns: { column: string; indexed: boolean; chunksPerValue: number | null; bytesPerValue: number | null; distinctValues: number | null }[];
   /** Access-controlled files: each partition's chunks and rows. */
   partitions: { partition: string; chunks: number; rows: number }[];
-  /** A sortedBy or chunkRows that would make those lookups read less, partitions compact() would merge. */
+  /** A sortedBy or chunkRows that would make those lookups read less, partitions compact({ regroup: true }) would merge. */
   suggestions: string[];
 }
 
@@ -367,8 +367,12 @@ export function inspect(path: string): {
   fileId: string; version: string; encrypted: boolean; passwordProtected: boolean; accessControlled: boolean; appended: boolean;
 };
 
-/** Rewrites the file in full: drops deleted rows and superseded data, re-locks with fresh secrets. */
-export function compact(path: string, options?: { key?: KeyInput; password?: string; codec?: JazminCodec; chunkRows?: number }):
+/**
+ * Rewrites the file in full: drops deleted rows and superseded data, re-locks with fresh secrets. With `regroup` (an
+ * access-controlled file without sortedBy, or sorted by its partition column first), each partition's rows are
+ * written together, in their file order: appends leave one chunk per append, and regrouping merges them.
+ */
+export function compact(path: string, options?: { key?: KeyInput; password?: string; codec?: JazminCodec; chunkRows?: number; regroup?: boolean }):
   { rowCount: number; bytesBefore: number; bytesAfter: number; expiredGrantsRemoved: number };
 /** Owner only: lets accessKey see the given partitions / column groups (rewrites the file). */
 export function grantAccess(path: string, ownerKey: KeyInput, accessKey: JazminAccessKey | string,
