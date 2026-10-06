@@ -68,6 +68,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   record one.
 - **The benchmark's `streaming` mode** says how to run it when no data file
   is given, instead of crashing.
+- **User guide: GraphQL resolvers that decode only the fields a query asks
+  for** (section 8.2), with totals from `count()` and pages after a known id.
+  The example was checked with graphql-js: aliases, `__typename` and
+  fragments (which read every column) give the right results.
 
 ## 1.1.0 - 2026-10-06 (file format 1.0)
 

@@ -565,21 +565,53 @@ input StringFilter { eq: String ne: String in: [String!] contains: String iconta
 input IntFilter    { eq: Int ne: Int gt: Int gte: Int lt: Int lte: Int in: [Int!] isNull: Boolean }
 input CustomerWhere { id: IntFilter name: StringFilter country: StringFilter and: [CustomerWhere!] or: [CustomerWhere!] not: CustomerWhere }
 
-type Query { customers(where: CustomerWhere, limit: Int = 50, offset: Int = 0): [Customer!]! }
+type Customer { id: Int! name: String country: String balance: Float }
+type Query {
+  customers(where: CustomerWhere, limit: Int = 50, offset: Int = 0): [Customer!]!
+  customerCount(where: CustomerWhere): Int!
+  customersAfter(after: Int = 0, first: Int = 50, where: CustomerWhere): [Customer!]!
+}
 ```
 
 ```js
-// Resolver (any GraphQL server: Apollo, Yoga, graphql-js...)
+// Resolvers (any GraphQL server: Apollo, Yoga, graphql-js...)
+
+// The columns a query asks for, so only those are decoded. With fragments
+// (`...`), every column: their fields are not listed at this level.
+function columnsOf(info, reader) {
+  const selections = info.fieldNodes[0].selectionSet?.selections ?? [];
+  if (selections.some((s) => s.kind !== 'Field')) return undefined;
+  const asked = new Set(selections.map((s) => s.name.value));
+  return reader.columns.map((c) => c.name).filter((name) => asked.has(name));
+}
+
 const resolvers = {
   Query: {
-    customers: (_, { where, limit, offset }) =>
-      [...reader.find(where ?? null, { limit, offset })],
+    customers: (_, { where, limit, offset }, context, info) =>
+      [...reader.find(where ?? null, { select: columnsOf(info, reader), limit, offset })],
+    customerCount: (_, { where }) => reader.count(where ?? undefined),
+    // Pages after a known id: in a file sorted by id, the chunks before it are skipped.
+    customersAfter: (_, { after, first, where }, context, info) =>
+      [...reader.find({ and: [where ?? {}, { id: { gt: after } }] }, { select: columnsOf(info, reader), limit: first })],
   },
 };
 ```
 
-In .NET with HotChocolate or GraphQL.NET, serialize the `where` argument to
-JSON and call `reader.Find(json, ...)`.
+- **Only the fields asked for are decoded.** A query for `{ id name }` reads
+  two columns, however wide the file (`select`, section 9.5). Aliases and
+  `__typename` work as usual.
+- **Totals:** `count()` answers from chunk statistics where it can, without
+  reading rows (section 9.10).
+- **Deep pages:** in a file written with `sortedBy: ['id']`, a page after id
+  190,000 of 200,000 read 3 of its 49 chunks. Unlike `offset` with a filter,
+  this stays fast however deep, and pages don't shift when rows are added.
+- **Shared files:** open the file with the caller's access key, and each
+  query sees only that person's rows and columns. Fields for columns they
+  can't see come back `null`.
+- **.NET** (HotChocolate, GraphQL.NET): serialize the `where` argument to
+  JSON and call `reader.Find(json, new JazminQueryOptions { Select = fields,
+  Limit = limit })`, with the requested field names as `fields`; totals come
+  from `reader.Count(JazminFilter.Parse(json))`.
 
 ### 8.3 LINQ support (.NET)
 
