@@ -2,6 +2,9 @@
   <Folder Name="/bench/">
     <Project Path="bench/Jazmin.Benchmarks/Jazmin.Benchmarks.csproj" />
   </Folder>
+  <Folder Name="/profiling/">
+    <Project Path="profiling/ProfDrive/ProfDrive.csproj" />
+  </Folder>
   <Folder Name="/samples/">
     <Project Path="samples/Jazmin.KeyService/Jazmin.KeyService.csproj" />
     <Project Path="samples/Jazmin.Samples/Jazmin.Samples.csproj" />

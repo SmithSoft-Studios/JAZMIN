@@ -102,8 +102,11 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         public ColumnBuffer[] Columns { get; set; } = []; // the current chunk's typed columns
         public int Bytes { get; set; } // estimated encoded size of the current chunk
 
-        /// <summary>Column buffers encoded by a worker and reset, ready for another chunk.</summary>
-        public System.Collections.Concurrent.ConcurrentBag<ColumnBuffer[]> Free { get; } = new();
+        /// <summary>
+        /// Column buffers encoded by a worker and reset, ready for another chunk. A queue, not a ConcurrentBag: each bag
+        /// holds a ThreadLocal that is never disposed, so every writer (one bag per partition) left work for the finalizer.
+        /// </summary>
+        public System.Collections.Concurrent.ConcurrentQueue<ColumnBuffer[]> Free { get; } = new();
     }
 
     /// <summary>A chunk this writer wrote (spec 6.3): its parts are filled in when they are written.</summary>
@@ -554,7 +557,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         {
             part.Bytes = 0;
             // The previous buffers now belong to the worker encoding them: take recycled ones, or new ones.
-            part.Columns = part.Free.TryTake(out var recycled) ? recycled : part.Cols.Select(i => ColumnBuffer.For(_columns[i].Type)).ToArray();
+            part.Columns = part.Free.TryDequeue(out var recycled) ? recycled : part.Cols.Select(i => ColumnBuffer.For(_columns[i].Type)).ToArray();
         }
         _chunkRows = 0;
     }
@@ -699,7 +702,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             var scratch = _scratchWriter ??= new ByteWriter(64 * 1024);
             foreach (var column in columns) column.Encode(output, scratch);
             foreach (var column in columns) column.Reset();
-            free.Add(columns); // reused for a later chunk
+            free.Enqueue(columns); // reused for a later chunk
         };
     }
 

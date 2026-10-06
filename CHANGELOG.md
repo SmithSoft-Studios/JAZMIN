@@ -25,6 +25,36 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   the package, which is never fetched. A new test checks that column names
   built to break out of the generated code never run.
 
+### Changed
+- **.NET: opening a file to read a few rows is about 1.5 times faster (#70).**
+  On the benchmark, finding one record by id (open the file, look it up)
+  went from about 2.0 to 1.4 ms, and from 2.0 to 1.3 ms encrypted.
+  - **Why:** the code that turns a row into an object is compiled while the
+    program runs. It was kept for one reader only, so every file opened
+    compiled it again: most of a lookup's time, plus clean-up work later.
+  - **Now:** it is reused by every reader of a file with the same columns
+    (names, types and order). A file whose columns differ gets its own.
+  - **Reading whole files:** each call saves one compile, and calls without
+    settings no longer miss the cache (each made its own default settings).
+  - **Unchanged:** each read still converts with its own settings, a reader
+    reused for many lookups is as fast as before, and memory use is the same.
+  - **Safer with threads:** the whole-file cache keeps a file's columns and
+    their code in one record, so a reader on another thread can't pair one
+    with the other.
+- **.NET writer: less clean-up work per write.** Spare column buffers are
+  kept in a queue instead of a `ConcurrentBag`, which held a `ThreadLocal`
+  that was never disposed (one per partition, per write). About 3% on the
+  write loop.
+
+### Added
+- **.NET profiling tools (`dotnet/profiling`).** `ProfDrive` runs one path
+  at a time (lookup, lookup on a reused reader, read all, write) with no
+  forced garbage collection between runs, so a CPU trace shows the library's
+  own work; `analyze.js` summarizes a trace. The README explains how to
+  record one.
+- **The benchmark's `streaming` mode** says how to run it when no data file
+  is given, instead of crashing.
+
 ## 1.1.0 - 2026-10-06 (file format 1.0)
 
 People in the field can now send records back from a phone (#13), and the

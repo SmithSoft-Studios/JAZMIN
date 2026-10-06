@@ -252,10 +252,19 @@ internal sealed class TypeMap
         };
     }
 
-    /// <summary>A compiled row -> instance function for one file's columns (built once, reused per row).</summary>
-    private sealed record Materializer(IReadOnlyList<JazminColumn> Columns, JazminSerializerSettings? Settings, Func<JazminRow, object> Create);
+    /// <summary>
+    /// A compiled row -> instance function for one column layout (names, types and order). Built once and reused per
+    /// row, and by later readers of files with the same columns: compiling costs far more than a lookup (issue #70).
+    /// The settings are an argument, so each call converts with its own.
+    /// </summary>
+    private sealed record Materializer(IReadOnlyList<JazminColumn> Columns, Func<object?[], JazminSerializerSettings?, object> Create);
 
     private Materializer? _lastMaterializer; // racy but safe: reference writes are atomic
+
+    private int _compilations;
+
+    /// <summary>Tests: how many row -> instance functions this map has compiled.</summary>
+    internal int Compilations => Volatile.Read(ref _compilations);
 
     /// <summary>Row -> new instance (or, preserving references, an instance read before).</summary>
     public object FromRow(IReadOnlyDictionary<string, object?> row, JazminSerializerSettings? settings, ReferenceResolver? references = null)
@@ -280,9 +289,11 @@ internal sealed class TypeMap
         if (row is JazminRow jazminRow && _defaultCtor is not null)
         {
             var materializer = _lastMaterializer;
-            if (materializer is null || !ReferenceEquals(materializer.Columns, jazminRow.Columns) || !ReferenceEquals(materializer.Settings, settings))
-                _lastMaterializer = materializer = BuildMaterializer(jazminRow.Columns, settings);
-            return materializer.Create(jazminRow);
+            if (materializer is null || !ReferenceEquals(materializer.Columns, jazminRow.Columns))
+                _lastMaterializer = materializer = materializer is not null && SameLayout(materializer.Columns, jazminRow.Columns)
+                    ? materializer with { Columns = jazminRow.Columns } // another reader, same columns: later rows match by reference
+                    : BuildMaterializer(jazminRow.Columns);
+            return materializer.Create(jazminRow.RawValues, settings);
         }
         if (_defaultCtor is not null)
         {
@@ -333,9 +344,10 @@ internal sealed class TypeMap
     /// step into one method: per row that is one call, with direct unboxing and property stores
     /// instead of a converter and a setter delegate per property.
     /// </summary>
-    private Materializer BuildMaterializer(IReadOnlyList<JazminColumn> columns, JazminSerializerSettings? settings)
+    private Materializer BuildMaterializer(IReadOnlyList<JazminColumn> columns)
     {
         var values = Expression.Parameter(typeof(object?[]), "values");
+        var settings = Expression.Parameter(typeof(JazminSerializerSettings), "settings");
         var item = Expression.Variable(_type, "item");
         var value = Expression.Variable(typeof(object), "value");
         var body = new List<Expression> { Expression.Assign(item, Expression.New(_defaultCtor!)) };
@@ -362,27 +374,31 @@ internal sealed class TypeMap
                 : Expression.Assign(property, Expression.Condition(isNull, Expression.Default(target), converted)));
         }
         body.Add(Expression.Convert(item, typeof(object)));
-        var compiled = Expression.Lambda<Func<object?[], object>>(Expression.Block(new[] { item, value }, body), values).Compile();
-        return new Materializer(columns, settings, row => compiled(row.RawValues));
+        var compiled = Expression.Lambda<Func<object?[], JazminSerializerSettings?, object>>(Expression.Block(new[] { item, value }, body), values, settings).Compile();
+        Interlocked.Increment(ref _compilations);
+        return new Materializer(columns, compiled);
     }
 
-    private (Func<DecodedColumn?[], int, object> Read, bool[] Wanted)? _lastColumnReader;
-    private IReadOnlyList<JazminColumn>? _lastColumnReaderColumns;
-    private JazminSerializerSettings? _lastColumnReaderSettings;
+    /// <summary>A compiled column reader for one column layout, as one record: read and written in one step.</summary>
+    private sealed record ColumnReaderCode(IReadOnlyList<JazminColumn> Columns, Func<DecodedColumn?[], int, JazminSerializerSettings?, object> Read, bool[] Wanted);
+
+    private ColumnReaderCode? _lastColumnReader; // racy but safe: reference writes are atomic
 
     /// <summary>
     /// A compiled reader that builds one instance from a decoded columnar chunk (typed arrays): no boxing, no row array.
     /// <c>Wanted</c> marks the columns the type maps, so other columns are not decoded at all.
-    /// Same conversions and null handling as the materializer. Null when the type has no parameterless constructor, or
-    /// rows can be of several types or refer to each other (those are read row by row).
+    /// Same conversions and null handling as the materializer, and like it reused for files with the same columns; the
+    /// settings are an argument. Null when the type has no parameterless constructor, or rows can be of several types or
+    /// refer to each other (those are read row by row). <c>Wanted</c> is shared: callers must not change it.
     /// </summary>
-    public (Func<DecodedColumn?[], int, object> Read, bool[] Wanted)? ColumnReader(IReadOnlyList<JazminColumn> columns, JazminSerializerSettings? settings)
+    public (Func<DecodedColumn?[], int, JazminSerializerSettings?, object> Read, bool[] Wanted)? ColumnReader(IReadOnlyList<JazminColumn> columns)
     {
         if (_defaultCtor is null || _derived is not null || _preserveReferences) return null;
-        if (_lastColumnReader is { } cached && ReferenceEquals(_lastColumnReaderColumns, columns) && ReferenceEquals(_lastColumnReaderSettings, settings)) return cached;
+        if (_lastColumnReader is { } cached && (ReferenceEquals(cached.Columns, columns) || SameLayout(cached.Columns, columns))) return (cached.Read, cached.Wanted);
 
         var cols = Expression.Parameter(typeof(DecodedColumn?[]), "columns");
         var row = Expression.Parameter(typeof(int), "row");
+        var settings = Expression.Parameter(typeof(JazminSerializerSettings), "settings");
         var item = Expression.Variable(_type, "item");
         var body = new List<Expression> { Expression.Assign(item, Expression.New(_defaultCtor)) };
         var wanted = new bool[columns.Count];
@@ -424,16 +440,15 @@ internal sealed class TypeMap
                 : Expression.IfThenElse(isNull, Expression.Assign(property, Expression.Default(target)), assign));
         }
         body.Add(Expression.Convert(item, typeof(object)));
-        var compiled = Expression.Lambda<Func<DecodedColumn?[], int, object>>(Expression.Block(new[] { item }, body), cols, row).Compile();
-        _lastColumnReaderColumns = columns;
-        _lastColumnReaderSettings = settings;
-        _lastColumnReader = (compiled, wanted);
-        return _lastColumnReader;
+        var compiled = Expression.Lambda<Func<DecodedColumn?[], int, JazminSerializerSettings?, object>>(Expression.Block(new[] { item }, body), cols, row, settings).Compile();
+        Interlocked.Increment(ref _compilations);
+        _lastColumnReader = new ColumnReaderCode(columns, compiled, wanted);
+        return (compiled, wanted);
     }
 
     private static readonly MethodInfo FromEpochMsMethod = typeof(Values).GetMethod(nameof(Values.FromEpochMs))!;
     /// <summary>Converts a typed value expression to the property type.</summary>
-    private static Expression TypedConvert(Expression read, JazminType columnType, Type target, JazminSerializerSettings? settings)
+    private static Expression TypedConvert(Expression read, JazminType columnType, Type target, ParameterExpression settings)
     {
         var t = Nullable.GetUnderlyingType(target) ?? target;
         Expression typed;
@@ -441,7 +456,7 @@ internal sealed class TypeMap
         else if (columnType == JazminType.Int && t == typeof(int)) typed = Expression.ConvertChecked(read, typeof(int));
         else if (columnType == JazminType.Float && t == typeof(float)) typed = Expression.Convert(read, typeof(float));
         else if (t == typeof(object)) typed = Expression.Convert(read, typeof(object));
-        else return Expression.Convert(Expression.Call(ConvertMethod, Expression.Convert(read, typeof(object)), Expression.Constant(target, typeof(Type)), Expression.Constant(settings, typeof(JazminSerializerSettings))), target);
+        else return Expression.Convert(Expression.Call(ConvertMethod, Expression.Convert(read, typeof(object)), Expression.Constant(target, typeof(Type)), settings), target);
         return typed.Type == target ? typed : Expression.Convert(typed, target);
     }
 
@@ -451,7 +466,7 @@ internal sealed class TypeMap
     /// A typed expression converting a non-null stored value to the property type: plain unboxing when
     /// the stored value already has that type, cheap casts for common numerics, otherwise Convert().
     /// </summary>
-    private static Expression ConvertExpression(ParameterExpression value, JazminType columnType, Type target, JazminSerializerSettings? settings)
+    private static Expression ConvertExpression(ParameterExpression value, JazminType columnType, Type target, ParameterExpression settings)
     {
         var t = Nullable.GetUnderlyingType(target) ?? target;
         var natural = columnType switch
@@ -469,8 +484,20 @@ internal sealed class TypeMap
         else if (t == natural) typed = Expression.Convert(value, t);
         else if (columnType == JazminType.Int && t == typeof(int)) typed = Expression.ConvertChecked(Expression.Convert(value, typeof(long)), typeof(int));
         else if (columnType == JazminType.Float && t == typeof(float)) typed = Expression.Convert(Expression.Convert(value, typeof(double)), typeof(float));
-        else return Expression.Convert(Expression.Call(ConvertMethod, value, Expression.Constant(target, typeof(Type)), Expression.Constant(settings, typeof(JazminSerializerSettings))), target);
+        else return Expression.Convert(Expression.Call(ConvertMethod, value, Expression.Constant(target, typeof(Type)), settings), target);
         return typed.Type == target ? typed : Expression.Convert(typed, target);
+    }
+
+    /// <summary>
+    /// Whether two files' columns have the same names, types and order: all the compiled code depends on (it binds each
+    /// property to a column position and converts from the column's type).
+    /// </summary>
+    private static bool SameLayout(IReadOnlyList<JazminColumn> a, IReadOnlyList<JazminColumn> b)
+    {
+        if (a.Count != b.Count) return false;
+        for (var i = 0; i < a.Count; i++)
+            if (a[i].Type != b[i].Type || !string.Equals(a[i].Name, b[i].Name, StringComparison.Ordinal)) return false;
+        return true;
     }
 
     private static int IndexOf(IReadOnlyList<JazminColumn> columns, string name)

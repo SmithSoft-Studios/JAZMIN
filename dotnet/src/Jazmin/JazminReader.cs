@@ -1303,13 +1303,16 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// Fast path for reading every row into objects: decodes only the columns the type maps (with read-ahead) and
     /// builds each instance from the typed column arrays. Only for files without access control; null otherwise.
     /// </summary>
-    internal IEnumerable<object>? DirectColumnRows(Func<IReadOnlyList<JazminColumn>, (Func<DecodedColumn?[], int, object> Read, bool[] Wanted)?> readerFor)
+    internal IEnumerable<object>? DirectColumnRows(
+        Func<IReadOnlyList<JazminColumn>, (Func<DecodedColumn?[], int, JazminSerializerSettings?, object> Read, bool[] Wanted)?> readerFor,
+        JazminSerializerSettings? settings)
     {
         if (_access is not null) return null;
-        return readerFor(_allColumns) is { } reader ? DirectColumnRowsIterator(reader.Read, reader.Wanted) : null;
+        return readerFor(_allColumns) is { } reader ? DirectColumnRowsIterator(reader.Read, reader.Wanted, settings) : null;
     }
 
-    private IEnumerable<object> DirectColumnRowsIterator(Func<DecodedColumn?[], int, object> read, bool[] wanted)
+    private IEnumerable<object> DirectColumnRowsIterator(Func<DecodedColumn?[], int, JazminSerializerSettings?, object> read, bool[] wanted,
+        JazminSerializerSettings? settings)
     {
         EnsureAllChunks();
         var deleted = 0;
@@ -1320,7 +1323,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 var rowId = _rowStart[ordinal] + r;
                 while (deleted < _deleted.Length && _deleted[deleted] < rowId) deleted++;
                 if (deleted < _deleted.Length && _deleted[deleted] == rowId) continue; // removed by an append
-                yield return read(columns, r);
+                yield return read(columns, r, settings);
             }
         }
     }

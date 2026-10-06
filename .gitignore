@@ -8,3 +8,6 @@ obj/
 TestResults/
 *.nupkg
 *.tgz
+# Profiling captures: large and regenerable (see dotnet/profiling/README.md)
+*.nettrace
+*.speedscope.json

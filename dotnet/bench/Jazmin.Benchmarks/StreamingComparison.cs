@@ -106,6 +106,12 @@ internal static class StreamingComparison
 
     public static void Run(string[] args)
     {
+        if (args.Length < 2)
+        {
+            Console.Error.WriteLine("Usage: dotnet run -c Release -f net10.0 --project bench/Jazmin.Benchmarks -- streaming path/to/statements.json [sections]");
+            Environment.ExitCode = 2;
+            return;
+        }
         var json = args[1];
         var sections = args.Length > 2 ? int.Parse(args[2]) : 5000;
         var jzm = Path.ChangeExtension(json, ".jzm");
