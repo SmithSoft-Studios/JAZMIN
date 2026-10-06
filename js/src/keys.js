@@ -94,6 +94,8 @@ const FINGERPRINT_SIZE = 8;
 export class JazminAccessKey {
   #secret;
   #fingerprint;
+  #id;
+  #text;
 
   constructor(secret, ownerFingerprint) {
     if (!(secret instanceof Uint8Array) || secret.length !== KEY_SIZE) throw new JazminKeyError('An access key secret must be 32 bytes');
@@ -114,7 +116,21 @@ export class JazminAccessKey {
     if (!checksum(body).equals(raw.subarray(KEY_SIZE + FINGERPRINT_SIZE))) {
       throw new JazminKeyError('Key checksum mismatch - the key text is mistyped or corrupted');
     }
-    return new JazminAccessKey(body.subarray(0, KEY_SIZE), body.subarray(KEY_SIZE));
+    const key = new JazminAccessKey(body.subarray(0, KEY_SIZE), body.subarray(KEY_SIZE));
+    key.#text = ACCESS_PREFIX + raw.toString('base64url'); // the text in its standard form: no need to hash again
+    return key;
+  }
+
+  /**
+   * Internal: a key from the owner directory, which the owner key decrypts and authenticates, so its checksum (there
+   * to catch mistyped keys) is not checked again. Each check is a hash; a file can grant thousands of keys.
+   */
+  static fromOwnerDirectory(text) {
+    const raw = typeof text === 'string' && text.startsWith(ACCESS_PREFIX) ? Buffer.from(text.slice(ACCESS_PREFIX.length), 'base64url') : null;
+    if (!raw || raw.length !== KEY_SIZE + FINGERPRINT_SIZE + CHECKSUM_SIZE) return JazminAccessKey.parse(text); // reported as for any key
+    const key = new JazminAccessKey(raw.subarray(0, KEY_SIZE), raw.subarray(KEY_SIZE, KEY_SIZE + FINGERPRINT_SIZE));
+    key.#text = ACCESS_PREFIX + raw.toString('base64url');
+    return key;
   }
 
   get secret() {
@@ -127,12 +143,16 @@ export class JazminAccessKey {
 
   /** Short public identifier (hex) of this key, safe to log. */
   get id() {
-    return slotId(this.#secret).toString('hex');
+    this.#id ??= slotId(this.#secret).toString('hex'); // a hash: worked out once
+    return this.#id;
   }
 
   toString() {
-    const body = Buffer.concat([this.#secret, this.#fingerprint]);
-    return ACCESS_PREFIX + Buffer.concat([body, checksum(body)]).toString('base64url');
+    if (this.#text === undefined) {
+      const body = Buffer.concat([this.#secret, this.#fingerprint]);
+      this.#text = ACCESS_PREFIX + Buffer.concat([body, checksum(body)]).toString('base64url');
+    }
+    return this.#text;
   }
 }
 

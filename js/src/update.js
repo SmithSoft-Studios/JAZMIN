@@ -89,7 +89,7 @@ export function updateUnlocked(path, options = {}) {
   let writer;
   try {
     const owner = reader[OWNER_GRANTS];
-    if (reader.access && !owner) throw new JazminKeyError("Only the file owner's master key can modify this file");
+    if (!owner && reader.access) throw new JazminKeyError("Only the file owner's master key can modify this file");
     if (!owner && (grant.length || revoke.length)) throw new JazminValidationError('grant/revoke apply only to access-controlled files');
     if (reader.tables.length > 1) {
       readers.length = 0;
@@ -231,6 +231,11 @@ export function carriedFiles(reader, addFiles, removeFiles) {
 }
 
 export function accessFor(owner, grant, revoke) {
+  const named = Object.fromEntries(Object.entries(owner.columnGroups).filter(([name]) => name !== '*'));
+  if (!grant.length && !revoke.length) {
+    // The file's grants as they are: no key ids needed (each is a hash, and a file can grant thousands of keys).
+    return { partitionBy: owner.partitionBy, columnGroups: named, grants: owner.grants.map((g) => (g.accessKey ? { ...g, key: g.accessKey } : g)) };
+  }
   const revoked = new Set(revoke.map((k) => {
     const parsed = parseAnyKey(k);
     if (!(parsed instanceof JazminAccessKey)) throw new JazminValidationError('revoke expects access keys (jza1-...)');
@@ -238,11 +243,10 @@ export function accessFor(owner, grant, revoke) {
   }));
   const grants = new Map();
   for (const g of owner.grants) {
-    const id = JazminAccessKey.parse(g.key).id;
-    if (!revoked.has(id)) grants.set(id, g);
+    const id = (g.accessKey ?? JazminAccessKey.parse(g.key)).id;
+    if (!revoked.has(id)) grants.set(id, g.accessKey ? { ...g, key: g.accessKey } : g); // the writer then needs not parse it again
   }
   for (const g of grant) grants.set(parseAnyKey(g.key).id, g); // re-granting replaces the previous grant
-  const named = Object.fromEntries(Object.entries(owner.columnGroups).filter(([name]) => name !== '*'));
   return { partitionBy: owner.partitionBy, columnGroups: named, grants: [...grants.values()] };
 }
 
@@ -252,7 +256,8 @@ export function accessFor(owner, grant, revoke) {
  * expiry, offline to online) needs update() or compact(), which re-lock the file with fresh secrets.
  */
 export function checkAppendGrants(existing, grants, now) {
-  const before = new Map(existing.map((g) => [JazminAccessKey.parse(g.key).id, g]));
+  if (!grants.length) return;
+  const before = new Map(existing.map((g) => [(g.accessKey ?? JazminAccessKey.parse(g.key)).id, g]));
   const list = (v) => (v === undefined || v === '*' ? '*' : Array.isArray(v) ? v.map(String) : null);
   const covers = (wider, narrower) => wider === '*' || (narrower !== '*' && narrower.every((x) => wider.includes(x)));
   for (const g of grants) {

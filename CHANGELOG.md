@@ -46,6 +46,20 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     init"`). It didn't reproduce locally, so CI will confirm the fix.
 
 ### Changed
+- **Appends to shared files no longer slow down with the number of people
+  (JS and .NET).** A one-record append to a file with 1,000 partitions: JS
+  57 -> 16 ms, .NET 41 -> 23 ms; with 100: JS 16 -> 12 ms, .NET 16 -> 14 ms.
+  - **No chunk directories read:** an append read every partition's. It
+    needs only the partition list, and, in a sorted table, the last chunk's
+    partition, which the chunk map names.
+  - **Each person's key handled once:** an append parsed every grant's key
+    three or four times, checking its checksum and working out its id each
+    time (two hashes). Keys from the owner directory, which the owner key
+    authenticates, are parsed once without the checksum; a key's id and
+    text are kept once worked out; ids are not needed at all when the
+    append changes no grants.
+  - **Partition ids worked out when needed:** each is a keyed hash, and an
+    append rarely needs them all.
 - **Owner lookups in shared files no longer read every partition (JS and
   .NET; a new optional part of the format, spec 7.6.5).** The file keeps a
   chunk map for the owner: which partition each chunk of records is in. An

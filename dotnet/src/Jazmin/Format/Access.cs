@@ -76,7 +76,8 @@ internal sealed partial class AccessConfig
             if (grant.Columns is not null)
                 foreach (var c in grant.Columns)
                     if (!groupNames.Contains(c)) throw new JazminValidationException($"Grant: unknown column group '{c}'");
-            if (!seen.Add(grant.Key.Id)) throw new JazminValidationException($"The same access key is granted twice ({grant.Key.Id})");
+            // A key's text in its standard form is as unique as its id, and needs no hashing when the key was parsed from it.
+            if (!seen.Add(grant.Key.ToString())) throw new JazminValidationException($"The same access key is granted twice ({grant.Key.Id})");
             var expires = grant.Expires ?? (grant.ExpiresIn is { } span ? now + span : null);
             if (expires is { } end && end <= now)
             {
@@ -113,18 +114,42 @@ internal sealed class FileSecrets
     public byte[] Owner { get; }
     public byte[] IdKey { get; }
 
-    /// <summary>Partition id -> name, for partitions present in the file (in order of first appearance).</summary>
-    public Dictionary<string, string> PartitionNames { get; } = new(StringComparer.Ordinal);
+    private readonly List<string> _names = new();
+    private readonly HashSet<string> _known = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, string> _ids = new(StringComparer.Ordinal); // name -> id, worked out once
+    private Dictionary<string, string>? _byId; // id -> name of every recorded partition, made when first needed
 
-    /// <summary>Opaque, owner-keyed id (base64url of 12 bytes) of a partition or file-group name.</summary>
-    public string PartitionId(string name) => AccessCrypto.GroupId(IdKey, name);
+    /// <summary>Names of the partitions present in the file, in the order they were recorded.</summary>
+    public IReadOnlyList<string> Names => _names;
+
+    /// <summary>Partition id -> name, for partitions present in the file (in order of first appearance).</summary>
+    public Dictionary<string, string> PartitionNames => _byId ??= _names.ToDictionary(PartitionId, n => n, StringComparer.Ordinal);
+
+    /// <summary>Opaque, owner-keyed id (base64url of 12 bytes) of a partition or file-group name: an HMAC, worked out once.</summary>
+    public string PartitionId(string name)
+    {
+        if (!_ids.TryGetValue(name, out var id)) _ids[name] = id = AccessCrypto.GroupId(IdKey, name);
+        return id;
+    }
+
+    /// <summary>Records partitions already in the file. Their ids are worked out only when needed: an append rarely needs them all.</summary>
+    public void RecordPartitions(IEnumerable<string> names)
+    {
+        foreach (var name in names) Record(name);
+    }
 
     /// <summary>Records a partition name and returns its id.</summary>
     public string AddPartition(string name)
     {
-        var id = PartitionId(name);
-        PartitionNames.TryAdd(id, name);
-        return id;
+        Record(name);
+        return PartitionId(name);
+    }
+
+    private void Record(string name)
+    {
+        if (!_known.Add(name)) return;
+        _names.Add(name);
+        _byId?.TryAdd(PartitionId(name), name);
     }
 
     private readonly Dictionary<string, byte[]> _partitionSecrets = new(StringComparer.Ordinal); // derived once per partition

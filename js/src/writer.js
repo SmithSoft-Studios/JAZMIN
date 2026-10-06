@@ -315,7 +315,7 @@ export class JazminWriter {
       this.#access = normalizeGrants(access.grants, new Set(this.#allGroupNames), this.#options.now);
       // Same file, same secrets when appending: new sections must be readable with those already in use.
       this.#secrets = cont ? new FileSecrets(this.#salt, cont.ownerSecrets.header, cont.ownerSecrets.owner) : new FileSecrets(this.#salt);
-      for (const name of cont?.directory.partitions ?? []) this.#secrets.addPartition(name);
+      this.#secrets.recordPartitions(cont?.directory.partitions ?? []);
     } else {
       if (cont) {
         this.#keys = cont.keys;
@@ -940,7 +940,7 @@ export class JazminWriter {
    */
   #ownerDirectoryText() {
     return JSON.stringify({
-      partitions: [...this.#secrets.partitionNames.values()],
+      partitions: [...this.#secrets.names],
       ...(this.#fileGroupNames.length ? { fileGroups: this.#fileGroupNames } : {}),
       grants: this.#access.grants.map((g) => ({
         key: g.key.toString(), rows: g.rows, columns: g.columns, ...(g.label === undefined ? {} : { label: g.label }),

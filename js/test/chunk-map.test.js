@@ -146,3 +146,18 @@ test('chunk map: each table of a file with several has its own', () => {
     first.close();
   }
 });
+
+test('chunk map: an append to a sorted shared file checks the order against the last row, with the map and without', () => {
+  for (const options of [{}, { [CHUNK_MAP]: false }]) {
+    const file = tmp('sorted.jzm');
+    write(file, Array.from({ length: 1000 }, (_, i) => row(i)), { columns, key: owner, access, chunkRows: 64, sortedBy: ['id'], ...options });
+    append(file, { key: owner, insert: [row(1000, 3), row(1001, 5)] }); // after the last row: in order
+    assert.throws(() => append(file, { key: owner, insert: [row(500, 1)] }), /must sort after the existing rows/);
+    const reader = open(file, { key: owner });
+    try {
+      assert.equal(reader.rowCount, 1002);
+    } finally {
+      reader.close();
+    }
+  }
+});

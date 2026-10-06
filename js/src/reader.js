@@ -439,6 +439,7 @@ export class JazminReader {
   #indexProvider = { get: (column, kind) => this.#index(column, kind) };
   #readAheads = []; // ranges read ahead (#readAhead) while they are held
   #map; // the owner's chunk map (#chunkMap): undefined until looked up, null when there is none
+  #grantKeys = new Map(); // grant key text -> parsed access key (owner)
   #cachedChunk = { ordinal: -1, wanted: null, chunk: null }; // the last chunk decoded, and the columns decoded (null: all)
   #sortStatsComplete; // computed on first sorted scan
   #flags = 0;
@@ -1206,7 +1207,7 @@ export class JazminReader {
     }
     if (isOwner) {
       info.grants = this.#ownerDirectory().grants.map((g) => ({
-        keyId: JazminAccessKey.parse(g.key).id, rows: g.rows, columns: g.columns, ...(g.label === undefined ? {} : { label: g.label }),
+        keyId: this.#grantKey(g.key).id, rows: g.rows, columns: g.columns, ...(g.label === undefined ? {} : { label: g.label }),
         mode: g.mode ?? 'offline',
         ...(g.expires ? { expires: g.expires } : {}),
       }));
@@ -1349,7 +1350,20 @@ export class JazminReader {
   get [OWNER_GRANTS]() {
     if (!this.#access?.isOwner) return null;
     const columnGroups = Object.fromEntries(this.#groups.map((g) => [g.name, g.cols.map((i) => this.#columns[i].name)]));
-    return { partitionBy: this.#table.partitionBy || undefined, columnGroups, grants: this.#ownerDirectory().grants };
+    // Each grant with its key parsed (accessKey: its id is worked out when first asked for), so callers need not parse
+    // every key again.
+    const grants = this.#ownerDirectory().grants.map((g) => ({ ...g, accessKey: this.#grantKey(g.key) }));
+    return { partitionBy: this.#table.partitionBy || undefined, columnGroups, grants };
+  }
+
+  /** A grant's access key, parsed once per reader (a parse checks a hash, and the id is another). */
+  #grantKey(text) {
+    let key = this.#grantKeys.get(text);
+    if (!key) {
+      key = JazminAccessKey.fromOwnerDirectory(text);
+      this.#grantKeys.set(text, key);
+    }
+    return key;
   }
 
   /** Reads and decodes a section by reference, checking its digest when it has one (spec 7.6.5). */
@@ -1952,9 +1966,17 @@ export class JazminReader {
 
   /** Internal: what the appender needs to continue this file. Owner (or the single key / password) only. */
   get [APPEND_STATE]() {
-    this.#ensureAllChunks();
-    const lastOrdinal = this.#visibleChunks[this.#visibleChunks.length - 1];
-    const last = lastOrdinal === undefined ? null : this.#chunk(lastOrdinal); // its last row, even if deleted, bounds the sort order
+    // An append needs every partition listed (for their segment counts), not every chunk directory read: with many
+    // partitions, reading them all would cost more than the append. In a sorted table it also needs the last chunk's
+    // last row, which bounds the sort order: only that chunk's partition is read when the chunk map names it.
+    this.#listAllPartitions();
+    let last = null;
+    if (this.#table.sortedBy.length && this.#table.chunkCount > 0) {
+      const lastOrdinal = this.#table.chunkCount - 1;
+      const map = this.#access?.isOwner && !this.#allLoaded ? this.#chunkMap() : null;
+      if (!(map && this.#loadPartitionsOf([map.rowStarts[lastOrdinal]]))) this.#ensureAllChunks();
+      if (this.#loaded[lastOrdinal]) last = this.#chunk(lastOrdinal); // its last row, even if deleted, bounds the sort order
+    }
     const isOwner = this.#access?.isOwner;
     return {
       header: this.#header,

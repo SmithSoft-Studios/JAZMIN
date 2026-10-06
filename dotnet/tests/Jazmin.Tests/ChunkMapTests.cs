@@ -135,6 +135,30 @@ public sealed class ChunkMapTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void An_append_to_a_sorted_shared_file_checks_the_order_against_the_last_row(bool chunkMap)
+    {
+        var path = Path.Combine(_dir, $"sorted-{chunkMap}.jzm");
+        using (var writer = JazminWriter.Create(path, Columns, new JazminWriteOptions
+        {
+            Key = Owner,
+            ChunkRows = 64,
+            ChunkMap = chunkMap,
+            SortedBy = ["id"],
+            Access = new JazminAccessOptions { PartitionBy = "person", Grants = [new JazminGrant(Owner.CreateAccessKey()) { Rows = [Person(0)] }] },
+        }))
+        {
+            for (var i = 0; i < 1000; i++) writer.WriteRow(Row(i));
+        }
+        JazminFile.Append(path, new JazminAppend { Key = Owner, Insert = [Row(1000, 3), Row(1001, 5)] }); // after the last row: in order
+        var error = Assert.Throws<JazminValidationException>(() => JazminFile.Append(path, new JazminAppend { Key = Owner, Insert = [Row(500, 1)] }));
+        Assert.Contains("must sort after the existing rows", error.Message);
+        using var reader = JazminReader.Open(path, new JazminReadOptions { Key = Owner });
+        Assert.Equal(1002, reader.RowCount);
+    }
+
     [Fact]
     public void Each_table_of_a_file_with_several_has_its_own()
     {

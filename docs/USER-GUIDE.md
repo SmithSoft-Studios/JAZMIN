@@ -1280,6 +1280,10 @@ records:
 Files written before the map existed get one at their next compaction or
 full rewrite; until then they read every partition's chunk directory.
 
+**Appends** don't read the partitions either: a one-record append to the same
+file takes about the same time with 1,000 partitions as with 100 (JavaScript
+16 and 12 ms, .NET 23 and 14 ms; before, 57 and 16 ms, and 41 and 16 ms).
+
 Opening reads only what the key needs: a short signed list of key-slot pages,
 the one page that holds its slot, the header, and its own partitions' chunk
 directories. So a client's open stays about the same however many keys the

@@ -222,7 +222,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                     throw new JazminValidationException($"Access key {grant.Key.Id} was issued by a different owner key");
             // Same file, same secrets when appending: new sections must be readable with those already in use.
             _secrets = cont is not null ? new FileSecrets(_salt, cont.OwnerSecrets!.Header, cont.OwnerSecrets.Owner) : new FileSecrets(_salt);
-            foreach (var name in cont?.Directory?["partitions"]?.AsArray() ?? []) _secrets.AddPartition((string)name!);
+            _secrets.RecordPartitions((cont?.Directory?["partitions"]?.AsArray() ?? []).Select(name => (string)name!));
         }
         else
         {
@@ -1058,7 +1058,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     {
         var directory = new JsonObject
         {
-            ["partitions"] = new JsonArray(_secrets!.PartitionNames.Values.Select(n => (JsonNode?)JsonValue.Create(n)).ToArray()),
+            ["partitions"] = new JsonArray(_secrets!.Names.Select(n => (JsonNode?)JsonValue.Create(n)).ToArray()),
         };
         if (_fileGroupNames.Count > 0) directory["fileGroups"] = new JsonArray(_fileGroupNames.Select(n => (JsonNode?)JsonValue.Create(n)).ToArray());
         directory["grants"] = new JsonArray(_access!.Grants.Select(g =>

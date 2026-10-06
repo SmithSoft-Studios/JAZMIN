@@ -57,7 +57,7 @@ function appendUnlocked(path, options) {
   let result;
   try {
     const owner = reader[OWNER_GRANTS];
-    if (reader.access && !owner) throw new JazminKeyError("Only the file owner's master key can modify this file");
+    if (!owner && reader.access) throw new JazminKeyError("Only the file owner's master key can modify this file");
     if (!owner && grant.length) throw new JazminValidationError('grant applies only to access-controlled files');
     if (owner) checkAppendGrants(owner.grants, grant, now);
 

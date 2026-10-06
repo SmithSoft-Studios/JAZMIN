@@ -146,7 +146,7 @@ public static class JazminFile
         try
         {
             var ownerGrants = reader.OwnerGrants;
-            if (reader.Access is not null && ownerGrants is null) throw new JazminKeyException("Only the file owner's master key can modify this file");
+            if (ownerGrants is null && reader.Access is not null) throw new JazminKeyException("Only the file owner's master key can modify this file");
             if (ownerGrants is null && (update.Grant.Count > 0 || update.Revoke.Count > 0))
                 throw new JazminValidationException("Grant/Revoke apply only to access-controlled files");
             if (reader.Tables.Count > 1)
@@ -318,7 +318,7 @@ public static class JazminFile
         try
         {
             var ownerGrants = reader.OwnerGrants;
-            if (reader.Access is not null && ownerGrants is null) throw new JazminKeyException("Only the file owner's master key can modify this file");
+            if (ownerGrants is null && reader.Access is not null) throw new JazminKeyException("Only the file owner's master key can modify this file");
             if (ownerGrants is null && append.Grant.Count > 0) throw new JazminValidationException("Grant applies only to access-controlled files");
             if (ownerGrants is not null) CheckAppendGrants(ownerGrants, append.Grant, append.Now ?? DateTimeOffset.UtcNow);
 
@@ -495,7 +495,7 @@ public static class JazminFile
     /// </summary>
     public static string IssueUnlockToken(string path, JazminKey ownerKey, string keyId, DateTimeOffset? now = null)
     {
-        var grant = OwnerGrantList(path, ownerKey).FirstOrDefault(g => JazminAccessKey.Parse((string)g!["key"]!).Id == keyId)
+        var grant = OwnerGrantList(path, ownerKey).FirstOrDefault(g => JazminAccessKey.FromOwnerDirectory((string)g!["key"]!).Id == keyId)
             ?? throw new JazminValidationException($"Key {keyId} has no grant in this file");
         if ((string?)grant["mode"] != "online") throw new JazminValidationException($"Key {keyId} is an offline grant - it needs no unlock token");
         if (grant["expires"] is { } expires && (now ?? DateTimeOffset.UtcNow) > DateTimeOffset.Parse((string)expires!, CultureInfo.InvariantCulture))
@@ -511,9 +511,9 @@ public static class JazminFile
     public static JazminAccessKey AccessKeyOf(string path, JazminKey ownerKey, string keyId)
     {
         var grant = OwnerGrantList(path, ownerKey, "Access keys are listed only in access-controlled files, and only for the owner key")
-            .FirstOrDefault(g => JazminAccessKey.Parse((string)g!["key"]!).Id == keyId)
+            .FirstOrDefault(g => JazminAccessKey.FromOwnerDirectory((string)g!["key"]!).Id == keyId)
             ?? throw new JazminValidationException($"Key {keyId} has no grant in this file");
-        return JazminAccessKey.Parse((string)grant["key"]!);
+        return JazminAccessKey.FromOwnerDirectory((string)grant["key"]!);
     }
 
     /// <summary>Key service: every online grant's unlock token, for services that store them.</summary>
@@ -521,7 +521,7 @@ public static class JazminFile
         OwnerGrantList(path, ownerKey)
             .Where(g => (string?)g!["mode"] == "online" && g["share"] is not null)
             .Select(g => new JazminUnlockTokenInfo(
-                JazminAccessKey.Parse((string)g!["key"]!).Id,
+                JazminAccessKey.FromOwnerDirectory((string)g!["key"]!).Id,
                 (string?)g["label"],
                 g["expires"] is { } e ? DateTimeOffset.Parse((string)e!, CultureInfo.InvariantCulture) : null,
                 UnlockTokens.Encode(Convert.FromBase64String((string)g["share"]!))))
@@ -639,7 +639,8 @@ public static class JazminFile
             wider is null || (narrower is not null && narrower.All(wider.Contains));
         static bool FilesCover(IReadOnlyList<string>? wider, IReadOnlyList<string>? narrower) =>
             narrower is null || narrower.Count == 0 || (wider is not null && (wider.Contains("*") || (!narrower.Contains("*") && narrower.All(wider.Contains))));
-        var before = ownerGrants.ToDictionary(n => JazminAccessKey.Parse((string)n!["key"]!).Id, n => n!);
+        if (grants.Count == 0) return;
+        var before = ownerGrants.ToDictionary(n => JazminAccessKey.FromOwnerDirectory((string)n!["key"]!).Id, n => n!);
         foreach (var grant in grants)
         {
             if (!before.TryGetValue(grant.Key.Id, out var old)) continue;
@@ -663,13 +664,17 @@ public static class JazminFile
     internal static JazminAccessOptions AccessFor(JazminReader reader, JsonArray ownerGrants, JazminUpdate update)
     {
         var (partitionBy, columnGroups) = reader.AccessLayout;
+        // With no grants or revokes, the file's grants are kept as they are: no key ids needed (each is a hash, and a file
+        // can grant thousands of keys). Otherwise grants are matched by id.
+        var byId = update.Revoke.Count > 0 || update.Grant.Count > 0;
         var revoked = update.Revoke.Select(k => k.Id).ToHashSet();
         var grants = new Dictionary<string, JazminGrant>();
+        var n = 0;
         foreach (var node in ownerGrants)
         {
-            var key = JazminAccessKey.Parse((string)node!["key"]!);
-            if (revoked.Contains(key.Id)) continue;
-            grants[key.Id] = new JazminGrant(key)
+            var key = JazminAccessKey.FromOwnerDirectory((string)node!["key"]!);
+            if (byId && revoked.Contains(key.Id)) continue;
+            grants[byId ? key.Id : (n++).ToString(CultureInfo.InvariantCulture)] = new JazminGrant(key)
             {
                 Rows = JazminReader.ListOrAll(node["rows"]),
                 Columns = JazminReader.ListOrAll(node["columns"]),

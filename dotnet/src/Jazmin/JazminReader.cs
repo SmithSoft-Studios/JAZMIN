@@ -1096,7 +1096,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 directory["partitions"]!.AsArray().Select(n => (string)n!).ToList(),
                 columnGroups,
                 directory["grants"]!.AsArray().Select(g => new JazminGrantInfo(
-                    JazminAccessKey.Parse((string)g!["key"]!).Id, ListOrAll(g["rows"]), ListOrAll(g["columns"]), (string?)g["label"])
+                    JazminAccessKey.FromOwnerDirectory((string)g!["key"]!).Id, ListOrAll(g["rows"]), ListOrAll(g["columns"]), (string?)g["label"])
                 {
                     Mode = (string?)g["mode"] == "online" ? JazminGrantMode.Online : JazminGrantMode.Offline,
                     Expires = g["expires"] is { } e ? DateTimeOffset.Parse((string)e!, CultureInfo.InvariantCulture) : null,
@@ -1997,16 +1997,25 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <summary>Internal: what <see cref="JazminFile.Append"/> needs to continue this file (owner / single key only).</summary>
     internal AppendStateInfo AppendState()
     {
-        EnsureAllChunks();
+        // An append needs every partition listed (for their segment counts), not every chunk directory read: with many
+        // partitions, reading them all would cost more than the append. In a sorted table it also needs the last chunk's
+        // last row, which bounds the sort order: only that chunk's partition is read when the chunk map names it.
+        ListAllPartitions();
         object?[]? lastRow = null;
-        if (_visibleChunks.Length > 0)
+        var lastOrdinal = _table.ChunkCount - 1;
+        if (_table.SortedBy.Count > 0 && lastOrdinal >= 0)
+        {
+            var map = _access is { IsOwner: true } && !_allLoaded ? ChunkMapInfo() : null;
+            if (!(map is not null && LoadPartitionsOf([map.RowStarts[lastOrdinal]]))) EnsureAllChunks();
+        }
+        if (lastOrdinal >= 0 && _table.SortedBy.Count > 0 && _loaded[lastOrdinal])
         {
             var saved = _deleted;
             _deleted = Array.Empty<long>(); // the physically last row, even if deleted, bounds the sort order
             _cachedOrdinal = -1;
             try
             {
-                var rows = ChunkRows(_visibleChunks[^1]);
+                var rows = ChunkRows(lastOrdinal);
                 lastRow = rows.Length > 0 ? rows[^1] : null;
             }
             finally

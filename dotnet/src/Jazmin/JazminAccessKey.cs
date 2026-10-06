@@ -19,6 +19,8 @@ public sealed class JazminAccessKey
 
     private readonly byte[] _secret;
     private readonly byte[] _fingerprint;
+    private string? _id; // each a hash: worked out once
+    private string? _text;
 
     public JazminAccessKey(ReadOnlySpan<byte> secret, ReadOnlySpan<byte> ownerFingerprint)
     {
@@ -45,7 +47,27 @@ public sealed class JazminAccessKey
         var body = raw.AsSpan(0, SecretSize + FingerprintSize);
         if (!SHA256.HashData(body)[..ChecksumSize].AsSpan().SequenceEqual(raw.AsSpan(SecretSize + FingerprintSize)))
             throw new JazminKeyException("Key checksum mismatch - the key text is mistyped or corrupted");
-        return new JazminAccessKey(body[..SecretSize], body[SecretSize..]);
+        // The text in its standard form: no need to hash again.
+        return new JazminAccessKey(body[..SecretSize], body[SecretSize..]) { _text = Prefix + Base64Url.Encode(raw) };
+    }
+
+    /// <summary>
+    /// A key from the owner directory, which the owner key decrypts and authenticates, so its checksum (there to catch
+    /// mistyped keys) is not checked again. Each check is a hash; a file can grant thousands of keys.
+    /// </summary>
+    internal static JazminAccessKey FromOwnerDirectory(string text)
+    {
+        byte[] raw;
+        try
+        {
+            raw = text is not null && text.StartsWith(Prefix, StringComparison.Ordinal) ? Base64Url.Decode(text[Prefix.Length..]) : [];
+        }
+        catch (FormatException)
+        {
+            raw = [];
+        }
+        if (raw.Length != SecretSize + FingerprintSize + ChecksumSize) return Parse(text!); // reported as for any key
+        return new JazminAccessKey(raw.AsSpan(0, SecretSize), raw.AsSpan(SecretSize, FingerprintSize)) { _text = Prefix + Base64Url.Encode(raw) };
     }
 
     internal ReadOnlySpan<byte> Secret => _secret;
@@ -53,14 +75,15 @@ public sealed class JazminAccessKey
     internal ReadOnlySpan<byte> OwnerFingerprint => _fingerprint;
 
     /// <summary>Short public identifier (hex) of this key, safe to log.</summary>
-    public string Id => Convert.ToHexString(OwnerSigning.SlotId(_secret)).ToLowerInvariant();
+    public string Id => _id ??= Convert.ToHexString(OwnerSigning.SlotId(_secret)).ToLowerInvariant();
 
     public override string ToString()
     {
+        if (_text is not null) return _text;
         var body = new byte[SecretSize + FingerprintSize];
         _secret.CopyTo(body, 0);
         _fingerprint.CopyTo(body, SecretSize);
-        return Prefix + Base64Url.Encode([.. body, .. SHA256.HashData(body)[..ChecksumSize]]);
+        return _text = Prefix + Base64Url.Encode([.. body, .. SHA256.HashData(body)[..ChecksumSize]]);
     }
 }
 

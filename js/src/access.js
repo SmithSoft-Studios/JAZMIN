@@ -104,10 +104,12 @@ export function normalizeGrants(list, groupNames, now) {
     };
   });
   const expiredGrants = grants.filter((g) => g.expires !== undefined && g.expires <= now).length;
+  // A key's text in its standard form is as unique as its id, and needs no hashing when the key was parsed from it.
   const seen = new Set();
   for (const g of grants) {
-    if (seen.has(g.key.id)) throw new JazminValidationError(`The same access key is granted twice (${g.key.id})`);
-    seen.add(g.key.id);
+    const text = g.key.toString();
+    if (seen.has(text)) throw new JazminValidationError(`The same access key is granted twice (${g.key.id})`);
+    seen.add(text);
   }
   return { grants: grants.filter((g) => g.expires === undefined || g.expires > now), expiredGrants };
 }
@@ -124,21 +126,47 @@ export class FileSecrets {
     this.header = header;
     this.owner = owner;
     this.idKey = hkdf(owner, salt, 'JAZMIN/1/partition-id');
-    this.partitionNames = new Map(); // partition id (base64url) -> name, for partitions present in the file
     this.columnSecrets = new Map();
     this.partitionSecrets = new Map(); // derived once per partition
+    this.names = []; // partition names present in the file, in the order they were recorded
+    this.#known = new Set();
+    this.#ids = new Map(); // name -> id, worked out once
+    this.#byId = null; // id -> name of every recorded partition, made when first needed
   }
 
-  /** Opaque, owner-keyed id (base64url of 12 bytes) for a partition or file-group name. */
+  #known;
+  #ids;
+  #byId;
+
+  /** Opaque, owner-keyed id (base64url of 12 bytes) for a partition or file-group name: an HMAC, worked out once. */
   partitionId(name) {
-    return groupId(this.idKey, name);
+    let id = this.#ids.get(name);
+    if (id === undefined) this.#ids.set(name, (id = groupId(this.idKey, name)));
+    return id;
+  }
+
+  /** Records partitions already in the file. Their ids are worked out only when needed: an append rarely needs them all. */
+  recordPartitions(names) {
+    for (const name of names) this.#record(name);
   }
 
   /** Records a partition name and returns its id. */
   addPartition(name) {
-    const id = this.partitionId(name);
-    this.partitionNames.set(id, name);
-    return id;
+    this.#record(name);
+    return this.partitionId(name);
+  }
+
+  #record(name) {
+    if (this.#known.has(name)) return;
+    this.#known.add(name);
+    this.names.push(name);
+    this.#byId?.set(this.partitionId(name), name);
+  }
+
+  /** Partition id (base64url) -> name, for every partition present in the file, in the order recorded. */
+  get partitionNames() {
+    if (!this.#byId) this.#byId = new Map(this.names.map((name) => [this.partitionId(name), name]));
+    return this.#byId;
   }
 
   partitionSecret(id) {

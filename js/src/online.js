@@ -1,7 +1,7 @@
 // Owner-side tools for online grants (spec section 7.7): a key service issues unlock tokens.
 import { JazminAccessExpiredError, JazminValidationError } from './errors.js';
 import { toMs } from './expiry.js';
-import { JazminAccessKey, encodeUnlockToken, parseAnyKey } from './keys.js';
+import { encodeUnlockToken, parseAnyKey } from './keys.js';
 import { JazminReader, OWNER_GRANTS } from './reader.js';
 import { DRAFT_MAGIC, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, MAGIC, PREAMBLE_SIZE } from './constants.js';
 import { JazminFormatError } from './errors.js';
@@ -25,9 +25,9 @@ function ownerGrants(path, ownerKey, need = 'Unlock tokens exist only for access
 export function accessKeyOf(path, ownerKey, accessKey) {
   const keyId = typeof accessKey === 'string' && /^[0-9a-f]{16}$/.test(accessKey) ? accessKey : parseAnyKey(accessKey).id;
   const { grants } = ownerGrants(path, ownerKey, 'Access keys are listed only in access-controlled files, and only for the owner key');
-  const grant = grants.find((g) => JazminAccessKey.parse(g.key).id === keyId);
+  const grant = grants.find((g) => g.accessKey.id === keyId);
   if (!grant) throw new JazminValidationError(`Key ${keyId} has no grant in this file`);
-  return JazminAccessKey.parse(grant.key);
+  return grant.accessKey;
 }
 
 /**
@@ -39,7 +39,7 @@ export function listUnlockTokens(path, ownerKey) {
   return ownerGrants(path, ownerKey).grants
     .filter((g) => g.mode === 'online' && g.share)
     .map((g) => ({
-      keyId: JazminAccessKey.parse(g.key).id,
+      keyId: g.accessKey.id,
       ...(g.label === undefined ? {} : { label: g.label }),
       ...(g.expires ? { expires: g.expires } : {}),
       token: encodeUnlockToken(Buffer.from(g.share, 'base64')),
@@ -53,7 +53,7 @@ export function listUnlockTokens(path, ownerKey) {
  */
 export function issueUnlockToken(path, ownerKey, accessKey, { now } = {}) {
   const keyId = typeof accessKey === 'string' && /^[0-9a-f]{16}$/.test(accessKey) ? accessKey : parseAnyKey(accessKey).id;
-  const grant = ownerGrants(path, ownerKey).grants.find((g) => JazminAccessKey.parse(g.key).id === keyId);
+  const grant = ownerGrants(path, ownerKey).grants.find((g) => g.accessKey.id === keyId);
   if (!grant) throw new JazminValidationError(`Key ${keyId} has no grant in this file`);
   if (grant.mode !== 'online') throw new JazminValidationError(`Key ${keyId} is an offline grant - it needs no unlock token`);
   if (grant.expires && !(toMs(now) <= Date.parse(grant.expires))) { // an unreadable date counts as expired

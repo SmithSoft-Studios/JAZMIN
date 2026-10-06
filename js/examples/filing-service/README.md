@@ -154,21 +154,23 @@ rest.
 
 | Records in the shared file | 10,000 | 100,000 | 250,000 |
 |---|---:|---:|---:|
-| File 1 new record | 31 ms, 5 MB | 33 ms, 5 MB | 26 ms, 5 MB |
-| File 50 new records | 28 ms, 5 MB | 31 ms, 5 MB | 25 ms, 5 MB |
-| Change 50 records | 29 ms, 7 MB | 36 ms, 9 MB | 35 ms, 8 MB |
-| The same 50 changes again (nothing changes) | 14 ms, 4 MB | 13 ms, 4 MB | 16 ms, 5 MB |
-| File 10 records with a 200 KB photo each | 75 ms, 16 MB | 78 ms, 17 MB | 83 ms, 20 MB |
-| Change a record to drop its photo | 36 ms, 11 MB | 58 ms, 10 MB | 100 ms, 12 MB |
-| Compact and regroup after 50 appends | 75 ms, 12 MB | 259 ms, 56 MB | 534 ms, 115 MB |
+| File 1 new record | 21 ms, 3 MB | 21 ms, 3 MB | 24 ms, 3 MB |
+| File 50 new records | 24 ms, 4 MB | 25 ms, 4 MB | 18 ms, 3 MB |
+| Change 50 records | 25 ms, 5 MB | 27 ms, 5 MB | 35 ms, 6 MB |
+| The same 50 changes again (nothing changes) | 15 ms, 4 MB | 14 ms, 4 MB | 14 ms, 6 MB |
+| File 10 records with a 200 KB photo each | 70 ms, 19 MB | 74 ms, 19 MB | 100 ms, 19 MB |
+| Change a record to drop its photo | 31 ms, 7 MB | 51 ms, 11 MB | 82 ms, 13 MB |
+| Compact and regroup after 50 appends | 66 ms, 13 MB | 236 ms, 54 MB | 520 ms, 100 MB |
 
 What the numbers mean:
-- **A batch costs about 25 to 35 ms, whatever the size of the shared file.**
+- **A batch costs about 20 to 25 ms, whatever the size of the shared file,
+  and about the same with 1,000 people as with 100.**
   An append writes only the change: a batch grows the file by 1 to 2 KB,
   plus its photos.
 - **Most of that time is fixed work per batch:**
-  - the append: writing safely to disk, signing the file and re-sealing the
-    key slots, about 13 ms;
+  - the append: writing safely to disk and signing the file, about 12 ms.
+    It reads no partition's chunk directory, and handles each person's key
+    once, so it doesn't grow with the number of people;
   - looking up the batch's ids, about 2 ms: the owner's chunk map says
     which partition holds each record, so only that partition's chunk
     directory is read, however many people the file has.
