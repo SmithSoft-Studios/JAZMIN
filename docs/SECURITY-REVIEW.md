@@ -174,11 +174,11 @@ and the randomness sources match the spec.
 | R2 | Medium | An append could narrow a grant (fewer rows or columns, an expiry, online mode), but the key kept the secrets that open the new data | **Fixed** in both libraries: appends refuse to narrow a grant (spec 11.2) |
 | R3 | Medium (sample) | Key service: parallel requests could race the lockout and replay checks; lockouts reset; confirming a code was not rate-limited | **Fixed:** per-user lock, lockouts double up to a day, confirm respects the lockout, codes accepted within ±30 s |
 | R4 | Medium (sample) | Key service holds the owner key, so a break-in exposes every file | **Documented** (sample README): give the service the grants' shares instead |
-| R5 | Medium | Expiry can be bypassed with the stock library: the reader's `now` / `Now` option sets the clock back. A token saved before expiry keeps working until a rewrite | **Open:** needs a public API change (decision D1 below). Guide corrected |
+| R5 | Medium | Expiry can be bypassed with the stock library: the reader's `now` / `Now` option sets the clock back. A token saved before expiry keeps working until a rewrite | **Deprecated in 1.1.0, removed in 2.0** (decision D1 below). Guide corrected |
 | R6 | Low | A file's password iteration count was used unchecked (a hostile file could stall a reader for hours) | **Fixed:** 1,000 to 10,000,000 (spec 7.2) |
 | R7 | Low | Key-slot and signature sections were decoded with any codec before being checked | **Fixed:** they must be stored as is (spec 7.6.4) |
 | R8 | Low | Digests were checked when present but not required; an encrypted file's embedded content without a key was read as plain | **Fixed:** both refused (spec 7.6.5) |
-| R9 | Low | Key objects print their full secret text (`toString`); the signing-key cache kept owner keys | **Partly fixed:** caches no longer hold owner keys (JS) and are bounded (.NET). `toString` needs a public API change (decision D2) |
+| R9 | Low | Key objects print their full secret text (`toString`); the signing-key cache kept owner keys | **Partly fixed:** caches no longer hold owner keys (JS) and are bounded (.NET). `export()` added in 1.1.0; `toString` stops printing the secret in 2.0 (decision D2) |
 | R10 | Low | `update` / `compact` dropped the file's permissions on POSIX | **Fixed** in both libraries |
 | R11 | Low | The owner directory (grants and names) was compressed before encryption, so its size could leak (CRIME-style) | **Fixed:** stored uncompressed (spec 7.6.5) |
 | R12 | Info | .NET: a filter could name a hidden column's placeholder (no data leaked) | **Fixed** |
@@ -191,10 +191,18 @@ Regression tests: `security.test.js`, `SecurityTests`, the append tests
 
 ### Decisions for the owner
 
+Both are breaking API changes, and 1.0.0 is published. The owner decided
+(2026-10-06): deprecate in 1.1.0, remove in 2.0.
+
 - **D1:** remove the reader's clock option, which closes R5. JavaScript `now`
-  and .NET `Now` would become internal (tests only). This is a breaking API
-  change: 1.0.0 is published, so it needs a major version, or a release that
-  marks the option obsolete first.
-- **D2:** make key `toString()` print only the key id, and add an explicit
-  `export()` for the secret text (R9). This breaks code that saves keys with
-  `toString()`.
+  and .NET `Now` become internal (tests only) in 2.0.
+  - **1.1.0:** marked deprecated (JS typings) and obsolete (.NET, a compiler
+    warning). It still works.
+- **D2:** make key `toString()` stop printing the secret (an access key
+  prints only its id), with an explicit `export()` for the secret text (R9).
+  This breaks code that saves or sends keys with `toString()`.
+  - **1.1.0:** `export()` / `Export()` added; the libraries, docs and samples
+    use it. `toString()` is marked deprecated in the JS typings. A call
+    can't be flagged in .NET (an override of `object.ToString`) or when a
+    key is put into a string, so the change is announced in the release
+    notes.

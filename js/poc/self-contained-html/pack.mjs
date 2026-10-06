@@ -67,7 +67,7 @@ try {
     BOOTSTRAP: read('viewer/bootstrap.js'),
     READER: read('jazmin-browser.js'),
     VIEWER: read('viewer/viewer.js'),
-    TEST_HOOK: args['test-key'] && key ? `<script>window.JAZMIN_TEST_KEY = ${JSON.stringify(key.toString())};</script>` : '',
+    TEST_HOOK: args['test-key'] && key ? `<script>window.JAZMIN_TEST_KEY = ${JSON.stringify(key.export())};</script>` : '',
   };
   for (const name of ['BOOTSTRAP', 'READER', 'VIEWER']) {
     if (/<\/script/i.test(fill[name])) throw new Error(`${name} must not contain "</script"`);

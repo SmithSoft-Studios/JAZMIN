@@ -30,7 +30,7 @@ const key = JazminKey.generate();
 write('customers.jzm', customers as unknown as Record<string, unknown>[], { columns, key, metadata: { source: 'crm' } });
 
 // 2. Query it - only matching chunks are decrypted and decoded.
-const reader = open('customers.jzm', { key: key.toString() });
+const reader = open('customers.jzm', { key: key.export() });
 const where: Filter = { country: 'ZA', name: { icontains: 'john' } };
 for (const row of reader.find(where, { select: ['id', 'name'] })) {
   const id = row.id as number;
@@ -70,12 +70,12 @@ write('shared.jzm', [{ section: 'A', amount: 1 }, { section: 'B', amount: 2 }], 
   sortedBy: ['section'],
   access: { partitionBy: 'section', columnGroups: { money: ['amount'] }, grants: [{ key: bob, rows: ['B'], columns: ['*'], label: 'Bob' }] },
 });
-const bobView = open('shared.jzm', { key: bob.toString() });
+const bobView = open('shared.jzm', { key: bob.export() });
 console.log([...bobView.rows()], bobView.hiddenRowCount); // [ { section: 'B' } ] 1
 bobView.close();
 
 // Bob sends records back, locked with the submission key he gets by opening the shared file; the owner derives it too.
-const bobsView = open('shared.jzm', { key: bob.toString() });
+const bobsView = open('shared.jzm', { key: bob.export() });
 const bobsKey = bobsView.submissionKey!;
 bobsView.close(); // an open reader keeps a file from being replaced (update, compact) on Windows
 write('bob-records.jzm', [{ section: 'B', amount: 4 }], { columns: [{ name: 'section', type: 'string' }, { name: 'amount', type: 'int' }], key: bobsKey });

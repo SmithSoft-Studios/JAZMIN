@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { JazminKey, JazminKeyError } from '../src/index.js';
+import { JazminAccessKey, JazminKey, JazminKeyError } from '../src/index.js';
 import { HkdfKeys, decrypt, encrypt, hkdf } from '../src/keys.js';
 import crypto from 'node:crypto';
 
@@ -9,6 +9,16 @@ test('key text round-trips and starts with the version prefix', () => {
   const text = key.toString();
   assert.match(text, /^jzk1-[A-Za-z0-9_-]{48}$/);
   assert.deepEqual(JazminKey.parse(text).bytes, key.bytes);
+});
+
+test('export() gives the key text, as toString() does until 2.0', () => {
+  const owner = JazminKey.generate();
+  const bob = owner.createAccessKey();
+  assert.equal(owner.toString(), owner.export());
+  assert.deepEqual(JazminKey.parse(owner.export()).bytes, owner.bytes);
+  assert.match(bob.export(), /^jza1-/);
+  assert.equal(bob.toString(), bob.export());
+  assert.equal(JazminAccessKey.parse(bob.export()).id, bob.id);
 });
 
 test('a mistyped key is rejected by its checksum', () => {

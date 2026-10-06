@@ -943,7 +943,7 @@ export class JazminWriter {
       partitions: [...this.#secrets.names],
       ...(this.#fileGroupNames.length ? { fileGroups: this.#fileGroupNames } : {}),
       grants: this.#access.grants.map((g) => ({
-        key: g.key.toString(), rows: g.rows, columns: g.columns, ...(g.label === undefined ? {} : { label: g.label }),
+        key: g.key.export(), rows: g.rows, columns: g.columns, ...(g.label === undefined ? {} : { label: g.label }),
         ...(g.files.length || g.files === '*' ? { files: g.files } : {}),
         ...(g.expires === undefined ? {} : { expires: new Date(g.expires).toISOString() }),
         mode: g.mode,

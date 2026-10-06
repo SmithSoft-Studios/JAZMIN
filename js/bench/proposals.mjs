@@ -200,7 +200,7 @@ async function measure([name, , fileName, query, kind]) {
     const start = process.hrtime.bigint();
     let rowsReturned;
     if (kind === 'browser') {
-      const reader = await globalThis.JazminBrowser.open(blobOf(fileName), { key: key.toString() });
+      const reader = await globalThis.JazminBrowser.open(blobOf(fileName), { key: key.export() });
       rowsReturned = await query(reader);
     } else {
       const reader = open(file(fileName), { key });

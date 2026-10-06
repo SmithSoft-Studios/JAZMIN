@@ -352,6 +352,24 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     recorded baseline, or returns different rows (docs/CONTRIBUTING.md,
     "Measuring what a query reads").
 
+### Deprecated
+Both are removed in 2.0 (docs/SECURITY-REVIEW.md, D1 and D2); they still work
+in 1.x.
+- **Getting a key's secret text with `toString()` (JS and .NET).** Use the
+  new **`export()`** (.NET `Export()`) on `JazminKey` and `JazminAccessKey`.
+  - **Why:** a key put into a log line or an error message prints its full
+    secret.
+  - **From 2.0:** `toString()` won't print the secret; an access key prints
+    only its id. Code that saves or sends keys with `toString()` would then
+    store the id instead, so switch to `export()` now.
+  - **Warnings:** JS editors strike through `key.toString()` (TypeScript
+    typings). .NET can't flag it: `ToString()` overrides `object.ToString`.
+- **The reader's clock option: JS `now`, .NET `JazminReadOptions.Now`.**
+  - **Why:** setting it back lets an expired key open the file.
+  - **From 2.0:** expiry is checked against the system clock only.
+  - **Warnings:** .NET reports `CS0618` (obsolete) where it's used; JS
+    editors strike it through.
+
 ## 1.0.0 - 2026-10-04 (file format 1.0)
 
 The first published release.

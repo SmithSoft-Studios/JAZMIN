@@ -185,7 +185,7 @@ The schema is inferred from the data:
 ### 4.2 Writing with a schema, indexes, metadata and encryption
 
 ```js
-const key = JazminKey.generate();          // store key.toString() in your secret manager
+const key = JazminKey.generate();          // store key.export() in your secret manager
 
 write('customers.jzm', customers, {
   columns: [
@@ -210,7 +210,7 @@ Pass `null` instead of a path to get a `Buffer` back. Rows are validated:
 ### 4.3 Reading and querying
 
 ```js
-const reader = open('customers.jzm', { key: key.toString() });   // reads only the header
+const reader = open('customers.jzm', { key: key.export() });   // reads only the header
 
 reader.columns;     // [{ name: 'id', type: 'int', nullable: false, description: 'Customer number' }, ...]
 reader.metadata;    // { source: 'crm', exportedBy: 'nightly-job' }
@@ -295,7 +295,7 @@ const columns: JazminColumnInput[] = [
 const key = JazminKey.generate();
 write('customers.jzm', customers as unknown as Record<string, unknown>[], { columns, key });
 
-const reader = open('customers.jzm', { key: key.toString() });
+const reader = open('customers.jzm', { key: key.export() });
 const where: Filter = { country: 'ZA', name: { icontains: 'john' } };   // type-checked filter
 for (const row of reader.find(where, { select: ['id', 'name'] })) {
   const id = row.id as number;     // rows are Record<string, JazminValue>
@@ -938,9 +938,13 @@ following remain visible:
 **Keys:**
 
 - Generate keys with `JazminKey.generate()` / `JazminKey.Generate()`.
-- Store the text form in a secret manager such as Azure Key Vault, AWS
-  Secrets Manager or HashiCorp Vault. Never store it next to the file or in
-  source control.
+- Get the key's text with `export()` / `Export()` and store it in a secret
+  manager such as Azure Key Vault, AWS Secrets Manager or HashiCorp Vault.
+  Never store it next to the file or in source control.
+- Until 2.0, `toString()` / `ToString()` gives the same secret text, so a key
+  put into a log line or an error message leaks it. From 2.0 it won't: an
+  access key will print only its id. Use `export()` wherever you mean to save
+  or send a key.
 - **If the key is lost, the data cannot be recovered.**
 - The `jzk1-...` text contains a checksum, so a typo produces "Key checksum
   mismatch" rather than a confusing decryption failure.
@@ -1185,7 +1189,7 @@ files whose signature or contents were changed.
 import { JazminKey, open, write, grantAccess, revokeAccess } from '@smithsoft-studios/jazmin';
 
 const owner = JazminKey.generate();          // keep in your secret store; it controls the file
-const bob = owner.createAccessKey();         // send bob.toString() to Bob (e.g. via your secrets API)
+const bob = owner.createAccessKey();         // send bob.export() to Bob (e.g. via your secrets API)
 
 write('statements.jzm', lines, {
   key: owner,
@@ -1222,7 +1226,7 @@ const access: AccessOptions = {
   grants: [{ key: bob, rows: ['B'], columns: ['*'], label: 'Bob' }],
 };
 write('shared.jzm', [{ section: 'A', amount: 1 }, { section: 'B', amount: 2 }], { key: owner, sortedBy: ['section'], access });
-const bobView = open('shared.jzm', { key: bob.toString() });
+const bobView = open('shared.jzm', { key: bob.export() });
 console.log([...bobView.rows()], bobView.hiddenRowCount); // [ { section: 'B' } ] 1
 ```
 
@@ -1230,7 +1234,7 @@ console.log([...bobView.rows()], bobView.hiddenRowCount); // [ { section: 'B' } 
 
 ```csharp
 var owner = JazminKey.Generate();
-var bob = owner.CreateAccessKey();                       // bob.ToString() -> "jza1-..."
+var bob = owner.CreateAccessKey();                       // bob.Export() -> "jza1-..."
 
 using (var writer = JazminWriter.Create("statements.jzm", columns, new JazminWriteOptions
 {
@@ -1729,7 +1733,8 @@ Kept with the user, the record survives swapping copies of the file.
 - **Online expiry stops keys that have no token yet.** After the expiry the
   key service issues no more tokens. A token obtained before the expiry still
   opens the copies of the file it was issued for, by anyone who sets the
-  reader's clock option (`now`, .NET `Now`) back or uses modified software,
+  reader's clock option (`now`, .NET `Now`; deprecated, removed in 2.0)
+  back or uses modified software,
   until the owner rewrites the file. For a complete cut-off, compact or
   update the file after the expiry, or revoke the key. A rewrite drops
   expired grants and re-locks the file.

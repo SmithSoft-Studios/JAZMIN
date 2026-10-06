@@ -340,7 +340,7 @@ for (const name of chosen) {
     await page.navigate(`${base}/js/viewer/index.html`);
     await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
     await page.evaluate(`fetch('/e2e/template.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'template.jzm')).then(() => true)`);
-    keys.template = templateKey.toString();
+    keys.template = templateKey.export();
     await unlock(page, { file: 'template.jzm', key: 'template' });
     const ready = await waitFor(page, 'JazminViewer.state.lastReady && JazminViewer.state.lastReady.info', 'the template to call jazmin.ready()');
     const expected = { total: 120, top: [119, 118, 117], all: 120, columns: ['n', 'label'] };

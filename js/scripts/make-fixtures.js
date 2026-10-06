@@ -45,7 +45,7 @@ fs.writeFileSync(path.join(dir, 'dataset.json'), JSON.stringify(dataset, null, 1
 const keysPath = path.join(dir, 'keys.json');
 const ownerKey = JazminKey.generate();
 const keys = fs.existsSync(keysPath) ? JSON.parse(fs.readFileSync(keysPath, 'utf8')) : {
-  key: ownerKey.toString(),
+  key: ownerKey.export(),
   password: 'jazmin-interop',
   kdfIterations: 1000,
   // Access-controlled fixtures: the owner is `key`; Bob sees ZA rows without the pii columns,

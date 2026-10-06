@@ -77,7 +77,8 @@ public sealed class JazminAccessKey
     /// <summary>Short public identifier (hex) of this key, safe to log.</summary>
     public string Id => _id ??= Convert.ToHexString(OwnerSigning.SlotId(_secret)).ToLowerInvariant();
 
-    public override string ToString()
+    /// <summary>The key's secret text ("jza1-..."), to send to its holder or pass to Parse. Keep it out of logs.</summary>
+    public string Export()
     {
         if (_text is not null) return _text;
         var body = new byte[SecretSize + FingerprintSize];
@@ -85,6 +86,12 @@ public sealed class JazminAccessKey
         _fingerprint.CopyTo(body, SecretSize);
         return _text = Prefix + Base64Url.Encode([.. body, .. SHA256.HashData(body)[..ChecksumSize]]);
     }
+
+    /// <summary>
+    /// For now the same as <see cref="Export"/>. From 2.0 it prints only the key's <see cref="Id"/>
+    /// (docs/SECURITY-REVIEW.md, D2): use <see cref="Export"/> to store or send a key.
+    /// </summary>
+    public override string ToString() => Export();
 }
 
 internal static class Base64Url

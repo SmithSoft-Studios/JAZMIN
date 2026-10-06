@@ -24,7 +24,7 @@ Console.WriteLine($"1. Round-tripped {back.Count} customers in {bytes.Length} by
 
 // --- 2. Encrypted file + LINQ query that uses indexes --------------------------------------------
 var key = JazminKey.Generate();
-Console.WriteLine($"2. Store this key safely: {key.ToString()[..12]}...");
+Console.WriteLine($"2. Store this key safely: {key.Export()[..12]}...");
 new JazminSerializer(new JazminSerializerSettings { Key = key, Metadata = new JsonObject { ["source"] = "crm" } })
     .Serialize(path, customers);
 

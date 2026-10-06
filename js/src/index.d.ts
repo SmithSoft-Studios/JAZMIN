@@ -164,7 +164,10 @@ export interface ReadOptions {
   password?: string;
   /** Online access keys: the "jzu1-..." token from the owner's key service. */
   unlockToken?: string;
-  /** Clock for expiry checks (default: the system clock). */
+  /**
+   * Clock for expiry checks (default: the system clock).
+   * @deprecated Removed in 2.0: setting it back lets an expired key open the file (docs/SECURITY-REVIEW.md, D1).
+   */
   now?: Date | number;
   /** Expiring keys: where the last-seen record is kept (default: the user's app-data folder). */
   accessState?: AccessState;
@@ -300,6 +303,9 @@ export class JazminKey {
    * The holder gets the same key from the shared file (reader.submissionKey).
    */
   submissionKey(accessKey: JazminAccessKey | string): JazminKey;
+  /** The key's secret text ("jzk1-..."), to store in a secret manager or pass to parse(). Keep it out of logs. */
+  export(): string;
+  /** @deprecated To get the key's secret text, use export(): from 2.0, toString() won't print the secret. */
   toString(): string;
 }
 
@@ -311,6 +317,9 @@ export class JazminAccessKey {
   readonly ownerFingerprint: Buffer;
   /** Short public identifier, safe to log. */
   readonly id: string;
+  /** The key's secret text ("jza1-..."), to send to its holder or pass to parse(). Keep it out of logs. */
+  export(): string;
+  /** @deprecated To get the key's secret text, use export(): from 2.0, toString() prints only the key's id. */
   toString(): string;
 }
 

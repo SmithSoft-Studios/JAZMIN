@@ -1,3 +1,6 @@
+// These tests move the reader's clock on purpose: the option is obsolete for callers, still honoured until 2.0.
+#pragma warning disable CS0618
+
 using Xunit;
 
 namespace Jazmin.Tests;

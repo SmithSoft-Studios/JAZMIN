@@ -49,8 +49,14 @@ export class JazminKey {
     return Buffer.from(this.#bytes);
   }
 
-  toString() {
+  /** The key's secret text ("jzk1-..."), to store in a secret manager or pass to parse(). Keep it out of logs. */
+  export() {
     return KEY_PREFIX + Buffer.concat([this.#bytes, checksum(this.#bytes)]).toString('base64url');
+  }
+
+  /** For now the same as export(). From 2.0 it won't print the secret (docs/SECURITY-REVIEW.md, D2). */
+  toString() {
+    return this.export();
   }
 
   /** The owner's public signing key (65-byte uncompressed P-256 point), stable for this key. */
@@ -147,12 +153,18 @@ export class JazminAccessKey {
     return this.#id;
   }
 
-  toString() {
+  /** The key's secret text ("jza1-..."), to send to its holder or pass to parse(). Keep it out of logs. */
+  export() {
     if (this.#text === undefined) {
       const body = Buffer.concat([this.#secret, this.#fingerprint]);
       this.#text = ACCESS_PREFIX + Buffer.concat([body, checksum(body)]).toString('base64url');
     }
     return this.#text;
+  }
+
+  /** For now the same as export(). From 2.0 it prints only the key's id (docs/SECURITY-REVIEW.md, D2). */
+  toString() {
+    return this.export();
   }
 }
 

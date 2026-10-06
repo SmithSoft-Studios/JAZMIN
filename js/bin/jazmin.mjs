@@ -239,13 +239,13 @@ const commands = {
   keygen(args) {
     const { values } = parse(args, { ...KEY_OPTIONS, access: { type: 'boolean' } });
     if (!values.access) {
-      out(JazminKey.generate().toString());
+      out(JazminKey.generate().export());
       return;
     }
     const ownerText = keyOptions(values).key;
     if (!ownerText) throw new UsageError('--access needs the owner key: set JAZMIN_KEY or pass --key-file');
     const accessKey = JazminKey.parse(ownerText).createAccessKey();
-    out(accessKey.toString());
+    out(accessKey.export());
     process.stderr.write(`Key id ${accessKey.id}. Grant it rows and columns with grantAccess() or update({ grant }).\n`);
   },
 };

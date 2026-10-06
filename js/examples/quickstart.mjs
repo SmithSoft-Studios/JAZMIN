@@ -33,7 +33,7 @@ write(file, [
 });
 
 // 3. Query with the GraphQL-style filter language
-const reader = open(file, { key: key.toString() });
+const reader = open(file, { key: key.export() });
 console.log('2.', reader.columns.map((c) => `${c.name}:${c.type}`).join(', '), reader.metadata);
 for (const row of reader.find({ country: 'ZA', name: { icontains: 'ndlovu' } })) console.log('3.', row);
 console.log('   plan:', reader.explain({ id: 3 }));
@@ -87,15 +87,15 @@ write(shared, [{ section: 'A', amount: 1 }, { section: 'B', amount: 2 }], {
   },
 });
 // accessState: false only stops this example writing a last-seen record; leave it on in real apps.
-const bobView = open(shared, { key: bob.toString(), accessState: false });
+const bobView = open(shared, { key: bob.export(), accessState: false });
 console.log('8. Bob:', [...bobView.rows()], 'until', bobView.access.expires);
 bobView.close();
 try {
-  open(shared, { key: sally.toString(), accessState: false });
+  open(shared, { key: sally.export(), accessState: false });
 } catch (e) {
   if (!(e instanceof JazminUnlockRequiredError)) throw e;
   const token = issueUnlockToken(shared, owner, e.keyId); // normally your key service does this, after 2FA
-  const sallyView = open(shared, { key: sally.toString(), unlockToken: token, accessState: false });
+  const sallyView = open(shared, { key: sally.export(), unlockToken: token, accessState: false });
   console.log('   Sally:', [...sallyView.rows()], 'until', sallyView.access.expires);
   sallyView.close();
 }

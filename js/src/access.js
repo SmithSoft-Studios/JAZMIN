@@ -107,7 +107,7 @@ export function normalizeGrants(list, groupNames, now) {
   // A key's text in its standard form is as unique as its id, and needs no hashing when the key was parsed from it.
   const seen = new Set();
   for (const g of grants) {
-    const text = g.key.toString();
+    const text = g.key.export();
     if (seen.has(text)) throw new JazminValidationError(`The same access key is granted twice (${g.key.id})`);
     seen.add(text);
   }

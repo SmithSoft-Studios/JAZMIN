@@ -90,7 +90,7 @@ let phone = null;
 for (const size of sizes) {
   const owner = JazminKey.generate();
   const ownerKeyFile = path.join(dir, `owner-${size}.key`);
-  fs.writeFileSync(ownerKeyFile, owner.toString()); // a throwaway key for this run; never printed
+  fs.writeFileSync(ownerKeyFile, owner.export()); // a throwaway key for this run; never printed
   const keys = Array.from({ length: PEOPLE }, () => owner.createAccessKey());
   const perPerson = Math.ceil(size / PEOPLE);
   const shared = path.join(dir, `shared-${size}.jzm`);
@@ -124,7 +124,7 @@ for (const size of sizes) {
   const variant = (name, batches) => {
     const file = path.join(dir, `shared-${size}-${name}.jzm`);
     fs.copyFileSync(shared, file);
-    for (const b of batches) fileBatch(file, owner.toString(), { keyId, batch: b });
+    for (const b of batches) fileBatch(file, owner.export(), { keyId, batch: b });
     return file;
   };
   const withPhotos = variant('photos', [photos.bytes]);

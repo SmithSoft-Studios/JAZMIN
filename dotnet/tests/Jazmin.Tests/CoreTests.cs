@@ -70,6 +70,18 @@ public class KeyTests
     }
 
     [Fact]
+    public void Export_GivesTheKeyText_AsToStringDoesUntil2()
+    {
+        var owner = JazminKey.Generate();
+        var bob = owner.CreateAccessKey();
+        Assert.Equal(owner.ToString(), owner.Export());
+        Assert.Equal(owner.ToBytes(), JazminKey.Parse(owner.Export()).ToBytes());
+        Assert.StartsWith("jza1-", bob.Export());
+        Assert.Equal(bob.ToString(), bob.Export());
+        Assert.Equal(bob.Id, JazminAccessKey.Parse(bob.Export()).Id);
+    }
+
+    [Fact]
     public void MistypedKey_IsRejectedByChecksum()
     {
         var text = JazminKey.Generate().ToString();

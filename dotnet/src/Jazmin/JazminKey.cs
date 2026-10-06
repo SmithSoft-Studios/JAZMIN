@@ -72,13 +72,20 @@ public sealed class JazminKey
     /// <summary>The submission key of <paramref name="accessKey"/> (see <see cref="SubmissionKey(string)"/>).</summary>
     public JazminKey SubmissionKey(JazminAccessKey accessKey) => SubmissionKey(accessKey.Id);
 
-    public override string ToString()
+    /// <summary>The key's secret text ("jzk1-..."), to store in a secret manager or pass to Parse. Keep it out of logs.</summary>
+    public string Export()
     {
         var raw = new byte[KeySize + ChecksumSize];
         _bytes.CopyTo(raw, 0);
         Checksum(_bytes).CopyTo(raw, KeySize);
         return Prefix + ToBase64Url(raw);
     }
+
+    /// <summary>
+    /// For now the same as <see cref="Export"/>. From 2.0 it won't print the secret (docs/SECURITY-REVIEW.md, D2):
+    /// use <see cref="Export"/> to store or send a key.
+    /// </summary>
+    public override string ToString() => Export();
 
     private static byte[] Checksum(ReadOnlySpan<byte> bytes) => SHA256.HashData(bytes)[..ChecksumSize];
 

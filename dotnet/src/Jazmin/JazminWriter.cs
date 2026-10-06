@@ -1063,7 +1063,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         if (_fileGroupNames.Count > 0) directory["fileGroups"] = new JsonArray(_fileGroupNames.Select(n => (JsonNode?)JsonValue.Create(n)).ToArray());
         directory["grants"] = new JsonArray(_access!.Grants.Select(g =>
         {
-            var grant = new JsonObject { ["key"] = g.Key.ToString(), ["rows"] = GrantList(g.Rows), ["columns"] = GrantList(g.Columns) };
+            var grant = new JsonObject { ["key"] = g.Key.Export(), ["rows"] = GrantList(g.Rows), ["columns"] = GrantList(g.Columns) };
             if (g.Label is not null) grant["label"] = g.Label;
             if (g.Files is { Count: > 0 } files) grant["files"] = files.Contains(EmbeddedFiles.Everyone) ? "*" : new JsonArray(files.Select(f => (JsonNode?)f).ToArray());
             if (g.Expires is { } expires) grant["expires"] = Iso(expires);

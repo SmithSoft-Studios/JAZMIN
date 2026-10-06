@@ -24,6 +24,7 @@ public sealed class JazminReadOptions
     public string? UnlockToken { get; set; }
 
     /// <summary>Clock for expiry checks (default: the system clock).</summary>
+    [Obsolete("Removed in 2.0: setting the clock back lets an expired key open the file (docs/SECURITY-REVIEW.md, D1). Expiry is checked against the system clock.")]
     public DateTimeOffset? Now { get; set; }
 
     /// <summary>Expiring keys: where last-seen records are kept (default: <see cref="JazminDirectoryAccessStateStore.DefaultDirectory"/>).</summary>
@@ -278,8 +279,11 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 var store = options.CheckClockRollback
                     ? options.AccessState ?? new JazminDirectoryAccessStateStore(JazminDirectoryAccessStateStore.DefaultDirectory)
                     : null;
+#pragma warning disable CS0618 // the clock option is obsolete for callers, still honoured until 2.0
+                var now = options.Now ?? DateTimeOffset.UtcNow;
+#pragma warning restore CS0618
                 ExpiryCheck.Enforce(expires, DateTimeOffset.FromUnixTimeMilliseconds(_header.Modified != 0 ? _header.Modified : _header.Created),
-                    options.Now ?? DateTimeOffset.UtcNow, _fileId, Convert.ToHexString(OwnerSigning.SlotId(_access.KeySecret)).ToLowerInvariant(),
+                    now, _fileId, Convert.ToHexString(OwnerSigning.SlotId(_access.KeySecret)).ToLowerInvariant(),
                     _access.KeySecret, store);
             }
         }

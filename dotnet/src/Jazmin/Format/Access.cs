@@ -77,7 +77,7 @@ internal sealed partial class AccessConfig
                 foreach (var c in grant.Columns)
                     if (!groupNames.Contains(c)) throw new JazminValidationException($"Grant: unknown column group '{c}'");
             // A key's text in its standard form is as unique as its id, and needs no hashing when the key was parsed from it.
-            if (!seen.Add(grant.Key.ToString())) throw new JazminValidationException($"The same access key is granted twice ({grant.Key.Id})");
+            if (!seen.Add(grant.Key.Export())) throw new JazminValidationException($"The same access key is granted twice ({grant.Key.Id})");
             var expires = grant.Expires ?? (grant.ExpiresIn is { } span ? now + span : null);
             if (expires is { } end && end <= now)
             {
