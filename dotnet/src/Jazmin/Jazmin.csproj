@@ -10,7 +10,7 @@
     <NoWarn>$(NoWarn);CS1591</NoWarn>
     <RootNamespace>Jazmin</RootNamespace>
     <PackageId>Jazmin</PackageId>
-    <Version>1.0.0</Version>
+    <Version>1.1.0</Version>
     <Description>JAZMIN (Javascript Secure Zipped Multi Index Notation): compact, indexed, optionally encrypted tabular file format with JSON/CSV/XML conversion and a Newtonsoft-style serializer API.</Description>
     <Authors>SmithSoft Pty Ltd</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

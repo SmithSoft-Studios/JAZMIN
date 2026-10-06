@@ -3,7 +3,21 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
-## Unreleased
+## 1.1.0 - 2026-10-06 (file format 1.0)
+
+People in the field can now send records back from a phone (#13), and the
+owner of a shared file finds records without reading every person's part.
+Queries read less, and appends to shared files stay fast with many people.
+
+- **Upgrade if you write decimals from JavaScript:** 1.0.0 could damage
+  decimals of more than about 20 digits (see Fixed).
+- **Files:** still format 1.0. Version 1.0.0 opens files written by 1.1.0
+  (tested with the published packages); the new owner-only parts are skipped.
+- **Changed behaviour:** browsers refuse a shared file's master key (see
+  Changed).
+- **Deprecated, removed in 2.0:** getting a key's secret text with
+  `toString()` (use `export()`), and the reader's clock option (see
+  Deprecated).
 
 ### Fixed
 - **JS: parallel writes hung in code run with `node -e` or `node -p`.**
