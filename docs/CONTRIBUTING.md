@@ -220,10 +220,12 @@ No long-lived npm or NuGet key is stored anywhere.
     `npm publish ./smithsoft-studios-jazmin-1.0.0.tgz --access public`, using the file that
     `check-packages.sh` makes, before pushing the tag. The workflow then sees
     the version is already on npm and skips it.
-- **npm, afterwards:** on npmjs.com, open `@smithsoft-studios/jazmin`, then **Settings**, then
+- **npm, afterwards (done 2026-10-06):** on npmjs.com, open `@smithsoft-studios/jazmin`, then **Settings**, then
   **Trusted publishing**. Add GitHub Actions with organization
   `SmithSoft-Studios`, repository `JAZMIN`, workflow `release.yml` and
-  environment `release`. Later releases need no npm token.
+  environment `release`. Later releases need no npm token: the `NPM_TOKEN`
+  secret is deleted, and the first release after it (1.1.1) is the first
+  published this way.
 - **Signing:** npm *provenance* is a signed record of the commit and workflow
   that built the package; it is added because the repository is public.
   nuget.org signs every package it accepts.
