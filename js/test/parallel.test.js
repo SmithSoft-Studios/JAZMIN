@@ -88,3 +88,12 @@ test('parallel writes work in code given on the command line (node -e, node -p)'
     assert.match(result.stdout, /rows 20000/, args[0]);
   }
 });
+
+test('workers inherit the process options as they are, unless code given on the command line must be left out', async () => {
+  const { workerExecArgv } = await import('../src/section-pool.js');
+  assert.equal(workerExecArgv([]), undefined);
+  assert.equal(workerExecArgv(['--max-old-space-size=64', '--max-semi-space-size=2']), undefined); // as before 1.1.0
+  assert.deepEqual(workerExecArgv(['--max-old-space-size=64', '-e', 'code()', '--no-warnings']), ['--max-old-space-size=64', '--no-warnings']);
+  assert.deepEqual(workerExecArgv(['--input-type=module', '-p', '1']), []);
+  assert.deepEqual(workerExecArgv(['--eval=code()', '--trace-gc']), ['--trace-gc']);
+});

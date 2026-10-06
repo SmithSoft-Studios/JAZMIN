@@ -6,6 +6,16 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Fixed
+- **JS: writes with Node heap options ran up to 20% slower in 1.1.0.** The
+  fix for parallel writes under `node -e` gave the compression workers the
+  process's Node options explicitly, and passed that way, heap options such
+  as `--max-old-space-size` slowed them. Workers again inherit the options
+  as they are, unless code given on the command line must be left out.
+  - **With the guide's server options** (`--max-old-space-size=64
+    --max-semi-space-size=2`), a wide write (200,000 rows x 300 columns)
+    went back from 23.3 to 19.8 s; its peak memory is 123 MB again, as in
+    1.0.0 (98 MB in 1.1.0).
+  - **Without Node options:** no change.
 - **JS: a column named `__proto__` is read as an ordinary field (#68).** In
   JavaScript, assigning to `__proto__` sets an object's prototype instead of
   adding a field.

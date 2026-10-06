@@ -9,11 +9,13 @@ const STOP_MS = 10_000; // a worker that has not stopped this long after being a
 /**
  * Node options for the workers: the process's own, less code given on the command line (`node -e`, `-p`,
  * `--input-type`). Workers inherit those by default and would run that code - the caller's script, which writes
- * again and starts more workers - instead of their own file.
+ * again and starts more workers - instead of their own file. Without such code: undefined, so workers inherit the
+ * options as they are. Passed explicitly, Node heap options (as --max-old-space-size) no longer reached the workers
+ * the same way, and wide writes under them were up to 20% slower.
  */
-function workerExecArgv() {
+export function workerExecArgv(args = process.execArgv) {
   const options = [];
-  const args = process.execArgv;
+  if (!args.some((a) => /^(-e|-p|--eval|--print|-pe|-ep|--input-type)(=|$)/.test(a))) return undefined;
   for (let i = 0; i < args.length; i++) {
     const option = args[i];
     if (/^(-e|-p|--eval|--print|-pe|-ep|--input-type)$/.test(option)) {
