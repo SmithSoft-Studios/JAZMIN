@@ -956,8 +956,17 @@ chart.draw(values.at, values.amount);
 | Node | 30.7 MB | **3.3 MB** |
 | Browser reader | 34.8 MB | **3.8 MB** |
 
-The raw arrays are 3.1 MB, and the time is the same as `find()`. On a phone,
-a dashboard showing 250,000 rows keeps about 5 MB instead of 43 MB.
+The raw arrays are 3.1 MB. On a phone, a dashboard showing 250,000 rows keeps
+about 5 MB instead of 43 MB.
+
+It is also faster than `find()`: values go from the decoded columns straight
+into the arrays, with no object per row and no `Date` per date. One million
+rows, two columns:
+
+| Reader | A number and a float | A date and a float |
+|---|---:|---:|
+| Node | 121 ms | 135 ms |
+| Browser reader | 300 ms | 305 ms |
 
 ---
 

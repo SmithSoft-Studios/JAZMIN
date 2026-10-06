@@ -56,6 +56,7 @@ const QUERIES = [
   [{ id: { gte: 100, lt: 400 } }, { offset: 30, limit: 120 }],
   [{ label: 'L3' }, { limit: 7 }],
   [null, { offset: 990 }],
+  [null, { offset: 60, limit: 200 }], // starts inside the first chunk, crosses the deleted row 64 and chunk boundaries
 ];
 
 test('columnArrays returns typed arrays equal to the rows find() returns', () => {
@@ -92,7 +93,7 @@ test('columnArrays refuses unknown columns and integers a Float64Array cannot ho
   }
 });
 
-test('columnArrays in an access-controlled file shows only what the key sees', () => {
+test('columnArrays in an access-controlled file shows only what the key sees', async () => {
   const owner = JazminKey.generate();
   const bob = owner.createAccessKey();
   const file = tmp('access.jzm');
@@ -101,12 +102,27 @@ test('columnArrays in an access-controlled file shows only what the key sees', (
     access: { partitionBy: 'label', columnGroups: { money: ['amount', 'price'] }, grants: [{ key: bob, rows: ['P1'], columns: ['*'] }] },
   });
   const reader = open(file, { key: bob });
+  const ownerReader = open(file, { key: owner });
   try {
     const arrays = reader.columnArrays(null, { select: ['id', 'at'] });
     assert.deepEqual([...arrays.values.id], Array.from({ length: 100 }, (_, i) => i * 3 + 1));
     assert.throws(() => reader.columnArrays(null, { select: ['amount'] }), /Unknown column 'amount'/);
+    // Filtered, and the owner's view: the values are the rows find() returns.
+    const select = ['id', 'at', 'amount'];
+    for (const [r, filter, options] of [[reader, { id: { gt: 100 } }, { limit: 40 }], [ownerReader, { amount: { gt: 20 } }, { offset: 5 }], [ownerReader, null, {}]]) {
+      const names = r === reader ? ['id', 'at'] : select;
+      assert.deepEqual(asRows(r.columnArrays(filter, { select: names, ...options }), names), [...r.find(filter, { select: names, ...options })]);
+    }
+    // The browser reader, with the access key: the same arrays.
+    const browser = await JazminBrowser.open(new Blob([fs.readFileSync(file)]), { key: bob.export() });
+    for (const filter of [null, { id: { gt: 100 } }]) {
+      const expected = reader.columnArrays(filter, { select: ['id', 'at'] });
+      const actual = await browser.columnArrays(filter, { select: ['id', 'at'] });
+      assert.deepEqual([actual.rowCount, [...actual.values.id], [...actual.values.at]], [expected.rowCount, [...expected.values.id], [...expected.values.at]]);
+    }
   } finally {
     reader.close();
+    ownerReader.close();
   }
 });
 

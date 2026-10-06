@@ -293,16 +293,39 @@
       }
     }
 
+    /**
+     * Unsigned varint: read with numbers when it has at most 7 bytes (49 bits, exact as a double), as the library
+     * reads it, else as a BigInt. BigInt arithmetic for every value made decoding several times slower.
+     */
+    numberVarUint() {
+      const start = this.pos;
+      let result = 0;
+      let multiplier = 1;
+      for (let count = 0; ; count++) {
+        if (count === 10) throw new JazminFormatError('Varint too long');
+        const b = this.byte();
+        result += (b & 0x7f) * multiplier;
+        multiplier *= 128;
+        if (!(b & 0x80)) {
+          if (count < 7) return result;
+          this.pos = start;
+          return this.bigVarUint();
+        }
+      }
+    }
+
     /** Unsigned varint that must fit a safe integer (lengths, counts, offsets). */
     varUint() {
-      const v = this.bigVarUint();
+      const v = this.numberVarUint();
+      if (typeof v === 'number') return v;
       if (v > BigInt(Number.MAX_SAFE_INTEGER)) throw new JazminFormatError('Value out of range');
       return Number(v);
     }
 
     /** Zigzag varint: a Number when it is safe, else a BigInt (as the library returns). */
     varInt() {
-      const z = this.bigVarUint();
+      const z = this.numberVarUint();
+      if (typeof z === 'number') return z % 2 === 0 ? z / 2 : -(z + 1) / 2;
       const v = z & 1n ? -((z + 1n) >> 1n) : z >> 1n;
       return v >= BigInt(Number.MIN_SAFE_INTEGER) && v <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(v) : v;
     }
@@ -338,9 +361,14 @@
   }
 
   function dateFromMs(ms) {
+    return new Date(msFromFile(ms));
+  }
+
+  /** A datetime read from a file, as milliseconds since 1970, checked as dateFromMs() does. */
+  function msFromFile(ms) {
     const n = Number(ms);
     if (!(Math.abs(n) <= 8.64e15)) throw new JazminFormatError('A datetime value is out of range');
-    return new Date(n);
+    return n;
   }
 
   // ---- catalog (Protocol Buffers wire format, spec/jazmin.proto) ----------------------------------
@@ -685,9 +713,10 @@
 
   /**
    * Decodes a columnar chunk payload into one array of values per column (null for null). `wanted[j] === false`
-   * skips column j (left undefined) without decoding it.
+   * skips column j (left undefined) without decoding it. With `datesAsMs`, datetimes are milliseconds since 1970
+   * instead of Date objects (for column arrays: no object per value).
    */
-  function decodeColumnar(raw, types, rowCount, ordinal, wanted) {
+  function decodeColumnar(raw, types, rowCount, ordinal, wanted, datesAsMs = false) {
     if (!Number.isSafeInteger(rowCount) || rowCount < 0 || (rowCount > 0 && rowCount > raw.length * 8)) {
       throw new JazminFormatError(`Chunk ${ordinal}: row count does not match its size`);
     }
@@ -712,14 +741,22 @@
       const values = new Array(count);
       switch (flags & 0x0f) {
         case ENCODING.plain:
-          for (let i = 0; i < count; i++) values[i] = readPlain(r, type);
+          if (datesAsMs && type === 'datetime') for (let i = 0; i < count; i++) values[i] = msFromFile(r.varInt());
+          else for (let i = 0; i < count; i++) values[i] = readPlain(r, type);
           break;
         case ENCODING.delta: {
-          let prev = 0n;
+          // Numbers while the running sum stays exact; BigInt beyond ±2^53 (as the library's decoder).
+          let prev = 0;
           for (let i = 0; i < count; i++) {
-            prev += BigInt(r.varInt());
-            const v = prev >= BigInt(Number.MIN_SAFE_INTEGER) && prev <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(prev) : prev;
-            values[i] = type === 'datetime' ? dateFromMs(v) : v;
+            const d = r.varInt();
+            let v;
+            if (typeof prev === 'number' && typeof d === 'number' && Number.isSafeInteger(prev + d)) v = prev + d;
+            else {
+              const big = BigInt(prev) + BigInt(d);
+              v = big >= BigInt(Number.MIN_SAFE_INTEGER) && big <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(big) : big;
+            }
+            prev = v;
+            values[i] = type !== 'datetime' ? v : datesAsMs ? msFromFile(v) : dateFromMs(v);
           }
           break;
         }
@@ -931,13 +968,21 @@
     else target[name] = value;
   }
 
-  /** As columnCollector in the library's reader.js: one column's values for columnArrays(). */
+  /**
+   * As columnCollector in the library's reader.js: one column's values for columnArrays(). add(column, from, to) takes
+   * a decoded column's rows from..to-1 in one loop.
+   */
   function columnCollector({ name, type }) {
     const PIECE = 8192; // values per piece: pieces are joined once, at the end
     const Typed = type === 'int' || type === 'float' || type === 'datetime' ? Float64Array : type === 'bool' ? Uint8Array : null;
     if (!Typed) {
       const values = [];
-      return { add: (v) => values.push(v), finish: () => ({ values }) };
+      return {
+        add(column, from, to) {
+          for (let r = from; r < to; r++) values.push(column[r]);
+        },
+        finish: () => ({ values }),
+      };
     }
     const pieces = [];
     let piece = new Typed(PIECE);
@@ -945,21 +990,24 @@
     let count = 0;
     const nullRows = [];
     return {
-      add(v) {
-        if (used === PIECE) {
-          pieces.push(piece);
-          piece = new Typed(PIECE);
-          used = 0;
+      add(column, from, to) {
+        for (let r = from; r < to; r++) {
+          if (used === PIECE) {
+            pieces.push(piece);
+            piece = new Typed(PIECE);
+            used = 0;
+          }
+          const v = column[r];
+          if (v === null || v === undefined) {
+            nullRows.push(count);
+            piece[used] = Typed === Float64Array ? NaN : 0;
+          } else if (type === 'datetime') piece[used] = typeof v === 'number' ? v : v.getTime();
+          else if (type === 'bool') piece[used] = v ? 1 : 0;
+          else if (typeof v === 'bigint') throw new JazminError(`Column '${name}' holds ${v}, beyond ±2^53: a Float64Array cannot hold it exactly (use find())`);
+          else piece[used] = v;
+          used++;
+          count++;
         }
-        if (v === null || v === undefined) {
-          nullRows.push(count);
-          piece[used] = Typed === Float64Array ? NaN : 0;
-        } else if (type === 'datetime') piece[used] = v.getTime();
-        else if (type === 'bool') piece[used] = v ? 1 : 0;
-        else if (typeof v === 'bigint') throw new JazminError(`Column '${name}' holds ${v}, beyond ±2^53: a Float64Array cannot hold it exactly (use find())`);
-        else piece[used] = v;
-        used++;
-        count++;
       },
       finish() {
         const values = new Typed(count);
@@ -1850,10 +1898,11 @@
     hiddenRows = table.rowCount - table.deletedCount - visibleRows;
 
     /**
-     * A chunk's rows as objects, by position in the chunk (rows deleted by appends are null). `wanted` (by column
-     * position) limits the columns decoded; a column group none of whose columns is wanted is not read.
+     * A chunk's columns: `values` by column position (null where not decoded) and the positions decoded. `wanted` (by
+     * column position) limits the columns decoded; a column group none of whose columns is wanted is not read.
+     * `datesAsMs` gives datetimes as milliseconds instead of Date objects.
      */
-    async function chunkRows(chunk, wanted = null) {
+    async function chunkColumns(chunk, wanted = null, datesAsMs = false) {
       const values = new Array(table.columnCount).fill(null);
       const decodedCols = [];
       for (let g = 0; g < groups.length; g++) {
@@ -1866,7 +1915,7 @@
           ? await hkdf(concat(chunk.partitionSecret, group.secret), file.salt, `JAZMIN/1/${sectionId}`)
           : await file.key(sectionId, null);
         const raw = await file.section(chunk.parts[g], sectionId, key, { requireDigest });
-        const cols = decodeColumnar(raw, group.cols.map((c) => columns[c].type), chunk.rowCount, chunk.ordinal, groupWanted);
+        const cols = decodeColumnar(raw, group.cols.map((c) => columns[c].type), chunk.rowCount, chunk.ordinal, groupWanted, datesAsMs);
         group.cols.forEach((c, j) => {
           if (groupWanted && !groupWanted[j]) return;
           values[c] = cols[j];
@@ -1877,6 +1926,15 @@
         file.cost.chunksRead++;
         file.cost.columnsDecoded += decodedCols.length;
       }
+      return { values, decodedCols };
+    }
+
+    /**
+     * A chunk's rows as objects, by position in the chunk (rows deleted by appends are null). `wanted` (by column
+     * position) limits the columns decoded; a column group none of whose columns is wanted is not read.
+     */
+    async function chunkRows(chunk, wanted = null) {
+      const { values, decodedCols } = await chunkColumns(chunk, wanted);
       const rows = new Array(chunk.rowCount);
       for (let r = 0; r < chunk.rowCount; r++) {
         if (deletedSet.has(chunk.rowStart + r)) {
@@ -2042,7 +2100,12 @@
     }
 
     /** Rows of a query, chunk by chunk: { row } for each match, after skipping `offset` (whole chunks unread). */
-    async function* matches(filter, { offset = 0, limit = Infinity, select } = {}) {
+    /**
+     * Rows matching a filter. With `sink`, no rows are yielded: sink(values, from, to) is called instead for rows
+     * from..to-1 of a chunk, with its decoded columns by position, which is all columnArrays() needs. Without a filter,
+     * no row object is built at all, unbroken runs of rows go to the sink together, and dates are milliseconds.
+     */
+    async function* matches(filter, { offset = 0, limit = Infinity, select } = {}, sink = null) {
       const match = filter ? compileFilter(filter, visibleColumns) : null;
       if (select) for (const name of select) if (!visibleColumns.some((c) => c.name === name)) throw new JazminError(`Unknown column '${name}' in select`);
       const plan = planOf(filter, planColumnsList);
@@ -2055,6 +2118,47 @@
         // Chunks wholly before the offset whose every row matches are counted, not read.
         if (rowIds === null && skipped < offset && offset - skipped >= liveRows(chunk) && (!plan || mustMatch(plan, statsOf(chunk), chunk.rowCount))) {
           skipped += liveRows(chunk);
+          continue;
+        }
+        if (sink && !match) {
+          const { values } = await chunkColumns(chunk, wanted, true);
+          let runFrom = -1;
+          let runTo = -1;
+          const count = rowIds === null ? chunk.rowCount : to - from;
+          for (let k = 0; k < count && yielded < limit; k++) {
+            const r = rowIds === null ? k : rowIds[from + k] - chunk.rowStart;
+            if (deletedSet.has(chunk.rowStart + r)) continue;
+            if (skipped < offset) {
+              skipped++;
+              continue;
+            }
+            yielded++;
+            if (r !== runTo) {
+              if (runFrom >= 0) sink(values, runFrom, runTo);
+              runFrom = r;
+            }
+            runTo = r + 1;
+          }
+          if (runFrom >= 0) sink(values, runFrom, runTo);
+          continue;
+        }
+        if (sink) {
+          // A filter: it reads each row as an object, but the values go to the sink from the columns.
+          const { values, decodedCols } = await chunkColumns(chunk, wanted);
+          const count = rowIds === null ? chunk.rowCount : to - from;
+          for (let k = 0; k < count && yielded < limit; k++) {
+            const r = rowIds === null ? k : rowIds[from + k] - chunk.rowStart;
+            if (deletedSet.has(chunk.rowStart + r)) continue;
+            const row = {};
+            for (const i of decodedCols) setField(row, columns[i].name, values[i][r]);
+            if (!match(row)) continue;
+            if (skipped < offset) {
+              skipped++;
+              continue;
+            }
+            yielded++;
+            sink(values, r, r + 1);
+          }
           continue;
         }
         const rows = await chunkRows(chunk, wanted);
@@ -2164,11 +2268,14 @@
       async columnArrays(filter, { select, offset, limit } = {}) {
         const names = select ?? visibleColumns.map((c) => c.name);
         const collectors = names.map((name) => columnCollector(visibleColumns.find((c) => c.name === name) ?? { name }));
+        const positions = names.map((name) => columns.findIndex((c) => c?.name === name));
         let rowCount = 0;
-        for await (const row of matches(filter, { select: names, offset, limit })) {
-          for (let i = 0; i < names.length; i++) collectors[i].add(row[names[i]]);
-          rowCount++;
-        }
+        // Values go from the decoded columns straight into the arrays: no object per row.
+        const sink = (values, from, to) => {
+          for (let i = 0; i < positions.length; i++) collectors[i].add(values[positions[i]], from, to);
+          rowCount += to - from;
+        };
+        for await (const _ of matches(filter, { select: names, offset, limit }, sink)); // eslint-disable-line no-unused-vars
         const values = {};
         const nulls = {};
         names.forEach((name, i) => {

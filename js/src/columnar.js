@@ -1,5 +1,5 @@
 // Columnar chunk layout (spec section 5.4): one stream per column, with per-type encodings.
-import { ByteReader, ByteWriter, dateFromMs, normalizeBigInt, parseJsonText } from './binary.js';
+import { ByteReader, ByteWriter, dateFromMs, msFromFile, normalizeBigInt, parseJsonText } from './binary.js';
 import { readDecimal, writeDecimal } from './decimal.js';
 import { JazminFormatError } from './errors.js';
 
@@ -421,9 +421,10 @@ function readPlain(r, type) {
 
 /**
  * Decodes a columnar payload into one array per column (public value forms, null for null).
- * `wanted[j] === false` skips column j without decoding it.
+ * `wanted[j] === false` skips column j without decoding it. With `datesAsMs`, datetimes are milliseconds since 1970
+ * instead of Date objects (for column arrays: no object per value).
  */
-export function decodeColumnar(raw, types, rowCount, ordinal, wanted) {
+export function decodeColumnar(raw, types, rowCount, ordinal, wanted, datesAsMs = false) {
   // Every column stream holds at least one bit per row (a null bitmap or values): a larger row count is damage,
   // caught before allocating for it.
   if (!Number.isSafeInteger(rowCount) || rowCount < 0 || (rowCount > 0 && rowCount > raw.length * 8)) {
@@ -455,7 +456,8 @@ export function decodeColumnar(raw, types, rowCount, ordinal, wanted) {
     const values = new Array(count);
     switch (encoding) {
       case ENCODING.plain:
-        for (let i = 0; i < count; i++) values[i] = readPlain(stream, type);
+        if (datesAsMs && type === 'datetime') for (let i = 0; i < count; i++) values[i] = msFromFile(stream.varInt());
+        else for (let i = 0; i < count; i++) values[i] = readPlain(stream, type);
         break;
       case ENCODING.delta: {
         let prev = 0;
@@ -465,7 +467,10 @@ export function decodeColumnar(raw, types, rowCount, ordinal, wanted) {
           values[i] = v;
           prev = v;
         }
-        if (type === 'datetime') for (let i = 0; i < count; i++) values[i] = toPublic.datetime(values[i]);
+        if (type === 'datetime') {
+          if (datesAsMs) for (let i = 0; i < count; i++) msFromFile(values[i]);
+          else for (let i = 0; i < count; i++) values[i] = toPublic.datetime(values[i]);
+        }
         break;
       }
       case ENCODING.dictionary: {

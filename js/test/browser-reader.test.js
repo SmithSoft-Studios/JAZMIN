@@ -210,3 +210,21 @@ test('browser reader: damaged files fail with a JazminError', async () => {
     }
   }
 });
+
+test('the browser reader reads integers and dates at the edges of a safe number exactly, as the library does', async () => {
+  // Varints of up to 7 bytes (49 bits) are read as numbers, longer ones as BigInts; delta sums switch at ±2^53.
+  const ints = [0, 1, -1, 2 ** 49 - 1, 2 ** 49, 2 ** 49 + 1, -(2 ** 49), 2 ** 53 - 1, -(2 ** 53 - 1), 2n ** 53n, -(2n ** 53n), 2n ** 60n,
+    -(2n ** 63n), 2n ** 63n - 1n, 123456789, -987654321];
+  const dates = [new Date(-8.64e15), new Date(8.64e15), new Date(0), new Date(Date.UTC(2026, 9, 7))];
+  const rows = ints.map((n, i) => ({ id: i, n, at: dates[i % dates.length] }));
+  const sorted = [...rows].sort((a, b) => (BigInt(a.n) < BigInt(b.n) ? -1 : BigInt(a.n) > BigInt(b.n) ? 1 : 0));
+  const columns = [{ name: 'id', type: 'int' }, { name: 'n', type: 'int' }, { name: 'at', type: 'datetime' }];
+  for (const [name, data, options] of [['plain', rows, {}], ['sorted by n (delta)', sorted, { sortedBy: ['n'] }]]) {
+    const bytes = write(null, data, { columns, ...options });
+    const expected = [...open(bytes).rows()];
+    const reader = await JazminBrowser.open(new Blob([bytes]));
+    assert.deepEqual(await browserRows(reader), rowsOf(expected), name);
+    const arrays = await reader.columnArrays(null, { select: ['at'] });
+    assert.deepEqual([...arrays.values.at], expected.map((r) => r.at.getTime()), name);
+  }
+});

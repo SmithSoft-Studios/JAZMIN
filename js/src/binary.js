@@ -120,8 +120,13 @@ const MAX_DATE_MS = 8.64e15; // the range of JavaScript dates
 
 /** A datetime read from a file (ms since 1970), checked to be one JavaScript can represent. */
 export function dateFromMs(ms) {
+  return new Date(msFromFile(ms));
+}
+
+/** A datetime read from a file, as milliseconds since 1970, checked as dateFromMs() does. */
+export function msFromFile(ms) {
   if (typeof ms !== 'number' || !(Math.abs(ms) <= MAX_DATE_MS)) throw new JazminFormatError('A datetime value is out of range');
-  return new Date(ms);
+  return ms;
 }
 
 // Buffer#utf8Slice skips the argument handling of toString(); fall back where it is missing.

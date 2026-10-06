@@ -55,6 +55,18 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   - **Still refused:** a program that holds the file without allowing it to
     be renamed (some editors and backup tools). The error now says so, and
     the file is left as it was.
+- **`columnArrays()` is faster and leaner (JS and the browser reader).**
+  Values go from the decoded columns straight into the arrays: no object per
+  row, no `Date` per date, and a full read hands over each chunk's rows at
+  once. One million rows, two columns:
+  - **Node:** two number columns 170 -> 121 ms; a date and a number 218 ->
+    135 ms, with peak memory 201 -> about 150 MB.
+  - **Browser reader:** 790 -> 300 ms, and 930-990 -> 305 ms with a date
+    (peak memory 241-272 -> about 170 MB).
+- **Browser reader: integers are read with numbers, as the library reads
+  them.** Every integer, length and count went through BigInt arithmetic.
+  Reading every row of one million: 1.33-1.37 s -> 0.80 s, peak memory
+  about 232 -> 164 MB. Values beyond ±2^53 are still BigInts.
 - **.NET writer: less clean-up work per write.** Spare column buffers are
   kept in a queue instead of a `ConcurrentBag`, which held a `ThreadLocal`
   that was never disposed (one per partition, per write). About 3% on the

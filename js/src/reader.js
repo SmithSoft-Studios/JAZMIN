@@ -83,13 +83,19 @@ const NUMBER_TYPES = new Set(['int', 'float', 'datetime']);
  * Collects one column's values for columnArrays(): numbers and dates (as milliseconds) in a Float64Array, bools in a
  * Uint8Array (1 = true), other types in a plain array. Typed arrays cannot hold null: those rows hold NaN (0 for bools)
  * and their bit is set in a null bitmap (bit i & 7 of byte i >> 3). Values are gathered in pieces and joined at the
- * end, so memory peaks at about twice the result.
+ * end, so memory peaks at about twice the result. add(column, from, to) takes a decoded column's rows from..to-1 in
+ * one loop: a full read hands over each chunk's rows at once.
  */
 function columnCollector({ name, type }) {
   const Typed = NUMBER_TYPES.has(type) ? Float64Array : type === 'bool' ? Uint8Array : null;
   if (!Typed) {
     const values = [];
-    return { add: (v) => values.push(v), finish: () => ({ values }) };
+    return {
+      add(column, from, to) {
+        for (let r = from; r < to; r++) values.push(column[r]);
+      },
+      finish: () => ({ values }),
+    };
   }
   const pieces = [];
   let piece = new Typed(PIECE);
@@ -97,21 +103,24 @@ function columnCollector({ name, type }) {
   let count = 0;
   const nullRows = [];
   return {
-    add(v) {
-      if (used === PIECE) {
-        pieces.push(piece);
-        piece = new Typed(PIECE);
-        used = 0;
+    add(column, from, to) {
+      for (let r = from; r < to; r++) {
+        if (used === PIECE) {
+          pieces.push(piece);
+          piece = new Typed(PIECE);
+          used = 0;
+        }
+        const v = column[r];
+        if (v === null) {
+          nullRows.push(count);
+          piece[used] = Typed === Float64Array ? NaN : 0;
+        } else if (type === 'datetime') piece[used] = typeof v === 'number' ? v : v.getTime();
+        else if (type === 'bool') piece[used] = v ? 1 : 0;
+        else if (typeof v === 'bigint') throw new JazminValidationError(`Column '${name}' holds ${v}, beyond ±2^53: a Float64Array cannot hold it exactly (use find())`);
+        else piece[used] = v;
+        used++;
+        count++;
       }
-      if (v === null) {
-        nullRows.push(count);
-        piece[used] = Typed === Float64Array ? NaN : 0;
-      } else if (type === 'datetime') piece[used] = v.getTime();
-      else if (type === 'bool') piece[used] = v ? 1 : 0;
-      else if (typeof v === 'bigint') throw new JazminValidationError(`Column '${name}' holds ${v}, beyond ±2^53: a Float64Array cannot hold it exactly (use find())`);
-      else piece[used] = v;
-      used++;
-      count++;
     },
     finish() {
       const values = new Typed(count);
@@ -1401,9 +1410,12 @@ export class JazminReader {
     return this.#read(part, sectionId, this.#keys?.sectionKey(KEYRING_GROUPS.data, sectionId), this.#scratch);
   }
 
-  /** Reads and decodes one chunk's columns (files with one column group); `wanted` skips unneeded columns. */
-  #decodeChunk(ordinal, wanted) {
-    const columns = decodeColumnar(this.#readChunk(ordinal), this.#types, this.#rowCount[ordinal], ordinal, wanted);
+  /**
+   * Reads and decodes one chunk's columns (files with one column group); `wanted` skips unneeded columns, and
+   * `datesAsMs` gives datetimes as milliseconds instead of Date objects.
+   */
+  #decodeChunk(ordinal, wanted, datesAsMs = false) {
+    const columns = decodeColumnar(this.#readChunk(ordinal), this.#types, this.#rowCount[ordinal], ordinal, wanted, datesAsMs);
     if (this.#cost) {
       this.#cost.chunksRead++;
       this.#cost.columnsDecoded += wanted ? wanted.filter(Boolean).length : this.#types.length;
@@ -1801,20 +1813,25 @@ export class JazminReader {
     return ordinals;
   }
 
-  /** find(); with `ticks`, NEXT_CHUNK is yielded before each chunk is read (for findAsync). */
-  *#find(filter, { select, limit = Infinity, offset = 0 } = {}, ticks) {
+  /**
+   * find(); with `ticks`, NEXT_CHUNK is yielded before each chunk is read (for findAsync). With `sink`, no row is built
+   * or yielded: sink(columns, from, to) is called instead for rows from..to-1 of a chunk, with its decoded columns by
+   * position (dates as milliseconds where the chunk is decoded for this query alone), which is all columnArrays()
+   * needs. A full read passes each chunk's unbroken runs of rows at once.
+   */
+  *#find(filter, { select, limit = Infinity, offset = 0 } = {}, ticks, sink) {
     const plan = this.#plan(filter);
     const selection = this.#selection(select);
     const singleGroup = !this.#access;
     const rowIds = this.#candidates(plan);
     if (singleGroup && plan) {
       // Decode only the filter's and the selected columns, of the chunks the index candidates (or the scan) name.
-      yield* this.#scanColumns(plan, selection, offset, limit, ticks, rowIds);
+      yield* this.#scanColumns(plan, selection, offset, limit, ticks, rowIds, sink);
       return;
     }
     const wanted = this.#wantedColumns(plan, selection); // only the filter's and the selected columns are decoded
-    const decode = plan ? null : this.#directDecoder(selection);
-    if (decode) {
+    const decode = plan || sink ? null : this.#directDecoder(selection);
+    if (decode || (sink && !plan)) {
       // Full scan: each chunk's columns are decoded and rows built from them one at a time (in access-controlled
       // files through #chunk, which reads each column group's part). Chunks wholly before the offset are counted,
       // not read.
@@ -1829,7 +1846,29 @@ export class JazminReader {
         }
         const rowCount = this.#rowCount[ordinal];
         if (ticks) yield NEXT_CHUNK;
-        const columns = singleGroup ? this.#decodeChunk(ordinal, wanted) : this.#chunk(ordinal, wanted).columns;
+        const columns = singleGroup ? this.#decodeChunk(ordinal, wanted, sink !== undefined) : this.#chunk(ordinal, wanted).columns;
+        if (sink) {
+          // Unbroken runs of rows go to the sink together: deleted rows, the offset and the limit end a run.
+          let from = -1;
+          let to = -1;
+          for (let r = 0; r < rowCount && yielded < limit; r++) {
+            const rowId = this.#rowStart[ordinal] + r;
+            while (deleted < this.#deleted.length && this.#deleted[deleted] < rowId) deleted++;
+            if (deleted < this.#deleted.length && this.#deleted[deleted] === rowId) continue;
+            if (skipped < offset) {
+              skipped++;
+              continue;
+            }
+            yielded++;
+            if (r !== to) {
+              if (from >= 0) sink(columns, from, to);
+              from = r;
+            }
+            to = r + 1;
+          }
+          if (from >= 0) sink(columns, from, to);
+          continue;
+        }
         for (let r = 0; r < rowCount; r++) {
           if (yielded >= limit) return;
           const rowId = this.#rowStart[ordinal] + r;
@@ -1845,8 +1884,8 @@ export class JazminReader {
       }
       return;
     }
-    const make = this.#maker(selection);
-    for (const item of this.#iterate(plan, offset, limit, ticks, wanted, rowIds)) yield item === NEXT_CHUNK ? item : make(item[1]);
+    const make = sink ? null : this.#maker(selection);
+    for (const item of this.#iterate(plan, offset, limit, ticks, wanted, rowIds, sink)) yield item === NEXT_CHUNK ? item : make(item[1]);
   }
 
   /** By column position: the columns a query decodes - those its filter reads and those it returns. */
@@ -1860,9 +1899,9 @@ export class JazminReader {
    * A filtered query on a file with one column group: only the columns the filter and the selection use are decoded,
    * and with index candidates (`rowIds`) only their chunks are read and only their rows checked.
    */
-  *#scanColumns(plan, selection, offset, limit, ticks, rowIds) {
+  *#scanColumns(plan, selection, offset, limit, ticks, rowIds, sink) {
     const wanted = this.#wantedColumns(plan, selection);
-    const make = this.#maker(selection);
+    const make = sink ? null : this.#maker(selection);
     const row = new Array(this.#columns.length);
     const whole = this.#wholeChunkTest(plan);
     let skipped = 0;
@@ -1877,7 +1916,7 @@ export class JazminReader {
       if (ticks) yield NEXT_CHUNK;
       const start = this.#rowStart[ordinal];
       const count = rowIds === null ? this.#rowCount[ordinal] : to - from;
-      const columns = this.#decodeChunk(ordinal, wanted);
+      const columns = this.#decodeChunk(ordinal, wanted, sink !== undefined); // filters compare dates as milliseconds
       for (let k = 0; k < count; k++) {
         if (yielded >= limit) return;
         const r = rowIds === null ? k : rowIds[from + k] - start;
@@ -1891,7 +1930,8 @@ export class JazminReader {
           continue;
         }
         yielded++;
-        yield make(row);
+        if (sink) sink(columns, r, r + 1);
+        else yield make(row);
       }
     }
   }
@@ -1932,7 +1972,7 @@ export class JazminReader {
    * candidate `rowIds` (see #candidates) or of a scan when null. `wanted` (by column position, null: all) limits
    * the columns decoded. The row array is reused for the next row: copy what you keep.
    */
-  *#iterate(plan, offset, limit, ticks, wanted, rowIds) {
+  *#iterate(plan, offset, limit, ticks, wanted, rowIds, sink) {
     let skipped = 0;
     let yielded = 0;
     const row = new Array(this.#columns.length).fill(null);
@@ -1964,7 +2004,8 @@ export class JazminReader {
         const r = rowIds === null ? k : rowIds[from + k] - start;
         if (accept(chunk, r)) {
           yielded++;
-          yield [start + r, row];
+          if (sink) sink(chunk.columns, r, r + 1);
+          else yield [start + r, row];
         }
       }
     }
@@ -2052,12 +2093,15 @@ export class JazminReader {
    */
   columnArrays(filter, { select, offset, limit } = {}) {
     const names = select ?? this.columns.map((c) => c.name);
-    const collectors = this.#selection(names).map((i) => columnCollector(this.#columns[i]));
+    const positions = this.#selection(names);
+    const collectors = positions.map((i) => columnCollector(this.#columns[i]));
     let rowCount = 0;
-    for (const row of this.find(filter, { select: names, offset, limit })) {
-      for (let i = 0; i < names.length; i++) collectors[i].add(row[names[i]]);
-      rowCount++;
-    }
+    // Values go from the decoded columns straight into the arrays: no object per row, and no Date per datetime.
+    const sink = (columns, from, to) => {
+      for (let i = 0; i < positions.length; i++) collectors[i].add(columns[positions[i]], from, to);
+      rowCount += to - from;
+    };
+    for (const _ of this.#find(filter, { select: names, offset, limit }, false, sink)); // eslint-disable-line no-unused-vars
     const values = {};
     const nulls = {};
     names.forEach((name, i) => {
