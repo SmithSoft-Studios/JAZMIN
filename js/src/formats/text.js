@@ -28,30 +28,96 @@ const INT = /^-?\d+$/;
 const FLOAT = /^-?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/;
 const BOOL = /^(true|false)$/i;
 
+/** The type a present text value is inferred as: int, float, bool, or string. */
+export const textType = (v) => (INT.test(v) ? 'int' : FLOAT.test(v) ? 'float' : BOOL.test(v) ? 'bool' : 'string');
+
+const digitsEnd = (bytes, i, end) => {
+  while (i < end && bytes[i] >= 48 && bytes[i] <= 57) i++;
+  return i;
+};
+
+/** textType() of a value from its UTF-8 bytes, without decoding it (the same answers, checked by a test). */
+export function textTypeOfBytes(bytes, start, end) {
+  let i = start < end && bytes[start] === 45 ? start + 1 : start; // '-'
+  const whole = digitsEnd(bytes, i, end);
+  if (whole > i && whole === end) return 'int';
+  // float: -?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?
+  let float = true;
+  if (whole > i) {
+    i = whole;
+    if (i < end && bytes[i] === 46) i = digitsEnd(bytes, i + 1, end);
+  } else if (i < end && bytes[i] === 46 && digitsEnd(bytes, i + 1, end) > i + 1) i = digitsEnd(bytes, i + 1, end);
+  else float = false;
+  if (float && i < end && (bytes[i] === 101 || bytes[i] === 69)) {
+    i++;
+    if (i < end && (bytes[i] === 43 || bytes[i] === 45)) i++;
+    const exponent = digitsEnd(bytes, i, end);
+    float = exponent > i;
+    i = exponent;
+  }
+  if (float && i === end) return 'float';
+  // bool: true or false, in any case (ASCII letters differ from their capitals by 0x20 only)
+  const n = end - start;
+  if (n === 4 || n === 5) {
+    const word = n === 4 ? 'true' : 'false';
+    let k = 0;
+    while (k < n && (bytes[start + k] | 0x20) === word.charCodeAt(k)) k++;
+    if (k === n) return 'bool';
+  }
+  return 'string';
+}
+
 /**
- * Infers column types from text values (null = absent). A column is int/float/bool
- * only when every present value matches; otherwise it stays string.
+ * Infers column types from text records (positional; null or a missing field = absent), one record at a time, so a
+ * file can be read without loading it. A column is int/float/bool only when every present value matches; otherwise
+ * it stays string.
  */
-export function inferTextColumns(names, rows, inferTypes) {
-  return names.map((name, i) => {
-    let type = null;
-    let nullable = false;
-    for (const row of rows) {
-      const v = row[i];
-      if (v === null || v === undefined) {
-        nullable = true;
-        continue;
-      }
-      if (!inferTypes) {
-        type = 'string';
-        continue;
-      }
-      const t = INT.test(v) ? 'int' : FLOAT.test(v) ? 'float' : BOOL.test(v) ? 'bool' : 'string';
-      if (type === null) type = t;
-      else if (type !== t) type = (type === 'int' && t === 'float') || (type === 'float' && t === 'int') ? 'float' : 'string';
+export class TextColumnInference {
+  #names;
+  #inferTypes;
+  #types;
+  #nullable;
+
+  constructor(names, inferTypes = true) {
+    this.#names = names;
+    this.#inferTypes = inferTypes;
+    this.#types = new Array(names.length).fill(null);
+    this.#nullable = new Array(names.length).fill(false);
+  }
+
+  add(record) {
+    for (let i = 0; i < this.#names.length; i++) {
+      const v = record[i];
+      if (v === null || v === undefined) this.#nullable[i] = true;
+      else if (this.#types[i] !== 'string') this.#merge(i, this.#inferTypes ? textType(v) : 'string'); // a string column stays one
     }
-    return { name, type: type ?? 'string', nullable };
-  });
+  }
+
+  /** add() for a record whose present values are given as their types (textType), as the CSV file reader finds them. */
+  addTypes(types) {
+    for (let i = 0; i < this.#names.length; i++) {
+      const t = types[i];
+      if (t === null || t === undefined) this.#nullable[i] = true;
+      else if (this.#types[i] !== 'string') this.#merge(i, this.#inferTypes ? t : 'string');
+    }
+  }
+
+  #merge(i, t) {
+    const type = this.#types[i];
+    if (type === null) this.#types[i] = t;
+    else if (type !== t) this.#types[i] = (type === 'int' && t === 'float') || (type === 'float' && t === 'int') ? 'float' : 'string';
+  }
+
+  columns() {
+    return this.#names.map((name, i) => ({ name, type: this.#types[i] ?? 'string', nullable: this.#nullable[i] }));
+  }
+}
+
+/** inferTextColumns for records that are all at hand (see TextColumnInference). */
+export function inferTextColumns(names, rows, inferTypes) {
+  const inference = new TextColumnInference(names, inferTypes);
+  for (const row of rows) inference.add(row);
+  return inference.columns();
 }
 
 /** Converts a text value into the column's type. */
@@ -64,17 +130,20 @@ export function textToValue(type, text) {
     }
     case 'float': return Number(text);
     case 'bool': return text.toLowerCase() === 'true';
-    default: return text;
+    case 'binary': return Buffer.from(text, 'base64'); // as valueToText writes them
+    case 'json': return JSON.parse(text);
+    default: return text; // strings, and datetimes and decimals, which the writer reads from their text
   }
+}
+
+/** One positional text row as an object keyed by column name. */
+export function toObject(columns, row) {
+  const out = {};
+  for (let i = 0; i < columns.length; i++) setField(out, columns[i].name, textToValue(columns[i].type, row[i] ?? null));
+  return out;
 }
 
 /** Turns positional text rows into objects keyed by column name. */
 export function toObjects(columns, rows) {
-  return rows.map((row) => {
-    const out = {};
-    columns.forEach((c, i) => {
-      setField(out, c.name, textToValue(c.type, row[i] ?? null));
-    });
-    return out;
-  });
+  return rows.map((row) => toObject(columns, row));
 }

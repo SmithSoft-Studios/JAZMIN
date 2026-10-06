@@ -87,6 +87,86 @@ public static class JazminConvert
     public static byte[] FromCsv(string csv, JazminSerializerSettings? settings = null, bool inferTypes = true) =>
         Write(CsvFormat.Parse(csv, inferTypes: inferTypes), settings);
 
+    /// <summary>
+    /// Converts a CSV file of any size to a JAZMIN file without loading it: the file is read twice, a buffer at a time
+    /// (column types as <see cref="FromCsv"/> infers them, then rows). With <paramref name="columns"/>, every header
+    /// name must be one of them, each value is read as its column's type, and the file is read once. If the input
+    /// fails part-way the output file is deleted.
+    /// </summary>
+    public static void FromCsvFile(string inputPath, string outputPath, JazminSerializerSettings? settings = null, bool inferTypes = true,
+        char delimiter = ',', IReadOnlyList<JazminColumn>? columns = null)
+    {
+        settings ??= new JazminSerializerSettings();
+        IEnumerable<string?[]> Records()
+        {
+            using var reader = new StreamReader(inputPath, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, 1 << 16);
+            foreach (var record in CsvFormat.ReadRecords(reader, delimiter)) yield return record;
+        }
+        if (columns is null)
+        {
+            List<string>? names = null;
+            TextColumnInference? inference = null;
+            long n = 0;
+            foreach (var record in Records())
+            {
+                if (names is null)
+                {
+                    names = CsvFormat.HeaderNames(record);
+                    inference = new TextColumnInference(names, inferTypes);
+                    continue;
+                }
+                CsvFormat.CheckFields(record, names, n++);
+                inference!.Add(record);
+            }
+            columns = inference?.Columns() ?? throw new JazminValidationException("CSV has no header row");
+        }
+        var writer = JazminWriter.Create(outputPath, settings.ApplyIndexes(columns), settings.ToWriteOptions());
+        try
+        {
+            JazminColumn[]? order = null;
+            List<string>? header = null;
+            long n = 0;
+            foreach (var record in Records())
+            {
+                if (header is null)
+                {
+                    header = CsvFormat.HeaderNames(record);
+                    order = header.Select(name => columns.FirstOrDefault(c => c.Name == name)
+                        ?? throw new JazminValidationException($"CSV column '{name}' is not one of the columns given")).ToArray();
+                    continue;
+                }
+                CsvFormat.CheckFields(record, header, n++);
+                writer.WriteValues(ToColumnOrder(columns, order!, record));
+            }
+            if (header is null) throw new JazminValidationException("CSV has no header row");
+            writer.Finish();
+        }
+        catch
+        {
+            writer.Abort();
+            File.Delete(outputPath);
+            throw;
+        }
+    }
+
+    /// <summary>A CSV record (in the header's order) as values in the order of <paramref name="columns"/>.</summary>
+    private static object?[] ToColumnOrder(IReadOnlyList<JazminColumn> columns, JazminColumn[] order, string?[] record)
+    {
+        var values = new object?[columns.Count];
+        for (var i = 0; i < order.Length && i < record.Length; i++)
+        {
+            var at = IndexOf(columns, order[i]);
+            values[at] = TextValues.FromText(order[i].Type, record[i]);
+        }
+        return values;
+    }
+
+    private static int IndexOf(IReadOnlyList<JazminColumn> columns, JazminColumn column)
+    {
+        for (var i = 0; i < columns.Count; i++) if (ReferenceEquals(columns[i], column)) return i;
+        return -1;
+    }
+
     public static string ToXml(byte[] data, JazminSerializerSettings? settings = null, JazminFilter? filter = null)
     {
         using var reader = JazminReader.Open(data, settings?.ToReadOptions());

@@ -561,6 +561,15 @@ export function importJSONFile(inputPath: string, target: string, options?: Writ
 /** Streams the objects of a JSON array or JSON Lines file one at a time. */
 export function readJsonObjects(path: string, options?: { blockSize?: number }): Generator<Record<string, unknown>>;
 
+/**
+ * Converts a CSV file of any size to JAZMIN without loading it. Read twice (column types, then rows) unless
+ * options.columns is given; then every header name must be one of those columns, and it is read once.
+ */
+export function importCSVFile(inputPath: string, target: null, options?: WriteOptions & { delimiter?: string; inferTypes?: boolean }): Buffer;
+export function importCSVFile(inputPath: string, target: string, options?: WriteOptions & { delimiter?: string; inferTypes?: boolean }): undefined;
+/** Streams the records of a CSV file (fields as strings, null for an unquoted empty field), header first. */
+export function readCsvRecords(path: string, options?: { delimiter?: string; blockSize?: number }): Generator<(string | null)[]>;
+
 export function parseCsv(text: string, options?: { delimiter?: string; inferTypes?: boolean }): { columns: JazminColumn[]; rows: JazminRow[] };
 export function parseXml(text: string, options?: { inferTypes?: boolean }): { columns: JazminColumn[]; rows: JazminRow[] };
 export function parseJsonRows(input: string | object | object[]): Record<string, unknown>[];

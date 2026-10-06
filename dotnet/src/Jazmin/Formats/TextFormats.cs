@@ -32,39 +32,68 @@ internal static class TextValues
     /// <summary>A column is int/float/bool only when every present value matches; otherwise string.</summary>
     public static TabularData FromText(IReadOnlyList<string> names, IReadOnlyList<string?[]> rows, bool inferTypes)
     {
-        var columns = new List<JazminColumn>();
-        for (var i = 0; i < names.Count; i++)
-        {
-            string? type = null;
-            var nullable = false;
-            foreach (var row in rows)
-            {
-                var v = i < row.Length ? row[i] : null;
-                if (v is null)
-                {
-                    nullable = true;
-                    continue;
-                }
-                var t = !inferTypes ? "string"
-                    : Int.IsMatch(v) && long.TryParse(v, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _) ? "int"
-                    : Float.IsMatch(v) ? "float"
-                    : v.Equals("true", StringComparison.OrdinalIgnoreCase) || v.Equals("false", StringComparison.OrdinalIgnoreCase) ? "bool"
-                    : "string";
-                type = type is null || type == t ? t : (type, t) is ("int", "float") or ("float", "int") ? "float" : "string";
-            }
-            columns.Add(new JazminColumn(names[i], TypeNames.Parse(type ?? "string")) { Nullable = nullable });
-        }
-        var values = rows.Select(row => columns.Select((c, i) => Convert(c.Type, i < row.Length ? row[i] : null)).ToArray()).ToList();
+        var inference = new TextColumnInference(names, inferTypes);
+        foreach (var row in rows) inference.Add(row);
+        var columns = inference.Columns();
+        var values = rows.Select(row => ToValues(columns, row)).ToList();
         return new TabularData(columns, values);
     }
 
-    private static object? Convert(JazminType type, string? text) => text is null ? null : type switch
+    /// <summary>A text record as values of <paramref name="columns"/> (positional; a missing field is null).</summary>
+    public static object?[] ToValues(IReadOnlyList<JazminColumn> columns, string?[] row)
+    {
+        var values = new object?[columns.Count];
+        for (var i = 0; i < values.Length; i++) values[i] = FromText(columns[i].Type, i < row.Length ? row[i] : null);
+        return values;
+    }
+
+    /// <summary>The type a present text value is inferred as: int (fitting a long), float, bool or string.</summary>
+    public static JazminType TypeOf(string v) =>
+        Int.IsMatch(v) && long.TryParse(v, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out _) ? JazminType.Int
+        : Float.IsMatch(v) ? JazminType.Float
+        : v.Equals("true", StringComparison.OrdinalIgnoreCase) || v.Equals("false", StringComparison.OrdinalIgnoreCase) ? JazminType.Bool
+        : JazminType.String;
+
+    /// <summary>A text value as a value of a column of <paramref name="type"/>, the reverse of <see cref="ToText"/>.</summary>
+    public static object? FromText(JazminType type, string? text) => text is null ? null : type switch
     {
         JazminType.Int => long.Parse(text, CultureInfo.InvariantCulture),
         JazminType.Float => double.Parse(text, CultureInfo.InvariantCulture),
         JazminType.Bool => text.Equals("true", StringComparison.OrdinalIgnoreCase),
-        _ => text,
+        JazminType.Binary => System.Convert.FromBase64String(text),
+        JazminType.Json => JsonNode.Parse(text),
+        _ => text, // strings, and dates and decimals, which the writer reads from their text
     };
+}
+
+/// <summary>
+/// Infers column types from text records one at a time, so a file can be read without loading it. A column is
+/// int/float/bool only when every present value matches; otherwise string.
+/// </summary>
+internal sealed class TextColumnInference(IReadOnlyList<string> names, bool inferTypes)
+{
+    private readonly JazminType?[] _types = new JazminType?[names.Count];
+    private readonly bool[] _nullable = new bool[names.Count];
+
+    public void Add(string?[] record)
+    {
+        for (var i = 0; i < _types.Length; i++)
+        {
+            var v = i < record.Length ? record[i] : null;
+            if (v is null)
+            {
+                _nullable[i] = true;
+                continue;
+            }
+            var type = _types[i];
+            if (type == JazminType.String) continue; // a string column stays one
+            var t = inferTypes ? TextValues.TypeOf(v) : JazminType.String;
+            _types[i] = type is null || type == t ? t : (type, t) is (JazminType.Int, JazminType.Float) or (JazminType.Float, JazminType.Int) ? JazminType.Float : JazminType.String;
+        }
+    }
+
+    public List<JazminColumn> Columns() =>
+        names.Select((name, i) => new JazminColumn(name, _types[i] ?? JazminType.String) { Nullable = _nullable[i] }).ToList();
 }
 
 /// <summary>JSON array-of-objects conversion (System.Text.Json; no third-party dependency).</summary>
@@ -254,42 +283,52 @@ public static class CsvFormat
 
     public static TabularData Parse(string text, char delimiter = ',', bool inferTypes = true)
     {
-        var records = ParseRecords(text.TrimStart('﻿'), delimiter);
+        var records = ReadRecords(new StringReader(text.TrimStart('\uFEFF')), delimiter).ToList();
         if (records.Count == 0) throw new JazminValidationException("CSV has no header row");
-        var names = records[0].Select((h, i) => h ?? $"column{i + 1}").ToList();
+        var names = HeaderNames(records[0]);
         var data = records.Skip(1).ToList();
-        for (var n = 0; n < data.Count; n++)
-            if (data[n].Length > names.Count) throw new JazminValidationException($"CSV line {n + 2} has more fields than the header");
+        for (var n = 0; n < data.Count; n++) CheckFields(data[n], names, n);
         return TextValues.FromText(names, data, inferTypes);
     }
 
-    private static List<string?[]> ParseRecords(string text, char delimiter)
+    /// <summary>Column names from a CSV header record (an empty name becomes column1, column2, ...).</summary>
+    internal static List<string> HeaderNames(string?[] header) => header.Select((h, i) => h ?? $"column{i + 1}").ToList();
+
+    /// <summary>Throws when a data record (<paramref name="n"/>, from 0) has more fields than the header.</summary>
+    internal static void CheckFields(string?[] record, IReadOnlyList<string> names, long n)
     {
-        var records = new List<string?[]>();
+        if (record.Length > names.Count) throw new JazminValidationException($"CSV line {n + 2} has more fields than the header");
+    }
+
+    /// <summary>
+    /// The records of CSV text (RFC 4180), read from <paramref name="reader"/> a buffer at a time: a file of any size
+    /// is never loaded. Fields are strings, or null for an unquoted empty field.
+    /// </summary>
+    public static IEnumerable<string?[]> ReadRecords(TextReader reader, char delimiter = ',')
+    {
+        var buffer = new char[1 << 16];
+        int length = 0, at = 0;
         var record = new List<string?>();
         var field = new StringBuilder();
         bool quoted = false, inQuotes = false;
-        void EndField()
+        while (true)
         {
-            record.Add(quoted || field.Length > 0 ? field.ToString() : null);
-            field.Clear();
-            quoted = false;
-        }
-        for (var i = 0; i < text.Length; i++)
-        {
-            var ch = text[i];
+            if (at == length)
+            {
+                length = reader.Read(buffer, 0, buffer.Length);
+                at = 0;
+                if (length == 0) break;
+            }
+            var ch = buffer[at++];
             if (inQuotes)
             {
-                if (ch == '"')
+                if (ch != '"') field.Append(ch);
+                else if (Peek() == '"')
                 {
-                    if (i + 1 < text.Length && text[i + 1] == '"')
-                    {
-                        field.Append('"');
-                        i++;
-                    }
-                    else inQuotes = false;
+                    field.Append('"');
+                    at++;
                 }
-                else field.Append(ch);
+                else inQuotes = false;
                 continue;
             }
             if (ch == '"' && field.Length == 0 && !quoted)
@@ -301,9 +340,9 @@ public static class CsvFormat
             else if (ch is '\r' or '\n')
             {
                 EndField();
-                records.Add(record.ToArray());
+                yield return record.ToArray();
                 record.Clear();
-                if (ch == '\r' && i + 1 < text.Length && text[i + 1] == '\n') i++;
+                if (ch == '\r' && Peek() == '\n') at++;
             }
             else field.Append(ch);
         }
@@ -311,9 +350,27 @@ public static class CsvFormat
         if (field.Length > 0 || quoted || record.Count > 0)
         {
             EndField();
-            records.Add(record.ToArray());
+            yield return record.ToArray();
         }
-        return records;
+
+        // The next character without taking it (reading the next buffer if needed), or -1 at the end.
+        int Peek()
+        {
+            if (at == length)
+            {
+                length = reader.Read(buffer, 0, buffer.Length);
+                at = 0;
+                if (length == 0) return -1;
+            }
+            return buffer[at];
+        }
+
+        void EndField()
+        {
+            record.Add(quoted || field.Length > 0 ? field.ToString() : null);
+            field.Clear();
+            quoted = false;
+        }
     }
 }
 

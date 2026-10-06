@@ -130,7 +130,7 @@ export function msFromFile(ms) {
 }
 
 // Buffer#utf8Slice skips the argument handling of toString(); fall back where it is missing.
-const utf8Slice = typeof Buffer.prototype.utf8Slice === 'function'
+export const utf8Slice = typeof Buffer.prototype.utf8Slice === 'function'
   ? (buf, start, end) => buf.utf8Slice(start, end)
   : (buf, start, end) => buf.toString('utf8', start, end);
 

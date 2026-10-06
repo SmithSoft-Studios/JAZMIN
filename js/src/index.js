@@ -1,12 +1,13 @@
 import fs from 'node:fs';
 import { JazminValidationError } from './errors.js';
-import { csvPieces, parseCsv } from './formats/csv.js';
+import { checkCsvFields, csvHeaderNames, csvPieces, parseCsv, readCsvRecords, readCsvTypes } from './formats/csv.js';
 import { jsonPieces, parseJsonRows } from './formats/json.js';
 import { readJsonObjects } from './formats/json-stream.js';
 import { parseXml, xmlPieces } from './formats/xml.js';
 import { JazminReader, fileSource } from './reader.js';
 import { PREAMBLE_SIZE } from './constants.js';
 import { inferSchema } from './schema.js';
+import { TextColumnInference, toObject } from './formats/text.js';
 import { shapePieces } from './shape.js';
 import { JazminWriter } from './writer.js';
 
@@ -142,6 +143,60 @@ export function importJSONFile(inputPath, target, options = {}) {
   return writeFrom(target, () => readJsonObjects(inputPath), options);
 }
 
+/**
+ * Converts a CSV file of any size to JAZMIN without loading it: the file is read twice, a block at a time (column
+ * types, then rows), so memory stays at about one chunk of rows. Column types are inferred as fromCSV() infers them
+ * unless options.columns is given: then every header name must be one of those columns, each value is read as its
+ * column's type, and the file is read once.
+ */
+export function importCSVFile(inputPath, target, options = {}) {
+  const { delimiter = ',', inferTypes = true } = options;
+  const records = () => readCsvRecords(inputPath, { delimiter });
+  let columns = options.columns;
+  if (!columns) {
+    // The header's names, then each value's type, worked out from the bytes without making a string of it.
+    const reading = records();
+    const header = reading.next();
+    reading.return(); // closes the file
+    if (header.done) throw new JazminValidationError('CSV has no header row');
+    const names = csvHeaderNames(header.value);
+    const inference = new TextColumnInference(names, inferTypes);
+    let n = -1;
+    for (const types of readCsvTypes(inputPath, { delimiter })) {
+      if (n >= 0) {
+        checkCsvFields(types, names, n);
+        inference.addTypes(types);
+      }
+      n++;
+    }
+    columns = inference.columns();
+  }
+  return writeFrom(target, () => csvRows(records(), columns, Boolean(options.columns)), { ...options, columns });
+}
+
+/** The data records of a CSV file as objects of `columns`; given columns are found by the header's names. */
+function* csvRows(records, columns, byName) {
+  let order = null;
+  let names = null;
+  let n = 0;
+  for (const record of records) {
+    if (!names) {
+      names = csvHeaderNames(record);
+      if (byName) {
+        order = names.map((name) => {
+          const column = columns.find((c) => c.name === name);
+          if (!column) throw new JazminValidationError(`CSV column '${name}' is not one of the columns given`);
+          return column;
+        });
+      }
+      continue;
+    }
+    checkCsvFields(record, names, n++);
+    yield toObject(order ?? columns, record);
+  }
+  if (!names) throw new JazminValidationError('CSV has no header row');
+}
+
 const EXPORTERS = { json: jsonPieces, csv: csvPieces, xml: xmlPieces };
 
 function pieces(reader, format, options = {}) {
@@ -203,7 +258,7 @@ export function fromXML(xml, target, options = {}) {
   return write(target, rows, { columns, ...options });
 }
 
-export { parseCsv, parseXml, parseJsonRows, readJsonObjects };
+export { parseCsv, parseXml, parseJsonRows, readCsvRecords, readJsonObjects };
 
 /**
  * Drop-in counterpart of JSON.stringify / JSON.parse for arrays of records:

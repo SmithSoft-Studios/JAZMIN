@@ -73,6 +73,18 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   write loop.
 
 ### Added
+- **Large CSV files are imported without loading them (TASKS C-2):**
+  `importCSVFile(path, target, options)` and `JazminConvert.FromCsvFile`.
+  - **How:** the file is read twice, a block at a time: once to work out the
+    column types (as `fromCSV` does), then to write the rows. With `columns`
+    given, each value is read as its column's type (a CSV export imports back
+    exactly) and the file is read once.
+  - **A 1 GB CSV file (10 million rows):** .NET 14 s at 63 MB peak memory;
+    Node 44 s at 92 MB (with `--max-old-space-size=64
+    --max-semi-space-size=2`). `fromCSV` took 1.6 GB for a 200 MB file.
+  - **Also:** `readCsvRecords(path)` / `CsvFormat.ReadRecords(reader)` give a
+    file's records one at a time; `fromCSV` / `FromCsv` read the same records
+    as before (checked against the previous parser on random input).
 - **.NET profiling tools (`dotnet/profiling`).** `ProfDrive` runs one path
   at a time (lookup, lookup on a reused reader, read all, write) with no
   forced garbage collection between runs, so a CPU trace shows the library's

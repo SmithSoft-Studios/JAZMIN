@@ -1025,6 +1025,7 @@ information through size changes (see RFC §13). For such cases, use
 | JSON → JAZMIN | `fromJSON(text, target, options)` | `JazminConvert.FromJson(json, settings)` |
 | JAZMIN → JSON | `toJSON(reader, { filter, select, pretty, omitNulls })` | `JazminConvert.ToJson(bytes, settings, filter)` |
 | CSV → JAZMIN | `fromCSV(text, target, { inferTypes })` | `JazminConvert.FromCsv(csv, settings, inferTypes)` |
+| CSV file of any size → JAZMIN | `importCSVFile(path, target, { inferTypes, delimiter, columns })` | `JazminConvert.FromCsvFile(path, output, settings, inferTypes, delimiter, columns)` |
 | JAZMIN → CSV | `toCSV(reader, options)` | `JazminConvert.ToCsv(bytes, settings, filter)` |
 | XML → JAZMIN | `fromXML(text, target)` | `JazminConvert.FromXml(xml, settings)` |
 | JAZMIN → XML | `toXML(reader, options)` | `JazminConvert.ToXml(bytes, settings, filter)` |
@@ -1043,6 +1044,37 @@ Conversion rules worth knowing:
 - **XML:** the shape is `<jazmin><row><column>value</column></row></jazmin>`.
   Null values are left out. Column names that are not valid XML names are
   written as `<field name="...">`.
+
+### 11.1 Large CSV files
+
+`importCSVFile` (.NET `JazminConvert.FromCsvFile`) reads a CSV file a block
+at a time, so its size doesn't matter. It reads the file twice: first to
+work out the column types, as `fromCSV` does, then to write the rows.
+
+```js
+import { importCSVFile } from '@smithsoft-studios/jazmin';
+
+importCSVFile('transactions.csv', 'transactions.jzm', { indexes: { account: 'sorted' } });
+
+// With the columns known (here, those of a file it was exported from), each value is read as its column's
+// type and the file is read once. Every header name must be one of the columns.
+importCSVFile('export.csv', 'back.jzm', { columns: reader.columns });
+```
+
+```csharp
+JazminConvert.FromCsvFile("transactions.csv", "transactions.jzm");
+JazminConvert.FromCsvFile("export.csv", "back.jzm", columns: reader.Columns);
+```
+
+A 1 GB CSV file (10 million rows of 8 columns):
+
+| Library | Time | Peak memory |
+|---|---:|---:|
+| .NET | 14 s | **63 MB** |
+| Node | 44 s | **92 MB** with `--max-old-space-size=64 --max-semi-space-size=2` (316 MB without: Node collects garbage late) |
+
+With `fromCSV`, Node holds the text and then every row as an object: a 200 MB
+file took 1.6 GB, so a 1 GB one would need about 8 GB.
 
 ---
 
@@ -1072,9 +1104,10 @@ Conversion rules worth knowing:
 | Rows per file | 2^53 in JavaScript, 2^63 in .NET |
 | Updates | By rewrite with atomic replace (section 16), or by append for frequent changes (section 17) |
 | Concurrency | Readers and writers are single-threaded objects. Open one per thread |
-| Browser | Not yet supported (uses Node `fs`, `zlib`, `crypto`). See TASKS.md B-1 |
+| Browser | `@smithsoft-studios/jazmin/browser` (section 24) reads every file except Brotli-compressed ones, and writes files with one key, a password or none |
 | Large JSON import | Streams with `importJSONFile` / `JazminConvert.FromJsonFile` at any size. `fromJSON` / `FromJson` (text in memory) are for small inputs |
-| Large CSV/XML import | Currently loads the whole input text into memory. See TASKS.md C-2 |
+| Large CSV import | Streams with `importCSVFile` / `JazminConvert.FromCsvFile` at any size (section 11.1) |
+| Large XML import | Loads the whole input text into memory. See TASKS.md C-2 |
 | Partial-access keys | Yes, by partition and/or column group (section 15) |
 
 ## 14. Recipe: one large file, processed section by section
