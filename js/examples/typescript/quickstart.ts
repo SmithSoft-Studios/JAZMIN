@@ -77,7 +77,7 @@ bobView.close();
 // Bob sends records back, locked with the submission key he gets by opening the shared file; the owner derives it too.
 const bobsView = open('shared.jzm', { key: bob.export() });
 const bobsKey = bobsView.submissionKey!;
-bobsView.close(); // an open reader keeps a file from being replaced (update, compact) on Windows
+bobsView.close();
 write('bob-records.jzm', [{ section: 'B', amount: 4 }], { columns: [{ name: 'section', type: 'string' }, { name: 'amount', type: 'int' }], key: bobsKey });
 accessKeyOf('shared.jzm', owner, bob.id); // the owner checks Bob still has a grant
 const received = open('bob-records.jzm', { key: owner.submissionKey(bob.id) });

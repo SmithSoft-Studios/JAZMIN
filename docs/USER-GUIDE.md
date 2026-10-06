@@ -1496,9 +1496,15 @@ Rules:
   file is removed.
 - **For frequent changes, use `append()`** (section 17). It is far cheaper
   than a rewrite and works while readers have the file open.
-- **On Windows, a rewrite cannot replace a file that another process has
-  open.** You get a clear error, and the original file is untouched. Close
-  readers first, or use `append()`.
+- **Readers that have the file open keep reading the version they opened,**
+  on Windows too. They see the new version once they open the file again.
+  - **On Windows,** a program that holds the file without allowing it to be
+    renamed (some editors and backup tools do) still blocks a rewrite. You
+    get a clear error, and the original file is untouched.
+  - **JavaScript on Windows** replaces an open file in two quick steps,
+    because Node has no single-step way: for an instant the file's name is
+    missing, so a program opening it at that moment may not find it. .NET
+    replaces it in one step.
 
 ## 17. Appending: fast, frequent changes
 
@@ -1521,7 +1527,7 @@ a threshold you choose.
 | Deleted/replaced rows | Removed | Marked deleted (skipped by readers) | Removed |
 | Revoke access, or narrow a grant | Yes (fresh secrets) | No | Yes (fresh secrets) |
 | File size | Minimal | Grows with every append | Back to minimal |
-| Works while readers have the file open (Windows) | No, fails with a clear error | **Yes** | No, fails with a clear error |
+| Works while readers have the file open | Yes: they keep the version they opened | **Yes** | Yes: they keep the version they opened |
 
 ### 17.1 JavaScript
 

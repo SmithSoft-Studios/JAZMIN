@@ -154,11 +154,9 @@ test('openTable reads another table of the same open file, sharing its keys and 
   const third = transactionsReader.openTable('clients');
   assert.deepEqual(third.get(1), clients[1]);
   transactionsReader.close();
-  if (process.platform === 'win32') {
-    assert.throws(() => update(file, { key: owner, metadata: { v: 1 } }), /has it open/); // `third` still holds the file
-  }
+  update(file, { key: owner, metadata: { v: 1 } }); // replaced; `third` keeps the version it opened
+  assert.deepEqual(third.get(1), clients[1]); // `third` still holds the file
   third.close();
-  update(file, { key: owner, metadata: { v: 1 } }); // every reader closed: the file can be replaced
   assert.throws(() => third.openTable('transactions'), /closed/);
 });
 

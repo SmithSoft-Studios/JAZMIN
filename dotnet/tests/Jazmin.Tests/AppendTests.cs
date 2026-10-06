@@ -166,27 +166,71 @@ public sealed class AppendTests : IDisposable
     }
 
     [Fact]
-    public void FullUpdate_WhileAReaderHasTheFileOpen_ReplacesOrFailsCleanlyOnWindows()
+    public void FullUpdateAndCompact_WhileReadersHaveTheFileOpen_ReplaceIt_OnWindowsToo()
     {
         var path = Write("rename.jzm", Range(0, 20));
-        var before = File.ReadAllBytes(path);
         using (var early = JazminReader.Open(path))
         {
-            if (OperatingSystem.IsWindows())
-            {
-                var error = Assert.Throws<JazminException>(() => JazminFile.Update(path, new JazminUpdate { Insert = [Row(20)] }));
-                Assert.Contains("Windows does not allow replacing an open file", error.Message);
-                Assert.Equal(before, File.ReadAllBytes(path));
-                Assert.Equal(new[] { "rename.jzm" }, Directory.GetFiles(_dir).Select(Path.GetFileName)); // temp file removed
-                JazminFile.Append(path, new JazminAppend { Insert = [Row(20)] }); // append works with readers open
-            }
-            else
-            {
-                JazminFile.Update(path, new JazminUpdate { Insert = [Row(20)] });
-            }
-            Assert.Equal(20, early.RowCount); // the open reader still sees the version it opened
+            JazminFile.Update(path, new JazminUpdate { Insert = [Row(20)] });
+            using var middle = JazminReader.Open(path);
+            JazminFile.Append(path, new JazminAppend { Insert = [Row(21)] });
+            JazminFile.Compact(path);
+            // Each open reader still reads the version it opened, rows included.
+            Assert.Equal((20, 20), (early.RowCount, early.Rows().Count()));
+            Assert.Equal((21, 21), (middle.RowCount, middle.Rows().Count()));
         }
+        Assert.Equal(22, Ids(path).Length);
+        Assert.Equal(new[] { "rename.jzm" }, Directory.GetFiles(_dir).Select(Path.GetFileName)); // no temporary or old versions left
+    }
+
+    [Fact]
+    public void FullUpdate_OfAFileHeldWithoutRenameSharing_LeavesItAsItWas()
+    {
+        if (!OperatingSystem.IsWindows()) return; // only Windows refuses to rename an open file
+        var path = Write("held.jzm", Range(0, 20));
+        var before = File.ReadAllBytes(path);
+        using (new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read)) // another program: no renames or deletes
+        {
+            var error = Assert.Throws<JazminException>(() => JazminFile.Update(path, new JazminUpdate { Insert = [Row(20)] }));
+            Assert.Contains("another program has it open and doesn't allow it to be renamed", error.Message);
+            Assert.Equal(before, File.ReadAllBytes(path));
+            Assert.Equal(new[] { "held.jzm" }, Directory.GetFiles(_dir).Select(Path.GetFileName)); // temporary file removed
+        }
+        JazminFile.Update(path, new JazminUpdate { Insert = [Row(20)] }); // once it is closed
         Assert.Equal(21, Ids(path).Length);
+    }
+
+    [Fact]
+    public void WindowsReplace_InOneStepOrTwo_KeepsOpenReadersOnTheirVersion()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        foreach (var twoSteps in new[] { false, true })
+        {
+            var target = Path.Combine(_dir, $"replace-{twoSteps}.bin");
+            var temp = target + ".tmp";
+            File.WriteAllText(target, "old version");
+            File.WriteAllText(temp, "new version");
+            using (var reader = new FileStream(target, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            {
+                Assert.True(twoSteps ? WindowsFiles.TryReplaceInTwoSteps(temp, target) : WindowsFiles.TryPosixReplace(temp, target));
+                Assert.Equal("old version", new StreamReader(reader).ReadToEnd());
+            }
+            Assert.Equal("new version", File.ReadAllText(target));
+            Assert.Equal(new[] { Path.GetFileName(target) }, Directory.GetFiles(_dir, "replace-*").Select(Path.GetFileName));
+            File.Delete(target);
+        }
+
+        // Held without rename sharing: nothing changes.
+        var held = Path.Combine(_dir, "held.bin");
+        File.WriteAllText(held, "old version");
+        File.WriteAllText(held + ".tmp", "new version");
+        using (new FileStream(held, FileMode.Open, FileAccess.Read, FileShare.Read))
+        {
+            Assert.False(WindowsFiles.TryPosixReplace(held + ".tmp", held));
+            Assert.False(WindowsFiles.TryReplaceInTwoSteps(held + ".tmp", held));
+        }
+        Assert.Equal("old version", File.ReadAllText(held));
+        Assert.Equal(new[] { "held.bin", "held.bin.tmp" }, Directory.GetFiles(_dir, "held.*").Select(Path.GetFileName).Order());
     }
 
     [Fact]

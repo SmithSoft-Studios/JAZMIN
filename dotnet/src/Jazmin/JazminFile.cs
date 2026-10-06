@@ -443,7 +443,7 @@ public static class JazminFile
 
     /// <summary>
     /// Atomically replaces <paramref name="path"/> with <paramref name="temp"/>: readers never see a half-written
-    /// file. Windows does not allow replacing a file that another process has open; that case gets a clear error.
+    /// file. Readers that have the file open keep reading the version they opened.
     /// </summary>
     private static void ReplaceFile(string temp, string path)
     {
@@ -452,10 +452,13 @@ public static class JazminFile
             if (!OperatingSystem.IsWindows()) File.SetUnixFileMode(temp, File.GetUnixFileMode(path)); // the new version keeps the file's permissions
             File.Move(temp, path, overwrite: true);
         }
-        catch (Exception e) when (OperatingSystem.IsWindows() && e is UnauthorizedAccessException or IOException)
+        catch (Exception e) when (e is UnauthorizedAccessException or IOException)
         {
-            throw new JazminException($"Cannot replace {path}: another process has it open, and Windows does not allow replacing an open file. "
-                + "Close its readers and retry, or use JazminFile.Append, which works while the file is open.", e);
+            // Windows refuses to replace an open file; readers allow it to be renamed, so it is replaced around them.
+            if (!OperatingSystem.IsWindows()) throw;
+            if (WindowsFiles.TryPosixReplace(temp, path) || WindowsFiles.TryReplaceInTwoSteps(temp, path)) return;
+            throw new JazminException($"Cannot replace {path}: another program has it open and doesn't allow it to be renamed. "
+                + "Close that program and retry, or use JazminFile.Append, which works while the file is open.", e);
         }
     }
 

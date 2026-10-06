@@ -178,10 +178,9 @@ public sealed class TablesTests : IDisposable
         var third = transactions.OpenTable("clients");
         Assert.Equal("Client C2", third.Get(1)["name"]);
         transactions.Dispose();
-        if (OperatingSystem.IsWindows())
-            Assert.Throws<JazminException>(() => JazminFile.Update(path, new JazminUpdate { Key = owner })); // `third` still holds the file
+        JazminFile.Update(path, new JazminUpdate { Key = owner }); // replaced; `third` keeps the version it opened
+        Assert.Equal("Client C2", third.Get(1)["name"]); // `third` still holds the file
         third.Dispose();
-        JazminFile.Update(path, new JazminUpdate { Key = owner }); // every reader closed: the file can be replaced
         Assert.Throws<ObjectDisposedException>(() => third.OpenTable("transactions"));
     }
 

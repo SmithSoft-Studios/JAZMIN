@@ -11,19 +11,43 @@ import { withLock } from './lock.js';
 import { JazminWriter } from './writer.js';
 
 /**
- * Atomically replaces `path` with `temp`: readers never see a half-written file. Windows does not
- * allow replacing a file that another process has open; that case gets a clear error.
+ * Atomically replaces `path` with `temp`: readers never see a half-written file. Readers that have the file open keep
+ * reading the version they opened.
  */
 function replaceFile(temp, path) {
   try {
     fs.chmodSync(temp, fs.statSync(path).mode & 0o7777); // the new version keeps the file's permissions
     fs.renameSync(temp, path);
   } catch (error) {
-    if (process.platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) {
-      throw new JazminError(`Cannot replace ${path}: another process has it open, and Windows does not allow replacing an open file. `
-        + 'Close its readers and retry, or use append(), which works while the file is open.');
-    }
+    if (process.platform === 'win32' && ['EPERM', 'EACCES', 'EBUSY'].includes(error.code)) replaceOpenFile(temp, path);
+    else throw error;
+  }
+}
+
+/**
+ * Windows refuses to replace a file that is open (W-1), but readers open files so that they may be renamed: the open
+ * file is moved aside, the new version takes its place, and the old one is deleted (readers keep it until they close
+ * it). Node has no single-step way to do this, so for an instant the path is missing; if the new version can't take
+ * its place, the old one is put back.
+ */
+function replaceOpenFile(temp, path) {
+  const aside = `${path}.${crypto.randomBytes(6).toString('hex')}.old`;
+  try {
+    fs.renameSync(path, aside);
+  } catch {
+    throw new JazminError(`Cannot replace ${path}: another program has it open and doesn't allow it to be renamed. `
+      + 'Close that program and retry, or use append(), which works while the file is open.');
+  }
+  try {
+    fs.renameSync(temp, path);
+  } catch (error) {
+    fs.renameSync(aside, path);
     throw error;
+  }
+  try {
+    fs.unlinkSync(aside);
+  } catch {
+    // Not deleted now: the new version is in place, and the old one is only a leftover.
   }
 }
 

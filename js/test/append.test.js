@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -241,20 +243,41 @@ test('upsert needs keyColumns', () => {
   assert.throws(() => append(file, { upsert: [row(1)] }), JazminValidationError);
 });
 
-test('a full update while a reader has the file open replaces it, or on Windows fails cleanly', () => {
+test('a full update or compaction while readers have the file open replaces it, on Windows too (W-1)', () => {
   const file = tmp('rename.jzm');
   write(file, Array.from({ length: 20 }, (_, i) => row(i)), { columns });
-  const before = fs.readFileSync(file);
   const early = open(file);
-  if (process.platform === 'win32') {
-    assert.throws(() => update(file, { insert: [row(20)] }), /Windows does not allow replacing an open file/);
-    assert.deepEqual(fs.readFileSync(file), before);
-    assert.deepEqual(fs.readdirSync(path.dirname(file)), ['rename.jzm']); // temp file removed
-    append(file, { insert: [row(20)] }); // append works with readers open
-  } else {
-    update(file, { insert: [row(20)] });
-  }
-  assert.equal(early.rowCount, 20); // the open reader still sees the version it opened
+  update(file, { insert: [row(20)] });
+  const middle = open(file);
+  append(file, { insert: [row(21)] });
+  compact(file);
+  // Each open reader still reads the version it opened, rows included.
+  assert.deepEqual([early.rowCount, [...early.rows()].length], [20, 20]);
+  assert.deepEqual([middle.rowCount, [...middle.rows()].length], [21, 21]);
   early.close();
+  middle.close();
+  assert.equal(ids(file).length, 22);
+  assert.deepEqual(fs.readdirSync(path.dirname(file)), ['rename.jzm']); // no temporary or old versions left
+});
+
+test('on Windows, a file another program holds without allowing renames is left as it was', {
+  skip: process.platform !== 'win32' && 'Windows only',
+}, async () => {
+  const file = tmp('held.jzm');
+  write(file, Array.from({ length: 20 }, (_, i) => row(i)), { columns });
+  const before = fs.readFileSync(file);
+  // PowerShell holds the file open for reading, sharing reads only (no renames or deletes).
+  const command = `$f = [IO.File]::Open('${file.replace(/'/g, "''")}', 'Open', 'Read', 'Read'); 'held'; [Console]::In.ReadLine() | Out-Null; $f.Close()`;
+  const holder = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', command], { stdio: ['pipe', 'pipe', 'inherit'] });
+  try {
+    await once(holder.stdout, 'data');
+    assert.throws(() => update(file, { insert: [row(20)] }), /another program has it open and doesn't allow it to be renamed/);
+    assert.deepEqual(fs.readFileSync(file), before);
+    assert.deepEqual(fs.readdirSync(path.dirname(file)), ['held.jzm']); // temporary file removed
+  } finally {
+    holder.stdin.end();
+    await once(holder, 'exit');
+  }
+  update(file, { insert: [row(20)] }); // once it is closed
   assert.equal(ids(file).length, 21);
 });

@@ -41,6 +41,20 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   - **Safer with threads:** the whole-file cache keeps a file's columns and
     their code in one record, so a reader on another thread can't pair one
     with the other.
+- **Windows: `update()` and `compact()` work while readers have the file open
+  (JS and .NET, TASKS W-1).** Before, they failed with "Windows does not
+  allow replacing an open file".
+  - **Now:** readers that have the file open keep reading the version they
+    opened, as on Linux and macOS, and see the new one when they open the
+    file again.
+  - **How:** readers already open files so that they may be renamed. .NET
+    replaces the file in one step (a POSIX-style rename), or where that isn't
+    supported, in two: the open file is moved aside, the new version takes
+    its place, and the old one is deleted. JS uses the two steps, since Node
+    has no single-step way, so for an instant the file's name is missing.
+  - **Still refused:** a program that holds the file without allowing it to
+    be renamed (some editors and backup tools). The error now says so, and
+    the file is left as it was.
 - **.NET writer: less clean-up work per write.** Spare column buffers are
   kept in a queue instead of a `ConcurrentBag`, which held a `ThreadLocal`
   that was never disposed (one per partition, per write). About 3% on the
