@@ -29,6 +29,8 @@ var za = reader.Query<Customer>(c => c.Country == "ZA" && c.Name.Contains("Smith
 - **Encryption:** AES-256-GCM on every section, with tamper detection.
 - **Access control:** one file, many keys. Each access key sees only its rows and columns, and keys can expire.
 - **Several tables per file,** embedded files, and append-only updates.
+- **Records sent back:** people with an access key send records back in small files locked with their submission
+  key, which only someone who opened the shared file has; the owner derives it to check and file them.
 - **Newtonsoft-style serializer:** attributes, converters, naming strategies, default values, polymorphism and
   references.
 

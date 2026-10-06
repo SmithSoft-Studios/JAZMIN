@@ -1421,8 +1421,9 @@ The filing service then:
 The design is in `docs/design/browser-writer.md`, and the spec's section 7.8
 defines the key.
 
-**Speed:** filing a batch takes about 40 ms, whether it holds 1 record or 50, and
-whether the shared file holds 10,000 records or 250,000. The filing-service
+**Speed:** filing a batch takes about 20 to 25 ms, whether it holds 1 record or 50,
+whether the shared file holds 10,000 records or 250,000, and with 1,000 people
+about as with 100. The filing-service
 README has the full figures.
 
 **A ready-made filing service** is in `js/examples/filing-service`. Its

@@ -41,7 +41,11 @@ reader.close();
 - **Access control:** one file, many keys. Each access key sees only its rows and columns, and keys can expire.
 - **Several tables per file,** embedded files, and append-only updates.
 - **Conversion:** lossless JSON round trip, plus CSV and XML.
-- **Browser:** the read-only browser reader is `@smithsoft-studios/jazmin/browser`.
+- **Browser:** `@smithsoft-studios/jazmin/browser` reads every kind of file, and writes files with one key, a
+  password or none, with embedded files (photos, PDFs).
+- **Sending records back:** people in the field send records from a phone, often offline, in a small file locked with
+  their submission key, which they get only by opening the shared file. The owner files them; a ready-made filing
+  service is in the repository.
 
 Full documentation, the format specification and the .NET library:
 [github.com/SmithSoft-Studios/JAZMIN](https://github.com/SmithSoft-Studios/JAZMIN).

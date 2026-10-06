@@ -274,8 +274,10 @@ memory limits. So before each release, also check by hand on one iPhone
    HTTPS server the phones can reach. Installing needs HTTPS.
 2. **Open a file:** on each phone, open the viewer, then choose
    `spec/fixtures/js-files-access.jzm` with the file picker.
-3. **Keys:** unlock it with the owner key, then again with bob's access key
-   (both in `spec/fixtures/keys.json`). Owner: 500 rows; bob: 80 rows.
+3. **Keys:** try the owner key first: for a shared file, the viewer refuses
+   it and clears the box (browsers open shared files only with access keys).
+   Then unlock it with bob's access key: 80 rows. Both keys are in
+   `spec/fixtures/keys.json`.
 4. **Data:** the first page of rows shows, and the next page opens.
 5. **Document and files:** the document shows, and `img/logo.svg` opens from
    the file list.

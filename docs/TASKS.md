@@ -16,7 +16,7 @@ Status: ✅ done · 🔶 partly done · 🔜 next · ⬜ later
 
 | ID | Task | Evidence |
 |---|---|---|
-| ✅ F-1 | Format spec v1.0 (RFC draft) | [rfc/draft-jazmin-format-02.md](rfc/draft-jazmin-format-02.md) |
+| ✅ F-1 | Format spec v1.0 (RFC draft) | [rfc/draft-jazmin-format-03.md](rfc/draft-jazmin-format-03.md) |
 | ✅ F-2 | Container: preamble, sections, trailer, CRC-32 | `roundtrip.test.js`, `RoundTripTests` |
 | ✅ F-3 | 8 data types, row encoding, null bitmap | "every data type round-trips" tests |
 | ✅ F-4 | Deflate + Brotli codecs, store-if-larger | compression tests |

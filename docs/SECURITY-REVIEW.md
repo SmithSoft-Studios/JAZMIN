@@ -193,7 +193,8 @@ Regression tests: `security.test.js`, `SecurityTests`, the append tests
 
 - **D1:** remove the reader's clock option, which closes R5. JavaScript `now`
   and .NET `Now` would become internal (tests only). This is a breaking API
-  change; the library is not published yet.
+  change: 1.0.0 is published, so it needs a major version, or a release that
+  marks the option obsolete first.
 - **D2:** make key `toString()` print only the key id, and add an explicit
   `export()` for the secret text (R9). This breaks code that saves keys with
   `toString()`.

@@ -31,6 +31,7 @@ Measured on 200,000 records (details and caveats in the user guide):
 | Encryption | AES-256-GCM on every section, with a typo-safe key format and tamper detection, at near-zero extra cost |
 | Conversion | Lossless JSON round trip, plus CSV and XML. **Export shapes** turn rows into nested JSON/XML (one entry per client with its transactions and totals), validated and streamed |
 | Access control | One file, many keys: each access key sees only its rows and columns. Files are signed by the owner, and only the owner can update them |
+| Records sent back | People in the field send records, photos and PDFs from a phone, written offline in the browser and locked with a key they get only by opening the shared file. The owner's service checks and files them, and a record sent again updates the filed one ([sample](js/examples/filing-service)) |
 | Time-limited access | Each key can expire (2 hours, 2 weeks, 5 years...). **Offline** keys are checked by the library; **online** keys also need an unlock token from your key service, which can require 2FA ([sample](dotnet/samples/Jazmin.KeyService)) |
 | Updates | Full rewrite with `update()`, or fast **append-only** changes with `append()` and a `compact()` you control |
 | Several tables | One file can hold several tables, like workbook sheets: client details once, transactions by client. Access follows the link |

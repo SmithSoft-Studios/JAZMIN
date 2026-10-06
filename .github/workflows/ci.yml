@@ -52,6 +52,7 @@ jobs:
       - name: Examples run
         run: |
           node js/examples/quickstart.mjs
+          node js/examples/typescript/quickstart.ts
           dotnet run --configuration Release --project dotnet/samples/Jazmin.Samples
 
   # The viewer in real browsers (TASKS F-2): the files fixtures with every kind of key, a template that queries the

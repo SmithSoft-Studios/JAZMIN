@@ -1,6 +1,10 @@
-// TypeScript quick start - type-checked by `npm run typecheck`.
+// TypeScript quick start - type-checked by `npm run typecheck`, and run by CI (`node examples/typescript/quickstart.ts`).
 import { JAZMIN, JazminKey, JazminKeyError, accessKeyOf, append, compact, importJSONFile, open, toCSV, update, write, type Filter, type JazminColumnInput } from '@smithsoft-studios/jazmin';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+process.chdir(fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-ts-'))); // the files below are written to a scratch folder
 
 interface Customer {
   id: number;
@@ -71,7 +75,9 @@ console.log([...bobView.rows()], bobView.hiddenRowCount); // [ { section: 'B' } 
 bobView.close();
 
 // Bob sends records back, locked with the submission key he gets by opening the shared file; the owner derives it too.
-const bobsKey = open('shared.jzm', { key: bob.toString() }).submissionKey!;
+const bobsView = open('shared.jzm', { key: bob.toString() });
+const bobsKey = bobsView.submissionKey!;
+bobsView.close(); // an open reader keeps a file from being replaced (update, compact) on Windows
 write('bob-records.jzm', [{ section: 'B', amount: 4 }], { columns: [{ name: 'section', type: 'string' }, { name: 'amount', type: 'int' }], key: bobsKey });
 accessKeyOf('shared.jzm', owner, bob.id); // the owner checks Bob still has a grant
 const received = open('bob-records.jzm', { key: owner.submissionKey(bob.id) });
