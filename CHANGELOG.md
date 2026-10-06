@@ -3,6 +3,28 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## Unreleased
+
+### Fixed
+- **JS: a column named `__proto__` is read as an ordinary field (#68).** In
+  JavaScript, assigning to `__proto__` sets an object's prototype instead of
+  adding a field.
+  - **Before:** the column was missing from rows read (`rows`, `find`,
+    `get`), from `columnArrays()`, and from CSV and XML imports; a CSV
+    import with that header failed. A hostile file with a `json` column of
+    that name could make its value each row's prototype, so rows seemed to
+    have fields the file doesn't declare. No code ran, and nothing outside
+    the row objects changed.
+  - **Now:** that name becomes a field like any other, in the library and
+    the browser reader. Other column names are unaffected, and reading is
+    as fast as before.
+  - **Not affected:** .NET.
+- **Security notes: what package scanners report (SECURITY.md).** Why the
+  reader generates code (`new Function`), and why that is safe; the one
+  environment variable the library reads; file access; and the one URL in
+  the package, which is never fetched. A new test checks that column names
+  built to break out of the generated code never run.
+
 ## 1.1.0 - 2026-10-06 (file format 1.0)
 
 People in the field can now send records back from a phone (#13), and the

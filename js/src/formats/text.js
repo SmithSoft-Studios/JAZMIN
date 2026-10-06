@@ -1,4 +1,5 @@
 // Shared conversions between typed values and their text form (used by CSV and XML).
+import { setField } from '../schema.js';
 
 /** Text form of a non-null value. */
 export function valueToText(type, value) {
@@ -72,7 +73,7 @@ export function toObjects(columns, rows) {
   return rows.map((row) => {
     const out = {};
     columns.forEach((c, i) => {
-      out[c.name] = textToValue(c.type, row[i] ?? null);
+      setField(out, c.name, textToValue(c.type, row[i] ?? null));
     });
     return out;
   });

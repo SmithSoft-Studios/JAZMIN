@@ -925,6 +925,12 @@
     return leaves.length === 1 || leaves.every((l) => RANGE_OPS.has(l.op) && l.column.position === leaves[0].column.position);
   }
 
+  /** As setField in the library's schema.js: a column named `__proto__` becomes a field, not the prototype (#68). */
+  function setField(target, name, value) {
+    if (name === '__proto__') Object.defineProperty(target, name, { value, enumerable: true, writable: true, configurable: true });
+    else target[name] = value;
+  }
+
   /** As columnCollector in the library's reader.js: one column's values for columnArrays(). */
   function columnCollector({ name, type }) {
     const PIECE = 8192; // values per piece: pieces are joined once, at the end
@@ -1878,7 +1884,7 @@
           continue;
         }
         const row = {};
-        for (const i of decodedCols) row[columns[i].name] = values[i][r];
+        for (const i of decodedCols) setField(row, columns[i].name, values[i][r]);
         rows[r] = row;
       }
       return rows;
@@ -2167,8 +2173,8 @@
         const nulls = {};
         names.forEach((name, i) => {
           const column = collectors[i].finish();
-          values[name] = column.values;
-          if (column.nulls) nulls[name] = column.nulls;
+          setField(values, name, column.values);
+          if (column.nulls) setField(nulls, name, column.nulls);
         });
         return { rowCount, values, nulls };
       },

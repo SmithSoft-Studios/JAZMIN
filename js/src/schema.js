@@ -7,6 +7,15 @@ const ISO_DATE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{
  * Validates column definitions and returns normalized copies:
  *   { name, type, nullable, description?, attributes?, index: string[] }
  */
+/**
+ * Sets the field `name` of an object built from column names. A column may be named `__proto__`: plain assignment
+ * would set the object's prototype instead of adding a field (issue #68).
+ */
+export function setField(target, name, value) {
+  if (name === '__proto__') Object.defineProperty(target, name, { value, enumerable: true, writable: true, configurable: true });
+  else target[name] = value;
+}
+
 export function normalizeColumns(columns) {
   if (!Array.isArray(columns) || columns.length === 0) throw new JazminValidationError('At least one column is required');
   const seen = new Set();

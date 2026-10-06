@@ -185,8 +185,9 @@ and the randomness sources match the spec.
 | R13 | Info | Rollback of an appended file by truncation; deleted row ids and package settings visible to every key holder; slot ids link a key holder across files; 64-bit owner fingerprint for shared keys | **Documented** in spec 13 |
 | R14 | Info | .NET derives the owner's public key with its own big-integer curve arithmetic (variable time; runs once per key) | **Open:** question for reviewers; it conflicts with the "no custom cryptography" rule |
 | R15 | Info | JS: an unreadable expiry date passed the check; lenient base64url in key text; online share length unchecked | **Partly fixed:** expiry fails closed. The rest is harmless: checksums are still verified |
+| R16 | Low | JS: a column named `__proto__` was lost when read (rows, `columnArrays`, CSV and XML import), or, as a `json` column holding an object, became each row's prototype, so rows seemed to have fields the file doesn't declare. Found after 1.1.0 (#68) | **Fixed** in the library and the browser reader. .NET was not affected |
 
-Regression tests: `security.test.js`, `SecurityTests`, the append tests
+Regression tests: `security.test.js`, `column-names.test.js`, `SecurityTests`, the append tests
 (`an append may widen a grant but not narrow it`) and the key service tests.
 
 ### Decisions for the owner

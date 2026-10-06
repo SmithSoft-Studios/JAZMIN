@@ -33,3 +33,31 @@ In scope:
 
 The keys, passwords and files under `spec/fixtures` are test data and public
 by design.
+
+## What package scanners report
+
+Scanners such as Socket list what the npm package does. Each of these is
+expected:
+
+- **Code generation (`new Function`, reported as "eval"):** `src/reader.js`
+  builds each row object with one object literal, so every row has the same
+  shape in V8. That builds rows 2 to 3 times faster than any way without
+  generated code.
+  - **Only names and numbers go in:** the generated code holds column names,
+    written as JSON strings, and integers. A column name never runs as code;
+    `test/column-names.test.js` checks names built to break out.
+  - **Without code generation** (`node --disallow-code-generation-from-strings`,
+    or a strict Content Security Policy), the reader builds rows without it,
+    more slowly.
+  - **The browser module** (`/browser`) generates no code.
+- **Environment variables:** the library reads only `LOCALAPPDATA`, on
+  Windows, to find where expiring keys keep their last-seen record (it
+  catches a clock set back). The `jazmin` command-line tool also reads
+  `JAZMIN_KEY` and `JAZMIN_PASSWORD`, so keys need not be typed on the
+  command line.
+- **File system (`node:fs`):** reading and writing `.jzm` files, lock files
+  and the last-seen records.
+- **URL `https://json-schema.org/draft/2020-12/schema`:** the standard
+  `$schema` label in the JSON Schema that `toJsonSchema` returns. Nothing is
+  downloaded: the library makes no network requests. Only the browser
+  module's `openUrl` fetches, and only the address it is given.

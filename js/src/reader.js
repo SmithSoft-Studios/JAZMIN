@@ -22,6 +22,7 @@ import { EVERYONE } from './files.js';
 import { answeredExactly, evaluate, indexPlan, mayMatch, mustMatch, normalizeFilter } from './filter.js';
 import { CompositeIndex, LazyTrigramIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
 import { JazminAccessKey, JazminKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
+import { setField } from './schema.js';
 import { decodeSection, sectionPayloadLength } from './section.js';
 import { decodeBound } from './stats.js';
 import { compareKeys } from './types.js';
@@ -319,32 +320,37 @@ function openSource(source) {
 }
 
 /**
+ * A column name as a property key in generated code. The names come from the file, so they are written as JSON
+ * strings (never as code). `__proto__` is computed: in a literal, `"__proto__": v` sets the prototype instead of
+ * adding a field (issue #68).
+ */
+const literalKey = (name) => (name === '__proto__' ? '["__proto__"]' : JSON.stringify(name));
+
+/**
  * Builds a function that turns a row array into an object. Creating every object with one literal
  * gives V8 a single object shape, which is markedly faster than adding properties one by one.
- * Falls back to plain assignment where code generation is disabled or a name needs it.
+ * Falls back to assigning the fields one by one where code generation is disabled.
  */
 function objectMaker(names, indexes) {
-  const assign = (row) => {
-    const out = {};
-    for (let k = 0; k < names.length; k++) out[names[k]] = row[indexes[k]];
-    return out;
-  };
-  if (names.includes('__proto__')) return assign; // a literal would set the prototype instead of a property
   try {
-    return new Function('row', `return { ${names.map((n, k) => `${JSON.stringify(n)}: row[${indexes[k]}]`).join(', ')} };`);
+    return new Function('row', `return { ${names.map((n, k) => `${literalKey(n)}: row[${indexes[k]}]`).join(', ')} };`);
   } catch {
-    return assign; // e.g. node --disallow-code-generation-from-strings
+    // e.g. node --disallow-code-generation-from-strings
+    return (row) => {
+      const out = {};
+      for (let k = 0; k < names.length; k++) setField(out, names[k], row[indexes[k]]);
+      return out;
+    };
   }
 }
 
 /**
  * Builds a function turning row `r` of decoded column arrays into an object with the selected columns.
  * Objects are built one at a time as rows are consumed, so a chunk's rows are never all alive at once.
- * Returns null where code generation is disabled or a name needs special handling.
+ * Returns null where code generation is disabled.
  */
 function columnsToObject(columns, select) {
-  if (select.some((i) => columns[i].name === '__proto__')) return null;
-  const object = select.map((i) => `${JSON.stringify(columns[i].name)}: c[${i}][r]`).join(', ');
+  const object = select.map((i) => `${literalKey(columns[i].name)}: c[${i}][r]`).join(', ');
   try {
     return new Function('c', 'r', `return { ${object} };`);
   } catch {
@@ -2056,8 +2062,8 @@ export class JazminReader {
     const nulls = {};
     names.forEach((name, i) => {
       const column = collectors[i].finish();
-      values[name] = column.values;
-      if (column.nulls) nulls[name] = column.nulls;
+      setField(values, name, column.values);
+      if (column.nulls) setField(nulls, name, column.nulls);
     });
     return { rowCount, values, nulls };
   }
