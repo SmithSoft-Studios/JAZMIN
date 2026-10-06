@@ -1,0 +1,72 @@
+name: Fuzz (long run)
+
+# The readers' long fuzz run (TASKS S-5), on demand only: Actions tab -> "Fuzz (long run)" -> Run workflow, or
+# `gh workflow run fuzz.yml`. Five jobs per library fuzz in parallel, each over its own range of seeds, so one run
+# fuzzes each library for about 25 hours (5 x 300 minutes) in about 5 hours. A job fails when it finds an input that
+# fails with the wrong error, hangs or crashes; its findings and corpus are then uploaded, to replay as
+# docs/CONTRIBUTING.md ("Fuzzing the readers") explains.
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: Minutes of fuzzing per job (GitHub stops a job at 360)
+        default: '300'
+
+permissions:
+  contents: read
+
+jobs:
+  js:
+    name: Fuzz JavaScript (part ${{ matrix.part }} of 5)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: js/package-lock.json
+      - name: Fuzz
+        working-directory: js
+        run: |
+          npm ci
+          # Each part fuzzes its own seeds: 1, 400,000,001, 800,000,001, ...
+          node scripts/fuzz.js --minutes "${{ inputs.minutes }}" --seed $(( (${{ matrix.part }} - 1) * 400000000 + 1 )) --out fuzz-findings
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-js-${{ matrix.part }}
+          path: js/fuzz-findings
+
+  dotnet:
+    name: Fuzz .NET (part ${{ matrix.part }} of 5)
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [1, 2, 3, 4, 5]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+      - name: Fuzz
+        working-directory: dotnet
+        env:
+          JAZMIN_FUZZ_MINUTES: ${{ inputs.minutes }}
+          JAZMIN_FUZZ_OUT: ${{ github.workspace }}/fuzz-findings
+        run: |
+          # Each part fuzzes its own seeds: 1, 400,000,001, 800,000,001, ...
+          export JAZMIN_FUZZ_SEED=$(( (${{ matrix.part }} - 1) * 400000000 + 1 ))
+          dotnet test tests/Jazmin.Tests --configuration Release --filter "FullyQualifiedName~FuzzTests.LongRun"
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-dotnet-${{ matrix.part }}
+          path: fuzz-findings

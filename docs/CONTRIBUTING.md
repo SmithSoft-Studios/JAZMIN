@@ -85,6 +85,11 @@ node scripts/fuzz.js --replay 1234 --out fuzz-findings   # rerun one seed
 JAZMIN_FUZZ_MINUTES=60 JAZMIN_FUZZ_OUT=fuzz-findings dotnet test --filter LongRun
 ```
 
+The long run before a release uses the **Fuzz (long run)** workflow, on
+demand (`gh workflow run fuzz.yml`): five jobs per library, each over its own
+seeds for 300 minutes, so about 25 hours of fuzzing per library in about 5
+hours. A job that finds something fails and uploads its findings.
+
 Each finding is saved as `seed-<n>.bin` with `seed-<n>.txt`, which holds
 the error and whether the input was a whole file or a raw section payload.
 Fix the cause in both libraries. Then copy a whole-file finding to
