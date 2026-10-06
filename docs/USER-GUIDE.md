@@ -1026,6 +1026,7 @@ information through size changes (see RFC §13). For such cases, use
 | JAZMIN → JSON | `toJSON(reader, { filter, select, pretty, omitNulls })` | `JazminConvert.ToJson(bytes, settings, filter)` |
 | CSV → JAZMIN | `fromCSV(text, target, { inferTypes })` | `JazminConvert.FromCsv(csv, settings, inferTypes)` |
 | CSV file of any size → JAZMIN | `importCSVFile(path, target, { inferTypes, delimiter, columns })` | `JazminConvert.FromCsvFile(path, output, settings, inferTypes, delimiter, columns)` |
+| XML file of any size → JAZMIN | `importXMLFile(path, target, { inferTypes, columns })` | `JazminConvert.FromXmlFile(path, output, settings, inferTypes, columns)` |
 | JAZMIN → CSV | `toCSV(reader, options)` | `JazminConvert.ToCsv(bytes, settings, filter)` |
 | XML → JAZMIN | `fromXML(text, target)` | `JazminConvert.FromXml(xml, settings)` |
 | JAZMIN → XML | `toXML(reader, options)` | `JazminConvert.ToXml(bytes, settings, filter)` |
@@ -1045,11 +1046,13 @@ Conversion rules worth knowing:
   Null values are left out. Column names that are not valid XML names are
   written as `<field name="...">`.
 
-### 11.1 Large CSV files
+### 11.1 Large CSV and XML files
 
-`importCSVFile` (.NET `JazminConvert.FromCsvFile`) reads a CSV file a block
-at a time, so its size doesn't matter. It reads the file twice: first to
-work out the column types, as `fromCSV` does, then to write the rows.
+`importCSVFile` and `importXMLFile` (.NET `JazminConvert.FromCsvFile` and
+`FromXmlFile`) read a file a block at a time, so its size doesn't matter.
+They read it twice: first to work out the column types, as `fromCSV` and
+`fromXML` do, then to write the rows. XML files are read as UTF-8 (or as a
+byte order mark says), whatever their XML declaration says.
 
 ```js
 import { importCSVFile } from '@smithsoft-studios/jazmin';
@@ -1064,17 +1067,22 @@ importCSVFile('export.csv', 'back.jzm', { columns: reader.columns });
 ```csharp
 JazminConvert.FromCsvFile("transactions.csv", "transactions.jzm");
 JazminConvert.FromCsvFile("export.csv", "back.jzm", columns: reader.Columns);
+JazminConvert.FromXmlFile("transactions.xml", "transactions.jzm");
 ```
 
-A 1 GB CSV file (10 million rows of 8 columns):
+In XML a column can first appear in a later row: it is then nullable, as
+`fromXML` infers it. With `columns`, every element must name one of them.
 
-| Library | Time | Peak memory |
+A 1 GB file:
+
+| Library | CSV (10 million rows) | XML (4.6 million rows) |
 |---|---:|---:|
-| .NET | 14 s | **63 MB** |
-| Node | 44 s | **92 MB** with `--max-old-space-size=64 --max-semi-space-size=2` (316 MB without: Node collects garbage late) |
+| .NET | 14 s, **63 MB** | 11 s, **65 MB** |
+| Node, with `--max-old-space-size=64 --max-semi-space-size=2` | 44 s, **92 MB** | 48 s, **86 MB** |
+| Node, without those flags (it collects garbage late) | 32 s, 316 MB | 41 s, 250 MB |
 
-With `fromCSV`, Node holds the text and then every row as an object: a 200 MB
-file took 1.6 GB, so a 1 GB one would need about 8 GB.
+With `fromCSV` or `fromXML`, Node holds the text and then every row as an
+object: a 200 MB file took 1.6 GB (CSV) and 1.3 GB (XML).
 
 ---
 
@@ -1106,8 +1114,7 @@ file took 1.6 GB, so a 1 GB one would need about 8 GB.
 | Concurrency | Readers and writers are single-threaded objects. Open one per thread |
 | Browser | `@smithsoft-studios/jazmin/browser` (section 24) reads every file except Brotli-compressed ones, and writes files with one key, a password or none |
 | Large JSON import | Streams with `importJSONFile` / `JazminConvert.FromJsonFile` at any size. `fromJSON` / `FromJson` (text in memory) are for small inputs |
-| Large CSV import | Streams with `importCSVFile` / `JazminConvert.FromCsvFile` at any size (section 11.1) |
-| Large XML import | Loads the whole input text into memory. See TASKS.md C-2 |
+| Large CSV and XML import | Streams with `importCSVFile` / `importXMLFile` (.NET `FromCsvFile` / `FromXmlFile`) at any size (section 11.1) |
 | Partial-access keys | Yes, by partition and/or column group (section 15) |
 
 ## 14. Recipe: one large file, processed section by section

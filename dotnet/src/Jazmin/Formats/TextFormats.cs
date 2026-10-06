@@ -72,12 +72,23 @@ internal static class TextValues
 /// </summary>
 internal sealed class TextColumnInference(IReadOnlyList<string> names, bool inferTypes)
 {
-    private readonly JazminType?[] _types = new JazminType?[names.Count];
-    private readonly bool[] _nullable = new bool[names.Count];
+    private readonly List<string> _names = [.. names];
+    private readonly List<JazminType?> _types = [.. new JazminType?[names.Count]];
+    private readonly List<bool> _nullable = [.. new bool[names.Count]];
+
+    public int Width => _names.Count;
+
+    /// <summary>A column first seen after <paramref name="nullable"/> (some records came before it): XML rows name their columns.</summary>
+    public void Grow(string name, bool nullable)
+    {
+        _names.Add(name);
+        _types.Add(null);
+        _nullable.Add(nullable);
+    }
 
     public void Add(string?[] record)
     {
-        for (var i = 0; i < _types.Length; i++)
+        for (var i = 0; i < _types.Count; i++)
         {
             var v = i < record.Length ? record[i] : null;
             if (v is null)
@@ -93,7 +104,7 @@ internal sealed class TextColumnInference(IReadOnlyList<string> names, bool infe
     }
 
     public List<JazminColumn> Columns() =>
-        names.Select((name, i) => new JazminColumn(name, _types[i] ?? JazminType.String) { Nullable = _nullable[i] }).ToList();
+        _names.Select((name, i) => new JazminColumn(name, _types[i] ?? JazminType.String) { Nullable = _nullable[i] }).ToList();
 }
 
 /// <summary>JSON array-of-objects conversion (System.Text.Json; no third-party dependency).</summary>
@@ -414,11 +425,32 @@ public static class XmlFormat
     public static TabularData Parse(string xml, bool inferTypes = true)
     {
         var names = new List<string>();
+        using var reader = XmlReader.Create(new StringReader(xml), ReaderSettings);
+        var records = ReadRows(reader, names).ToList();
+        var rows = records.Select(r => Record(r, names.Count)).ToList();
+        return TextValues.FromText(names, rows, inferTypes);
+    }
+
+    internal static readonly XmlReaderSettings ReaderSettings = new() { IgnoreComments = true, DtdProcessing = DtdProcessing.Prohibit };
+
+    /// <summary>A row (column position to text) as a positional record over the first <paramref name="width"/> columns.</summary>
+    internal static string?[] Record(Dictionary<int, string> row, int width)
+    {
+        var record = new string?[width];
+        foreach (var (i, text) in row) record[i] = text;
+        return record;
+    }
+
+    /// <summary>
+    /// The rows of canonical tabular XML, read from <paramref name="reader"/> as it goes (a file of any size is never
+    /// loaded): each a map from column position to its text. <paramref name="names"/> fills with the columns in order
+    /// of appearance.
+    /// </summary>
+    public static IEnumerable<Dictionary<int, string>> ReadRows(XmlReader reader, List<string> names)
+    {
         var index = new Dictionary<string, int>(StringComparer.Ordinal);
-        var records = new List<Dictionary<int, string>>();
-        using var reader = XmlReader.Create(new StringReader(xml), new XmlReaderSettings { IgnoreComments = true, DtdProcessing = DtdProcessing.Prohibit });
         reader.MoveToContent();
-        if (reader.IsEmptyElement) return TextValues.FromText(names, new List<string?[]>(), inferTypes);
+        if (reader.IsEmptyElement) yield break;
         reader.ReadStartElement(); // root
         while (reader.MoveToContent() == XmlNodeType.Element)
         {
@@ -443,9 +475,7 @@ public static class XmlFormat
                 }
                 reader.ReadEndElement();
             }
-            records.Add(record);
+            yield return record;
         }
-        var rows = records.Select(r => names.Select((_, i) => r.TryGetValue(i, out var v) ? v : null).ToArray()).ToList();
-        return TextValues.FromText(names, rows, inferTypes);
     }
 }

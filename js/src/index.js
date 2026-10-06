@@ -3,11 +3,12 @@ import { JazminValidationError } from './errors.js';
 import { checkCsvFields, csvHeaderNames, csvPieces, parseCsv, readCsvRecords, readCsvTypes } from './formats/csv.js';
 import { jsonPieces, parseJsonRows } from './formats/json.js';
 import { readJsonObjects } from './formats/json-stream.js';
-import { parseXml, xmlPieces } from './formats/xml.js';
+import { parseXml, readXmlRows, xmlPieces, xmlRecord } from './formats/xml.js';
 import { JazminReader, fileSource } from './reader.js';
 import { PREAMBLE_SIZE } from './constants.js';
 import { inferSchema } from './schema.js';
-import { TextColumnInference, toObject } from './formats/text.js';
+import { TextColumnInference, textToValue, toObject } from './formats/text.js';
+import { setField } from './schema.js';
 import { shapePieces } from './shape.js';
 import { JazminWriter } from './writer.js';
 
@@ -197,6 +198,46 @@ function* csvRows(records, columns, byName) {
   if (!names) throw new JazminValidationError('CSV has no header row');
 }
 
+/**
+ * Converts an XML file of the canonical shape (as toXML writes it) of any size to JAZMIN without loading it: the file
+ * is read twice, a block at a time (column types as fromXML infers them, then rows). With options.columns, the file
+ * is read once, each value is read as its column's type, and every element must name one of the columns.
+ */
+export function importXMLFile(inputPath, target, options = {}) {
+  const { inferTypes = true } = options;
+  let columns = options.columns;
+  if (!columns) {
+    const names = [];
+    let inference = null;
+    let rows = 0;
+    for (const row of readXmlRows(inputPath, { names })) {
+      inference ??= new TextColumnInference([], inferTypes);
+      while (inference.width < names.length) inference.grow(names[inference.width], rows > 0); // earlier rows lacked it
+      inference.add(xmlRecord(row, names.length));
+      rows++;
+    }
+    columns = inference?.columns() ?? [];
+  }
+  return writeFrom(target, () => xmlRows(inputPath, columns, Boolean(options.columns)), { ...options, columns });
+}
+
+/** The rows of an XML file as objects of `columns`; given columns are found by the elements' names. */
+function* xmlRows(inputPath, columns, byName) {
+  const names = [];
+  const order = [];
+  for (const row of readXmlRows(inputPath, { names })) {
+    while (order.length < names.length) {
+      const column = byName ? columns.find((c) => c.name === names[order.length]) : columns[order.length];
+      if (!column) throw new JazminValidationError(`XML element '${names[order.length]}' is not one of the columns given`);
+      order.push(column);
+    }
+    const out = {};
+    for (const c of columns) setField(out, c.name, null);
+    for (const [i, text] of row) setField(out, order[i].name, textToValue(order[i].type, text));
+    yield out;
+  }
+}
+
 const EXPORTERS = { json: jsonPieces, csv: csvPieces, xml: xmlPieces };
 
 function pieces(reader, format, options = {}) {
@@ -258,7 +299,7 @@ export function fromXML(xml, target, options = {}) {
   return write(target, rows, { columns, ...options });
 }
 
-export { parseCsv, parseXml, parseJsonRows, readCsvRecords, readJsonObjects };
+export { parseCsv, parseXml, parseJsonRows, readCsvRecords, readJsonObjects, readXmlRows };
 
 /**
  * Drop-in counterpart of JSON.stringify / JSON.parse for arrays of records:

@@ -73,6 +73,20 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   write loop.
 
 ### Added
+- **Large XML files are imported without loading them (TASKS C-2):**
+  `importXMLFile(path, target, options)` and `JazminConvert.FromXmlFile`, as
+  CSV below.
+  - **A 1 GB XML file (4.6 million rows):** .NET 11 s at 65 MB peak memory;
+    Node 48 s at 86 MB (with the same flags). `fromXML` took 1.3 GB for a
+    200 MB file.
+  - **JavaScript:** a reader of the canonical XML shape that takes bytes a
+    block at a time; `fromXML` uses it, and gives the same rows as before
+    (checked against the previous parser on 50,000 random documents, whole
+    and in pieces). Tags without attributes are read from the bytes.
+  - **.NET:** `XmlFormat.ReadRows(XmlReader)`, which `Parse` uses. A file is
+    read as UTF-8 (or as a byte order mark says): `ToXml` returns a string
+    whose declaration says UTF-16, and a reader trusting it refuses the
+    UTF-8 file such a string is usually saved as.
 - **Large CSV files are imported without loading them (TASKS C-2):**
   `importCSVFile(path, target, options)` and `JazminConvert.FromCsvFile`.
   - **How:** the file is read twice, a block at a time: once to work out the

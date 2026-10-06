@@ -102,6 +102,17 @@ export class TextColumnInference {
     }
   }
 
+  /** A column first seen after `nullable` (some records came before it): XML rows name their columns. */
+  grow(name, nullable) {
+    this.#names = [...this.#names, name];
+    this.#types.push(null);
+    this.#nullable.push(nullable);
+  }
+
+  get width() {
+    return this.#names.length;
+  }
+
   #merge(i, t) {
     const type = this.#types[i];
     if (type === null) this.#types[i] = t;

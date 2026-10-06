@@ -134,6 +134,11 @@ export const utf8Slice = typeof Buffer.prototype.utf8Slice === 'function'
   ? (buf, start, end) => buf.utf8Slice(start, end)
   : (buf, start, end) => buf.toString('utf8', start, end);
 
+// The same for text known to be ASCII (as element names read from bytes).
+export const latin1Slice = typeof Buffer.prototype.latin1Slice === 'function'
+  ? (buf, start, end) => buf.latin1Slice(start, end)
+  : (buf, start, end) => buf.toString('latin1', start, end);
+
 /** Sequential little-endian reader over a Buffer. */
 export class ByteReader {
   // One instance that stays alive, so V8 keeps this class's object shape through full garbage collections. Without

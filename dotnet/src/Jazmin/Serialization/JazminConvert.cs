@@ -178,6 +178,73 @@ public static class JazminConvert
     public static byte[] FromXml(string xml, JazminSerializerSettings? settings = null, bool inferTypes = true) =>
         Write(XmlFormat.Parse(xml, inferTypes), settings);
 
+    /// <summary>
+    /// Converts an XML file of the canonical shape (as <see cref="ToXml"/> writes it) of any size to a JAZMIN file without
+    /// loading it: the file is read twice as it goes (column types as <see cref="FromXml"/> infers them, then rows). With
+    /// <paramref name="columns"/>, the file is read once, each value is read as its column's type, and every element must
+    /// name one of the columns. If the input fails part-way the output file is deleted.
+    /// </summary>
+    public static void FromXmlFile(string inputPath, string outputPath, JazminSerializerSettings? settings = null, bool inferTypes = true,
+        IReadOnlyList<JazminColumn>? columns = null)
+    {
+        settings ??= new JazminSerializerSettings();
+        IEnumerable<Dictionary<int, string>> Rows(List<string> names)
+        {
+            // Read as text, UTF-8 unless a byte order mark says otherwise (as the JavaScript importer reads it): the XML
+            // declaration's encoding is not used. ToXml's text declares UTF-16 (it is a .NET string) but is usually saved
+            // as UTF-8, which a reader that trusts the declaration refuses.
+            using var text = new StreamReader(inputPath, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, 1 << 16);
+            using var reader = System.Xml.XmlReader.Create(text, XmlFormat.ReaderSettings);
+            foreach (var row in XmlFormat.ReadRows(reader, names)) yield return row;
+        }
+        var byName = columns is not null;
+        if (columns is null)
+        {
+            var names = new List<string>();
+            var inference = new TextColumnInference([], inferTypes);
+            long rows = 0;
+            foreach (var row in Rows(names))
+            {
+                while (inference.Width < names.Count) inference.Grow(names[inference.Width], rows > 0); // earlier rows lacked it
+                inference.Add(XmlFormat.Record(row, names.Count));
+                rows++;
+            }
+            columns = inference.Columns();
+        }
+        var writer = JazminWriter.Create(outputPath, settings.ApplyIndexes(columns), settings.ToWriteOptions());
+        try
+        {
+            var names = new List<string>();
+            var order = new List<int>(); // a name's position -> its column's
+            foreach (var row in Rows(names))
+            {
+                while (order.Count < names.Count)
+                {
+                    var name = names[order.Count];
+                    var at = byName ? IndexOfName(columns, name) : order.Count;
+                    if (at < 0) throw new JazminValidationException($"XML element '{name}' is not one of the columns given");
+                    order.Add(at);
+                }
+                var values = new object?[columns.Count];
+                foreach (var (i, text) in row) values[order[i]] = TextValues.FromText(columns[order[i]].Type, text);
+                writer.WriteValues(values);
+            }
+            writer.Finish();
+        }
+        catch
+        {
+            writer.Abort();
+            File.Delete(outputPath);
+            throw;
+        }
+    }
+
+    private static int IndexOfName(IReadOnlyList<JazminColumn> columns, string name)
+    {
+        for (var i = 0; i < columns.Count; i++) if (columns[i].Name == name) return i;
+        return -1;
+    }
+
     internal static byte[] Write(TabularData data, JazminSerializerSettings? settings)
     {
         settings ??= new JazminSerializerSettings();

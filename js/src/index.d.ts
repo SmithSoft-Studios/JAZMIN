@@ -567,6 +567,14 @@ export function readJsonObjects(path: string, options?: { blockSize?: number }):
  */
 export function importCSVFile(inputPath: string, target: null, options?: WriteOptions & { delimiter?: string; inferTypes?: boolean }): Buffer;
 export function importCSVFile(inputPath: string, target: string, options?: WriteOptions & { delimiter?: string; inferTypes?: boolean }): undefined;
+/**
+ * Converts an XML file of the canonical shape (as toXML writes it) of any size to JAZMIN without loading it. Read
+ * twice (column types, then rows) unless options.columns is given; then every element must name one of those columns.
+ */
+export function importXMLFile(inputPath: string, target: null, options?: WriteOptions & { inferTypes?: boolean }): Buffer;
+export function importXMLFile(inputPath: string, target: string, options?: WriteOptions & { inferTypes?: boolean }): undefined;
+/** Streams the rows of a canonical XML file: each a Map from column position to its text; `names` fills as it reads. */
+export function readXmlRows(path: string, options?: { blockSize?: number; names?: string[] }): Generator<Map<number, string>>;
 /** Streams the records of a CSV file (fields as strings, null for an unquoted empty field), header first. */
 export function readCsvRecords(path: string, options?: { delimiter?: string; blockSize?: number }): Generator<(string | null)[]>;
 
