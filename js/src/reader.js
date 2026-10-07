@@ -181,6 +181,9 @@ function pinnedPartitionStats(plan, col) {
 }
 
 /** Internal: state the appender needs to continue an existing file (see append.js). */
+/** Internal: what key rotation needs (see the getter). */
+export const KEY_ROTATION = Symbol('jazmin.keyRotation');
+
 /** Internal: whether a reader's file uses compact sorted indexes (update keeps them). */
 export const COMPACT_INDEXES = Symbol('jazmin.compactIndexes');
 export const APPEND_STATE = Symbol('jazmin.appendState');
@@ -465,6 +468,7 @@ export class JazminReader {
   #deleted = []; // sorted row ids removed by appends
   #deletedVisible; // computed on first use
   #validEnd = 0; // end of the trailer in use (an interrupted append may have left bytes after it)
+  #headerRef = null; // where the header section is ({ offset, length }), from the trailer
   #recovered = false;
   #closed = false;
   #readOptions;
@@ -515,6 +519,7 @@ export class JazminReader {
     this.encrypted = (flags & FLAG_ENCRYPTED) !== 0;
 
     const trailer = this.#locateTrailer(size, flags);
+    this.#headerRef = trailer.header;
     const headerSection = Buffer.from(this.#source.read(trailer.header.offset, trailer.header.length));
 
     let raw;
@@ -2109,6 +2114,70 @@ export class JazminReader {
           else yield [start + r, row];
         }
       }
+    }
+  }
+
+  /**
+   * Internal (key rotation, TASKS S-2), for a file encrypted with a key or password: its preamble values, its decoded
+   * header and where the header is, and every other section it references, as { offset, length, sectionId, key } with
+   * either `group` (the keyring group that keys it) or `contentKey` (an embedded-file block, keyed by its content key
+   * and the file's salt). `key` decrypts the section now.
+   */
+  get [KEY_ROTATION]() {
+    if (!this.#keys || this.#access) throw new JazminValidationError('Only a file encrypted with a key or password has its key rotated this way');
+    const sections = [];
+    const add = (ref, sectionId, group) => {
+      sections.push({ offset: ref.offset, length: ref.length, sectionId, key: this.#keys.sectionKey(group, sectionId), group });
+    };
+    this.#header.deltas.forEach((ref, i) => add(ref, `delta/${i}`, KEYRING_GROUPS.data));
+    const files = this.#header.files;
+    if (files) {
+      const suffix = files.segment ? `/${files.segment}` : '';
+      for (const dir of files.directories) add(dir.section, `files/dir${suffix}`, KEYRING_GROUPS.files);
+      for (const content of this.#files().contents.values()) {
+        if (!content.key) throw new JazminFormatError(`Embedded content ${content.id} has no key in an encrypted file`);
+        const contentKey = Buffer.from(content.key, 'base64');
+        content.blocks.forEach((block, b) => {
+          const sectionId = `file/${content.id}/${b}`;
+          sections.push({ offset: block.offset, length: block.length, sectionId, key: hkdf(contentKey, this.#salt, `JAZMIN/1/${sectionId}`), contentKey });
+        });
+      }
+    }
+    this.#header.tables.forEach((table, t) => {
+      const reader = t === this.#tableIndex ? this : new JazminReader(SHARED, { table: table.name, [SHARED]: this });
+      try {
+        reader.#tableSections(add);
+      } finally {
+        if (reader !== this) reader.close();
+      }
+    });
+    return { flags: this.#flags, fileId: this.#fileId, header: this.#header, headerRef: this.#headerRef, end: this.#validEnd, recovered: this.#recovered, sections };
+  }
+
+  /** The sections of this reader's table, for KEY_ROTATION: `add(ref, sectionId, keyring group)`. */
+  #tableSections(add) {
+    const t = this.#tableIndex;
+    const table = this.#table;
+    const { data, index } = KEYRING_GROUPS;
+    if (table.columnGroups.some((g) => g.definitions)) throw new JazminFormatError('Catalog: only access-controlled files keep column definitions in their own section');
+    if (table.partitionTable) add(table.partitionTable, `${t}/partitions`, data);
+    if (table.deletes) add(table.deletes, `${t}/deletes/${table.deletedCount}`, data);
+    this.#ensureAllChunks();
+    for (const [id, p] of this.#partitions) p.segments.forEach((ref, s) => add(ref, `${t}/dir/${id}${s ? `/${s}` : ''}`, data));
+    for (const segment of this.#segments) {
+      segment.statistics.forEach((block, b) => add(block.section, `${t}/stats/${segment.partition}/${b}${segment.suffix}`, data));
+    }
+    for (let o = 0; o < this.#loaded.length; o++) {
+      if (!this.#loaded[o]) throw new JazminFormatError(`Chunk ${o} is in no chunk directory`);
+      this.#groups.forEach((group, g) => add(this.#part(o, g), `${t}/chunk/${o}/${group.name}`, data));
+    }
+    for (const ix of this.#indexList()) {
+      const base = `${t}/index/${ix.column}/${ix.kind}${ix.segment ? `/${ix.segment}` : ''}`;
+      add(ix.section, base, index);
+      if (ix.kind !== 'sorted') continue;
+      const directory = decodeIndexDirectory(this.#read(ix.section, base, this.#keys.sectionKey(index, base)));
+      directory.pages.forEach((page, n) => add(page, `${base}/page/${n}`, index));
+      if (directory.nulls) add(directory.nulls, `${base}/nulls`, index);
     }
   }
 

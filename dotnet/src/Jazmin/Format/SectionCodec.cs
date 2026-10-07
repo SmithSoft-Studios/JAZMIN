@@ -208,6 +208,30 @@ internal static class SectionCodec
         return raw;
     }
 
+    /// <summary>
+    /// The section under another key and file id (key rotation, TASKS S-2): its CRC and the old key's authentication
+    /// tag are checked, and its stored payload is decrypted and encrypted again, not decompressed. The result has the
+    /// same length.
+    /// </summary>
+    public static byte[] Reencrypt(ReadOnlySpan<byte> section, byte[] key, byte[] fileId, string sectionId, byte[] newKey, byte[] newFileId)
+    {
+        if (section.Length < FormatConstants.EnvelopeSize) throw new JazminFormatException($"Section '{sectionId}' is truncated");
+        var envelope = section[..FormatConstants.EnvelopeSize];
+        var body = section[FormatConstants.EnvelopeSize..];
+        if (BinaryPrimitives.ReadUInt32LittleEndian(envelope[8..]) != body.Length) throw new JazminFormatException($"Section '{sectionId}' is truncated");
+        if (Crc32.Compute(body) != BinaryPrimitives.ReadUInt32LittleEndian(envelope[12..]))
+            throw new JazminFormatException($"Section '{sectionId}' failed its CRC-32 check");
+        if ((envelope[1] & FormatConstants.SectionEncrypted) == 0) throw new JazminFormatException($"Section '{sectionId}' is not encrypted but the file is");
+        var plain = Crypto.Decrypt(key, body, Aad(fileId, envelope, sectionId));
+        var sealedBody = Crypto.Encrypt(newKey, plain, Aad(newFileId, envelope, sectionId));
+        var output = new byte[FormatConstants.EnvelopeSize + sealedBody.Length];
+        envelope.CopyTo(output);
+        sealedBody.CopyTo(output, FormatConstants.EnvelopeSize);
+        BinaryPrimitives.WriteUInt32LittleEndian(output.AsSpan(8), (uint)sealedBody.Length);
+        BinaryPrimitives.WriteUInt32LittleEndian(output.AsSpan(12), Crc32.Compute(sealedBody));
+        return output;
+    }
+
     private static byte[] Aad(byte[] fileId, ReadOnlySpan<byte> envelope, string sectionId)
     {
         var id = Encoding.UTF8.GetBytes(sectionId);

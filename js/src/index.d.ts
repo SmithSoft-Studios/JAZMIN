@@ -424,6 +424,14 @@ export function inspect(path: string): {
  */
 export function compact(path: string, options?: { key?: KeyInput; password?: string; codec?: JazminCodec; chunkRows?: number; regroup?: boolean }):
   { rowCount: number; bytesBefore: number; bytesAfter: number; expiredGrantsRemoved: number };
+/**
+ * Encrypts a file again under a new key or password, without decoding its rows: every section is decrypted and
+ * encrypted again as stored. Only the new key or password opens the result. A file with appends is compacted first.
+ * Not for access-controlled files.
+ */
+export function rotateKey(path: string, options: {
+  key?: KeyInput; password?: string; newKey?: KeyInput; newPassword?: string; kdfIterations?: number;
+}): { sections: number; bytes: number };
 /** Owner only: lets accessKey see the given partitions / column groups (rewrites the file). */
 export function grantAccess(path: string, ownerKey: KeyInput, accessKey: JazminAccessKey | string,
   grant?: { rows?: '*' | string[]; columns?: '*' | string[]; label?: string }): UpdateResult;

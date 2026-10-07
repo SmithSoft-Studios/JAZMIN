@@ -1032,6 +1032,35 @@ following remain visible:
 **Passwords:** suitable for people. For services, prefer keys. PBKDF2
 slows down guessing, but a weak password is still weak.
 
+**Changing a file's key or password** (when a key may have leaked, or
+someone who knew it leaves):
+
+```js
+rotateKey('statements.jzm', { key: oldKey, newKey: JazminKey.generate() });
+rotateKey('statements.jzm', { password: 'old one', newPassword: 'new one' });
+```
+
+```csharp
+JazminFile.RotateKey(path, new JazminKeyRotation { Key = oldKey, NewKey = JazminKey.Generate() });
+```
+
+- **Only the new key or password opens the file afterwards.** Nothing is
+  shared with the old version: the master key, file id, salt and every
+  section's key are new.
+- **Fast, because rows are not decoded:** each section is decrypted and
+  encrypted again as it is stored. On a 176 MB file (200,000 rows × 300
+  columns) it took 0.7 s at 138 MB in Node and 0.7 s at 45 MB in .NET,
+  against 33 s at about 450 MB and 14 s at 120 MB for a full rewrite.
+- **A file with appends is compacted first,** so that its earlier versions,
+  still under the old key, are not kept.
+- **Keys and passwords can change places:** pass `newPassword` (and
+  `kdfIterations`) for a key-encrypted file, or `newKey` for a
+  password-encrypted one.
+- **What it can't do:** undo a leak. Anyone who held the old key and a copy
+  of the old file can still read that copy.
+- **Not for access-controlled files** (section 15): their owner key also
+  seals every access key's slot.
+
 **Sharing one file with many people:** give each person an access key that opens only their rows and
 columns. See [section 15](#15-access-control-one-file-many-keys).
 

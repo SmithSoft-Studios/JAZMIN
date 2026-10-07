@@ -14,7 +14,7 @@ import { JazminWriter } from './writer.js';
  * Atomically replaces `path` with `temp`: readers never see a half-written file. Readers that have the file open keep
  * reading the version they opened.
  */
-function replaceFile(temp, path) {
+export function replaceFile(temp, path) {
   try {
     fs.chmodSync(temp, fs.statSync(path).mode & 0o7777); // the new version keeps the file's permissions
     fs.renameSync(temp, path);

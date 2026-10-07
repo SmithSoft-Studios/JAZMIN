@@ -148,6 +148,21 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   write loop.
 
 ### Added
+- **Change a file's key or password: `rotateKey()` / `JazminFile.RotateKey`
+  (TASKS S-2).** The file is encrypted again under a new key or password,
+  and only the new one opens it: its master key, file id, salt and every
+  section's key are new.
+  - **Rows are not decoded:** each section is decrypted and encrypted again
+    as it is stored, so the file keeps its layout. A 176 MB file of 200,000
+    rows x 300 columns: 0.7 s at 138 MB in Node (a full rewrite: 33 s,
+    about 450 MB), 0.7 s at 45 MB in .NET (14 s, 120 MB).
+  - **Files with appends** are compacted first, so their earlier versions,
+    still under the old key, are not kept.
+  - **Keys and passwords can change places.**
+  - **Not for access-controlled files:** their owner key also seals every
+    access key's slot.
+  - **Checked across libraries:** each library reads the files the other
+    rotated, with the same rows and embedded files.
 - **Compact indexes, opt-in: `compactIndexes` (.NET `CompactIndexes`).**
   Sorted indexes store each key as its difference from the previous one
   (text: only the part after what it shares with the previous key), and

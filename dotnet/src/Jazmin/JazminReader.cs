@@ -219,6 +219,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private long[] _deleted = Array.Empty<long>(); // sorted row ids removed by appends
     private long? _deletedVisible;
     private long _validEnd;
+    private SectionRef _headerRef = new(0, 0, null); // where the header section is, from the trailer
     private int _cachedOrdinal = -1;
     private object?[][]? _cachedRows;
     private bool[]? _cachedWanted; // the columns the cached chunk decoded (null: all)
@@ -268,7 +269,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             else
             {
                 (_header, _fileId, _salt, _keys, _access, _metadata) = (from._header, from._fileId, from._salt, from._keys, from._access, from._metadata);
-                (_flags, _validEnd, Recovered, KdfIterations) = (from._flags, from._validEnd, from.Recovered, from.KdfIterations);
+                (_flags, _validEnd, Recovered, KdfIterations, _headerRef) = (from._flags, from._validEnd, from.Recovered, from.KdfIterations, from._headerRef);
             }
             // One table at a time (spec 6.2): the caller chooses it by name; the first by default.
             _tableIndex = options.Table is null ? 0 : _header.Tables.FindIndex(t => t.Name == options.Table);
@@ -334,6 +335,78 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         return new JazminReader(_stream, new JazminReadOptions { Table = name, Priority = _priority, MaxDegreeOfParallelism = _readAhead }, _leaveOpen, this);
     }
 
+    /// <summary>
+    /// Key rotation (TASKS S-2), for a file encrypted with a key or password: its preamble values, its header and where
+    /// it is, and every other section it references.
+    /// </summary>
+    internal KeyRotationPlan KeyRotation()
+    {
+        if ((_flags & FormatConstants.FlagEncrypted) == 0) throw new JazminValidationException("The file is not encrypted: it has no key to rotate");
+        if (_keys is null || _access is not null) throw new JazminValidationException("Only a file encrypted with a key or password has its key rotated this way");
+        var keys = _keys;
+        var sections = new List<RotatedSection>();
+        void Add(SectionRef at, string sectionId, string group) => sections.Add(new(at.Offset, at.Length, sectionId, keys.SectionKey(group, sectionId), group, null));
+        for (var i = 0; i < _header.Deltas.Count; i++) Add(_header.Deltas[i], $"delta/{i}", FormatConstants.KeyringData);
+        if (_header.Files is { } files)
+        {
+            var suffix = files.Segment > 0 ? $"/{files.Segment}" : "";
+            foreach (var (_, section) in files.Directories) Add(section, $"files/dir{suffix}", FormatConstants.KeyringFiles);
+            foreach (var content in FileIndex().Contents.Values)
+            {
+                var contentKey = content.Key ?? throw new JazminFormatException($"Embedded content {content.Id} has no key in an encrypted file");
+                for (var b = 0; b < content.Blocks.Count; b++)
+                {
+                    var sectionId = $"file/{content.Id}/{b}";
+                    var (offset, length, _) = content.Blocks[b];
+                    sections.Add(new(offset, length, sectionId, Crypto.Hkdf(contentKey, _salt, $"JAZMIN/1/{sectionId}"), null, contentKey));
+                }
+            }
+        }
+        for (var t = 0; t < _header.Tables.Count; t++)
+        {
+            var reader = t == _tableIndex ? this : OpenTable(_header.Tables[t].Name);
+            try
+            {
+                reader.TableSections(Add);
+            }
+            finally
+            {
+                if (reader != this) reader.Dispose();
+            }
+        }
+        return new KeyRotationPlan(_flags, _fileId, _header, _headerRef, Recovered, sections);
+    }
+
+    /// <summary>The sections of this reader's table, for <see cref="KeyRotation"/>.</summary>
+    private void TableSections(Action<SectionRef, string, string> add)
+    {
+        const string data = FormatConstants.KeyringData, index = FormatConstants.KeyringIndex;
+        var t = _tableIndex;
+        if (_table.ColumnGroups.Any(g => g.Definitions is not null))
+            throw new JazminFormatException("Catalog: only access-controlled files keep column definitions in their own section");
+        if (_table.PartitionTable is { } partitionTable) add(partitionTable, $"{t}/partitions", data);
+        if (_table.Deletes is { } deletes) add(deletes, $"{t}/deletes/{_table.DeletedCount}", data);
+        EnsureAllChunks();
+        foreach (var (id, p) in _partitions)
+            for (var s = 0; s < p.Segments.Count; s++) add(p.Segments[s], $"{t}/dir/{id}{(s > 0 ? $"/{s}" : "")}", data);
+        foreach (var segment in _segments)
+            for (var b = 0; b < segment.Statistics.Count; b++) add(segment.Statistics[b].Section, $"{t}/stats/{segment.Partition}/{b}{segment.Suffix}", data);
+        for (var o = 0; o < _loaded.Length; o++)
+        {
+            if (!_loaded[o]) throw new JazminFormatException($"Chunk {o} is in no chunk directory");
+            for (var g = 0; g < _groups.Length; g++) add(Part(o, g), $"{t}/chunk/{o}/{_groups[g].Name}", data);
+        }
+        foreach (var ix in IndexList())
+        {
+            var baseId = $"{t}/index/{ix.Column}/{ix.Kind}{(ix.Segment > 0 ? $"/{ix.Segment}" : "")}";
+            add(ix.Section, baseId, index);
+            if (ix.Kind != "sorted") continue;
+            var directory = Catalog.DecodeIndexDirectory(ReadSection(ix.Section, baseId, _keys!.SectionKey(index, baseId)));
+            for (var n = 0; n < directory.Pages.Count; n++) add(directory.Pages[n].At, $"{baseId}/page/{n}", index);
+            if (directory.Nulls is { } nulls) add(nulls, $"{baseId}/nulls", index);
+        }
+    }
+
     /// <summary>Whether the file's sorted indexes may hold keys as differences (reader feature 'index-deltas'); update keeps them.</summary>
     internal bool CompactIndexes => _header.ReaderFeatures.Contains(FormatConstants.IndexDeltas);
 
@@ -387,6 +460,15 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     private sealed record Trailer(SectionRef Header, SectionRef KeySlots, SectionRef Signature);
 
+    /// <summary>What <see cref="JazminFile.RotateKey"/> needs: the preamble values, the header and where it is, and every other section.</summary>
+    internal sealed record KeyRotationPlan(ushort Flags, byte[] FileId, HeaderDef Header, SectionRef HeaderRef, bool Recovered, List<RotatedSection> Sections);
+
+    /// <summary>
+    /// A section to encrypt again: <see cref="Key"/> decrypts it now. Under new keys it is keyed by its keyring
+    /// <see cref="Group"/>, or (an embedded-file block) by its <see cref="ContentKey"/> with the new salt.
+    /// </summary>
+    internal sealed record RotatedSection(long Offset, int Length, string SectionId, byte[] Key, string? Group, byte[]? ContentKey);
+
     private (HeaderDef, byte[], byte[], KeySchedule?, AccessState?) Open(JazminReadOptions options)
     {
         var size = _stream.Length;
@@ -404,6 +486,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         KdfIterations = iterations == 0 ? null : (int)Math.Min(iterations, int.MaxValue);
 
         var trailer = LocateTrailer(size, flags);
+        _headerRef = trailer.Header;
         var headerSection = Read(trailer.Header.Offset, trailer.Header.Length);
 
         if ((flags & FormatConstants.FlagAccess) != 0)

@@ -78,6 +78,26 @@ export function encodeSectionParts(raw, { codec = 'deflate', level, key, fileId,
   return { envelope, body };
 }
 
+/**
+ * The section under another key and file id (key rotation, TASKS S-2): its CRC and the old key's authentication tag
+ * are checked, and its stored payload is decrypted and encrypted again, not decompressed. The result has the same
+ * length. `next` is { key, fileId } for the new file. Returns { envelope, body }.
+ */
+export function reencryptSection(section, { key, fileId, sectionId }, next) {
+  if (section.length < ENVELOPE_SIZE) throw new JazminFormatError(`Section '${sectionId}' is truncated`);
+  const envelope = Buffer.from(section.subarray(0, ENVELOPE_SIZE));
+  const payloadLength = envelope.readUInt32LE(8);
+  const body = section.subarray(ENVELOPE_SIZE);
+  if (body.length !== payloadLength) throw new JazminFormatError(`Section '${sectionId}' is truncated`);
+  if (crc32(body) !== envelope.readUInt32LE(12)) throw new JazminFormatError(`Section '${sectionId}' failed its CRC-32 check`);
+  if (!(envelope[1] & SECTION_ENCRYPTED)) throw new JazminFormatError(`Section '${sectionId}' is not encrypted but the file is`);
+  const plain = decrypt(key, body, aad(fileId, envelope, sectionId));
+  const sealed = encrypt(next.key, plain, aad(next.fileId, envelope, sectionId));
+  envelope.writeUInt32LE(sealed.length, 8);
+  envelope.writeUInt32LE(crc32(sealed), 12);
+  return { envelope, body: sealed }; // written one after the other: no copy joining them
+}
+
 /** Reads the payload length declared by an envelope. */
 export function sectionPayloadLength(envelope) {
   return envelope.readUInt32LE(8);

@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
@@ -64,6 +65,26 @@ public sealed class JazminUpdate
     /// <summary>The table the rows change in, by name (default: the first). The file's other tables are kept.</summary>
     public string? Table { get; set; }
 }
+
+/// <summary>The keys for <see cref="JazminFile.RotateKey"/>: the file's key or password now, and the new one.</summary>
+public sealed class JazminKeyRotation
+{
+    /// <summary>The file's key now (or <see cref="Password"/>).</summary>
+    public JazminKey? Key { get; set; }
+
+    public string? Password { get; set; }
+
+    /// <summary>The new key (or <see cref="NewPassword"/>): only it opens the file afterwards.</summary>
+    public JazminKey? NewKey { get; set; }
+
+    public string? NewPassword { get; set; }
+
+    /// <summary>PBKDF2 iterations for <see cref="NewPassword"/> (default 600,000).</summary>
+    public int KdfIterations { get; set; } = FormatConstants.DefaultKdfIterations;
+}
+
+/// <summary>What <see cref="JazminFile.RotateKey"/> did: the sections it encrypted again and the new file's size.</summary>
+public sealed record JazminKeyRotationResult(int Sections, long Bytes);
 
 public sealed record JazminUpdateResult(long RowCount, long Inserted, long Updated, long Deleted)
 {
@@ -144,6 +165,116 @@ public static class JazminFile
     /// access grants carry over; every new version gets fresh secrets, so revoked keys cannot read it.
     /// </summary>
     public static JazminUpdateResult Update(string path, JazminUpdate update) => WithLock(path, () => UpdateUnlocked(path, update));
+
+    /// <summary>
+    /// Encrypts a file again under a new key or password without decoding its rows (TASKS S-2). Every section is
+    /// decrypted and encrypted again as it is stored (still compressed), under a new master key, file id, salt and
+    /// keyring, so only the new key or password opens the result, and the file keeps its layout. A file with appends is
+    /// compacted first: its earlier versions, still under the old key, are dropped. Access-controlled files are not
+    /// supported.
+    /// </summary>
+    public static JazminKeyRotationResult RotateKey(string path, JazminKeyRotation rotation) => WithLock(path, () => RotateUnlocked(path, rotation));
+
+    private static JazminKeyRotationResult RotateUnlocked(string path, JazminKeyRotation rotation)
+    {
+        if ((rotation.NewKey is null) == (rotation.NewPassword is null)) throw new JazminValidationException("Supply either NewKey or NewPassword");
+        if (rotation.NewPassword is not null && rotation.KdfIterations is < FormatConstants.MinKdfIterations or > FormatConstants.MaxKdfIterations)
+            throw new JazminValidationException($"KdfIterations must be from {FormatConstants.MinKdfIterations} to {FormatConstants.MaxKdfIterations}");
+        var salt = RandomNumberGenerator.GetBytes(FormatConstants.SaltSize);
+        var master = rotation.NewPassword is not null ? Crypto.DeriveFromPassword(rotation.NewPassword, salt, rotation.KdfIterations) : rotation.NewKey!.ToBytes();
+
+        var readOptions = new JazminReadOptions { Key = rotation.Key, Password = rotation.Password };
+        var reader = JazminReader.Open(path, readOptions);
+        JazminReader.KeyRotationPlan plan;
+        try
+        {
+            plan = reader.KeyRotation();
+            if ((plan.Flags & FormatConstants.FlagAppended) != 0 || plan.Recovered)
+            {
+                // Earlier versions are still in the file, under the old key: compact first, which writes only the current one.
+                reader.Dispose();
+                UpdateUnlocked(path, new JazminUpdate { Key = rotation.Key, Password = rotation.Password });
+                reader = JazminReader.Open(path, readOptions);
+                plan = reader.KeyRotation();
+            }
+        }
+        catch
+        {
+            reader.Dispose();
+            throw;
+        }
+
+        var sections = plan.Sections.OrderBy(s => s.Offset).ToList();
+        // Every byte between the preamble and the header must belong to a listed section: anything else would be lost.
+        long at = FormatConstants.PreambleSize;
+        for (var i = 0; i <= sections.Count; i++)
+        {
+            var offset = i < sections.Count ? sections[i].Offset : plan.HeaderRef.Offset;
+            if (offset != at)
+            {
+                reader.Dispose();
+                throw new JazminFormatException($"Bytes {at} to {offset} belong to no section this reader knows: the key was not rotated");
+            }
+            if (i < sections.Count) at += sections[i].Length;
+        }
+
+        var fileId = RandomNumberGenerator.GetBytes(FormatConstants.FileIdSize);
+        var keys = new KeySchedule(master, salt) { Keyring = (plan.Header.Keyring ?? []).ToDictionary(k => k.Key, _ => RandomNumberGenerator.GetBytes(32)) };
+        var temp = $"{path}.{Convert.ToHexString(RandomNumberGenerator.GetBytes(6)).ToLowerInvariant()}.tmp";
+        long bytes;
+        try
+        {
+            using (var source = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16))
+            using (var output = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 16))
+            {
+                var preamble = new byte[FormatConstants.PreambleSize];
+                FormatConstants.Magic.CopyTo(preamble.AsSpan());
+                BinaryPrimitives.WriteUInt16LittleEndian(preamble.AsSpan(FormatConstants.FlagsOffset),
+                    (ushort)(FormatConstants.FlagEncrypted | (rotation.NewPassword is not null ? FormatConstants.FlagPassword : 0)));
+                fileId.CopyTo(preamble, 8);
+                salt.CopyTo(preamble, 24);
+                BinaryPrimitives.WriteUInt32LittleEndian(preamble.AsSpan(56), rotation.NewPassword is not null ? (uint)rotation.KdfIterations : 0);
+                output.Write(preamble);
+
+                var buffer = Array.Empty<byte>(); // one section at a time
+                foreach (var s in sections)
+                {
+                    if (buffer.Length < s.Length) buffer = new byte[(int)Math.Min(int.MaxValue, s.Length * 5L / 4)];
+                    source.Position = s.Offset;
+                    source.ReadExactly(buffer, 0, s.Length);
+                    var next = s.ContentKey is not null ? Crypto.Hkdf(s.ContentKey, salt, $"JAZMIN/1/{s.SectionId}") : keys.SectionKey(s.Group!, s.SectionId);
+                    output.Write(SectionCodec.Reencrypt(buffer.AsSpan(0, s.Length), s.Key, plan.FileId, s.SectionId, next, fileId));
+                }
+
+                source.Position = plan.HeaderRef.Offset;
+                var codec = (JazminCodec)source.ReadByte();
+                plan.Header.Keyring = keys.Keyring;
+                plan.Header.Modified = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                var headerSection = SectionCodec.Encode(Catalog.EncodeHeader(plan.Header), Enum.IsDefined(codec) ? codec : JazminCodec.Deflate, null,
+                    keys.HeaderKey, fileId, FormatConstants.HeaderSectionId);
+                var headerOffset = output.Position;
+                output.Write(headerSection);
+                output.Flush(flushToDisk: true); // data first: a trailer must never point at data that is not on disk yet
+                var trailer = new byte[FormatConstants.TrailerSize];
+                BinaryPrimitives.WriteUInt64LittleEndian(trailer, (ulong)headerOffset);
+                BinaryPrimitives.WriteUInt32LittleEndian(trailer.AsSpan(8), (uint)headerSection.Length);
+                BinaryPrimitives.WriteUInt32LittleEndian(trailer.AsSpan(36), Crc32.Compute(trailer.AsSpan(0, 36)));
+                FormatConstants.Magic.CopyTo(trailer.AsSpan(40));
+                output.Write(trailer);
+                output.Flush(flushToDisk: true);
+                bytes = output.Length;
+            }
+            reader.Dispose();
+            ReplaceFile(temp, path);
+        }
+        catch
+        {
+            reader.Dispose();
+            File.Delete(temp);
+            throw;
+        }
+        return new JazminKeyRotationResult(sections.Count + 1, bytes);
+    }
 
     private static JazminUpdateResult UpdateUnlocked(string path, JazminUpdate update, bool regroup = false)
     {
