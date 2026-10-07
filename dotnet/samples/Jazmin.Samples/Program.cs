@@ -204,6 +204,26 @@ var orderBytes = JazminConvert.SerializeObject(new List<Order> { new() { OrderId
 var orders = JazminConvert.DeserializeObject<List<Order>>(orderBytes, shopSettings)!;
 Console.WriteLine($"11. {JazminConvert.ToJson(orderBytes, new JazminSerializerSettings { NullValueHandling = NullValueHandling.Ignore })} -> {orders[0].Total}");
 
+// --- 12. LINQ the reader runs, and speed or memory first (USER-GUIDE 8.3 and 20.4) -----------------
+using (var reader = JazminReader.Open(path, new JazminReadOptions { Key = key, Priority = JazminPriority.Speed }))
+{
+    var people = reader.AsQueryable<Customer>();
+    var page = people.Where(c => c.Country == "ZA").Skip(1).Take(5).Select(c => c.Name).ToList(); // filter, offset, 1 column
+    Console.WriteLine($"12. {people.Count(c => c.Country == "ZA")} in ZA; page 2: {string.Join(", ", page)}");
+}
+
+// --- 13. A new key without rewriting the rows: when a key may have leaked (USER-GUIDE 10) ----------
+var newKey = JazminKey.Generate();
+var rotation = JazminFile.RotateKey(path, new JazminKeyRotation { Key = key, NewKey = newKey });
+using (var rekeyed = JazminReader.Open(path, new JazminReadOptions { Key = newKey }))
+    Console.WriteLine($"13. {rotation.Sections} sections encrypted again; {rekeyed.RowCount} rows open with the new key");
+
+// --- 14. Rows as UTF-8 JSON, written as they are read (for HTTP responses and System.Text.Json) ------
+using (var reader = JazminReader.Open(path, new JazminReadOptions { Key = newKey }))
+using (var json = new JazminJsonStream(reader, JazminFilter.Eq("Country", "ZA")))
+using (var text = new StreamReader(json))
+    Console.WriteLine($"14. {text.ReadToEnd()[..60]}...");
+
 Directory.Delete(dir, true);
 
 public readonly record struct Money(long Cents, string Currency);

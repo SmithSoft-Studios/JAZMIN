@@ -232,7 +232,7 @@ No long-lived npm or NuGet key is stored anywhere.
   **Trusted publishing**. Add GitHub Actions with organization
   `SmithSoft-Studios`, repository `JAZMIN`, workflow `release.yml` and
   environment `release`. Later releases need no npm token: the `NPM_TOKEN`
-  secret is deleted, and the first release after it (1.1.1) is the first
+  secret is deleted, and the first release after it (1.2.0) is the first
   published this way.
 - **Signing:** npm *provenance* is a signed record of the commit and workflow
   that built the package; it is added because the repository is public.

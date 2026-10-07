@@ -36,6 +36,10 @@ var page = reader.AsQueryable<Customer>().Where(c => c.Country == "ZA").Skip(20)
   key, which only someone who opened the shared file has; the owner derives it to check and file them.
 - **Newtonsoft-style serializer:** attributes, converters, naming strategies, default values, polymorphism and
   references.
+- **LINQ the reader runs:** `AsQueryable<T>()` turns conditions, `Skip`/`Take`, counts and sort order into one query on
+  the file, reading only the columns it uses.
+- **Memory or speed first,** key and password changes without rewriting rows, and rows as a JSON stream.
+- **ASP.NET Core:** the `Jazmin.AspNetCore` package serves a file's embedded files from an endpoint.
 
 Full documentation, the format specification and the JavaScript library:
 [github.com/SmithSoft-Studios/JAZMIN](https://github.com/SmithSoft-Studios/JAZMIN).

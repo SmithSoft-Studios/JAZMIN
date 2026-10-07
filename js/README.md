@@ -40,7 +40,11 @@ reader.close();
 - **Encryption:** AES-256-GCM on every section, with tamper detection.
 - **Access control:** one file, many keys. Each access key sees only its rows and columns, and keys can expire.
 - **Several tables per file,** embedded files, and append-only updates.
-- **Conversion:** lossless JSON round trip, plus CSV and XML.
+- **Conversion:** lossless JSON round trip, plus CSV and XML; large CSV and XML files are imported without loading them.
+- **Memory or speed first:** one `priority` setting; opt-in compact indexes for much smaller index files.
+- **Key changes:** `rotateKey()` gives a file a new key or password without rewriting its rows; `rotateOwnerKey()` re-keys a shared file.
+- **On a server:** `serveFiles()` serves a file's embedded files (byte ranges, per key), and `renderPdf()` prints its
+  document with a Playwright or Puppeteer browser you supply.
 - **Browser:** `@smithsoft-studios/jazmin/browser` reads every kind of file, and writes files with one key, a
   password or none, with embedded files (photos, PDFs).
 - **Sending records back:** people in the field send records from a phone, often offline, in a small file locked with

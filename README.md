@@ -34,6 +34,10 @@ Measured on 200,000 records (details and caveats in the user guide):
 | Records sent back | People in the field send records, photos and PDFs from a phone, written offline in the browser and locked with a key they get only by opening the shared file. The owner's service checks and files them, and a record sent again updates the filed one ([sample](js/examples/filing-service)) |
 | Time-limited access | Each key can expire (2 hours, 2 weeks, 5 years...). **Offline** keys are checked by the library; **online** keys also need an unlock token from your key service, which can require 2FA ([sample](dotnet/samples/Jazmin.KeyService)) |
 | Updates | Full rewrite with `update()`, or fast **append-only** changes with `append()` and a `compact()` you control |
+| Key changes | A new key or password without rewriting the rows; for a shared file, a new owner key and new access keys that see exactly what the old ones did |
+| Memory or speed | One `priority` setting chooses the least memory, the most speed, or a balance; opt-in **compact indexes** make index files much smaller |
+| LINQ (.NET) | `reader.AsQueryable<T>()`: conditions, `Skip`/`Take`, counts and sort order run in the reader, reading only the columns a query uses |
+| On a server | Serve a file's embedded files from Node or ASP.NET Core (byte ranges, per key), and print a file's own document to PDF with the same template the viewer shows |
 | Several tables | One file can hold several tables, like workbook sheets: client details once, transactions by client. Access follows the link |
 | Viewer | Open `.jzm` files in a browser, as an installed app, a hosted page or one HTML file: the document, the data and the files, with any kind of key. Nothing is uploaded |
 | Platforms | Node.js 22+ and TypeScript; .NET 10 (no third-party dependencies) |
@@ -47,6 +51,7 @@ payloads. The user guide shows the trade-offs.
 ```bash
 npm install @smithsoft-studios/jazmin   # Node.js 22+ and TypeScript
 dotnet add package Jazmin               # .NET 10
+dotnet add package Jazmin.AspNetCore    # .NET: serve embedded files from ASP.NET Core
 ```
 
 ## Documentation

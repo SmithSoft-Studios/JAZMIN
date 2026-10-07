@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, compact, exportFile, fromCSV, issueUnlockToken, open, openAsync, toJSON, toXML, write, writeAsync,
+  JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, compact, createFileHandler, exportFile, fromCSV, issueUnlockToken, open, openAsync,
+  rotateKey, toJSON, toXML, write, writeAsync,
 } from '../src/index.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-examples-'));
@@ -145,5 +146,33 @@ const linesReader = clientsReader.openTable('transactions'); // same open file, 
 console.log('11.', clientsReader.tables, [...clientsReader.find({ clientId: 'C1' })][0].name, [...linesReader.find({ clientId: 'C1' })].length, 'lines');
 linesReader.close();
 clientsReader.close();
+
+// 12. Memory or speed first (USER-GUIDE 20.4), and smaller indexes, opt-in (readers from 1.2.0 read them).
+const ordersFile = path.join(dir, 'orders.jzm');
+write(ordersFile, Array.from({ length: 5000 }, (_, i) => ({ id: i, customer: `C${i % 250}`, amount: (i % 97) / 4 })), {
+  columns: [{ name: 'id', type: 'int', nullable: false }, { name: 'customer', type: 'string', index: 'sorted' }, { name: 'amount', type: 'float' }],
+  sortedBy: ['id'],
+  compactIndexes: true,
+  priority: 'memory', // 'memory', 'balanced' (the default) or 'speed'
+});
+const orders = open(ordersFile, { priority: 'speed' }); // reads ahead on worker threads
+console.log('12.', orders.count({ customer: 'C7' }), 'orders for C7');
+orders.close();
+
+// 13. A new key for a file, without rewriting its rows: when a key may have leaked (USER-GUIDE 10).
+const newKey = JazminKey.generate();
+const rotation = rotateKey(file, { key: key.export(), newKey: newKey.export() });
+const rekeyed = open(file, { key: newKey.export() });
+console.log('13.', rotation.sections, 'sections encrypted again;', rekeyed.rowCount, 'rows open with the new key');
+rekeyed.close();
+
+// 14. A file's embedded files, served by path: byte ranges, ETags, only what the key can see (USER-GUIDE 19.4).
+// On a web server: http.createServer(serveFiles(reader, { prefix: '/files/' })).
+const docsFile = path.join(dir, 'docs.jzm');
+write(docsFile, [{ n: 1 }], { files: [{ path: 'invoices/march.txt', content: 'Invoice: R 1,250.00' }] });
+const docs = open(docsFile);
+const part = createFileHandler(docs)('invoices/march.txt', { range: 'bytes=0-6' });
+console.log('14.', part.status, JSON.stringify(part.body.toString()), part.headers['content-range']);
+docs.close();
 
 fs.rmSync(dir, { recursive: true, force: true });

@@ -740,7 +740,7 @@ rows and time per query); docs/CONTRIBUTING.md explains it.
 | File size with 3 indexes + AES-256 encryption | | | 2,235 KB |
 | Find one record by id (open file → result) | 265 ms | 104 ms | **1.4 ms** (1.3 ms encrypted) |
 | Filter `Country == "NA" && Age > 80` | 276 ms | | **13 ms** |
-| Memory allocated for one lookup | 196 MB | | **0.8 MB** |
+| Memory allocated for one lookup | 196 MB | | **1.1 MB** |
 | Deserialize every record | 211 ms | 91 ms | **32 ms** |
 | Serialize every record | 103 ms | 57 ms | **42 ms** (94 ms with 3 indexes) |
 
@@ -760,11 +760,18 @@ On Node 26 (same day), JAZMIN takes 1.8 ms per lookup and 58 ms to read every
 record; `JSON.parse` is about 10% faster there than on Node 24.
 
 Measured on 5 October 2026, and re-run for 1.1.0 on 6 October: every figure
-within 10%, except .NET memory for one lookup (1.1 MB then). Since 1.0.0, query planning (sections 9.7 and 9.8)
+within 10%. Since 1.0.0, query planning (sections 9.7 and 9.8)
 took lookups from 2.7 to 1.7 ms in Node and from 3.7 to 1.9 ms in .NET, and
-the filter from 56 to 13 ms and from 40 to 13 ms. In 1.1.1, .NET readers of
+the filter from 56 to 13 ms and from 40 to 13 ms. In 1.2.0, .NET readers of
 files with the same columns share their compiled row code, which took the .NET
 lookup from about 2.0 to 1.4 ms (issue #70).
+
+**Checked again for 1.2.0** on 7 October, against 1.1.0 side by side on the
+same machine, runs alternating (the machine was busier than on 5 October, so
+both took longer than the tables show): Node unchanged within noise; .NET
+lookups 2.6-2.7 ms (1.1.0) against 1.9 ms (1.2.0), the filter 15-17 ms
+against 12-14 ms, the rest unchanged; file sizes identical. The memory for one
+.NET lookup is 1.1 MB in both.
 
 ### 9.3 What the numbers mean
 

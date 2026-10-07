@@ -3,7 +3,23 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
-## Unreleased
+## 1.2.0 - 2026-10-08 (file format 1.0)
+
+Choose memory or speed first, give a file (or a shared file) a new key without
+rewriting it, query .NET files with LINQ the reader runs, and serve a file's
+embedded files and documents from a server, with a new package for ASP.NET
+Core. Typed and wide reads in .NET are several times faster.
+
+- **Files:** still format 1.0. Version 1.1.0 reads and appends to files
+  written by 1.2.0 (tested with the published package), except files written
+  with the new, opt-in `compactIndexes`: those need 1.2.0 or later, and older
+  readers refuse them, naming what they lack.
+- **New package:** `Jazmin.AspNetCore` (NuGet), for ASP.NET Core endpoints.
+- **Changed behaviour:** readers refuse a file whose own JSON repeats a name
+  (neither library writes one); .NET `ToXml` declares UTF-8; new files with
+  `sortedBy` have no index on their first sort column (see Fixed and Changed).
+- **Still deprecated, removed in 2.0:** getting a key's secret with
+  `toString()` (use `export()`), and the reader's clock option.
 
 ### Fixed
 - **Viewer: a document's `jazmin.query(…, { orderBy })` sorted decimals as
