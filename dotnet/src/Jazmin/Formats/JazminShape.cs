@@ -51,7 +51,7 @@ public sealed class JazminShape
     /// <summary>The shape's output for these rows as XML text.</summary>
     public string ToXml(JazminReader reader, JazminFilter? filter = null, string root = "export")
     {
-        using var writer = new StringWriter(CultureInfo.InvariantCulture);
+        using var writer = new Utf8StringWriter();
         WriteXml(reader, writer, filter, root);
         return writer.ToString();
     }

@@ -170,4 +170,29 @@ public sealed class XmlStreamTests : IDisposable
         Assert.ThrowsAny<XmlException>(() => JazminConvert.FromXmlFile(xml, output));
         Assert.False(File.Exists(output));
     }
+
+    [Fact]
+    public void ToXml_DeclaresUtf8_SoTheSavedFileLoadsAnywhere()
+    {
+        // ToXml used to declare utf-16 (a .NET string's encoding): saved as UTF-8, as File.WriteAllText and web responses
+        // do, the file was refused by readers that trust the declaration ("There is no Unicode byte order mark").
+        var path = Path.Combine(_dir, "source.jzm");
+        using (var writer = JazminWriter.Create(path, [new("id", JazminType.Int), new("label", JazminType.String)], new JazminWriteOptions { Metadata = new JsonObject { ["title"] = "Été" } }))
+            for (var i = 0; i < 20; i++) writer.WriteValues([(long)i, $"é{i}"]);
+        using var reader = JazminReader.Open(path);
+        var texts = new[]
+        {
+            JazminConvert.ToXml(File.ReadAllBytes(path)),
+            JazminShape.Parse("""{ "title": { "$meta": "title" }, "rows": { "$rows": { "id": "id", "label": "label" }, "$xmlItem": "row" } }""").ToXml(reader),
+        };
+        foreach (var text in texts)
+        {
+            Assert.StartsWith("<?xml version=\"1.0\" encoding=\"utf-8\"?>", text);
+            var saved = Path.Combine(_dir, "saved.xml");
+            File.WriteAllText(saved, text);
+            var document = new XmlDocument();
+            document.Load(saved);
+            Assert.Contains("é1", document.DocumentElement!.InnerText);
+        }
+    }
 }

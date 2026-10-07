@@ -386,6 +386,18 @@ public static class CsvFormat
 }
 
 /// <summary>
+/// Collects XML text that declares UTF-8, the encoding it is saved and sent in (as the JavaScript library declares).
+/// An XmlWriter declares its TextWriter's encoding, and a plain StringWriter's is UTF-16: saved as UTF-8, that text is
+/// refused by readers that trust the declaration.
+/// </summary>
+internal sealed class Utf8StringWriter() : StringWriter(CultureInfo.InvariantCulture)
+{
+    private static readonly Encoding Utf8 = new UTF8Encoding(false);
+
+    public override Encoding Encoding => Utf8;
+}
+
+/// <summary>
 /// Canonical tabular XML: &lt;jazmin&gt;&lt;row&gt;&lt;name&gt;Ann&lt;/name&gt;&lt;/row&gt;&lt;/jazmin&gt;.
 /// Nulls are omitted; names that are not valid XML names use &lt;field name="..."&gt;.
 /// </summary>

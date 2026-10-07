@@ -53,6 +53,15 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   environment variable the library reads; file access; and the one URL in
   the package, which is never fetched. A new test checks that column names
   built to break out of the generated code never run.
+- **.NET: XML text from `ToXml` declares UTF-8.** `JazminConvert.ToXml` and
+  `JazminShape.ToXml` declared `encoding="utf-16"`, the encoding of a .NET
+  string in memory.
+  - **Before:** saved as UTF-8, as `File.WriteAllText` and web responses
+    save it, the file was refused by readers that trust the declaration,
+    such as `XmlDocument.Load`.
+  - **Now:** the text declares `utf-8`, as the JavaScript library's does.
+  - **Unchanged:** the XML itself, and XML written to a stream or
+    `TextWriter`, which declares that writer's encoding.
 
 ### Changed
 - **JS: trigram indexes are built faster.** Grams of ASCII text are keyed as

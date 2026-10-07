@@ -170,7 +170,7 @@ public static class JazminConvert
     public static string ToXml(byte[] data, JazminSerializerSettings? settings = null, JazminFilter? filter = null)
     {
         using var reader = JazminReader.Open(data, settings?.ToReadOptions());
-        var output = new StringWriter();
+        var output = new Utf8StringWriter();
         XmlFormat.Write(output, reader.Columns, reader.Find(filter));
         return output.ToString();
     }
@@ -191,8 +191,8 @@ public static class JazminConvert
         IEnumerable<Dictionary<int, string>> Rows(List<string> names)
         {
             // Read as text, UTF-8 unless a byte order mark says otherwise (as the JavaScript importer reads it): the XML
-            // declaration's encoding is not used. ToXml's text declares UTF-16 (it is a .NET string) but is usually saved
-            // as UTF-8, which a reader that trusts the declaration refuses.
+            // declaration's encoding is not used. Text from ToXml before 1.1.1 declares UTF-16 (a .NET string's encoding)
+            // but is usually saved as UTF-8, which a reader that trusts the declaration refuses.
             using var text = new StreamReader(inputPath, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, 1 << 16);
             using var reader = System.Xml.XmlReader.Create(text, XmlFormat.ReaderSettings);
             foreach (var row in XmlFormat.ReadRows(reader, names)) yield return row;
