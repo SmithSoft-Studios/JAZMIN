@@ -85,6 +85,9 @@ if (values.child) {
     fs.writeSync(fd, seedBytes, 0, 8, 0);
     const { kind, bytes, error } = run(prepared, seed);
     if (error) save(seed, kind, bytes, String(error?.stack ?? error));
+    // Lets Node run the work left for later: zlib frees a decompressor that failed on damaged data on the next tick,
+    // and a loop that never yielded kept every one, until the 768 MB heap ran out (after about 25 minutes).
+    if (seed % 1000 === 0) await new Promise(setImmediate);
   }
 } else if (values.replay !== undefined) {
   const { kind, bytes, error } = run(loadCorpus(), Number(values.replay));
@@ -114,16 +117,22 @@ if (values.child) {
       if (seed !== last.seed) last = { seed, at: Date.now() };
       reached = Math.max(reached, seed);
       if (Date.now() >= deadline) {
-        stopping = true;
-        child.kill();
+        stop();
       } else if (seed >= 0 && Date.now() - last.at > HANG_MS) {
         const { kind, bytes } = input(prepared, seed);
         save(seed, kind, bytes, `hang: no progress for ${HANG_MS / 1000} s`);
-        stopping = true;
-        child.kill();
         child.once('exit', () => start(seed + 1));
+        stop();
       }
     }, 1000);
+    // The watchdog stops first, so a fuzzing process slow to end is reported and restarted once (it used to be every
+    // second until it ended, each time starting another). SIGKILL: a process stuck in a loop, or ending after it ran out
+    // of memory, may not end on SIGTERM.
+    const stop = () => {
+      clearInterval(watchdog);
+      stopping = true;
+      child.kill('SIGKILL');
+    };
     child.on('exit', (code, signal) => {
       clearInterval(watchdog);
       if (stopping) {

@@ -38,7 +38,7 @@ jobs:
           # Each part fuzzes its own seeds: 1, 400,000,001, 800,000,001, ...
           node scripts/fuzz.js --minutes "${{ inputs.minutes }}" --seed $(( (${{ matrix.part }} - 1) * 400000000 + 1 )) --out fuzz-findings
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: failure() || cancelled() # cancelled: a job stopped at its time limit keeps its findings and corpus
         with:
           name: fuzz-js-${{ matrix.part }}
           path: js/fuzz-findings
@@ -66,7 +66,7 @@ jobs:
           export JAZMIN_FUZZ_SEED=$(( (${{ matrix.part }} - 1) * 400000000 + 1 ))
           dotnet test tests/Jazmin.Tests --configuration Release --filter "FullyQualifiedName~FuzzTests.LongRun"
       - uses: actions/upload-artifact@v4
-        if: failure()
+        if: failure() || cancelled() # cancelled: a job stopped at its time limit keeps its findings and corpus
         with:
           name: fuzz-dotnet-${{ matrix.part }}
           path: fuzz-findings
