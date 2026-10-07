@@ -423,39 +423,70 @@ export function trigrams(text) {
 }
 
 /** Builds a trigram index used to accelerate `contains` / `icontains` filters (spec 8.2). */
+const TRIGRAM_SEEN_LIMIT = 4096; // distinct values whose grams a trigram builder remembers
+
 export class TrigramIndexBuilder {
   constructor() {
-    // Gram -> row ids. A gram of code units (c0, c1, c2) is keyed as the number c0·2³² + c1·2¹⁶ + c2:
-    // no strings are created while building, and numeric order equals the code-unit order of the text.
+    // Gram -> row ids, with no strings created while building. A gram of ASCII code units (c0, c1, c2), the usual
+    // case, is keyed as c0·2¹⁴ + c1·2⁷ + c2: a small integer, which V8 hashes fastest. Any other gram is keyed as
+    // c0·2³² + c1·2¹⁶ + c2. In both, numeric order equals the code-unit order of the text.
+    this.ascii = new Map();
     this.grams = new Map();
+    // Value -> the row-id lists of its grams. Indexed text often repeats (names, categories): a value seen before
+    // needs only its row id added to each list. Bounded, and dropped when values rarely repeat.
+    this.seen = new Map();
+    this.hits = 0;
+    this.misses = 0;
   }
 
   add(rowId, value) {
     if (value === null || value.length < 3) return;
+    const seen = this.seen;
+    if (seen) {
+      const lists = seen.get(value);
+      if (lists) {
+        this.hits++;
+        for (let k = 0; k < lists.length; k++) {
+          const ids = lists[k];
+          if (ids[ids.length - 1] !== rowId) ids.push(rowId); // a gram repeated within one value counts once
+        }
+        return;
+      }
+      if (++this.misses > TRIGRAM_SEEN_LIMIT && this.hits < this.misses) this.seen = null; // values rarely repeat
+    }
+    const lists = this.seen && this.seen.size < TRIGRAM_SEEN_LIMIT ? [] : null;
     const lower = (c) => (c >= 65 && c <= 90 ? c + 32 : c); // same ASCII-only folding as asciiLower()
     let a = lower(value.charCodeAt(0));
     let b = lower(value.charCodeAt(1));
     for (let i = 2; i < value.length; i++) {
       const c = lower(value.charCodeAt(i));
-      const key = a * 4294967296 + b * 65536 + c;
-      const ids = this.grams.get(key);
-      if (!ids) this.grams.set(key, [rowId]);
+      const ascii = (a | b | c) < 128;
+      const grams = ascii ? this.ascii : this.grams;
+      const key = ascii ? (a << 14) | (b << 7) | c : a * 4294967296 + b * 65536 + c;
+      let ids = grams.get(key);
+      if (!ids) grams.set(key, (ids = [rowId]));
       else if (ids[ids.length - 1] !== rowId) ids.push(rowId); // a gram repeated within one value counts once
+      if (lists) lists.push(ids);
       a = b;
       b = c;
     }
+    if (lists) this.seen.set(value, lists);
   }
 
   encode() {
-    const sorted = [...this.grams.keys()].sort((x, y) => x - y);
+    // Every gram in the wide form (the ASCII ones converted), in code-unit order.
+    const entries = [];
+    for (const [key, ids] of this.ascii) entries.push([(key >> 14) * 4294967296 + ((key >> 7) & 127) * 65536 + (key & 127), ids]);
+    for (const entry of this.grams) entries.push(entry);
+    entries.sort((x, y) => x[0] - y[0]);
     const writer = new ByteWriter();
     writer.byte(POSTINGS_ENCODING);
-    writer.varUint(sorted.length);
-    for (const key of sorted) {
+    writer.varUint(entries.length);
+    for (const [key, ids] of entries) {
       writer.u16(Math.floor(key / 4294967296));
       writer.u16(Math.floor(key / 65536) % 65536);
       writer.u16(key % 65536);
-      writePostings(writer, this.grams.get(key));
+      writePostings(writer, ids);
     }
     return writer.toBuffer();
   }

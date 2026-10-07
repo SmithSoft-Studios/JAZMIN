@@ -36,6 +36,15 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   built to break out of the generated code never run.
 
 ### Changed
+- **JS: trigram indexes are built faster.** Grams of ASCII text are keyed as
+  small integers, which V8 looks up fastest, and the builder remembers the
+  grams of up to 4,096 values (a value seen again only adds its row): the
+  index is byte for byte the same.
+  - **Building alone, 200,000 values:** repeated names 70.7 -> 37.0 ms;
+    unique e-mail addresses 122.6 -> 95.8 ms; text with non-ASCII
+    characters 107.4 -> 93.0 ms.
+  - **The benchmark's write with 3 indexes:** 354 -> 281 ms (2.08 -> 1.70
+    times a write without indexes; TASKS P-5 aims for 1.5).
 - **JS: writing decimals is faster.**
   Format 1.0 stores a decimal as a scale and an integer, and the writer
   worked each value out with BigInt arithmetic two or three times (its
