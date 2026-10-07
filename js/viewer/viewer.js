@@ -203,16 +203,22 @@
 
   // ---- the document: the package's entry page, in a sandbox ----------------------------------------
 
-  /** The sandbox's security policy, from the signed package settings: allowed origins are its only network access. */
+  /**
+   * The sandbox's security policy, from the signed package settings: allowed origins are its only network access, for
+   * scripts, styles, images, fonts, audio and video, and requests.
+   */
   function policy(settings) {
     const origins = (settings.allowedOrigins || []).join(' ');
+    const extra = origins ? ` ${origins}` : '';
     return [
       "default-src 'none'",
-      `script-src 'unsafe-inline' blob:${settings.allowWasm ? " 'wasm-unsafe-eval'" : ''}${origins ? ` ${origins}` : ''}`,
-      `style-src 'unsafe-inline' blob:${origins ? ` ${origins}` : ''}`,
-      `img-src blob: data:${origins ? ` ${origins}` : ''}`,
-      'font-src blob: data:', 'media-src blob: data:', 'object-src blob:', 'frame-src blob:', 'worker-src blob:',
-      `connect-src blob: data:${origins ? ` ${origins}` : ''}`,
+      `script-src 'unsafe-inline' blob:${settings.allowWasm ? " 'wasm-unsafe-eval'" : ''}${extra}`,
+      `style-src 'unsafe-inline' blob:${extra}`,
+      `img-src blob: data:${extra}`,
+      `font-src blob: data:${extra}`,
+      `media-src blob: data:${extra}`,
+      'object-src blob:', 'frame-src blob:', 'worker-src blob:',
+      `connect-src blob: data:${extra}`,
     ].join('; ');
   }
 

@@ -6,6 +6,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Fixed
+- **Viewer: fonts, audio and video from a package's allowed origins were
+  blocked.** A template could load scripts, styles, images and data from the
+  origins its package settings allow (`allowedOrigins`), but not fonts or
+  media: Google Fonts, for example, failed even with both of its origins
+  listed. They now load from those origins, and still from no others.
+  Packages without `allowedOrigins` are unchanged.
 - **.NET: `Query<T>` with a condition gave wrong results on files that
   preserve references** (`PreserveReferencesHandling.Objects`). In those
   files a repeated object is stored once; later rows only refer to it and

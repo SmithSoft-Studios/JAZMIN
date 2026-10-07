@@ -60,6 +60,40 @@ write(path.join(temp, 'template.jzm'), Array.from({ length: 120 }, (_, n) => ({ 
   package: { entry: 'index.html', title: 'Template' },
 });
 
+// A package allowed to reach one origin: its fonts and media load from there, and from no other origin. The template
+// asks for a font and an audio file from the allowed origin and from another, and reports what the policy refused.
+// Both origins are made up, so the requests fail: Firefox logs those failures, which are not page errors.
+const ORIGINS_TEST = /fonts\.example\.com|other\.example\.org/;
+write(path.join(temp, 'origins.jzm'), [{ n: 1 }], {
+  key: templateKey,
+  files: [
+    { path: 'index.html', content: '<!doctype html><title>Origins</title><body><p>Allowed origins</p><script src="app.js"></script></body>' },
+    {
+      path: 'app.js',
+      content: `(async () => {
+        const refused = [];
+        document.addEventListener('securitypolicyviolation', (e) => refused.push(e.effectiveDirective + ' ' + new URL(e.blockedURI).host));
+        const css = document.createElement('style');
+        css.textContent = '@font-face { font-family: Allowed; src: url(https://fonts.example.com/a.woff2); }'
+          + '@font-face { font-family: Other; src: url(https://other.example.org/b.woff2); }';
+        document.head.append(css);
+        const settle = (promise) => Promise.race([promise.catch(() => null), new Promise((r) => setTimeout(r, 4000))]);
+        const media = (url) => new Promise((resolve) => {
+          const audio = new Audio();
+          audio.onerror = resolve;
+          audio.src = url;
+          audio.load();
+        });
+        await Promise.all([document.fonts.load('16px Allowed'), document.fonts.load('16px Other'),
+          media('https://fonts.example.com/a.mp3'), media('https://other.example.org/b.mp3')].map(settle));
+        await new Promise((r) => setTimeout(r, 300)); // violation reports arrive as events
+        jazmin.ready({ refused: [...new Set(refused)].sort() }); // each policy copy (frame and page) reports
+      })();`,
+    },
+  ],
+  package: { entry: 'index.html', title: 'Origins', allowedOrigins: ['https://fonts.example.com'] },
+});
+
 // A shared file Bob may read, written now: a phone opens it to get the submission key it sends records back with.
 write(path.join(temp, 'shared.jzm'), [{ id: 0, person: 'P1' }], {
   columns: [{ name: 'id', type: 'int' }, { name: 'person', type: 'string' }],
@@ -163,7 +197,7 @@ async function launchFirefox(exe) {
     if (msg.id && pending.has(msg.id)) {
       pending.get(msg.id)(msg);
       pending.delete(msg.id);
-    } else if (msg.method === 'log.entryAdded' && msg.params.level === 'error') {
+    } else if (msg.method === 'log.entryAdded' && msg.params.level === 'error' && !ORIGINS_TEST.test(msg.params.text)) {
       problems.push(msg.params.text);
     }
   });
@@ -345,6 +379,16 @@ for (const name of chosen) {
     const ready = await waitFor(page, 'JazminViewer.state.lastReady && JazminViewer.state.lastReady.info', 'the template to call jazmin.ready()');
     const expected = { total: 120, top: [119, 118, 117], all: 120, columns: ['n', 'label'] };
     results.push({ browser: name, label: 'template API: count, sorted query, rows, ready', ok: JSON.stringify(ready) === JSON.stringify(expected), problems: JSON.stringify(ready) === JSON.stringify(expected) ? [] : [JSON.stringify(ready)] });
+
+    // Fonts and media load from the package's allowed origins, and only from those.
+    await page.navigate(`${base}/js/viewer/index.html`);
+    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+    await page.evaluate(`fetch('/e2e/origins.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'origins.jzm')).then(() => true)`);
+    await unlock(page, { file: 'origins.jzm', key: 'template' });
+    const origins = await waitFor(page, 'JazminViewer.state.lastReady && JazminViewer.state.lastReady.info', 'the origins template to call jazmin.ready()', 20000);
+    const refused = JSON.stringify(origins.refused);
+    const wanted = JSON.stringify(['font-src other.example.org', 'media-src other.example.org']);
+    results.push({ browser: name, label: 'allowed origins: fonts and media load from them only', ok: refused === wanted, problems: refused === wanted ? [] : [`refused: ${refused}`] });
 
     // The browser writer: a file sent back with the submission key, with two attachments (a File of three blocks and a
     // string), written in the page, read back here and by the library.

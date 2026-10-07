@@ -2868,6 +2868,16 @@ A package's entry page runs in a sandbox. It has no network access (except
 the package's `allowedOrigins`), no access to browser storage, and never sees
 the key. It reads the data through `window.jazmin`:
 
+- **Allowed origins** are `https://` origins listed in the package settings,
+  for example `package: { entry: 'index.html', allowedOrigins:
+  ['https://fonts.googleapis.com', 'https://fonts.gstatic.com'] }`. From
+  those, and only those, a template may load scripts, styles, images, fonts,
+  audio and video, and make requests.
+- **Each one is a trade-off:** whoever runs that site learns when the file is
+  opened, a document that loads from it shows nothing of it offline, and a
+  script from it runs with the data in view. Files a template needs are
+  better stored in the package (section 19); a font is typically 20-100 KB.
+
 ```js
 jazmin.metadata; jazmin.columns; jazmin.access; jazmin.rowCount;
 const page = await jazmin.query({ country: 'ZA' }, { orderBy: '-amount', offset: 0, limit: 100, select: ['id', 'amount'] });
