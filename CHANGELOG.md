@@ -34,13 +34,19 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   them was in JS too. Each now fails with `JazminFormatException` /
   `JazminFormatError`, and `spec/fixtures/damaged/` holds files that showed
   them, so both test suites keep checking.
-  - **A name repeated in a JSON object** of the reader's own: the metadata,
-    the embedded-file directory, package settings, column attributes or the
-    owner directory. .NET threw `ArgumentException` when the object was
-    first used; it now rejects the file. Neither library writes such JSON.
-    JS keeps reading it, with the last value winning, as `JSON.parse` does.
-    Values of `json` columns are not checked: that would make them about
-    1.5 times slower to read.
+  - **A name repeated in one object of the reader's own JSON:** the
+    metadata, column attributes, package settings, an embedded-file
+    directory, a key slot or the owner directory. Neither library writes
+    such JSON, so only damaged or hand-made files are affected.
+    - **Before:** .NET threw `ArgumentException` when the object was first
+      used; JS kept the last value, as `JSON.parse` does.
+    - **Now:** both libraries and the browser reader reject the file, as
+      the spec now says (section 2). `{"id":1,"id":2}` is rejected; the same
+      name in different objects or at different levels is not.
+    - **Cost:** checked once per file. A 177 KB owner directory (1,000
+      grants) takes about 0.5 ms more to read in JS.
+    - **Not checked:** values of `json` columns, your own data. Checking
+      them would make them about 1.5 times slower to read in .NET.
   - **A dictionary column whose size didn't fit its stream:**
     `OverflowException` or `IndexOutOfRangeException` in .NET, `RangeError`
     in JS.

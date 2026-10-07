@@ -107,13 +107,50 @@ export class ByteWriter {
   }
 }
 
-/** Parses JSON text read from a file; malformed text is a format error. */
-export function parseJsonText(text, what) {
+/**
+ * Parses JSON text read from a file; malformed text is a format error. uniqueNames: JSON the reader uses itself
+ * (metadata, attributes, settings, directories, key slots), where a name repeated in one object is a format error too
+ * (spec 2), as .NET reads it: JSON.parse alone would keep the last value. Values of json columns are not checked.
+ */
+export function parseJsonText(text, what, uniqueNames = false) {
+  let value;
   try {
-    return JSON.parse(text);
+    value = JSON.parse(text);
   } catch {
     throw new JazminFormatError(`${what} is not valid JSON`);
   }
+  if (uniqueNames && repeatsName(text)) throw new JazminFormatError(`${what} is not valid JSON: a name appears twice in one object`);
+  return value;
+}
+
+/** Whether valid JSON text repeats a name in one object, comparing names with their escapes decoded. */
+function repeatsName(text) {
+  const open = []; // per open object: the names seen in it; null for an open array
+  let name = false; // the next string is a name
+  let slash = text.indexOf('\\'); // the next backslash: there are none in most strings
+  for (let i = 0; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 34) { // '"': a string, which ends at the first quote unless a backslash comes before it
+      let end = text.indexOf('"', i + 1);
+      const escaped = slash !== -1 && slash < end;
+      if (escaped) for (end = i + 1; text.charCodeAt(end) !== 34; end++) if (text.charCodeAt(end) === 92) end++;
+      if (name) {
+        const names = open[open.length - 1];
+        const key = escaped ? JSON.parse(text.slice(i, end + 1)) : text.slice(i + 1, end);
+        if (names.has(key)) return true;
+        names.add(key);
+        name = false;
+      }
+      i = end;
+      if (escaped) slash = text.indexOf('\\', end);
+    } else if (c === 123) { // '{'
+      open.push(new Set());
+      name = true;
+    } else if (c === 91) open.push(null); // '['
+    else if (c === 125 || c === 93) open.pop(); // '}' ']'
+    else if (c === 44) name = open[open.length - 1] !== null; // ','
+  }
+  return false;
 }
 
 const MAX_DATE_MS = 8.64e15; // the range of JavaScript dates

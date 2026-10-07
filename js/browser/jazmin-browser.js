@@ -352,12 +352,46 @@
     return v;
   };
 
-  function parseJson(textValue, what) {
+  /** As the library's parseJsonText: uniqueNames for the JSON the reader uses itself (spec 2). */
+  function parseJson(textValue, what, uniqueNames = false) {
+    let value;
     try {
-      return JSON.parse(textValue);
+      value = JSON.parse(textValue);
     } catch {
       throw new JazminFormatError(`${what} is not valid JSON`);
     }
+    if (uniqueNames && repeatsName(textValue)) throw new JazminFormatError(`${what} is not valid JSON: a name appears twice in one object`);
+    return value;
+  }
+
+  /** Whether valid JSON text repeats a name in one object, comparing names with their escapes decoded. */
+  function repeatsName(text) {
+    const open = []; // per open object: the names seen in it; null for an open array
+    let name = false; // the next string is a name
+    let slash = text.indexOf('\\'); // the next backslash: there are none in most strings
+    for (let i = 0; i < text.length; i++) {
+      const c = text.charCodeAt(i);
+      if (c === 34) { // '"': a string, which ends at the first quote unless a backslash comes before it
+        let end = text.indexOf('"', i + 1);
+        const escaped = slash !== -1 && slash < end;
+        if (escaped) for (end = i + 1; text.charCodeAt(end) !== 34; end++) if (text.charCodeAt(end) === 92) end++;
+        if (name) {
+          const names = open[open.length - 1];
+          const key = escaped ? JSON.parse(text.slice(i, end + 1)) : text.slice(i + 1, end);
+          if (names.has(key)) return true;
+          names.add(key);
+          name = false;
+        }
+        i = end;
+        if (escaped) slash = text.indexOf('\\', end);
+      } else if (c === 123) { // '{'
+        open.push(new Set());
+        name = true;
+      } else if (c === 91) open.push(null); // '['
+      else if (c === 125 || c === 93) open.pop(); // '}' ']'
+      else if (c === 44) name = open[open.length - 1] !== null; // ','
+    }
+    return false;
   }
 
   function dateFromMs(ms) {
@@ -421,7 +455,7 @@
       else if (f === 3) c.type = TYPE_NAMES[num(v)] || '';
       else if (f === 4) c.nullable = num(v) === 0;
       else if (f === 5) c.description = text(v);
-      else if (f === 6) c.attributes = parseJson(text(v), 'Column attributes');
+      else if (f === 6) c.attributes = parseJson(text(v), 'Column attributes', true);
       else if (f === 7 && num(v) !== 0) throw new JazminFormatError(`Column '${c.name}' uses an unknown time unit`);
     });
     if (!c.type) throw new JazminFormatError(`Column '${c.name}' has an unknown type`);
@@ -1653,7 +1687,7 @@
       let bundle;
       try {
         const kek = await hkdf(share ? concat(secret, share) : secret, salt, 'JAZMIN/1/slot');
-        bundle = parseJson(fromUtf8.decode(await decrypt(kek, slot.sealed, concat(fileId, id))), 'A key slot');
+        bundle = parseJson(fromUtf8.decode(await decrypt(kek, slot.sealed, concat(fileId, id))), 'A key slot', true);
       } catch (error) {
         if (slot.online && error instanceof JazminKeyError) throw new JazminKeyError('The unlock token is not valid for this key and file');
         throw error;
@@ -1709,7 +1743,7 @@
     const file = {
       header, fileId, salt, size, keys, access, section, read,
       cost: null, // while explain({ analyze }) runs a query: what it reads
-      metadata: header.metadata ? parseJson(header.metadata, 'Metadata') : {},
+      metadata: header.metadata ? parseJson(header.metadata, 'Metadata', true) : {},
       /** Key of a catalog section: keyring group (key files) or HKDF(secret) (access-controlled files). */
       async key(sectionId, secret, group = 'data') {
         if (access) return hkdf(secret, salt, `JAZMIN/1/${sectionId}`);
@@ -2197,7 +2231,7 @@
             sectionId = `files/dir/${dir.group}${suffix}`;
             key = await hkdf(secret, file.salt, `JAZMIN/1/${sectionId}`);
           }
-          const directory = checkFileDirectory(parseJson(fromUtf8.decode(await file.section(dir.section, sectionId, key, { requireDigest })), 'An embedded-file directory'));
+          const directory = checkFileDirectory(parseJson(fromUtf8.decode(await file.section(dir.section, sectionId, key, { requireDigest })), 'An embedded-file directory', true));
           for (const c of directory.contents) contents.set(c.id, c);
           for (const f of directory.files) if (!entries.has(f.path)) entries.set(f.path, { path: f.path, type: f.type, content: f.content });
         }
@@ -2240,7 +2274,7 @@
        * submission keys existed, until the owner's next rewrite.
        */
       submissionKey: access?.submission ?? null,
-      package: header.files?.package ? parseJson(header.files.package, 'Package settings') : undefined,
+      package: header.files?.package ? parseJson(header.files.package, 'Package settings', true) : undefined,
       /** Another table of the same file (the file is not read again). */
       openTable: (tableName) => openTable(file, tableName),
       /**

@@ -111,6 +111,17 @@ All multi-byte integers are little-endian. "varint" means unsigned LEB128.
 "big zigzag varint" is the same mapping applied to an integer of any size
 (`n >= 0 ? 2n : -2n - 1`), written as a varint of as many bytes as needed.
 
+**JSON texts.** Besides the values of `json` columns, a file holds JSON
+texts that readers use themselves: metadata (6.6), column attributes (6.2),
+package settings and file directories (6.8), key-slot bundles (7.6.4) and
+the owner directory (7.6.5). A name MUST NOT appear twice in one object of
+these texts, at any depth: [RFC8259] leaves the meaning of a repeated name
+open, and readers that keep the first, keep the last or fail would read one
+file differently. Readers MUST reject a file whose JSON texts repeat a name.
+Names are compared after their escapes are decoded, and case matters
+(`"Name"` and `"name"` differ). The values of `json` columns are application
+data and are not subject to this rule.
+
 ## 3. Design Goals
 
 In priority order:
@@ -1326,6 +1337,9 @@ indexes, embedded files) written by both reference implementations.
   sections referenced from `TableIndexes.chunk_map` and
   `chunk_map_appended` in the owner catalog. Readers that don't know them
   ignore them, as Protocol Buffers readers do with unknown fields.
+- **Since format 1.0, a rule writers already kept:** no name twice in one
+  object of the JSON texts readers use themselves (2). Readers reject such a
+  file; before, one library kept the last value and the other failed.
 
 ## Appendix C. Design Notes (informative)
 

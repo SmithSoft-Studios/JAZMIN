@@ -374,7 +374,7 @@ function publicColumn(c) {
     type: c.type,
     nullable: !c.required,
     ...(c.description ? { description: c.description } : {}),
-    ...(c.attributes ? { attributes: parseJsonText(c.attributes, `Column '${c.name}' attributes`) } : {}),
+    ...(c.attributes ? { attributes: parseJsonText(c.attributes, `Column '${c.name}' attributes`, true) } : {}),
   };
 }
 
@@ -535,7 +535,7 @@ export class JazminReader {
       if (!SUPPORTED_READER_FEATURES.has(feature)) throw new JazminFormatError(`This file needs the '${feature}' feature, which this JAZMIN reader does not support`);
     }
     this.#header = header;
-    this.#metadata = header.metadata ? parseJsonText(header.metadata, 'Metadata') : {};
+    this.#metadata = header.metadata ? parseJsonText(header.metadata, 'Metadata', true) : {};
     if (this.#keys) this.#keys.setKeyring(header.keyring ?? {});
     this.#openTable(this.#readOptions.table);
     if (this.#access?.expires) {
@@ -1019,7 +1019,7 @@ export class JazminReader {
       const ref = this.#header.access.ownerDirectory;
       const raw = this.#read(ref, 'owner', ownerDirectoryKey(this.#access.secrets.owner, this.#salt));
       this.#access.directoryText = raw.toString('utf8');
-      this.#access.directory = parseJsonText(this.#access.directoryText, 'The owner directory');
+      this.#access.directory = parseJsonText(this.#access.directoryText, 'The owner directory', true);
     }
     return this.#access.directory;
   }
@@ -1255,7 +1255,7 @@ export class JazminReader {
           sectionId = `files/dir/${dir.group}${suffix}`;
           key = hkdf(secret, this.#salt, `JAZMIN/1/${sectionId}`);
         }
-        const directory = checkFileDirectory(parseJsonText(this.#read(dir.section, sectionId, key).toString('utf8'), 'An embedded-file directory'));
+        const directory = checkFileDirectory(parseJsonText(this.#read(dir.section, sectionId, key).toString('utf8'), 'An embedded-file directory', true));
         for (const c of directory.contents) index.contents.set(c.id, c);
         for (const f of directory.files) {
           const known = index.entries.get(f.path);
@@ -1288,7 +1288,7 @@ export class JazminReader {
   /** Package settings for viewers ({ entry, title, allowedOrigins, allowWasm }), or undefined. */
   get package() {
     const settings = this.#header.files?.package;
-    return settings ? parseJsonText(settings, 'Package settings') : undefined;
+    return settings ? parseJsonText(settings, 'Package settings', true) : undefined;
   }
 
   #fileContent(path) {

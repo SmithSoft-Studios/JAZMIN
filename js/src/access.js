@@ -1,5 +1,6 @@
 // Access-controlled files (spec 7.6): partitions and column groups, their secrets, key slots and the owner signature.
 import crypto from 'node:crypto';
+import { parseJsonText } from './binary.js';
 import { DEFAULT_COLUMN_GROUP, PUBLIC_KEY_SIZE, SIGNATURE_SIZE } from './constants.js';
 import { JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminValidationError } from './errors.js';
 import { grantExpiry } from './expiry.js';
@@ -243,7 +244,7 @@ export function unsealSlot(keySlots, secret, salt, fileId, share) {
       { fileId: fileId.toString('hex'), keyId: id.toString('hex') });
   }
   try {
-    return JSON.parse(decrypt(slotKek(secret, slot.online ? share : undefined, salt), slot.sealed, slotAad(fileId, id)).toString('utf8'));
+    return parseJsonText(decrypt(slotKek(secret, slot.online ? share : undefined, salt), slot.sealed, slotAad(fileId, id)).toString('utf8'), 'A key slot', true);
   } catch (error) {
     if (slot.online) throw new JazminKeyError('The unlock token is not valid for this key and file');
     throw error;

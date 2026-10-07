@@ -252,7 +252,8 @@ internal static class AccessCrypto
                 try
                 {
                     var plain = Crypto.Decrypt(SlotKek(secret, online ? share : null, salt), keySlots.Raw.AsSpan((int)start, (int)length), SlotAad(fileId, id));
-                    return JsonNode.Parse(plain)!.AsObject();
+                    return Values.ParseJson(Encoding.UTF8.GetString(plain), "A key slot", uniqueNames: true) as JsonObject
+                        ?? throw new JazminFormatException("A key slot is not a JSON object");
                 }
                 catch (JazminKeyException) when (online)
                 {
