@@ -16,6 +16,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Jazmin\Jazmin.csproj" />
+    <ProjectReference Include="..\..\src\Jazmin.AspNetCore\Jazmin.AspNetCore.csproj" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" /><!-- AspNetCoreTests: a real server, no extra packages -->
   </ItemGroup>
 
 </Project>

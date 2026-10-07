@@ -187,7 +187,9 @@ Steps for a format change:
 
 ## Releasing
 
-Both packages are published together by `.github/workflows/release.yml`.
+The packages are published together by `.github/workflows/release.yml`: the
+npm package, and the NuGet packages `Jazmin` and (from 1.2.0) `Jazmin.AspNetCore`,
+all with the same version.
 It runs when a version tag is pushed. A published version number can never
 be reused on npm or NuGet, so check before approving.
 
@@ -208,7 +210,8 @@ No long-lived npm or NuGet key is stored anywhere.
   repository secret: `gh secret set NUGET_USER`.
 
   *Or, with a NuGet API key:* create a key on nuget.org that can push new
-  packages, limited to the glob `Jazmin`, and save it with
+  packages, limited to the glob `Jazmin*` (it must cover `Jazmin.AspNetCore`
+  too; a key limited to `Jazmin` cannot create it), and save it with
   `gh secret set NUGET_API_KEY`. The workflow then uses the key instead of
   trusted publishing. Trusted publishing is safer, because no key is stored.
 - **npm organisation (done):** the package is published as `@smithsoft-studios/jazmin` under the

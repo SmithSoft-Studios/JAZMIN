@@ -196,6 +196,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   write loop.
 
 ### Added
+- **.NET: a new package, `Jazmin.AspNetCore`: `app.MapJazminFiles(pattern,
+  resolver)` serves a file's embedded files from an ASP.NET Core endpoint.**
+  The resolver picks the file and key per request (from route values and the
+  user): only what that key can see is served (404 otherwise; 403 for a key
+  that cannot open the file). Byte ranges, HEAD and 304s (ETags are the
+  SHA-256) come from ASP.NET over a stream that decodes a block at a time;
+  pages and SVG get the viewer's document policy and a sandbox. A separate
+  package, so apps without ASP.NET keep a `Jazmin` without it.
 - **JS: serving a file's embedded files, and its document as a PDF (TASKS
   F-3).**
   - **`serveFiles(reader, { prefix })`**, a Node request handler (http,

@@ -1,0 +1,37 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <RootNamespace>Jazmin.AspNetCore</RootNamespace>
+    <PackageId>Jazmin.AspNetCore</PackageId>
+    <Version>1.1.0</Version>
+    <Description>ASP.NET Core endpoints for JAZMIN (.jzm) files: MapJazminFiles serves a file's embedded files (invoices, photos, videos) per key, with byte ranges, ETags and a sandbox for stored pages.</Description>
+    <Authors>SmithSoft Pty Ltd</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageProjectUrl>https://github.com/SmithSoft-Studios/JAZMIN</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/SmithSoft-Studios/JAZMIN</RepositoryUrl>
+    <PackageTags>jazmin;aspnetcore;file-format;embedded-files;range-requests</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageIcon>icon.png</PackageIcon>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <ProjectReference Include="..\Jazmin\Jazmin.csproj" />
+    <InternalsVisibleTo Include="Jazmin.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="icon.png" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

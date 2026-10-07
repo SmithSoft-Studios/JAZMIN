@@ -1,8 +1,9 @@
 name: Release
 
-# Publishes both packages when a version tag is pushed (git tag v1.2.3 && git push origin v1.2.3); see
-# docs/CONTRIBUTING.md, "Releasing". Nothing is published unless the tag matches the versions in js/package.json
-# and Jazmin.csproj, the tests pass and the packages work in a clean project. The publish jobs use the "release"
+# Publishes the packages (npm: @smithsoft-studios/jazmin; NuGet: Jazmin and Jazmin.AspNetCore) when a version tag is
+# pushed (git tag v1.2.3 && git push origin v1.2.3); see docs/CONTRIBUTING.md, "Releasing". Nothing is published
+# unless the tag matches the versions in js/package.json, Jazmin.csproj and Jazmin.AspNetCore.csproj, the tests pass
+# and the packages work in a clean project. The publish jobs use the "release"
 # environment, which accepts only v* tags and waits for a maintainer's approval.
 # Both registries use trusted publishing: they trust this workflow and hand it a key that lasts about an hour, so no
 # long-lived key is stored. Secrets: NUGET_USER (the nuget.org user name), and NPM_TOKEN only for npm's first
@@ -36,8 +37,9 @@ jobs:
           tag="${GITHUB_REF_NAME#v}"
           npm_version=$(node -p "require('./js/package.json').version")
           dotnet_version=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' dotnet/src/Jazmin/Jazmin.csproj)
-          if [ "$tag" != "$npm_version" ] || [ "$tag" != "$dotnet_version" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME, js/package.json $npm_version and Jazmin.csproj $dotnet_version must match"
+          aspnetcore_version=$(sed -n 's:.*<Version>\(.*\)</Version>.*:\1:p' dotnet/src/Jazmin.AspNetCore/Jazmin.AspNetCore.csproj)
+          if [ "$tag" != "$npm_version" ] || [ "$tag" != "$dotnet_version" ] || [ "$tag" != "$aspnetcore_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME, js/package.json $npm_version, Jazmin.csproj $dotnet_version and Jazmin.AspNetCore.csproj $aspnetcore_version must match"
             exit 1
           fi
 

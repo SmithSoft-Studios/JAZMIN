@@ -2122,7 +2122,7 @@ JazminFile.Append("statements.jzm", new JazminAppend { Key = owner, AddFiles = [
 - **Already-compressed files** (JPEG, PNG, MP4, PDF) are stored as they are.
   Compressing them would not help.
 
-### 19.4 On a server: serving files and rendering PDFs (JavaScript)
+### 19.4 On a server: serving files and rendering PDFs
 
 **Serving a file's embedded files** to browsers or apps, for example the
 invoices, photos or videos stored with the records:
@@ -2182,6 +2182,33 @@ await browser.close();
   comes to `onReady(info)`.
 - **Measured** with the test template (120 rows, 4 queries, an image, a file):
   about 0.3-0.5 s per PDF in Chrome, browser already running.
+
+**ASP.NET Core** (the `Jazmin.AspNetCore` package) serves embedded files the
+same way, from an endpoint:
+
+```csharp
+using Jazmin;
+using Jazmin.AspNetCore;
+
+// /docs/42/invoices/2026-03.pdf: that embedded file of statements/42.jzm, read with this person's access key.
+app.MapJazminFiles("/docs/{id}", async context =>
+{
+    var id = (string)context.Request.RouteValues["id"]!;
+    var key = await keys.AccessKeyFor(context.User, id);    // your lookup; null: 404
+    return key is null ? null : new JazminFileSource($"statements/{id}.jzm", new JazminReadOptions { AccessKey = key });
+}).RequireAuthorization();
+```
+
+- **Each request opens the file with the key** the resolver returns, so it
+  is served only what that key can see (404 otherwise). A key that cannot
+  open the file (wrong, expired, revoked) answers 403.
+- **Byte ranges, HEAD and 304s** come from ASP.NET's own file handling,
+  over a stream that decodes one 256 KiB block at a time.
+- **Pages and SVG** get the same policy and sandbox as in JavaScript;
+  `new JazminFilesOptions { Sandbox = false, Origin = "https://files.example.com" }`
+  turns the sandbox off for files served from an origin of their own.
+- **PDFs from .NET:** not built in. Render them with `renderPdf` from
+  JavaScript (above).
 
 ## 20. Speed and memory: practical recipes
 

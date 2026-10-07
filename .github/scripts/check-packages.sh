@@ -30,10 +30,11 @@ printf '{ "compilerOptions": { "target": "ES2022", "module": "NodeNext", "module
 npx tsc -p .
 echo "   $(basename "$tgz"): installs, the quickstart runs, @smithsoft-studios/jazmin/browser loads, the jazmin command runs, the types check"
 
-echo "== NuGet package"
+echo "== NuGet packages"
 cd "$root/dotnet"
 dotnet pack src/Jazmin/Jazmin.csproj --configuration Release --output "$out" -p:ContinuousIntegrationBuild=true > /dev/null
-nupkg=$(ls "$out"/Jazmin.*.nupkg)
+dotnet pack src/Jazmin.AspNetCore/Jazmin.AspNetCore.csproj --configuration Release --output "$out" -p:ContinuousIntegrationBuild=true > /dev/null
+nupkg=$(ls "$out"/Jazmin.[0-9]*.nupkg)
 version=$(basename "$nupkg" .nupkg)
 version=${version#Jazmin.}
 mkdir "$work/CleanApp" && cd "$work/CleanApp"
@@ -42,6 +43,40 @@ dotnet add package Jazmin --version "$version" --source "$out" > /dev/null
 cp "$root/dotnet/samples/Jazmin.Samples/Program.cs" Program.cs
 dotnet run --configuration Release > /dev/null
 echo "   $(basename "$nupkg"): installs and the sample runs"
+
+# Jazmin.AspNetCore: a clean web app maps a file's embedded files and is served a byte range of one.
+aspnetcore=$(ls "$out"/Jazmin.AspNetCore.[0-9]*.nupkg)
+mkdir "$work/CleanWeb" && cd "$work/CleanWeb"
+dotnet new web --framework net10.0 > /dev/null
+dotnet add package Jazmin.AspNetCore --version "$version" --source "$out" > /dev/null
+cat > Program.cs <<'CS'
+using Jazmin;
+using Jazmin.AspNetCore;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+
+var path = Path.Combine(Path.GetTempPath(), $"jazmin-check-{Guid.NewGuid():N}.jzm");
+var key = JazminKey.Generate();
+var bytes = Enumerable.Range(0, 300_000).Select(i => (byte)i).ToArray();
+using (var writer = JazminWriter.Create(path, [new JazminColumn("n", JazminType.Int)], new JazminWriteOptions { Key = key, Files = [new JazminFileInput("a.bin", bytes)] }))
+    writer.WriteValues([1L]);
+var builder = WebApplication.CreateSlimBuilder(args);
+builder.WebHost.UseUrls("http://127.0.0.1:0");
+var app = builder.Build();
+app.MapJazminFiles("/files/{id}", _ => ValueTask.FromResult<JazminFileSource?>(new JazminFileSource(path, new JazminReadOptions { Key = key })));
+await app.StartAsync();
+var address = app.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.First();
+using var http = new HttpClient { BaseAddress = new Uri(address) };
+var request = new HttpRequestMessage(HttpMethod.Get, "/files/x/a.bin");
+request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(1000, 1009);
+var response = await http.SendAsync(request);
+var part = await response.Content.ReadAsByteArrayAsync();
+await app.StopAsync();
+File.Delete(path);
+if ((int)response.StatusCode != 206 || !part.SequenceEqual(bytes[1000..1010])) throw new Exception($"Expected bytes 1000-1009 (206), got {(int)response.StatusCode} with {part.Length} bytes");
+CS
+dotnet run --configuration Release > /dev/null
+echo "   $(basename "$aspnetcore"): installs, and a web app serves a byte range of an embedded file"
 
 rm -rf "$work"
 echo "Packages in $out"
