@@ -75,6 +75,15 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   column name, one column after another; they now read a query's values by
   position. 200,000 rows x 300 columns: 24.4 s -> 7.4 s, with the same
   bytes and memory.
+- **.NET: typed rows read only the columns their type maps.** `Query<T>`,
+  `Rows<T>` and `AsQueryable<T>` decoded every column of the file, and built
+  each object from a row of boxed values; they now decode the type's columns
+  only and build objects straight from the decoded columns, as
+  `DeserializeEnumerable` does. Same objects.
+  - **200,000 rows x 300 columns, a type mapping 9:** every row 3.2-3.7 s
+    -> 0.31 s; `Query<T>(condition).Count()` 3.3-3.9 s -> 0.38 s.
+  - **500,000 rows, a type mapping every column:** 0.31-0.41 s -> 0.21 s,
+    at the same memory.
 - **.NET: reading a wide row's values by name is up to 5 times faster.**
   `row["name"]` (and `TryGetValue`, `ContainsKey`, `Get<T>`, `GetDecimal`)
   checked the row's column names one at a time. The rows of a query now
@@ -165,6 +174,24 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   write loop.
 
 ### Added
+- **.NET: LINQ queries that run in the reader: `reader.AsQueryable<T>()`
+  (TASKS J-2).** Write the query with the usual LINQ operators; the reader
+  does as much of it as it can, and the rest runs in memory. Results are
+  always those LINQ gives over a list.
+  - **In the reader:** `Where` (and the condition of `Count`, `Any`,
+    `First`, `Single`, `Last`) becomes a filter that uses indexes and chunk
+    statistics, as in `Query<T>`; `Skip`/`Take` its offset and limit;
+    `Count`/`LongCount`/`Any` are answered without building objects;
+    `OrderBy`/`ThenBy` along the file's `sortedBy` columns cost nothing.
+    A `Select`, or `Sum`/`Average`/`Min`/`Max` with a selector, reads only
+    the columns it uses.
+  - **200,000 rows x 300 columns, a type mapping 9 of them** (`Query<T>`
+    1.1.0 with LINQ to Objects -> `AsQueryable`): a page at row 150,000
+    2.5-2.7 s -> 0.05 s (63 -> 35 MB); `OrderBy(id).Take(10)` on a file
+    sorted by id 3.5 s -> 0.05 s (100 -> 35 MB); `Count(condition)`
+    3.3-3.9 s -> 0.25 s; a condition and two columns 3.6 s -> 0.35 s.
+  - **Files that preserve references** (`PreserveReferencesHandling.Objects`)
+    run the whole query in memory: their rows refer to earlier rows.
 - **A new owner key for a shared file: `rotateOwnerKey()` /
   `JazminFile.RotateOwnerKey`**, for when the owner key may have leaked.
   - **Every access key is replaced:** each one carries a stamp of the owner

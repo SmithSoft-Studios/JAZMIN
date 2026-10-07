@@ -492,6 +492,12 @@ foreach (var c in reader.Query<Customer>(c => c.Country == "ZA" && c.Balance > 1
 // Ordinary LINQ operators work on the streamed result.
 var top = reader.Query<Customer>(c => c.Tier == Tier.Gold).OrderByDescending(c => c.Balance).Take(10).ToList();
 
+// Or the whole query in the reader (section 8.3): the condition, Skip/Take and the count read only what they need.
+var customers = reader.AsQueryable<Customer>();
+var page = customers.Where(c => c.Country == "ZA").Skip(20).Take(10).ToList();
+int gold = customers.Count(c => c.Tier == Tier.Gold);
+var names = customers.Where(c => c.Balance > 100m).Select(c => new { c.Id, c.Name }).ToList(); // reads 3 columns
+
 // Untyped rows with the filter builder ...
 foreach (JazminRow row in reader.Find(JazminFilter.Eq("Country", "ZA") & JazminFilter.IContains("Name", "ndlovu")))
     Console.WriteLine($"{row.RowId}: {row["Name"]}");
@@ -660,6 +666,55 @@ row. Translation therefore affects only speed, never results.
 | `list.Contains(x.Country)` | ✔ |
 | `x.IsActive` (bool property) | ✔ |
 | `decimal` comparisons, method calls, arithmetic (`x.Id % 7 == 0`) | ✘ (scanned, still correct) |
+
+#### Whole queries: `AsQueryable<T>()`
+
+`reader.AsQueryable<T>()` gives an `IQueryable<T>`. Write the query with the
+usual LINQ operators; the reader runs as much of it as it can, so less of
+the file is read and fewer objects are built. Results are always the ones
+LINQ gives over a list of the same objects.
+
+```csharp
+using var reader = JazminReader.Open("orders.jzm");   // sortedBy: ["Id"]
+var orders = reader.AsQueryable<Order>();
+
+var page = orders.Where(o => o.Region == "ZA").Skip(40).Take(20).ToList(); // filter, offset and limit in the reader
+int za = orders.Count(o => o.Region == "ZA");                               // no objects built
+bool any = orders.Any(o => o.Customer == "C-1042");                         // an index lookup, with an index on Customer
+var first = orders.OrderBy(o => o.Id).Take(10).ToList();                    // stored in that order: reads 10 rows
+var lines = orders.Where(o => o.Paid).Select(o => new { o.Id, o.Amount });  // reads 3 columns
+decimal total = orders.Where(o => o.Region == "NA").Sum(o => o.Amount);     // reads 2 columns
+```
+
+| Operator | What the reader does |
+|---|---|
+| `Where`, and the condition of `Count`, `Any`, `First`, `Single`, `Last` | Becomes a filter, as in `Query<T>`: indexes and chunk statistics, and parts it can't translate checked on each object |
+| `Skip`, `Take` | The filter's offset and limit: whole chunks before the offset are skipped unread (when nothing is checked on each object) |
+| `Count`, `LongCount`, `Any` | Answered without building objects, from indexes or chunk statistics where the filter allows |
+| `OrderBy` / `ThenBy` along the file's `sortedBy` columns | Nothing to do: rows are stored in that order. Needs ascending keys of non-nullable columns; numbers, dates and bools as they are, strings with `StringComparer.Ordinal` |
+| `Select`; `Sum`, `Average`, `Min`, `Max` with a selector | Only the columns they use are read |
+| Everything from the first operator it can't do (`OrderByDescending`, `GroupBy`, `Join`, a `Where` after `Take`...) | Runs in memory on the rows read, as LINQ to Objects |
+
+- **Typed rows read only the columns their type maps,** here and in
+  `Query<T>` / `Rows<T>`: a class of 9 properties over a 300-column file
+  decodes 9 columns.
+- **Files that preserve references** (`PreserveReferencesHandling.Objects`)
+  run the whole query in memory, because their rows refer to earlier rows.
+- **Like the reader,** a query is not thread-safe, and is read while the
+  reader is open. For async code, use `QueryAsync<T>`.
+
+Measured on .NET 10 (200,000 rows x 300 columns, a type mapping 9 of them;
+`Query<T>` in 1.1.0 followed by LINQ to Objects, against `AsQueryable`):
+
+| Query | 1.1.0 | `AsQueryable` |
+|---|---:|---:|
+| Every row as objects | 3.2-3.7 s | 0.30 s |
+| A condition and two columns (`Where` + `Select`) | 3.6 s | 0.35-0.37 s |
+| `Count(condition)` | 3.3-3.9 s, 63 MB | 0.25 s, 56 MB |
+| `Skip(150_000).Take(10)` | 2.5-2.7 s, 63 MB | 0.05 s, 35 MB |
+| `OrderBy(o => o.Id).Take(10)` (file sorted by id) | 3.5 s, 100 MB | 0.05 s, 35 MB |
+| `Sum(o => o.Qty)` | 3.2-3.4 s | 0.25 s |
+| `First(o => o.Id == 123_456)` | 0.08-0.09 s | 0.07 s |
 
 ---
 

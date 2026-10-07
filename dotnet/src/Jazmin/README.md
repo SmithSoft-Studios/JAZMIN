@@ -20,6 +20,9 @@ List<Customer> back = JazminConvert.DeserializeObject<List<Customer>>(bytes, new
 // Query a file: only the index pages and the chunks holding matches are read
 using var reader = JazminReader.Open("customers.jzm", new() { Key = key });
 var za = reader.Query<Customer>(c => c.Country == "ZA" && c.Name.Contains("Smith")).ToList();
+
+// Or a whole LINQ query run by the reader: the condition, Skip/Take and Count read only what they need
+var page = reader.AsQueryable<Customer>().Where(c => c.Country == "ZA").Skip(20).Take(10).ToList();
 ```
 
 ## What it does

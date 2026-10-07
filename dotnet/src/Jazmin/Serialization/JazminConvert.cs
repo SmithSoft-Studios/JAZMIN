@@ -428,7 +428,7 @@ public sealed class JazminSerializer(JazminSerializerSettings? settings = null)
                 && (g == typeof(Dictionary<,>) || g == typeof(IDictionary<,>) || g == typeof(IReadOnlyDictionary<,>))))
             return null;
         var map = TypeMap.For(type, _settings);
-        return reader.DirectColumnRows(map.ColumnReader, _settings);
+        return reader.DirectColumnRows(columns => map.ColumnReader(columns), _settings);
     }
 
     private object Materialize(JazminRow row, Type type, ReferenceResolver references)

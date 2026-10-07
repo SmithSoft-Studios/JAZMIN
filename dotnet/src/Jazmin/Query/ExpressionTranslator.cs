@@ -19,7 +19,11 @@ internal sealed record Translation(JazminFilter? Filter, bool Exact);
 /// </summary>
 internal static class ExpressionTranslator
 {
-    public static Translation Translate<T>(Expression<Func<T, bool>> predicate, Func<MemberInfo, JazminColumn?> columnFor)
+    public static Translation Translate<T>(Expression<Func<T, bool>> predicate, Func<MemberInfo, JazminColumn?> columnFor) =>
+        Translate((LambdaExpression)predicate, columnFor);
+
+    /// <summary>A predicate of one parameter returning bool, whose type is known only at run time (IQueryable).</summary>
+    public static Translation Translate(LambdaExpression predicate, Func<MemberInfo, JazminColumn?> columnFor)
     {
         var visitor = new Visitor(predicate.Parameters[0], columnFor);
         var filter = visitor.Visit(predicate.Body);

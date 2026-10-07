@@ -31,6 +31,11 @@ public sealed class JazminRow : IReadOnlyDictionary<string, object?>
 
     internal IReadOnlyList<JazminColumn> Columns => _shape.Columns;
 
+    /// <summary>A columnar scan's row: the chunk's decoded columns (null otherwise) and the row's position in them.</summary>
+    internal Format.DecodedColumn?[]? ChunkColumns => _chunkColumns;
+
+    internal int ChunkIndex => _index;
+
     /// <summary>Value by position in the file's full column list (ignores Select).</summary>
     internal object? ValueAt(int columnIndex) => _values is not null ? _values[columnIndex] : _chunkColumns![columnIndex]?.Get(_index);
 

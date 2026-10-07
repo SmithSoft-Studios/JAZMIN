@@ -2059,10 +2059,55 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     public IEnumerable<T> Query<T>(Expression<Func<T, bool>>? predicate, JazminSerializerSettings? settings = null)
     {
         var map = TypeMap.For(typeof(T), settings);
-        var translation = predicate is null ? null : ExpressionTranslator.Translate(predicate, member => FileColumn(map.ColumnFor(member)));
+        var translation = predicate is null ? null : Translate(predicate, map);
         // An exact translation already selects precisely the predicate's rows: skip compiling it.
         var check = predicate is null || translation!.Exact ? null : predicate.Compile();
-        var rows = Find(translation?.Filter);
+        return TypedRows(map, settings, translation?.Filter, check);
+    }
+
+    /// <summary>
+    /// The rows as a LINQ query: <c>reader.AsQueryable&lt;T&gt;().Where(...).Skip(...).Take(...)</c> runs as one query on
+    /// the file. Conditions become a filter that uses indexes and chunk statistics (as in <see cref="Query{T}"/>), Skip
+    /// and Take its offset and limit, and Count, LongCount and Any are answered without building objects when the
+    /// conditions translate exactly. OrderBy/ThenBy along the file's <see cref="SortedBy"/> columns cost nothing. When
+    /// the objects never leave the query (a Select, or Count, Sum, Average, Min or Max with a selector), only the columns
+    /// it uses are read. Operators after the first one the reader cannot do run in memory, with LINQ to Objects' results.
+    /// Like the reader, a query is not thread-safe, and is read while the reader is open.
+    /// </summary>
+    public IQueryable<T> AsQueryable<T>(JazminSerializerSettings? settings = null) =>
+        new JazminQueryProvider<T>(this, TypeMap.For(typeof(T), settings), settings).Root;
+
+    /// <summary>A LINQ predicate of a mapped type as an index-aware filter.</summary>
+    internal Translation Translate(LambdaExpression predicate, TypeMap map) =>
+        ExpressionTranslator.Translate(predicate, member => FileColumn(map.ColumnFor(member)));
+
+    /// <summary>The file's visible column a mapped member is stored in, when its values are the member's (see FileColumn).</summary>
+    internal JazminColumn? FileColumn(TypeMap map, System.Reflection.MemberInfo member) => FileColumn(map.ColumnFor(member));
+
+    /// <summary>The visible column objects read a mapped column from: exact name first, then case-insensitive.</summary>
+    internal string? VisibleColumnName(string name) =>
+        (_visibleColumns.FirstOrDefault(c => c.Name == name)
+         ?? _visibleColumns.FirstOrDefault(c => string.Equals(c.Name, name, StringComparison.OrdinalIgnoreCase)))?.Name;
+
+    /// <summary>
+    /// Rows matching a filter as <typeparamref name="T"/>, kept when <paramref name="check"/> (the parts of a LINQ
+    /// predicate the filter cannot express) accepts them. Only the columns the type maps are read; with
+    /// <paramref name="select"/>, only those, and only their members are set. Rows of a columnar scan are built straight
+    /// from the chunk's decoded columns, with no row array.
+    /// </summary>
+    internal IEnumerable<T> TypedRows<T>(TypeMap map, JazminSerializerSettings? settings, JazminFilter? filter, Func<T, bool>? check = null,
+        long offset = 0, long? limit = null, IReadOnlyList<string>? select = null)
+    {
+        bool[]? only = null;
+        if (select is not null)
+        {
+            only = new bool[_allColumns.Length];
+            foreach (var name in select) only[VisibleIndex(name, "select")] = true;
+        }
+        // The file's other columns would only be decoded to be ignored.
+        select ??= map.Columns.Select(c => VisibleColumnName(c.Name)).OfType<string>().Distinct().ToList();
+        var rows = Find(filter, new JazminQueryOptions { Offset = offset, Limit = limit, Select = select });
+        var direct = _access is null ? map.ColumnReader(_allColumns, only) : null;
         return Iterate();
 
         IEnumerable<T> Iterate()
@@ -2070,7 +2115,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             var references = new ReferenceResolver();
             foreach (var row in rows)
             {
-                var item = (T)map.FromRow(row, settings, references);
+                var item = (T)(direct is { } reader && row.ChunkColumns is { } columns
+                    ? reader.Read(columns, row.ChunkIndex, settings)
+                    : map.FromRow(row, settings, references));
                 if (check is null || check(item)) yield return item;
             }
         }

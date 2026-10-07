@@ -68,6 +68,12 @@ public class GuideSnippetTests
                     reader.Query<GuideCustomer>(c => c.Country == "ZA" && c.Balance > 100m).Select(c => c.Id));
                 var top = reader.Query<GuideCustomer>(c => c.Tier == GuideTier.Gold).OrderByDescending(c => c.Balance).Take(10).ToList();
                 Assert.Equal(17, top[0].Id); // Gold = i % 3 == 2
+                var queryable = reader.AsQueryable<GuideCustomer>();
+                Assert.Equal(customers.Where(c => c.Country == "ZA").Skip(2).Take(3).Select(c => c.Id),
+                    queryable.Where(c => c.Country == "ZA").Skip(2).Take(3).ToList().Select(c => c.Id));
+                Assert.Equal(customers.Count(c => c.Tier == GuideTier.Gold), queryable.Count(c => c.Tier == GuideTier.Gold));
+                Assert.Equal(customers.Where(c => c.Balance > 100m).Select(c => new { c.Id, c.Name }),
+                    queryable.Where(c => c.Balance > 100m).Select(c => new { c.Id, c.Name }).ToList());
                 Assert.Single(reader.Find(JazminFilter.Eq("country_code", "NA") & JazminFilter.IContains("Name", "ndlovu")));
                 Assert.Single(reader.Find("""{ "Name": { "icontains": "ndlovu" } }"""));
                 Assert.Equal(10, reader.Count(JazminFilter.Eq("country_code", "ZA")));

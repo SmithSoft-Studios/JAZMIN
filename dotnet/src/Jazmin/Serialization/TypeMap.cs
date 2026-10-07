@@ -162,6 +162,23 @@ internal sealed class TypeMap
     public JazminColumn? ColumnFor(MemberInfo member) =>
         _ignoreDefaults ? null : _members.FirstOrDefault(m => m.Property.Name == member.Name && m.Converter is null)?.Column;
 
+    /// <summary>
+    /// For LINQ queries that read only some columns: the column a member is read from, when reading sets the member from
+    /// that column alone (its setter, or a constructor parameter for types without a parameterless constructor). Null
+    /// when its value may come from other members (no setter: computed), or rows may be of several types or refer to
+    /// each other: every column is then read.
+    /// </summary>
+    public string? ColumnRead(MemberInfo member)
+    {
+        if (_derived is not null || _preserveReferences) return null;
+        var m = Array.Find(_members, m => m.Property.Name == member.Name);
+        if (m is null) return null;
+        if (_defaultCtor is not null) return m.Set is not null ? m.Column.Name : null;
+        return _paramCtor is not null && _paramCtor.GetParameters().Any(p => string.Equals(p.Name, m.Property.Name, StringComparison.OrdinalIgnoreCase))
+            ? m.Column.Name
+            : null;
+    }
+
     /// <summary>The property's default value: its [DefaultValue], or the type's default.</summary>
     private static object? DefaultOf(PropertyInfo p)
     {
@@ -380,7 +397,7 @@ internal sealed class TypeMap
     }
 
     /// <summary>A compiled column reader for one column layout, as one record: read and written in one step.</summary>
-    private sealed record ColumnReaderCode(IReadOnlyList<JazminColumn> Columns, Func<DecodedColumn?[], int, JazminSerializerSettings?, object> Read, bool[] Wanted);
+    private sealed record ColumnReaderCode(IReadOnlyList<JazminColumn> Columns, bool[]? Only, Func<DecodedColumn?[], int, JazminSerializerSettings?, object> Read, bool[] Wanted);
 
     private ColumnReaderCode? _lastColumnReader; // racy but safe: reference writes are atomic
 
@@ -390,11 +407,14 @@ internal sealed class TypeMap
     /// Same conversions and null handling as the materializer, and like it reused for files with the same columns; the
     /// settings are an argument. Null when the type has no parameterless constructor, or rows can be of several types or
     /// refer to each other (those are read row by row). <c>Wanted</c> is shared: callers must not change it.
+    /// With <paramref name="only"/> (a LINQ query reading some columns), members of other columns are left unset.
     /// </summary>
-    public (Func<DecodedColumn?[], int, JazminSerializerSettings?, object> Read, bool[] Wanted)? ColumnReader(IReadOnlyList<JazminColumn> columns)
+    public (Func<DecodedColumn?[], int, JazminSerializerSettings?, object> Read, bool[] Wanted)? ColumnReader(IReadOnlyList<JazminColumn> columns, bool[]? only = null)
     {
         if (_defaultCtor is null || _derived is not null || _preserveReferences) return null;
-        if (_lastColumnReader is { } cached && (ReferenceEquals(cached.Columns, columns) || SameLayout(cached.Columns, columns))) return (cached.Read, cached.Wanted);
+        if (_lastColumnReader is { } cached && (ReferenceEquals(cached.Columns, columns) || SameLayout(cached.Columns, columns))
+            && (cached.Only is null ? only is null : only is not null && cached.Only.AsSpan().SequenceEqual(only)))
+            return (cached.Read, cached.Wanted);
 
         var cols = Expression.Parameter(typeof(DecodedColumn?[]), "columns");
         var row = Expression.Parameter(typeof(int), "row");
@@ -409,7 +429,7 @@ internal sealed class TypeMap
             var property = Expression.Property(item, m.Property);
             var populate = _populate ? Expression.Assign(property, Expression.Constant(m.DefaultValue, target)) : null;
             var j = IndexOf(columns, m.Column.Name);
-            if (j < 0 || wanted[j])
+            if (j < 0 || wanted[j] || (only is not null && !only[j]))
             {
                 if (j < 0 && populate is not null) body.Add(populate);
                 continue;
@@ -442,7 +462,7 @@ internal sealed class TypeMap
         body.Add(Expression.Convert(item, typeof(object)));
         var compiled = Expression.Lambda<Func<DecodedColumn?[], int, JazminSerializerSettings?, object>>(Expression.Block(new[] { item }, body), cols, row, settings).Compile();
         Interlocked.Increment(ref _compilations);
-        _lastColumnReader = new ColumnReaderCode(columns, compiled, wanted);
+        _lastColumnReader = new ColumnReaderCode(columns, only, compiled, wanted);
         return (compiled, wanted);
     }
 
