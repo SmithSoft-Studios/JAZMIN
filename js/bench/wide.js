@@ -3,7 +3,8 @@
 // memory (max RSS) is measured cleanly.
 //
 //   node bench/wide.js [rows=1000000] [columns=300] [dir=<temp>]
-//   JAZMIN_PARALLELISM=1 node bench/wide.js ...   (writer threads; default: up to 4)
+//   JAZMIN_PARALLELISM=1 node bench/wide.js ...   (writer threads; default: by priority)
+//   JAZMIN_PRIORITY=memory node bench/wide.js ...  (memory | balanced | speed; default: balanced)
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -65,6 +66,7 @@ function measure(fn) {
 const PHASES = {
   'write-jzm': () => measure(() => {
     const parallel = process.env.JAZMIN_PARALLELISM ? { maxDegreeOfParallelism: Number(process.env.JAZMIN_PARALLELISM) } : {};
+    if (process.env.JAZMIN_PRIORITY) parallel.priority = process.env.JAZMIN_PRIORITY;
     const w = new JazminWriter(jzm, { columns, sortedBy: ['id'], ...parallel });
     for (let r = 0; r < ROWS; r++) w.writeRow(row(r));
     w.finish();

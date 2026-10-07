@@ -47,10 +47,23 @@ public sealed class JazminWriteOptions
     public JazminPackage? Package { get; set; }
 
     /// <summary>
-    /// Chunks encoded, compressed and encrypted at the same time on worker threads (default: one per processor,
-    /// at most 16). 1 does everything on the calling thread. The file is the same either way.
+    /// Memory or speed first (default <see cref="JazminPriority.Balanced"/>): sets the default of
+    /// <see cref="MaxDegreeOfParallelism"/>. The file is the same either way.
     /// </summary>
-    public int MaxDegreeOfParallelism { get; set; } = Math.Min(Environment.ProcessorCount, 16);
+    public JazminPriority Priority { get; set; }
+
+    /// <summary>
+    /// Chunks encoded, compressed and encrypted at the same time on worker threads. 1 does everything on the calling
+    /// thread. The file is the same either way. Default by <see cref="Priority"/>: Balanced and Speed one per
+    /// processor, at most 16 (more threads did not write faster); Memory 1.
+    /// </summary>
+    public int MaxDegreeOfParallelism
+    {
+        get => _maxDegreeOfParallelism ?? (Priority == JazminPriority.Memory ? 1 : Math.Min(Environment.ProcessorCount, 16));
+        set => _maxDegreeOfParallelism = value;
+    }
+
+    private int? _maxDegreeOfParallelism;
 
     /// <summary>Target raw size of a sorted-index page (spec 8.1); tests and fixtures lower it to get many pages.</summary>
     internal int IndexPageBytes { get; set; } = FormatConstants.DefaultIndexPageBytes;

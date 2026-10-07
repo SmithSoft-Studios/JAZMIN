@@ -28,7 +28,7 @@ function compareTuples(a, b) {
  * removes them and the superseded headers.
  *
  * options: key | password, insert, upsert + keyColumns, delete (filter), metadata,
- *          grant (access-controlled files), codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism,
+ *          grant (access-controlled files), codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority,
  *          addFiles (add or replace by path), removeFiles (paths), package (viewer settings),
  *          autoCompact: { deletedRatio?, appends? }   compact afterwards when either is reached
  *
@@ -44,7 +44,7 @@ export function append(path, options = {}) {
 function appendUnlocked(path, options) {
   const {
     key, password, insert = [], upsert = [], keyColumns, delete: deleteWhere, metadata, grant = [], revoke = [],
-    codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, autoCompact, now,
+    codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, autoCompact, now,
     addFiles = [], removeFiles = [], package: packageSettings, table,
   } = options;
   if (upsert.length && (!Array.isArray(keyColumns) || keyColumns.length === 0)) {
@@ -119,7 +119,7 @@ function appendUnlocked(path, options) {
       columns,
       metadata: { ...existingMetadata, ...(metadata ?? {}) },
       sortedBy,
-      codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism,
+      codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority,
       key,
       access: owner ? accessFor(owner, grant, []) : undefined,
       now, // expired grants lose their key slots (full lock-out of old secrets needs compact/update)
@@ -155,7 +155,7 @@ function appendUnlocked(path, options) {
   }
 
   if (autoCompact && shouldCompact(result, autoCompact)) {
-    const compacted = updateUnlocked(path, { key, password, codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, now, table });
+    const compacted = updateUnlocked(path, { key, password, codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, now, table });
     return { ...result, rowCount: compacted.rowCount, appendCount: 0, deletedRowCount: 0, compacted: true };
   }
   return result;

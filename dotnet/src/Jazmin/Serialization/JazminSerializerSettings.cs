@@ -19,6 +19,9 @@ public sealed class JazminSerializerSettings
 
     public int KdfIterations { get; set; } = 600_000;
 
+    /// <summary>Memory or speed first when files are read and written (default <see cref="JazminPriority.Balanced"/>).</summary>
+    public JazminPriority Priority { get; set; }
+
     public JsonObject? Metadata { get; set; }
 
     /// <summary>Extra indexes by column name (in addition to [JazminIndex] attributes).</summary>
@@ -78,9 +81,10 @@ public sealed class JazminSerializerSettings
         KdfIterations = KdfIterations,
         Metadata = Metadata,
         JsonOptions = EffectiveJsonOptions,
+        Priority = Priority,
     };
 
-    internal JazminReadOptions ToReadOptions() => new() { Key = Key, Password = Password };
+    internal JazminReadOptions ToReadOptions() => new() { Key = Key, Password = Password, Priority = Priority };
 
     internal IReadOnlyList<JazminColumn> ApplyIndexes(IReadOnlyList<JazminColumn> columns)
     {

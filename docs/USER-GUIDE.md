@@ -750,7 +750,7 @@ again on 7 October 2026.
 | `select` (query option) | every column | List only the columns you need. Only those, and the columns the filter uses, are decoded, on every kind of query: scans, index lookups and access-controlled files. In access-controlled files, a column group none of whose columns is needed is not read at all. A one-column read through an index took 45% of the time of reading every column |
 | indexes | none | Add `sorted` to columns used in `eq` / range filters, and `trigram` to text searched with `contains`. Skip `sorted` on the first `sortedBy` column: chunk statistics already find its values. Large sorted indexes are paged automatically |
 | `kdfIterations` | 600,000 | Do not lower it in production. It only affects password-based files. Allowed: 1,000 to 10,000,000; readers refuse files outside that range |
-| `maxDegreeOfParallelism` (JS) / `MaxDegreeOfParallelism` (.NET writer) | JS: up to 2 worker threads; .NET: one thread per core, up to 16 | Set 1 for the lowest memory. Raise it in .NET for faster writes. In JS, more than 2 gains little, because preparing rows on the main thread is the limit. JS compaction of a shared file is the exception: 2 threads made it only about 5% faster than 1, for about 35 MB more (250,000 records); for other files they made it about twice as fast |
+| `maxDegreeOfParallelism` (JS) / `MaxDegreeOfParallelism` (.NET writer) | By `priority` (20.4). Balanced: JS up to 2 worker threads; .NET one thread per core, up to 16 | Set 1, or `priority` memory, for the lowest memory. Raise it in .NET for faster writes. In JS, more than 2 gains little, because preparing rows on the main thread is the limit. JS compaction of a shared file is the exception: 2 threads made it only about 5% faster than 1, for about 35 MB more (250,000 records); for other files they made it about twice as fast |
 
 ### 9.6 Seeing what a query reads
 
@@ -2041,20 +2041,60 @@ foreach (var line in serializer.DeserializeEnumerable<StatementLine>(stream))
 `ToList()`, `[...rows]` and `DeserializeObject<List<T>>` hold everything in
 memory. That is fine for thousands of rows, but stream instead for millions.
 
-### 20.4 Tune parallel reading (.NET)
+### 20.4 Choose memory or speed first (`priority`)
 
-```csharp
-// Default: up to 4 chunks are decoded ahead on worker threads while you consume rows.
-var fast = JazminReader.Open(path);
+One setting decides what reading and writing favour where memory and speed
+pull apart: how many threads work at once, and how far a scan decodes
+ahead. The file written and the rows read are the same whichever you choose.
 
-// Lowest memory: decode on the calling thread only.
-var lean = JazminReader.Open(path, new JazminReadOptions { MaxDegreeOfParallelism = 1 });
+```js
+// JavaScript: 'memory' | 'balanced' (the default) | 'speed'
+const writer = new JazminWriter('statements.jzm', { columns, priority: 'memory' });
+update('statements.jzm', { insert: rows, priority: 'speed' }); // append() too
 ```
 
-Read-ahead is also capped at about 128 decoded columns in flight. A 3-column
-query gets the full read-ahead (about 3× faster on the wide benchmark). A
-full read of a 300-column file stays sequential, at its lowest memory, where
-read-ahead would only add memory for little gain.
+```csharp
+// .NET: JazminPriority.Memory | Balanced (the default) | Speed
+using var reader = JazminReader.Open(path, new JazminReadOptions { Priority = JazminPriority.Speed });
+using var writer = JazminWriter.Create(path, columns, new JazminWriteOptions { Priority = JazminPriority.Memory });
+var settings = new JazminSerializerSettings { Priority = JazminPriority.Memory }; // JazminUpdate, JazminAppend too
+```
+
+| | `memory` | `balanced` (default) | `speed` |
+|---|---|---|---|
+| .NET reads | the calling thread only | up to 4 chunks decoded ahead, about 128 decoded columns in flight | up to 8 chunks ahead, about 1,024 columns in flight |
+| .NET writes | the calling thread only | one thread per processor, up to 16 | as balanced: more threads did not write faster |
+| Node writes | this thread only | up to 2 worker threads | as balanced: 4 threads were no faster than 2 |
+| Node reads | this thread | this thread | this thread (for now) |
+
+Measured on 200,000 rows × 300 columns (20 cores; medians of 3 to 5 runs,
+each in its own process, the modes taking turns; peak memory of the
+process):
+
+| | `memory` | `balanced` | `speed` |
+|---|---:|---:|---:|
+| .NET: sum 3 columns | 0.76 s, **49 MB** | 0.27 s, 54 MB | **0.19 s**, 65 MB |
+| .NET: filter on 2 columns | 0.74 s, **49 MB** | 0.26 s, 54 MB | **0.19 s**, 65 MB |
+| .NET: read every row | 2.33 s, 60 MB | 2.29 s, 60 MB | **2.10 s**, 95 MB |
+| .NET: write | 11.2 s, **68 MB** | 4.3 s, 79 MB | 4.5 s, 82 MB |
+| Node: write | 19.6 s, **233 MB** | 15.0 s, 257 MB | as balanced |
+
+- **`memory`** suits small servers, and many files read or written at the
+  same time: each reader's or writer's threads hold chunks of their own.
+  Narrow queries become about 3 times slower.
+- **`speed`** suits one big job on a machine with memory to spare: narrow
+  .NET queries about 30% faster, and full reads of wide tables about 8%
+  faster (they decode ahead too, for about 35 MB more). In Node it changes
+  nothing yet.
+- **Looking up rows by id** costs the same in every mode: it decodes one
+  chunk.
+- **A thread count you set yourself** (`maxDegreeOfParallelism`,
+  `MaxDegreeOfParallelism`) wins over the priority.
+
+```csharp
+// The same as Priority = Memory for reads: decode on the calling thread only.
+var lean = JazminReader.Open(path, new JazminReadOptions { MaxDegreeOfParallelism = 1 });
+```
 
 ### 20.5 Keep Node.js memory low
 
@@ -2158,7 +2198,7 @@ span. Each reader keeps at most 8 decoded pages per index.
 | `select` the columns you need | Reading whole rows of a wide table |
 | Stream with `for…of`, `DeserializeEnumerable`, `await foreach` | `ToList()` / `[...rows]` on millions of rows |
 | One reader per thread, reused | Opening the file for every row |
-| Writer parallelism 1 on very small servers (`maxDegreeOfParallelism: 1` in JS, `MaxDegreeOfParallelism = 1` in .NET) | Leaving the .NET writer at 16 threads on a 2-core container |
+| `priority: 'memory'` (JS) / `Priority = JazminPriority.Memory` (.NET) on very small servers, or with many files open at once (20.4) | Many readers and writers each running their own threads on a 2-core container |
 | Node: `--max-semi-space-size=8` on memory-limited servers | Judging memory by the default heap growth (mostly garbage awaiting collection) |
 
 ### 20.9 Measure on your own data

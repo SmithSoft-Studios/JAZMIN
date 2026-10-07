@@ -34,11 +34,29 @@ public sealed class JazminReadOptions
     public bool CheckClockRollback { get; set; } = true;
 
     /// <summary>
-    /// Chunks decoded ahead on worker threads during scans (default: up to 4). The file is still read in order on
-    /// the calling thread; 1 decodes everything on the calling thread. To bound memory, read-ahead is also limited to
-    /// about 128 decoded columns in flight, so full reads of very wide files stay sequential.
+    /// Memory or speed first (default <see cref="JazminPriority.Balanced"/>): sets the default of
+    /// <see cref="MaxDegreeOfParallelism"/> and how many decoded columns a scan keeps in flight.
     /// </summary>
-    public int MaxDegreeOfParallelism { get; set; } = Math.Min(Environment.ProcessorCount, 4);
+    public JazminPriority Priority { get; set; }
+
+    /// <summary>
+    /// Chunks decoded ahead on worker threads during scans. The file is still read in order on the calling thread;
+    /// 1 decodes everything on the calling thread. Default by <see cref="Priority"/>: Balanced up to 4, Memory 1,
+    /// Speed up to 8. To bound memory, read-ahead is also limited to about 128 decoded columns in flight (Speed:
+    /// 1,024), so with Balanced, full reads of very wide tables stay sequential.
+    /// </summary>
+    public int MaxDegreeOfParallelism
+    {
+        get => _maxDegreeOfParallelism ?? Priority switch
+        {
+            JazminPriority.Memory => 1,
+            JazminPriority.Speed => Math.Min(Environment.ProcessorCount, 8),
+            _ => Math.Min(Environment.ProcessorCount, 4),
+        };
+        set => _maxDegreeOfParallelism = value;
+    }
+
+    private int? _maxDegreeOfParallelism;
 
     /// <summary>The table to read, by name (default: the first). See <see cref="JazminReader.Tables"/>.</summary>
     public string? Table { get; set; }
@@ -154,6 +172,8 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private readonly bool _leaveOpen;
     private readonly StringPool _strings = new();
     private readonly int _readAhead;
+    private readonly int _columnsInFlight; // decoded columns a scan keeps in flight at most (memory budget)
+    private readonly JazminPriority _priority;
     private readonly SharedStream _io;
     private readonly HeaderDef _header;
     private readonly TableDef _table;
@@ -221,6 +241,8 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         _leaveOpen = leaveOpen;
         options ??= new JazminReadOptions();
         _readAhead = Math.Max(1, options.MaxDegreeOfParallelism);
+        _priority = options.Priority;
+        _columnsInFlight = _priority == JazminPriority.Speed ? 1024 : 128;
         if (from is null)
         {
             _io = new SharedStream();
@@ -309,7 +331,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     {
         lock (_io)
             if (_io.Readers == 0) throw new ObjectDisposedException(nameof(JazminReader));
-        return new JazminReader(_stream, new JazminReadOptions { Table = name, MaxDegreeOfParallelism = _readAhead }, _leaveOpen, this);
+        return new JazminReader(_stream, new JazminReadOptions { Table = name, Priority = _priority, MaxDegreeOfParallelism = _readAhead }, _leaveOpen, this);
     }
 
     /// <summary>Lets go of the shared stream: the last reader closes it (unless leaveOpen).</summary>
@@ -1177,10 +1199,10 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             }
         }
 
-        // Memory first: about 128 decoded columns in flight. Narrow queries read far ahead; full reads of wide
-        // files (where read-ahead gains little) stay sequential.
+        // Memory first: about 128 decoded columns in flight (Speed: 1,024). Narrow queries read far ahead; full reads
+        // of wide files (where read-ahead gains little) stay sequential unless speed was asked for.
         var decodedColumns = wanted is null ? types.Length : wanted.Count(w => w);
-        var ahead = Math.Clamp(128 / Math.Max(1, decodedColumns), 1, _readAhead);
+        var ahead = Math.Clamp(_columnsInFlight / Math.Max(1, decodedColumns), 1, _readAhead);
         (byte[] Section, int Length) ReadChunk(int ordinal)
         {
             var at = Part(ordinal, 0);

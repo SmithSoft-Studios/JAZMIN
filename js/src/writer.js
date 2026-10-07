@@ -36,6 +36,23 @@ const TINY_SECTION = 256; // raw bytes below which catalog sections are not comp
 const STAGE_SIZE = 1024 * 1024;
 const STAGE_LIMIT = 256 * 1024;
 
+// Worker threads compressing chunks by priority. On a 300-column write, 4 threads were no faster than 2 (preparing
+// rows on this thread is the limit) and used 29 MB more, so speed uses 2 as well.
+const WRITE_THREADS = { memory: 1, balanced: 2, speed: 2 };
+
+/** Checks a priority option: 'memory', 'balanced' or 'speed'. */
+export function checkPriority(priority) {
+  if (typeof priority !== 'string' || !Object.hasOwn(WRITE_THREADS, priority)) {
+    throw new JazminValidationError("priority must be 'memory', 'balanced' or 'speed'");
+  }
+}
+
+/** Default compression threads for a priority: at most one fewer than the processors, at least 1. */
+export function writeThreads(priority) {
+  checkPriority(priority);
+  return Math.max(1, Math.min(os.availableParallelism() - 1, WRITE_THREADS[priority]));
+}
+
 /**
  * Output: a file (written at explicit positions) or an in-memory list of buffers.
  * With `appendAt`, an existing file is continued from that offset; anything after it (an
@@ -263,9 +280,10 @@ export class JazminWriter {
     const {
       columns, metadata = {}, codec = DEFAULTS.codec, level, chunkRows = DEFAULTS.chunkRows,
       chunkBytes = DEFAULTS.chunkBytes, key, password, kdfIterations = DEFAULTS.kdfIterations, sortedBy, access, now,
-      layout, files, package: packageSettings, tables,
-      maxDegreeOfParallelism = Math.max(1, Math.min(os.availableParallelism() - 1, 2)),
+      layout, files, package: packageSettings, tables, priority = 'balanced',
     } = options;
+    const { maxDegreeOfParallelism = writeThreads(priority) } = options;
+    checkPriority(priority);
     if (!Number.isInteger(maxDegreeOfParallelism) || maxDegreeOfParallelism < 1) {
       throw new JazminValidationError('maxDegreeOfParallelism must be a positive integer');
     }

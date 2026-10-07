@@ -3,6 +3,11 @@
 export type JazminType = 'bool' | 'int' | 'float' | 'decimal' | 'string' | 'datetime' | 'binary' | 'json';
 export type JazminIndexKind = 'sorted' | 'trigram';
 export type JazminCodec = 'none' | 'deflate' | 'brotli';
+/**
+ * What reading or writing favours where memory and speed pull apart (default 'balanced'). It sets the default
+ * thread count; the file written and the rows read are the same whichever is chosen.
+ */
+export type JazminPriority = 'memory' | 'balanced' | 'speed';
 
 /** Values as returned by readers. */
 export type JazminValue = boolean | number | bigint | string | Date | Buffer | JsonValue | null;
@@ -138,9 +143,12 @@ export interface WriteOptions {
   chunkBytes?: number;
   /**
    * Threads compressing (and encrypting) chunks: worker threads start from the third chunk, so small files
-   * never pay for them. Default: up to 2. 1 = this thread only (lowest memory).
+   * never pay for them. 1 = this thread only (lowest memory). Default by priority: 'balanced' and 'speed' up
+   * to 2 (more threads did not write faster), 'memory' 1; at most one fewer than the processors.
    */
   maxDegreeOfParallelism?: number;
+  /** Memory or speed first (default 'balanced'): sets the default of maxDegreeOfParallelism. */
+  priority?: JazminPriority;
   /** Files to embed. Identical content is stored once. */
   files?: FileInput[];
   package?: PackageSettings;
@@ -340,8 +348,10 @@ export interface UpdateOptions {
   level?: number;
   chunkRows?: number;
   chunkBytes?: number;
-  /** Threads compressing chunks (default up to 2; 1 = this thread only). */
+  /** Threads compressing chunks (default by priority, as for a new file; 1 = this thread only). */
   maxDegreeOfParallelism?: number;
+  /** Memory or speed first while the file is rewritten (default 'balanced'). */
+  priority?: JazminPriority;
   /** Clock used to drop expired grants (default: the system clock). */
   now?: Date | number;
   /** Embedded files to add (a path that exists is replaced). */

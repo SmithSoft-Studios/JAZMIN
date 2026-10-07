@@ -9,6 +9,8 @@ using Jazmin.Query;
 /// memory. Both sides are written and read as streams; each measurement runs in its own process so its peak
 /// memory is measured cleanly. Same data as js/bench/wide.js.
 /// Run: dotnet run -c Release -f net10.0 --project bench/Jazmin.Benchmarks -- wide [rows=1000000] [columns=300] [dir]
+/// JAZMIN_PRIORITY=Memory|Balanced|Speed sets the priority, and JAZMIN_PARALLELISM=n MaxDegreeOfParallelism, for the writer and
+/// the readers (default: the libraries' own).
 /// </summary>
 internal static class WideBenchmark
 {
@@ -16,6 +18,23 @@ internal static class WideBenchmark
     private static readonly string[] Statuses = ["paid", "due", "overdue", "void", "draft", "sent", "partial", "disputed"];
     private static readonly string[] Names = Enumerable.Range(0, 2000).Select(i => $"Customer {i} {new[] { "Ltd", "Inc", "CC", "Trust" }[i % 4]}").ToArray();
     private static readonly DateTime Base = new(2015, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+
+    private static readonly int? Parallelism = int.TryParse(Environment.GetEnvironmentVariable("JAZMIN_PARALLELISM"), out var n) ? n : null;
+    private static readonly JazminPriority Priority = Enum.TryParse<JazminPriority>(Environment.GetEnvironmentVariable("JAZMIN_PRIORITY"), true, out var p) ? p : JazminPriority.Balanced;
+
+    private static JazminWriteOptions WriteOptions()
+    {
+        var options = new JazminWriteOptions { SortedBy = ["id"], Priority = Priority };
+        if (Parallelism is { } p) options.MaxDegreeOfParallelism = p;
+        return options;
+    }
+
+    private static JazminReader Open(string path)
+    {
+        var options = new JazminReadOptions { Priority = Priority };
+        if (Parallelism is { } p) options.MaxDegreeOfParallelism = p;
+        return JazminReader.Open(path, options);
+    }
 
     private static JazminColumn[] Columns(int count)
     {
@@ -119,7 +138,7 @@ internal static class WideBenchmark
             case "write-jzm":
             {
                 var values = new object?[cols];
-                using (var w = JazminWriter.Create(jzm, columns, new JazminWriteOptions { SortedBy = ["id"] }))
+                using (var w = JazminWriter.Create(jzm, columns, WriteOptions()))
                     for (long r = 0; r < rows; r++)
                     {
                         Fill(values, r);
@@ -162,13 +181,13 @@ internal static class WideBenchmark
             }
             case "open-jzm":
             {
-                using var r = JazminReader.Open(jzm);
+                using var r = Open(jzm);
                 result = r.ChunkCount.ToString(CultureInfo.InvariantCulture);
                 break;
             }
             case "lookup-jzm":
             {
-                using var r = JazminReader.Open(jzm);
+                using var r = Open(jzm);
                 result = r.Find(JazminFilter.Eq("id", target)).First()["id"]!.ToString()!;
                 break;
             }
@@ -177,7 +196,7 @@ internal static class WideBenchmark
                 break;
             case "project-jzm":
             {
-                using var r = JazminReader.Open(jzm);
+                using var r = Open(jzm);
                 double sum = 0;
                 foreach (var row in r.Rows(new JazminQueryOptions { Select = [p1, p2, p3] }))
                     sum += Num(row[p1]) + Num(row[p2]) + Num(row[p3]);
@@ -193,7 +212,7 @@ internal static class WideBenchmark
             }
             case "filter-jzm":
             {
-                using var r = JazminReader.Open(jzm);
+                using var r = Open(jzm);
                 result = r.Find(JazminFilter.And(JazminFilter.Eq(status, "paid"), JazminFilter.Gt(amount, 5_000_000L)), new JazminQueryOptions { Select = ["id"] })
                     .LongCount().ToString(CultureInfo.InvariantCulture);
                 break;
@@ -204,7 +223,7 @@ internal static class WideBenchmark
                 break;
             case "scan-jzm":
             {
-                using var r = JazminReader.Open(jzm);
+                using var r = Open(jzm);
                 result = r.Rows().LongCount().ToString(CultureInfo.InvariantCulture);
                 break;
             }

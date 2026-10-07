@@ -33,6 +33,23 @@ public enum JazminCodec : byte
     Brotli = 2,
 }
 
+/// <summary>
+/// What reading or writing favours where memory and speed pull apart: how many threads work at once and how far
+/// a scan decodes ahead. The file written is the same whichever is chosen, and an explicit
+/// MaxDegreeOfParallelism still wins.
+/// </summary>
+public enum JazminPriority
+{
+    /// <summary>The default: a few threads, within a memory budget.</summary>
+    Balanced,
+
+    /// <summary>The least memory: everything on the calling thread, nothing decoded ahead. Slower.</summary>
+    Memory,
+
+    /// <summary>The fastest: more threads, and full reads of wide tables decode ahead too. Uses more memory.</summary>
+    Speed,
+}
+
 /// <summary>A column definition: name, type, nullability, documentation and indexes.</summary>
 public sealed class JazminColumn
 {

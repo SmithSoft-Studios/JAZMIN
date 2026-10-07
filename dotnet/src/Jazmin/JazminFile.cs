@@ -49,6 +49,9 @@ public sealed class JazminUpdate
 
     public int ChunkRows { get; set; } = FormatConstants.DefaultChunkRows;
 
+    /// <summary>Memory or speed first while the file is read and rewritten (default <see cref="JazminPriority.Balanced"/>).</summary>
+    public JazminPriority Priority { get; set; }
+
     /// <summary>Clock used to drop expired grants (default: the system clock).</summary>
     public DateTimeOffset? Now { get; set; }
 
@@ -102,6 +105,9 @@ public sealed class JazminAppend
     /// <summary>Compact automatically afterwards when a threshold is reached (null: never).</summary>
     public JazminAutoCompact? AutoCompact { get; set; }
 
+    /// <summary>Memory or speed first while the file is read and rewritten (default <see cref="JazminPriority.Balanced"/>).</summary>
+    public JazminPriority Priority { get; set; }
+
     /// <summary>Clock used to drop expired grants (default: the system clock).</summary>
     public DateTimeOffset? Now { get; set; }
 
@@ -140,7 +146,7 @@ public static class JazminFile
             throw new JazminValidationException("Upsert needs KeyColumns, e.g. KeyColumns = [\"id\"]");
 
         var temp = $"{path}.{Convert.ToHexString(RandomNumberGenerator.GetBytes(6)).ToLowerInvariant()}.tmp";
-        var reader = JazminReader.Open(path, new JazminReadOptions { Key = update.Key, Password = update.Password, Table = update.Table });
+        var reader = JazminReader.Open(path, new JazminReadOptions { Key = update.Key, Password = update.Password, Table = update.Table, Priority = update.Priority });
         var readers = new List<JazminReader> { reader }; // in a file with several tables, one per table, in file order
         JazminWriter? writer = null;
         try
@@ -195,6 +201,7 @@ public static class JazminFile
                 Package = update.Package ?? reader.Package,
                 Access = access is null ? null : several ? new JazminAccessOptions { Grants = access.Grants } : access,
                 Now = update.Now, // expired grants are dropped; the new version's fresh secrets lock them out
+                Priority = update.Priority,
                 Tables = several ? readers.Select(TableFor).ToList() : null,
             };
             writer = several ? JazminWriter.Create(temp, options) : JazminWriter.Create(temp, columns, options);
@@ -312,7 +319,7 @@ public static class JazminFile
         if (append.Upsert.Count > 0 && (append.KeyColumns is null || append.KeyColumns.Count == 0))
             throw new JazminValidationException("Upsert needs KeyColumns, e.g. KeyColumns = [\"id\"]");
 
-        var reader = JazminReader.Open(path, new JazminReadOptions { Key = append.Key, Password = append.Password, Table = append.Table });
+        var reader = JazminReader.Open(path, new JazminReadOptions { Key = append.Key, Password = append.Password, Table = append.Table, Priority = append.Priority });
         JazminWriter? writer = null;
         JazminAppendResult result;
         try
@@ -373,6 +380,7 @@ public static class JazminFile
                 CompressionLevel = append.CompressionLevel,
                 ChunkRows = append.ChunkRows,
                 Access = accessOptions,
+                Priority = append.Priority,
                 Now = append.Now, // expired grants lose their key slots (full lock-out needs Compact/Update)
                 Files = append.AddFiles,
                 Package = append.Package,
@@ -403,7 +411,7 @@ public static class JazminFile
             var compacted = UpdateUnlocked(path, new JazminUpdate
             {
                 Key = append.Key, Password = append.Password, Codec = append.Codec, CompressionLevel = append.CompressionLevel, ChunkRows = append.ChunkRows,
-                Now = append.Now, Table = append.Table,
+                Now = append.Now, Table = append.Table, Priority = append.Priority,
             });
             return result with { RowCount = compacted.RowCount, AppendCount = 0, DeletedRowCount = 0, Compacted = true };
         }

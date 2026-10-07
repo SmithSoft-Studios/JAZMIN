@@ -135,6 +135,23 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   write loop.
 
 ### Added
+- **Choose memory or speed first: the `priority` setting.** `'memory'`,
+  `'balanced'` (the default, as before) or `'speed'` (.NET:
+  `JazminPriority`), on reads and writes, updates and appends, and .NET's
+  `JazminSerializerSettings`. It sets how many threads work at once and how
+  far a scan decodes ahead. The file written and the rows read are the same
+  whichever is chosen, and an explicit `maxDegreeOfParallelism` still wins.
+  Measured on 200,000 rows x 300 columns (user guide 20.4):
+  - **`memory`:** everything on the calling thread. .NET queries of a few
+    columns use 49 MB instead of 54 MB but take about 3 times as long; .NET
+    writes 68 MB instead of 79 MB (11.2 s instead of 4.3 s); Node writes
+    233 MB instead of 257 MB (19.6 s instead of 15.0 s).
+  - **`speed`:** .NET reads decode up to 8 chunks ahead instead of 4, and up
+    to 1,024 columns in flight instead of 128. Queries of a few columns:
+    0.19 s instead of 0.27 s (65 MB instead of 54 MB). Reading every row of
+    a 300-column table: 2.10 s instead of 2.29 s (95 MB instead of 60 MB).
+    Writes are as balanced in both libraries, because more threads did not
+    write faster. In Node, reads are not changed yet.
 - **Large XML files are imported without loading them (TASKS C-2):**
   `importXMLFile(path, target, options)` and `JazminConvert.FromXmlFile`, as
   CSV below.
