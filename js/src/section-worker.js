@@ -1,8 +1,8 @@
-// Worker thread for SectionPool: encodes one section per message and answers on its own port.
+// Worker thread for SectionPool: encodes (or, for a reader, decodes) one section per message and answers on its own port.
 // Everything the worker allocates is handed to the main thread (and the chunk buffer handed back for reuse),
 // so no garbage builds up here: a worker does little JS work, so it would rarely collect it.
 import { isMarkedAsUntransferable, parentPort, workerData } from 'node:worker_threads';
-import { encodeSectionParts } from './section.js';
+import { decodeSection, encodeSectionParts } from './section.js';
 
 const { port, signal, slot } = workerData;
 const asBuffer = (bytes) => (bytes ? Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength) : bytes);
@@ -25,13 +25,22 @@ parentPort.on('message', ({ raw, options, stop }) => {
   const transfer = [];
   try {
     const input = asBuffer(raw);
-    const { envelope, body } = encodeSectionParts(input, {
-      ...options, key: asBuffer(options.key), fileId: asBuffer(options.fileId), outputSize: input.length + 64,
-    });
-    const stored = body.buffer === raw.buffer; // compression did not help: the body is the input itself
-    reply = { envelope, body, raw: stored ? null : raw };
-    if (transferable(body)) transfer.push(body.buffer);
-    if (!stored && !isMarkedAsUntransferable(raw.buffer)) transfer.push(raw.buffer);
+    if (options.decode) {
+      // A section read ahead of a scan (reader priority 'speed'): checked, decrypted and decompressed.
+      const body = decodeSection(input, { key: asBuffer(options.key), fileId: asBuffer(options.fileId), sectionId: options.sectionId });
+      const view = body.buffer === raw.buffer; // stored as it is: the payload is a view of the input
+      reply = { body, raw: view ? null : raw };
+      if (view ? !isMarkedAsUntransferable(raw.buffer) : transferable(body)) transfer.push(body.buffer);
+      if (!view && !isMarkedAsUntransferable(raw.buffer)) transfer.push(raw.buffer);
+    } else {
+      const { envelope, body } = encodeSectionParts(input, {
+        ...options, key: asBuffer(options.key), fileId: asBuffer(options.fileId), outputSize: input.length + 64,
+      });
+      const stored = body.buffer === raw.buffer; // compression did not help: the body is the input itself
+      reply = { envelope, body, raw: stored ? null : raw };
+      if (transferable(body)) transfer.push(body.buffer);
+      if (!stored && !isMarkedAsUntransferable(raw.buffer)) transfer.push(raw.buffer);
+    }
   } catch (error) {
     reply = { error: error?.message ?? String(error), raw };
   }

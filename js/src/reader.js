@@ -22,7 +22,9 @@ import { EVERYONE } from './files.js';
 import { answeredExactly, evaluate, indexPlan, mayMatch, mustMatch, normalizeFilter } from './filter.js';
 import { CompositeIndex, LazyTrigramIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
 import { JazminAccessKey, JazminKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
+import { checkPriority, readThreads } from './priority.js';
 import { setField } from './schema.js';
+import { SectionPool } from './section-pool.js';
 import { decodeSection, sectionPayloadLength } from './section.js';
 import { decodeBound } from './stats.js';
 import { compareKeys } from './types.js';
@@ -467,6 +469,8 @@ export class JazminReader {
   #makers = new Map(); // selected column indexes -> row-object builder
   #fileIndex = null; // embedded files visible to this key: { entries: Map(path -> entry), contents: Map(id -> content) }
   #scratch = Buffer.alloc(0); // file-read buffer reused across chunks (see #readChunk)
+  #ahead = null; // priority 'speed': { pool, ordinals } - chunks being decoded on worker threads, in the order submitted
+  #aheadBuffer = Buffer.alloc(0); // file-read buffer of chunks read ahead (the pool copies what it is given)
   #cost = null; // while explain({ analyze: true }) runs a query: what it reads (see QueryCost in index.d.ts)
 
   /**
@@ -474,12 +478,13 @@ export class JazminReader {
    * `now` (Date / ms, default the system clock) and `accessState` ({ dir } | custom store | false)
    * for expiring keys - see enforceExpiry; `table`: the name of the table to read (default: the first).
    */
-  constructor(source, { key, password, unlockToken, now, accessState, table, [SHARED]: from } = {}) {
+  constructor(source, { key, password, unlockToken, now, accessState, table, priority = 'balanced', [SHARED]: from } = {}) {
     if (source === SHARED) {
       this.#share(from, table);
       return;
     }
-    this.#readOptions = { unlockToken, now, accessState, table };
+    checkPriority(priority);
+    this.#readOptions = { unlockToken, now, accessState, table, priority };
     this.#source = openSource(source);
     try {
       this.#open(key, password);
@@ -1405,9 +1410,102 @@ export class JazminReader {
    */
   #readChunk(ordinal) {
     const part = this.#part(ordinal, 0);
+    const ahead = this.#ahead;
+    const at = ahead ? ahead.ordinals.indexOf(ordinal) : -1;
+    if (at >= 0) {
+      for (let i = 0; i < at; i++) ahead.pool.takeDecoded(); // read ahead, then passed over by the query
+      ahead.ordinals.splice(0, at + 1);
+      const payload = ahead.pool.takeDecoded();
+      if (payload) {
+        if (this.#cost && !this.#readAheads.some((r) => part.offset >= r.start && part.offset + part.length <= r.start + r.buf.length)) this.#cost.bytesRead += part.length;
+        return payload;
+      }
+      // A worker could not decode it: decode it here, which reports the error as a scan without read-ahead does.
+    }
     if (this.#scratch.length < part.length) this.#scratch = Buffer.allocUnsafeSlow(Math.ceil(part.length * 1.25));
     const sectionId = `${this.#tableIndex}/chunk/${ordinal}/${this.#groups[0].name}`;
     return this.#read(part, sectionId, this.#keys?.sectionKey(KEYRING_GROUPS.data, sectionId), this.#scratch);
+  }
+
+  /**
+   * The items of a scan, in order. With priority 'speed' (files with one column group), the chunks of the next items
+   * are read and decompressed ahead on worker threads while this thread builds rows; #readChunk takes them. `wanted`
+   * (by column position) is what the scan decodes. A scan of more than a quarter of the columns uses 2 threads and
+   * keeps 2 chunks in flight: building its rows here is the limit, and more would only add memory. A narrower one,
+   * which mostly waits for decompression, uses every thread.
+   */
+  *#decodeAhead(items, ordinalOf, wanted) {
+    const most = this.#access ? 0 : readThreads(this.#readOptions.priority ?? 'balanced');
+    if (most === 0) {
+      yield* items;
+      return;
+    }
+    const wide = wanted.filter(Boolean).length * 4 > wanted.length;
+    this.#dropAhead(); // what a scan left unfinished
+    const iterator = items[Symbol.iterator]();
+    const upcoming = []; // items whose chunks are being decoded ahead
+    try {
+      for (let n = 0; ; n++) {
+        // Worker threads start from a scan's third chunk, so short scans never pay for them.
+        const pool = n >= 2 ? this.#aheadPool(wide ? Math.min(2, most) : most) : null;
+        const depth = pool && (wide ? 2 : pool.capacity);
+        let next;
+        while (pool && upcoming.length < depth && !(next = iterator.next()).done) {
+          upcoming.push(next.value);
+          this.#submitChunk(ordinalOf(next.value));
+        }
+        if (upcoming.length) yield upcoming.shift();
+        else if ((next = iterator.next()).done) return;
+        else yield next.value;
+      }
+    } finally {
+      this.#dropAhead();
+    }
+  }
+
+  /**
+   * The worker threads of priority 'speed', at least `threads` of them: started on first use, and replaced by a
+   * larger pool when a scan needs more. Null where worker threads are unavailable.
+   */
+  #aheadPool(threads) {
+    const ahead = this.#ahead;
+    if (ahead && (!ahead.pool || ahead.pool.size >= threads)) return ahead.pool;
+    this.#dropAhead();
+    ahead?.pool.close();
+    let pool = null;
+    try {
+      pool = new SectionPool(threads);
+    } catch {
+      // no worker threads here: chunks are decoded on this thread
+    }
+    this.#ahead = { pool, ordinals: [] };
+    return pool;
+  }
+
+  /**
+   * Reads a chunk's section and hands it to a worker to decode. A section that fails a check here is not handed
+   * over: #readChunk reads it again and reports the damage as a scan without read-ahead does.
+   */
+  #submitChunk(ordinal) {
+    const part = this.#part(ordinal, 0);
+    if (!(part.length >= ENVELOPE_SIZE)) return;
+    if (this.#aheadBuffer.length < part.length) this.#aheadBuffer = Buffer.allocUnsafeSlow(Math.ceil(part.length * 1.25));
+    const section = this.#source.read(part.offset, part.length, this.#aheadBuffer);
+    if (sectionPayloadLength(section) + ENVELOPE_SIZE !== part.length) return;
+    if (part.digest !== undefined) {
+      const actual = digest(section);
+      if (!(typeof part.digest === 'string' ? actual.toString('base64') === part.digest : actual.equals(part.digest))) return;
+    }
+    const sectionId = `${this.#tableIndex}/chunk/${ordinal}/${this.#groups[0].name}`;
+    this.#ahead.pool.submit(section, { decode: true, key: this.#keys?.sectionKey(KEYRING_GROUPS.data, sectionId), fileId: this.#fileId, sectionId });
+    this.#ahead.ordinals.push(ordinal);
+  }
+
+  /** Discards the chunks decoded ahead and not used (a scan ended early). */
+  #dropAhead() {
+    const ahead = this.#ahead;
+    if (!ahead?.pool) return;
+    for (; ahead.ordinals.length; ahead.ordinals.shift()) ahead.pool.takeDecoded();
   }
 
   /**
@@ -1838,7 +1936,7 @@ export class JazminReader {
       let skipped = 0;
       let yielded = 0;
       let deleted = 0;
-      for (const ordinal of this.#visibleChunks) {
+      for (const ordinal of this.#decodeAhead(this.#visibleChunks, (o) => o, wanted)) {
         if (yielded >= limit) return;
         if (skipped < offset && offset - skipped >= this.#liveRows(ordinal)) {
           skipped += this.#liveRows(ordinal);
@@ -1907,7 +2005,7 @@ export class JazminReader {
     let skipped = 0;
     let yielded = 0;
     let deleted = 0;
-    for (const { ordinal, from, to } of this.#chunkRuns(plan, rowIds)) {
+    for (const { ordinal, from, to } of this.#decodeAhead(this.#chunkRuns(plan, rowIds), (run) => run.ordinal, wanted)) {
       if (yielded >= limit) return;
       if (rowIds === null && skipped < offset && offset - skipped >= this.#liveRows(ordinal) && whole(ordinal)) {
         skipped += this.#liveRows(ordinal); // every row matches and lies before the offset: no need to read it
@@ -2254,6 +2352,8 @@ export class JazminReader {
   close() {
     if (this.#closed) return;
     this.#closed = true;
+    this.#ahead?.pool?.close();
+    this.#ahead = null;
     release(this.#source);
     this.#cachedChunk = { ordinal: -1, wanted: null, chunk: null };
     this.#indexes.clear();

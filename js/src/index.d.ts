@@ -181,6 +181,11 @@ export interface ReadOptions {
   accessState?: AccessState;
   /** The table to read, by name (default: the first). */
   table?: string;
+  /**
+   * Memory or speed first (default 'balanced'). With 'speed', scans of files with one column group decompress the
+   * next chunks on worker threads (up to 4; 2 for scans of more than a quarter of the columns) while rows are built.
+   */
+  priority?: JazminPriority;
 }
 
 /** Operators for one column (GraphQL-style "where" input). */

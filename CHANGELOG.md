@@ -151,7 +151,13 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     0.19 s instead of 0.27 s (65 MB instead of 54 MB). Reading every row of
     a 300-column table: 2.10 s instead of 2.29 s (95 MB instead of 60 MB).
     Writes are as balanced in both libraries, because more threads did not
-    write faster. In Node, reads are not changed yet.
+    write faster.
+  - **`speed` in Node reads:** scans decompress (and decrypt) the next
+    chunks on worker threads while rows are built (TASKS P-4): up to 4, or
+    2 when a scan decodes more than a quarter of the columns. Queries of 3
+    columns: 0.24 s instead of 0.66 s (196 MB instead of 125 MB); reading
+    every row: 4.34 s instead of 4.80 s (256 MB instead of 226 MB). Workers
+    start from a scan's third chunk; files with one column group only.
 - **Large XML files are imported without loading them (TASKS C-2):**
   `importXMLFile(path, target, options)` and `JazminConvert.FromXmlFile`, as
   CSV below.

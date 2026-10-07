@@ -2049,6 +2049,7 @@ ahead. The file written and the rows read are the same whichever you choose.
 
 ```js
 // JavaScript: 'memory' | 'balanced' (the default) | 'speed'
+const reader = open('statements.jzm', { priority: 'speed' });
 const writer = new JazminWriter('statements.jzm', { columns, priority: 'memory' });
 update('statements.jzm', { insert: rows, priority: 'speed' }); // append() too
 ```
@@ -2065,7 +2066,7 @@ var settings = new JazminSerializerSettings { Priority = JazminPriority.Memory }
 | .NET reads | the calling thread only | up to 4 chunks decoded ahead, about 128 decoded columns in flight | up to 8 chunks ahead, about 1,024 columns in flight |
 | .NET writes | the calling thread only | one thread per processor, up to 16 | as balanced: more threads did not write faster |
 | Node writes | this thread only | up to 2 worker threads | as balanced: 4 threads were no faster than 2 |
-| Node reads | this thread | this thread | this thread (for now) |
+| Node reads | this thread | this thread | the next chunks decompressed on worker threads while rows are built: up to 4, or 2 when a scan decodes more than a quarter of the columns |
 
 Measured on 200,000 rows × 300 columns (20 cores; medians of 3 to 5 runs,
 each in its own process, the modes taking turns; peak memory of the
@@ -2077,15 +2078,24 @@ process):
 | .NET: filter on 2 columns | 0.74 s, **49 MB** | 0.26 s, 54 MB | **0.19 s**, 65 MB |
 | .NET: read every row | 2.33 s, 60 MB | 2.29 s, 60 MB | **2.10 s**, 95 MB |
 | .NET: write | 11.2 s, **68 MB** | 4.3 s, 79 MB | 4.5 s, 82 MB |
+| Node: sum 3 columns (`columnArrays`) | 0.66 s, **125 MB** | 0.66 s, 125 MB | **0.24 s**, 196 MB |
+| Node: sum 3 columns (rows) | 0.67 s, **98 MB** | 0.67 s, 98 MB | **0.24 s**, 166 MB |
+| Node: filter on 2 columns | 0.70 s, **96 MB** | 0.70 s, 96 MB | **0.23 s**, 162 MB |
+| Node: read every row | 4.80 s, **226 MB** | 4.80 s, 226 MB | **4.34 s**, 256 MB |
 | Node: write | 19.6 s, **233 MB** | 15.0 s, 257 MB | as balanced |
 
 - **`memory`** suits small servers, and many files read or written at the
   same time: each reader's or writer's threads hold chunks of their own.
-  Narrow queries become about 3 times slower.
-- **`speed`** suits one big job on a machine with memory to spare: narrow
-  .NET queries about 30% faster, and full reads of wide tables about 8%
-  faster (they decode ahead too, for about 35 MB more). In Node it changes
-  nothing yet.
+  Narrow .NET queries become about 3 times slower. Node reads already use
+  only the main thread unless you choose `speed`.
+- **`speed`** suits one big job on a machine with memory to spare. Queries
+  of a few columns: Node about 2.8 times as fast, .NET about 30% faster.
+  Full reads of wide tables: about 10% faster (they decode ahead too, for
+  about 30 MB more). In Node, each chunk is decompressed whole even when a
+  query needs 3 of its 300 columns, so that work is what the workers take
+  over. Workers start from a scan's third chunk, so short scans and lookups
+  never pay for them, and only for files with one column group (not
+  access-controlled files).
 - **Looking up rows by id** costs the same in every mode: it decodes one
   chunk.
 - **A thread count you set yourself** (`maxDegreeOfParallelism`,

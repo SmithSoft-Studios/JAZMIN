@@ -63,6 +63,8 @@ function measure(fn) {
   process.stdout.write(JSON.stringify({ ms, maxRssMb: process.resourceUsage().maxRSS / 1024, result }));
 }
 
+const READ = process.env.JAZMIN_PRIORITY ? { priority: process.env.JAZMIN_PRIORITY } : {};
+
 const PHASES = {
   'write-jzm': () => measure(() => {
     const parallel = process.env.JAZMIN_PARALLELISM ? { maxDegreeOfParallelism: Number(process.env.JAZMIN_PARALLELISM) } : {};
@@ -92,11 +94,11 @@ const PHASES = {
     fs.closeSync(fd);
     return size;
   }),
-  'open-jzm': () => measure(() => { const r = open(jzm); const n = r.chunkCount; r.close(); return n; }),
-  'lookup-jzm': () => measure(() => { const r = open(jzm); const hit = [...r.find({ id: TARGET })][0]; r.close(); return hit.id; }),
+  'open-jzm': () => measure(() => { const r = open(jzm, READ); const n = r.chunkCount; r.close(); return n; }),
+  'lookup-jzm': () => measure(() => { const r = open(jzm, READ); const hit = [...r.find({ id: TARGET })][0]; r.close(); return hit.id; }),
   'lookup-json': () => measure(() => { for (const o of readJsonObjects(json)) if (o.id === TARGET) return o.id; return null; }),
   'project-jzm': () => measure(() => {
-    const r = open(jzm);
+    const r = open(jzm, READ);
     let sum = 0;
     for (const o of r.rows({ select: [P1, P2, P3] })) sum += (o[P1] ?? 0) + (o[P2] ?? 0) + (o[P3] ?? 0);
     r.close();
@@ -108,7 +110,7 @@ const PHASES = {
     return Math.round(sum);
   }),
   'filter-jzm': () => measure(() => {
-    const r = open(jzm);
+    const r = open(jzm, READ);
     let n = 0;
     for (const _ of r.find({ [STATUS]: 'paid', [AMOUNT]: { gt: 5_000_000 } }, { select: ['id'] })) n++;
     r.close();
@@ -119,7 +121,15 @@ const PHASES = {
     for (const o of readJsonObjects(json)) if (o[STATUS] === 'paid' && o[AMOUNT] > 5_000_000) n++;
     return n;
   }),
-  'scan-jzm': () => measure(() => { const r = open(jzm); let n = 0; for (const _ of r.rows()) n++; r.close(); return n; }),
+  'arrays-jzm': () => measure(() => {
+    const r = open(jzm, READ);
+    const { values } = r.columnArrays(null, { select: [P1, P2, P3] });
+    let sum = 0;
+    for (const name of [P1, P2, P3]) for (const v of values[name]) if (!Number.isNaN(v)) sum += v;
+    r.close();
+    return Math.round(sum);
+  }),
+  'scan-jzm': () => measure(() => { const r = open(jzm, READ); let n = 0; for (const _ of r.rows()) n++; r.close(); return n; }),
   'scan-json': () => measure(() => { let n = 0; for (const _ of readJsonObjects(json)) n++; return n; }),
 };
 

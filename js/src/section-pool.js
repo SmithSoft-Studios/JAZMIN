@@ -1,4 +1,5 @@
-// Encodes sections (compress, encrypt, checksum) on worker threads while the writer's API stays synchronous:
+// Encodes sections (compress, encrypt, checksum) on worker threads while the writer's API stays synchronous, and
+// decodes sections ahead of a reader's scan (priority 'speed'):
 // results are collected in submission order with receiveMessageOnPort, blocking with Atomics.wait when needed.
 import { MessageChannel, Worker, receiveMessageOnPort } from 'node:worker_threads';
 import { JazminError } from './errors.js';
@@ -52,6 +53,11 @@ export class SectionPool {
     }
   }
 
+  /** Worker threads. */
+  get size() {
+    return this.#workers.length;
+  }
+
   /** Chunks in flight at most: two per worker keeps every worker busy while bounding memory. */
   get capacity() {
     return this.#workers.length * 2;
@@ -94,6 +100,22 @@ export class SectionPool {
 
   /** The oldest submission's encoded section as { envelope, body } (written one after the other), waiting if needed. */
   take() {
+    const { envelope, body, error } = this.#receive();
+    if (error) throw new JazminError(`Encoding a section failed: ${error}`);
+    return { envelope: Buffer.from(envelope.buffer, envelope.byteOffset, envelope.byteLength), body: Buffer.from(body.buffer, body.byteOffset, body.byteLength) };
+  }
+
+  /**
+   * The oldest submission's decoded payload (submitted with options.decode), waiting if needed; null if decoding
+   * failed, so that the caller decodes it again itself and reports the error as it would have.
+   */
+  takeDecoded() {
+    const { body, error } = this.#receive();
+    return error ? null : Buffer.from(body.buffer, body.byteOffset, body.byteLength);
+  }
+
+  /** The oldest submission's reply, waiting if needed; its input buffer is kept for reuse. */
+  #receive() {
     const w = this.#queued.shift();
     this.#taken[w]++;
     const { port } = this.#workers[w];
@@ -102,10 +124,9 @@ export class SectionPool {
       const seen = Atomics.load(this.#signal, w);
       const received = receiveMessageOnPort(port);
       if (received) {
-        const { envelope, body, raw, error } = received.message;
+        const { raw } = received.message;
         if (raw && this.#free.length < this.capacity) this.#free.push(raw.buffer);
-        if (error) throw new JazminError(`Encoding a section failed: ${error}`);
-        return { envelope: Buffer.from(envelope.buffer, envelope.byteOffset, envelope.byteLength), body: Buffer.from(body.buffer, body.byteOffset, body.byteLength) };
+        return received.message;
       }
       if (Atomics.wait(this.#signal, w, seen, 1000) === 'timed-out' && (waited += 1000) >= STALL_MS) {
         throw new JazminError('A compression worker stopped responding');
