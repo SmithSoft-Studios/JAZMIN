@@ -83,6 +83,15 @@ public sealed class JazminKeyRotation
     public int KdfIterations { get; set; } = FormatConstants.DefaultKdfIterations;
 }
 
+/// <summary>
+/// What <see cref="JazminFile.RotateOwnerKey"/> did: the new owner key, and a new access key for each grant, in the
+/// file's grant order. Hand each person their new key; online keys also need new unlock tokens.
+/// </summary>
+public sealed record JazminOwnerKeyRotation(JazminKey OwnerKey, IReadOnlyList<JazminReissuedKey> AccessKeys);
+
+/// <summary>A grant's new access key: <see cref="PreviousKeyId"/> is the id of the key it replaces.</summary>
+public sealed record JazminReissuedKey(string PreviousKeyId, JazminAccessKey Key, string? Label, JazminGrantMode Mode, DateTimeOffset? Expires);
+
 /// <summary>What <see cref="JazminFile.RotateKey"/> did: the sections it encrypted again and the new file's size.</summary>
 public sealed record JazminKeyRotationResult(int Sections, long Bytes);
 
@@ -174,6 +183,38 @@ public static class JazminFile
     /// supported.
     /// </summary>
     public static JazminKeyRotationResult RotateKey(string path, JazminKeyRotation rotation) => WithLock(path, () => RotateUnlocked(path, rotation));
+
+    /// <summary>
+    /// A shared (access-controlled) file under a new owner key (default: generated), when the old one may have leaked.
+    /// Every access key is replaced too, since each carries its owner's fingerprint (spec 7.6.6): each grant keeps its
+    /// rows, columns, files, label, expiry and mode under a new access key. Online grants also get a new share, so they
+    /// need new unlock tokens (<see cref="IssueUnlockToken(string, JazminKey, string, DateTimeOffset?)"/> with the new
+    /// owner key). Expired grants are dropped. The file is rewritten with fresh secrets throughout, as
+    /// <see cref="Update"/> does.
+    /// </summary>
+    public static JazminOwnerKeyRotation RotateOwnerKey(string path, JazminKey key, JazminKey? newKey = null, DateTimeOffset? now = null) => WithLock(path, () =>
+    {
+        var owner = newKey ?? JazminKey.Generate();
+        var at = now ?? DateTimeOffset.UtcNow;
+        var issued = new List<JazminReissuedKey>();
+        List<JazminGrant> Regrant(List<JazminGrant> grants)
+        {
+            var next = new List<JazminGrant>();
+            foreach (var g in grants)
+            {
+                var expires = g.Expires ?? (g.ExpiresIn is { } span ? at + span : null);
+                if (expires <= at) continue; // expired: dropped, as Update drops it
+                var accessKey = owner.CreateAccessKey();
+                issued.Add(new JazminReissuedKey(g.Key.Id, accessKey, g.Label, g.Mode, expires));
+                // No share: an online grant gets a new one, which the new owner key's unlock tokens use.
+                next.Add(new JazminGrant(accessKey) { Rows = g.Rows, Columns = g.Columns, Files = g.Files, Label = g.Label, Expires = expires, Mode = g.Mode });
+            }
+            return next;
+        }
+        // The same instant for the grants checked here and those the writer drops.
+        UpdateUnlocked(path, new JazminUpdate { Key = key, Now = at }, newOwner: (owner, Regrant));
+        return new JazminOwnerKeyRotation(owner, issued);
+    });
 
     private static JazminKeyRotationResult RotateUnlocked(string path, JazminKeyRotation rotation)
     {
@@ -276,7 +317,9 @@ public static class JazminFile
         return new JazminKeyRotationResult(sections.Count + 1, bytes);
     }
 
-    private static JazminUpdateResult UpdateUnlocked(string path, JazminUpdate update, bool regroup = false)
+    // newOwner (RotateOwnerKey): the new owner key, and the grants it writes instead of the file's.
+    private static JazminUpdateResult UpdateUnlocked(string path, JazminUpdate update, bool regroup = false,
+        (JazminKey Key, Func<List<JazminGrant>, List<JazminGrant>> Grants)? newOwner = null)
     {
         ArgumentNullException.ThrowIfNull(update);
         if (update.Upsert.Count > 0 && (update.KeyColumns is null || update.KeyColumns.Count == 0))
@@ -292,6 +335,8 @@ public static class JazminFile
             if (ownerGrants is null && reader.Access is not null) throw new JazminKeyException("Only the file owner's master key can modify this file");
             if (ownerGrants is null && (update.Grant.Count > 0 || update.Revoke.Count > 0))
                 throw new JazminValidationException("Grant/Revoke apply only to access-controlled files");
+            if (ownerGrants is null && newOwner is not null)
+                throw new JazminValidationException("The file is not access-controlled: use RotateKey to change its key");
             if (reader.Tables.Count > 1)
             {
                 readers.Clear();
@@ -324,10 +369,11 @@ public static class JazminFile
 
             // The other tables of the file are copied as they are: a new version has fresh secrets throughout (spec 7.6.7).
             var access = ownerGrants is null ? null : AccessFor(reader, ownerGrants, update);
+            if (access is not null && newOwner is { } change) access.Grants = change.Grants(access.Grants);
             var several = readers.Count > 1;
             var options = new JazminWriteOptions
             {
-                Key = update.Key,
+                Key = newOwner?.Key ?? update.Key,
                 Password = update.Password,
                 KdfIterations = reader.KdfIterations ?? FormatConstants.DefaultKdfIterations,
                 Metadata = MergeMetadata(reader.Metadata, update.Metadata),

@@ -432,6 +432,15 @@ export function compact(path: string, options?: { key?: KeyInput; password?: str
 export function rotateKey(path: string, options: {
   key?: KeyInput; password?: string; newKey?: KeyInput; newPassword?: string; kdfIterations?: number;
 }): { sections: number; bytes: number };
+/**
+ * A shared (access-controlled) file under a new owner key (default: generated). Every access key is replaced too: each
+ * grant keeps its rows, columns, files, label, expiry and mode under a new key. Online grants need new unlock tokens.
+ * Expired grants are dropped. The file is rewritten with fresh secrets.
+ */
+export function rotateOwnerKey(path: string, options: { key: KeyInput; newKey?: KeyInput; now?: Date | number }): {
+  ownerKey: JazminKey;
+  accessKeys: { previous: string; key: JazminAccessKey; label?: string; mode: 'offline' | 'online'; expires?: Date }[];
+};
 /** Owner only: lets accessKey see the given partitions / column groups (rewrites the file). */
 export function grantAccess(path: string, ownerKey: KeyInput, accessKey: JazminAccessKey | string,
   grant?: { rows?: '*' | string[]; columns?: '*' | string[]; label?: string }): UpdateResult;

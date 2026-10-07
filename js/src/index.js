@@ -17,7 +17,7 @@ export { JazminWriter } from './writer.js';
 export { JazminAccessKey, JazminKey } from './keys.js';
 export { grantAccess, revokeAccess, update } from './update.js';
 export { append, compact } from './append.js';
-export { rotateKey } from './rotate.js';
+export { rotateKey, rotateOwnerKey } from './rotate.js';
 export { accessKeyOf, inspect, issueUnlockToken, listUnlockTokens } from './online.js';
 export { inferSchema } from './schema.js';
 export { compileShape, shapeSchema } from './shape.js';

@@ -11,11 +11,12 @@ import {
   PREAMBLE_SIZE, SALT_SIZE, TRAILER_SIZE,
 } from './constants.js';
 import { JazminFormatError, JazminValidationError } from './errors.js';
-import { JazminKey, KeySchedule, deriveFromPassword, hkdf } from './keys.js';
+import { grantExpiry, toMs } from './expiry.js';
+import { JazminAccessKey, JazminKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey } from './keys.js';
 import { withLock } from './lock.js';
 import { JazminReader, KEY_ROTATION } from './reader.js';
 import { encodeSection, reencryptSection } from './section.js';
-import { replaceFile, updateUnlocked } from './update.js';
+import { NEW_OWNER, replaceFile, updateUnlocked } from './update.js';
 
 const CODEC_NAMES = Object.fromEntries(Object.entries(CODEC).map(([name, id]) => [id, name]));
 
@@ -27,6 +28,35 @@ const CODEC_NAMES = Object.fromEntries(Object.entries(CODEC).map(([name, id]) =>
  */
 export function rotateKey(path, options = {}) {
   return withLock(path, () => rotateUnlocked(path, options));
+}
+
+/**
+ * A shared (access-controlled) file under a new owner key, when the old one may have leaked: rotateOwnerKey(path,
+ * { key, newKey }) with the owner key now and the new one (default: generated). Every access key is replaced too, since
+ * each carries its owner's fingerprint (spec 7.6.6): each grant keeps its rows, columns, files, label, expiry and mode
+ * under a new access key. Online grants also get a new share, so they need new unlock tokens (issueUnlockToken with the
+ * new owner key). Expired grants are dropped. The file is rewritten with fresh secrets throughout, as update() does.
+ * Returns { ownerKey, accessKeys: [{ previous (the old key's id), key, label, mode, expires }] }, in the file's grant
+ * order: hand each person their new key.
+ */
+export function rotateOwnerKey(path, { key, newKey = JazminKey.generate(), now } = {}) {
+  const owner = parseAnyKey(newKey);
+  if (!(owner instanceof JazminKey)) throw new JazminValidationError('newKey must be an owner key (jzk1-...)');
+  const at = toMs(now);
+  return withLock(path, () => {
+    const accessKeys = [];
+    const grants = (current) => current.flatMap((g) => {
+      const expires = grantExpiry(g, at);
+      if (expires !== undefined && expires <= at) return []; // expired: dropped, as update() drops it
+      const previous = (g.key instanceof JazminAccessKey ? g.key : JazminAccessKey.fromOwnerDirectory(g.key)).id;
+      const next = owner.createAccessKey();
+      accessKeys.push({ previous, key: next, label: g.label, mode: g.mode ?? 'offline', expires: expires === undefined ? undefined : new Date(expires) });
+      // No share: an online grant gets a new one, which the new owner key's unlock tokens use.
+      return [{ key: next, rows: g.rows, columns: g.columns, files: g.files, label: g.label, expires: g.expires, mode: g.mode }];
+    });
+    updateUnlocked(path, { key, now: at, [NEW_OWNER]: { key: owner, grants } }); // the instant the grants were checked against
+    return { ownerKey: owner, accessKeys };
+  });
 }
 
 function rotateUnlocked(path, { key, password, newKey, newPassword, kdfIterations = DEFAULTS.kdfIterations } = {}) {

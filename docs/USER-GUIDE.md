@@ -1058,8 +1058,35 @@ JazminFile.RotateKey(path, new JazminKeyRotation { Key = oldKey, NewKey = Jazmin
   password-encrypted one.
 - **What it can't do:** undo a leak. Anyone who held the old key and a copy
   of the old file can still read that copy.
-- **Not for access-controlled files** (section 15): their owner key also
-  seals every access key's slot.
+- **Shared (access-controlled) files** (section 15) use `rotateOwnerKey`,
+  below.
+
+**If a shared file's owner key leaks:** give the file a new owner key.
+
+```js
+const { ownerKey, accessKeys } = rotateOwnerKey('collect.jzm', { key: oldOwnerKey });
+// Store ownerKey.export() in your secret manager. Then, for each person:
+for (const k of accessKeys) send(k.label, k.key.export()); // k.previous is the id of the key it replaces
+```
+
+```csharp
+var result = JazminFile.RotateOwnerKey(path, oldOwnerKey);
+foreach (var k in result.AccessKeys) Send(k.Label, k.Key.Export()); // k.PreviousKeyId: the key it replaces
+```
+
+- **Everyone gets a new access key.** Each access key carries a stamp of
+  the owner key that issued it, and readers check that stamp to catch
+  forged files, so no old key can work with a new owner key. Each new key
+  opens exactly what the old one did: the same rows, columns, embedded
+  files, label, expiry and mode.
+- **Online keys need new unlock tokens:** issue them with the new owner key
+  (`issueUnlockToken` / `JazminFile.IssueUnlockToken`).
+- **Expired grants are dropped,** as `update()` drops them.
+- **The file is rewritten** with fresh secrets throughout, as `update()`
+  does. Afterwards, neither the old owner key nor any old access key opens
+  it.
+- **If only one person's access key leaks,** you don't need this:
+  `revokeAccess()` and `grantAccess()` replace just that key (section 15).
 
 **Sharing one file with many people:** give each person an access key that opens only their rows and
 columns. See [section 15](#15-access-control-one-file-many-keys).

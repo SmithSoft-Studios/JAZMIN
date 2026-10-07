@@ -97,6 +97,9 @@ export function columnsWithIndexes(reader) {
   return reader.columns.map((c) => ({ ...c, index: indexKinds.get(c.name) ?? [] }));
 }
 
+/** Internal (rotateOwnerKey): { key, grants(grants) } - the new owner key, and the grants it writes instead. */
+export const NEW_OWNER = Symbol('jazmin.newOwner');
+
 /** update() without taking the file lock (the caller holds it). */
 export function updateUnlocked(path, options = {}) {
   const {
@@ -116,6 +119,8 @@ export function updateUnlocked(path, options = {}) {
     const owner = reader[OWNER_GRANTS];
     if (!owner && reader.access) throw new JazminKeyError("Only the file owner's master key can modify this file");
     if (!owner && (grant.length || revoke.length)) throw new JazminValidationError('grant/revoke apply only to access-controlled files');
+    const newOwner = options[NEW_OWNER];
+    if (newOwner && !owner) throw new JazminValidationError('The file is not access-controlled: use rotateKey() to change its key');
     if (reader.tables.length > 1) {
       readers.length = 0;
       for (const name of reader.tables) readers.push(name === reader.table ? reader : new JazminReader(path, { key, password, table: name }));
@@ -148,7 +153,8 @@ export function updateUnlocked(path, options = {}) {
     const isDeleted = deleteWhere ? compileFilter(deleteWhere, columns) : null;
 
     // The other tables of the file are copied as they are: a new version has fresh secrets throughout (spec 7.6.7).
-    const access = owner ? accessFor(owner, grant, revoke) : undefined;
+    let access = owner ? accessFor(owner, grant, revoke) : undefined;
+    if (newOwner) access = { ...access, grants: newOwner.grants(access.grants) };
     const several = readers.length > 1;
     writer = new JazminWriter(temp, {
       ...(several
@@ -157,7 +163,7 @@ export function updateUnlocked(path, options = {}) {
       metadata: { ...reader.metadata, ...(metadata ?? {}) },
       codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, layout,
       compactIndexes: compactIndexes ?? reader[COMPACT_INDEXES],
-      key, password, kdfIterations: reader.kdfIterations,
+      key: newOwner ? newOwner.key : key, password, kdfIterations: reader.kdfIterations,
       access: access && several ? { grants: access.grants } : access,
       now, // expired grants are dropped, and the new version's fresh secrets lock them out
       files: [...carriedFiles(reader, addFiles, removeFiles), ...addFiles],

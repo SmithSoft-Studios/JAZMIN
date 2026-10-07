@@ -153,6 +153,19 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   write loop.
 
 ### Added
+- **A new owner key for a shared file: `rotateOwnerKey()` /
+  `JazminFile.RotateOwnerKey`**, for when the owner key may have leaked.
+  - **Every access key is replaced:** each one carries a stamp of the owner
+    key that issued it, and readers check it, so none can survive the
+    change. Each new key opens exactly what the old one did: rows, columns,
+    embedded files, label, expiry and mode. The result lists them with the
+    id of the key each replaces, to hand out.
+  - **Online keys need new unlock tokens,** issued with the new owner key.
+    Expired grants are dropped.
+  - **The file is rewritten** with fresh secrets. Neither the old owner key
+    nor any old access key opens it afterwards.
+  - **Checked across libraries:** each library reads the other's re-keyed
+    shared file with the new keys, every key seeing what it saw before.
 - **.NET: rows as a JSON stream or JSON tokens (TASKS J-3).** For code that
   already consumes JSON (user guide 11.2):
   - **`JazminJsonStream`:** a query's rows as UTF-8 JSON, written as it is
@@ -177,8 +190,7 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   - **Files with appends** are compacted first, so their earlier versions,
     still under the old key, are not kept.
   - **Keys and passwords can change places.**
-  - **Not for access-controlled files:** their owner key also seals every
-    access key's slot.
+  - **Shared (access-controlled) files:** see `rotateOwnerKey` below.
   - **Checked across libraries:** each library reads the files the other
     rotated, with the same rows and embedded files.
 - **Compact indexes, opt-in: `compactIndexes` (.NET `CompactIndexes`).**
