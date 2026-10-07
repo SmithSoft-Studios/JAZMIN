@@ -124,7 +124,7 @@ test('serveFiles serves under a prefix, streams ranges, and passes other request
 });
 
 test("the document policy is the viewer's", () => {
-  const source = fs.readFileSync(path.resolve(here, '../viewer/viewer.js'), 'utf8');
+  const source = fs.readFileSync(path.resolve(here, '../viewer/viewer.js'), 'utf8').replace(/\r\n/g, '\n'); // Windows checkouts: CRLF
   const start = source.indexOf('function policy(settings) {');
   const end = source.indexOf('\n  }\n', start);
   const viewerPolicy = vm.runInNewContext(`(${source.slice(start, end + 4)})`);
