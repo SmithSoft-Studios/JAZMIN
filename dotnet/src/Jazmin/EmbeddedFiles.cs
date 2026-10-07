@@ -217,7 +217,7 @@ internal sealed class StoredContent
         static bool Entry(JsonNode? f) => f is JsonObject o && Text(o["path"]) && Text(o["type"]) && Count(o["content"], int.MaxValue)
             && (o["groups"] is null || o["groups"] is JsonArray g && g.All(Text));
 
-        var json = Values.ParseJson(text, "An embedded-file directory") as JsonObject;
+        var json = Values.ParseJson(text, "An embedded-file directory", uniqueNames: true) as JsonObject;
         if (json?["contents"] is not JsonArray contents || json["files"] is not JsonArray files || !contents.All(Content) || !files.All(Entry))
             throw new JazminFormatException("An embedded-file directory is malformed");
         return json;

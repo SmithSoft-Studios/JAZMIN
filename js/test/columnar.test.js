@@ -188,4 +188,7 @@ test('malformed column streams are rejected', () => {
   assert.throws(() => decodeColumnar(stream(ENCODING.dictionary, [1, 1, 0x61, 3]), ['string'], 1, 0), /out of range/);
   assert.throws(() => decodeColumnar(Buffer.concat([good, Buffer.from([0])]), ['string'], 4, 0), JazminFormatError);
   assert.throws(() => decodeColumnar(stream(ENCODING.plain, [2]), ['int'], 2, 0), JazminFormatError); // too short
+  // A dictionary of 2³² entries: more than the stream holds, and more than an array can (a RangeError before).
+  const huge = [0x80, 0x80, 0x80, 0x80, 0x10, 1, 0x61, 0];
+  assert.throws(() => decodeColumnar(stream(ENCODING.dictionary, huge), ['string'], 1, 0), /invalid dictionary size/);
 });

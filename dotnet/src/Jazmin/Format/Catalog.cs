@@ -162,7 +162,14 @@ internal static class Catalog
     private static List<long> Cumulative(List<long> values)
     {
         long total = 0;
-        for (var i = 0; i < values.Count; i++) values[i] = total = checked(total + values[i]);
+        try
+        {
+            for (var i = 0; i < values.Count; i++) values[i] = total = checked(total + values[i]);
+        }
+        catch (OverflowException)
+        {
+            throw Bad("value out of range");
+        }
         return values;
     }
 

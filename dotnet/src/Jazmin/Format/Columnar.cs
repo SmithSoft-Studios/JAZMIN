@@ -269,7 +269,8 @@ internal static class Columnar
                 case Dictionary:
                 {
                     var k = reader.VarUInt();
-                    if (k < 1 || k > (ulong)(end - reader.Position)) throw new JazminFormatException($"Chunk {ordinal}: invalid dictionary size"); // each entry takes at least one byte
+                    // Each entry takes at least one byte. The nulls bitmap or k itself may already have run past the stream.
+                    if (k < 1 || reader.Position > end || k > (ulong)(end - reader.Position)) throw new JazminFormatException($"Chunk {ordinal}: invalid dictionary size");
                     var entries = new string[(int)k];
                     for (var i = 0; i < entries.Length; i++)
                         entries[i] = type == JazminType.Decimal ? Decimals.ReadText(reader) : strings?.Read(reader) ?? reader.String();

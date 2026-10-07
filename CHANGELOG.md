@@ -29,6 +29,25 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     the browser reader. Other column names are unaffected, and reading is
     as fast as before.
   - **Not affected:** .NET.
+- **Some damaged files failed with a .NET or JavaScript error instead of a
+  JAZMIN error.** The first long fuzz run found three causes in .NET; one of
+  them was in JS too. Each now fails with `JazminFormatException` /
+  `JazminFormatError`, and `spec/fixtures/damaged/` holds files that showed
+  them, so both test suites keep checking.
+  - **A name repeated in a JSON object** of the reader's own: the metadata,
+    the embedded-file directory, package settings, column attributes or the
+    owner directory. .NET threw `ArgumentException` when the object was
+    first used; it now rejects the file. Neither library writes such JSON.
+    JS keeps reading it, with the last value winning, as `JSON.parse` does.
+    Values of `json` columns are not checked: that would make them about
+    1.5 times slower to read.
+  - **A dictionary column whose size didn't fit its stream:**
+    `OverflowException` or `IndexOutOfRangeException` in .NET, `RangeError`
+    in JS.
+  - **.NET: an index directory whose offsets added up past the largest
+    number:** `OverflowException`.
+  - **Not affected:** files the libraries wrote, and the speed of reading
+    them.
 - **Security notes: what package scanners report (SECURITY.md).** Why the
   reader generates code (`new Function`), and why that is safe; the one
   environment variable the library reads; file access; and the one URL in

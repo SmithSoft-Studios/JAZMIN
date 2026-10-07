@@ -475,7 +475,8 @@ export function decodeColumnar(raw, types, rowCount, ordinal, wanted, datesAsMs 
       }
       case ENCODING.dictionary: {
         const k = stream.varUint();
-        if (typeof k !== 'number' || k < 1) throw new JazminFormatError(`Chunk ${ordinal}: invalid dictionary size`);
+        // Each entry takes at least one byte.
+        if (typeof k !== 'number' || k < 1 || k > end - stream.pos) throw new JazminFormatError(`Chunk ${ordinal}: invalid dictionary size`);
         const entries = new Array(k);
         for (let i = 0; i < k; i++) entries[i] = type === 'decimal' ? readDecimal(stream) : stream.string();
         for (let i = 0; i < count; i++) {

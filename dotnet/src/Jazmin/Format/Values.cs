@@ -87,12 +87,20 @@ internal static class Values
         _ => null,
     };
 
+    private static readonly JsonDocumentOptions UniqueNames = new() { AllowDuplicateProperties = false };
+
     /// <summary>Parses JSON text read from a file: damaged text is a <see cref="JazminFormatException"/>.</summary>
-    public static JsonNode? ParseJson(string text, string what)
+    /// <remarks>
+    /// uniqueNames is true for the JSON the reader itself uses (metadata, directories, settings, attributes): a name repeated
+    /// in an object is then a format error, not an <see cref="ArgumentException"/> when the object is first used. Values of
+    /// json columns are not checked: the check reads the whole text at once, and json values would be about 1.5 times slower
+    /// to read.
+    /// </remarks>
+    public static JsonNode? ParseJson(string text, string what, bool uniqueNames = false)
     {
         try
         {
-            return JsonNode.Parse(text);
+            return uniqueNames ? JsonNode.Parse(text, documentOptions: UniqueNames) : JsonNode.Parse(text);
         }
         catch (JsonException e)
         {

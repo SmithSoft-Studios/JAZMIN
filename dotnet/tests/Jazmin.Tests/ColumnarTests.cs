@@ -240,4 +240,22 @@ public class ColumnarTests
         Assert.Throws<JazminFormatException>(() => Columnar.Decode(good.Concat(new byte[] { 0 }).ToArray(), new[] { JazminType.String }, 4, 0));
         Assert.ThrowsAny<JazminException>(() => Columnar.Decode(Stream(Columnar.Plain, 2), new[] { JazminType.Int }, 2, 0));
     }
+
+    [Fact]
+    public void DictionaryStream_ReadPastItsEnd_IsRejected()
+    {
+        // Fuzz findings: the nulls bitmap ran past the end of the stream, so the dictionary size was checked against a
+        // negative length left. A size whose int was negative failed to allocate (OverflowException); one that wrapped to a
+        // small array was indexed past its end (IndexOutOfRangeException).
+        foreach (var size in new ulong[] { 0x1_0000_0002, 0xffff_ffff })
+        {
+            var w = new ByteWriter();
+            w.VarUInt(1); // the stream holds only its flags
+            w.Byte(Columnar.Dictionary | 0x10); // with nulls
+            w.Bytes(new byte[] { 0, 0 }); // nulls of 16 rows, none null
+            w.VarUInt(size);
+            w.Bytes(new byte[] { 1, 0x61, 1, 0x62, 5, 5 }); // entries "a" and "b", then ids
+            Assert.Throws<JazminFormatException>(() => Columnar.Decode(w.ToArray(), new[] { JazminType.String }, 16, 0));
+        }
+    }
 }

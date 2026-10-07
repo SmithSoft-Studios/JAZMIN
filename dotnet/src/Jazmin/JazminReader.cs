@@ -240,7 +240,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                     if (!FormatConstants.SupportedReaderFeatures.Contains(feature))
                         throw new JazminFormatException($"This file needs the '{feature}' feature, which this JAZMIN reader does not support");
                 }
-                _metadata = _header.Metadata.Length == 0 ? new JsonObject() : Values.ParseJson(_header.Metadata, "Metadata") as JsonObject ?? throw new JazminFormatException("Metadata is not a JSON object");
+                _metadata = _header.Metadata.Length == 0 ? new JsonObject() : Values.ParseJson(_header.Metadata, "Metadata", uniqueNames: true) as JsonObject ?? throw new JazminFormatException("Metadata is not a JSON object");
                 if (_keys is not null) _keys.Keyring = _header.Keyring ?? new Dictionary<string, byte[]>();
             }
             else
@@ -550,7 +550,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 {
                     Nullable = !c.Required,
                     Description = c.Description,
-                    Attributes = c.Attributes is null ? null : Values.ParseJson(c.Attributes, "Column attributes") as JsonObject,
+                    Attributes = c.Attributes is null ? null : Values.ParseJson(c.Attributes, "Column attributes", uniqueNames: true) as JsonObject,
                 };
                 groupOf[c.Position] = gi;
             }
@@ -769,7 +769,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             var at = _header.Access?.OwnerDirectory ?? throw new JazminFormatException("Owner directory is missing");
             var text = Encoding.UTF8.GetString(ReadSection(at, "owner", AccessCrypto.OwnerDirectoryKey(_access.Secrets!.Owner, _salt)));
             _access.DirectoryText = text;
-            _access.Directory = Values.ParseJson(text, "The owner directory") as JsonObject ?? throw new JazminFormatException("The owner directory is not a JSON object");
+            _access.Directory = Values.ParseJson(text, "The owner directory", uniqueNames: true) as JsonObject ?? throw new JazminFormatException("The owner directory is not a JSON object");
         }
         return _access.Directory;
     }
@@ -866,7 +866,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         }
     }
 
-    private JsonObject? PackageJson => _header.Files is { Package.Length: > 0 } files ? Values.ParseJson(files.Package, "Package settings") as JsonObject : null;
+    private JsonObject? PackageJson => _header.Files is { Package.Length: > 0 } files ? Values.ParseJson(files.Package, "Package settings", uniqueNames: true) as JsonObject : null;
 
     /// <summary>Settings for viewers that render the embedded files, or null.</summary>
     public JazminPackage? Package => EmbeddedFiles.PackageFrom(PackageJson);
