@@ -2059,7 +2059,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     public IEnumerable<T> Query<T>(Expression<Func<T, bool>>? predicate, JazminSerializerSettings? settings = null)
     {
         var map = TypeMap.For(typeof(T), settings);
-        var translation = predicate is null ? null : Translate(predicate, map);
+        // Rows that refer to objects earlier rows define store no values of their own: every row is read, in order, and
+        // checked as an object.
+        var translation = predicate is null ? null : map.PreservesReferences ? new Translation(null, false) : Translate(predicate, map);
         // An exact translation already selects precisely the predicate's rows: skip compiling it.
         var check = predicate is null || translation!.Exact ? null : predicate.Compile();
         return TypedRows(map, settings, translation?.Filter, check);

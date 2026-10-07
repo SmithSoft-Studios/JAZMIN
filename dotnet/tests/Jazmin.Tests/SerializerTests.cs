@@ -226,5 +226,24 @@ public class LinqTests
         Assert.Equal("index", reader.Explain(filter).Strategy);
     }
 
+    public sealed class Pet
+    {
+        public string Name { get; set; } = "";
+    }
+
+    [Fact]
+    public void FilesThatPreserveReferences_CheckEveryRow_SoReferencedObjectsMatchAndResolve()
+    {
+        // Rows 3-5 only refer to rows 1-2: a filter on their stored values would miss them, or drop the rows they refer to.
+        var (a, b) = (new Pet { Name = "a" }, new Pet { Name = "b" });
+        var pets = new List<Pet> { a, b, a, b, a };
+        var settings = new JazminSerializerSettings { PreserveReferencesHandling = PreserveReferencesHandling.Objects };
+        using var reader = JazminReader.Open(JazminConvert.SerializeObject(pets, settings));
+        Assert.Equal(["a", "a", "a"], reader.Query<Pet>(p => p.Name == "a", settings).Select(p => p.Name));
+        Assert.Equal(["a", "a", "a"], reader.Query<Pet>(p => p.Name != "b", settings).Select(p => p.Name));
+        var found = reader.Query<Pet>(p => p.Name == "a", settings).ToList();
+        Assert.Same(found[0], found[2]);
+    }
+
     private static Func<System.Reflection.MemberInfo, JazminColumn?> TypeMapFor<T>() => Serialization.TypeMap.For(typeof(T)).ColumnFor;
 }

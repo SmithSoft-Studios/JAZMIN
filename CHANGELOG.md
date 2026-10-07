@@ -6,6 +6,18 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Fixed
+- **.NET: `Query<T>` with a condition gave wrong results on files that
+  preserve references** (`PreserveReferencesHandling.Objects`). In those
+  files a repeated object is stored once; later rows only refer to it and
+  store no values of their own.
+  - **Before:** the condition was checked against stored values, so rows
+    that only referred to a matching object were missed (1 match instead
+    of 3 in the test), and a referring row whose earlier row was filtered
+    out failed with "A row refers to object ..., which no earlier row
+    defines". `QueryAsync<T>` was affected too.
+  - **Now:** for these files every row is read in order and the condition
+    is checked on each object, as LINQ over the list does. Other files are
+    unaffected.
 - **JS: writes with Node heap options ran up to 20% slower in 1.1.0.** The
   fix for parallel writes under `node -e` gave the compression workers the
   process's Node options explicitly, and passed that way, heap options such
