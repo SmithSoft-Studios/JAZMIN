@@ -460,6 +460,7 @@ internal static class Fuzzing
             () => Columnar.Decode(input, Enumerable.Range(0, 1 + rnd.Int(4)).Select(_ => rnd.Pick(types)).ToArray(), rnd.Int(300), 0),
             () => Columnar.DecodeTyped(input, input.Length, Enumerable.Range(0, 1 + rnd.Int(4)).Select(_ => rnd.Pick(types)).ToArray(), rnd.Int(300), 0),
             () => SortedIndex.DecodePage(input, rnd.Pick(types)),
+            () => SortedIndex.DecodePage(input, rnd.Pick(types), deltas: true), // keys as differences (reader feature index-deltas)
             () => TrigramIndex.Decode(input),
             () => RowSet.DecodeSection(input, "Rows"),
             () => AccessCrypto.FindKeySlotPage(input, input.AsSpan(0, Math.Min(8, input.Length))),

@@ -149,6 +149,12 @@ export interface WriteOptions {
   maxDegreeOfParallelism?: number;
   /** Memory or speed first (default 'balanced'): sets the default of maxDegreeOfParallelism. */
   priority?: JazminPriority;
+  /**
+   * Sorted indexes with keys and first row ids as differences from the previous entry's (reader feature
+   * 'index-deltas'): much smaller for whole numbers and dates, and lookups as fast or faster. Readers before 1.2 refuse
+   * such files, naming the feature. Default false until 2.0. An append keeps the file's choice.
+   */
+  compactIndexes?: boolean;
   /** Files to embed. Identical content is stored once. */
   files?: FileInput[];
   package?: PackageSettings;
@@ -357,6 +363,8 @@ export interface UpdateOptions {
   maxDegreeOfParallelism?: number;
   /** Memory or speed first while the file is rewritten (default 'balanced'). */
   priority?: JazminPriority;
+  /** Sorted indexes with keys as differences (see WriteOptions.compactIndexes). Default: as the file has them. */
+  compactIndexes?: boolean;
   /** Clock used to drop expired grants (default: the system clock). */
   now?: Date | number;
   /** Embedded files to add (a path that exists is replaced). */
@@ -380,7 +388,7 @@ export interface UpdateResult {
 /** Streams the file into a new version with the changes applied, then atomically replaces it. */
 export function update(path: string, options: UpdateOptions): UpdateResult;
 
-export interface AppendOptions extends Omit<UpdateOptions, 'revoke'> {
+export interface AppendOptions extends Omit<UpdateOptions, 'revoke' | 'compactIndexes'> {
   /** Compact automatically afterwards when either threshold is reached. */
   autoCompact?: { deletedRatio?: number; appends?: number };
 }

@@ -5,7 +5,7 @@ import { compileFilter } from './filter.js';
 import { grantExpiry, toMs } from './expiry.js';
 import { JazminAccessKey, parseAnyKey } from './keys.js';
 import { FILE_SOURCE } from './files.js';
-import { FILE_STATE, JazminReader, OWNER_GRANTS, ROWS_BY_PARTITION } from './reader.js';
+import { COMPACT_INDEXES, FILE_STATE, JazminReader, OWNER_GRANTS, ROWS_BY_PARTITION } from './reader.js';
 import { compareKeys, normalizeValue, toKey } from './types.js';
 import { withLock } from './lock.js';
 import { JazminWriter } from './writer.js';
@@ -81,6 +81,7 @@ function compareTuples(a, b) {
  *   metadata: {...}     merged into the existing metadata
  *   grant: [{ key, rows, columns, label }], revoke: [accessKey]   (access-controlled files)
  *   codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority   output settings (defaults as for a new file)
+ *   compactIndexes      sorted indexes with keys as differences (default: as the file has them)
  *   addFiles, removeFiles, package        embedded files: add or replace, remove (by path), viewer settings
  *
  * Returns { rowCount, inserted, updated, deleted }.
@@ -100,7 +101,7 @@ export function columnsWithIndexes(reader) {
 export function updateUnlocked(path, options = {}) {
   const {
     key, password, insert = [], upsert = [], keyColumns, delete: deleteWhere, metadata,
-    grant = [], revoke = [], codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, now, layout,
+    grant = [], revoke = [], codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, compactIndexes, now, layout,
     addFiles = [], removeFiles = [], package: packageSettings, table, regroup = false,
   } = options;
   if (upsert.length && (!Array.isArray(keyColumns) || keyColumns.length === 0)) {
@@ -155,6 +156,7 @@ export function updateUnlocked(path, options = {}) {
         : { columns, sortedBy }),
       metadata: { ...reader.metadata, ...(metadata ?? {}) },
       codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, layout,
+      compactIndexes: compactIndexes ?? reader[COMPACT_INDEXES],
       key, password, kdfIterations: reader.kdfIterations,
       access: access && several ? { grants: access.grants } : access,
       now, // expired grants are dropped, and the new version's fresh secrets lock them out

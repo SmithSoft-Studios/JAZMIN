@@ -23,7 +23,14 @@ internal static class FormatConstants
     public const ushort KnownFlags = 0x000f;
 
     /// <summary>Reader features this library supports (none are defined in format 1.0).</summary>
-    public static readonly IReadOnlySet<string> SupportedReaderFeatures = new HashSet<string>();
+    /// <summary>
+    /// Reader feature 'index-deltas' (spec 8.1): sorted index pages with encoding 1, whose keys and first row ids are
+    /// differences from the previous entry's. Written only when asked for (CompactIndexes) until 2.0.
+    /// </summary>
+    public const string IndexDeltas = "index-deltas";
+    public const byte IndexDeltasEncoding = 1;
+
+    public static readonly IReadOnlySet<string> SupportedReaderFeatures = new HashSet<string> { IndexDeltas };
 
     public const string DefaultColumnGroup = "*";
     public const string WholeTable = "*"; // partition of a table without partitionBy

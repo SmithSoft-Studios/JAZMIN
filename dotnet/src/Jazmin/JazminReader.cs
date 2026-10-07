@@ -334,6 +334,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         return new JazminReader(_stream, new JazminReadOptions { Table = name, Priority = _priority, MaxDegreeOfParallelism = _readAhead }, _leaveOpen, this);
     }
 
+    /// <summary>Whether the file's sorted indexes may hold keys as differences (reader feature 'index-deltas'); update keeps them.</summary>
+    internal bool CompactIndexes => _header.ReaderFeatures.Contains(FormatConstants.IndexDeltas);
+
     /// <summary>Lets go of the shared stream: the last reader closes it (unless leaveOpen).</summary>
     private void Release()
     {
@@ -1377,7 +1380,8 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 index = Combine(infos.Select(info =>
                 {
                     var baseId = FormatConstants.IndexSectionId(_tableIndex, column, kind, info.Segment);
-                    return (IIndex)new PagedSortedIndex(Catalog.DecodeIndexDirectory(Read(baseId, info.Section)), type, (part, page) => Read($"{baseId}/{part}", page));
+                    return (IIndex)new PagedSortedIndex(Catalog.DecodeIndexDirectory(Read(baseId, info.Section)), type, (part, page) => Read($"{baseId}/{part}", page),
+                        CompactIndexes);
                 }).ToList());
             }
             else

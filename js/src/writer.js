@@ -14,7 +14,7 @@ import {
 import { columnBuffer, encodeColumnBuffers } from './columnar.js';
 import { EVERYONE, FILE_BLOCK_SIZE, FILE_SOURCE, fileSource, normalizePackage } from './files.js';
 import {
-  DEFAULTS, DEFAULT_COLUMN_GROUP, FILE_ID_SIZE, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, INLINE_PARTITIONS,
+  DEFAULTS, DEFAULT_COLUMN_GROUP, FILE_ID_SIZE, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, INDEX_DELTAS, INLINE_PARTITIONS,
   KEYRING_GROUPS, MAGIC, MAX_KDF_ITERATIONS, MIN_KDF_ITERATIONS, PREAMBLE_SIZE, SALT_SIZE, TRAILER_SIZE, WHOLE_TABLE,
 } from './constants.js';
 import { JazminValidationError } from './errors.js';
@@ -256,6 +256,8 @@ export class JazminWriter {
   #package; // package settings for viewers (validated at finish)
   #fileGroupNames = []; // access mode: names of the file groups written
   #parallelism; // threads encoding chunk sections (1 = this thread only)
+  #indexDeltas = false; // sorted index pages with keys and first row ids as differences (reader feature 'index-deltas')
+  #usesIndexDeltas = false; // a page was written that way: the header names the feature
   #pool = null; // SectionPool, started from the third chunk so small files never pay for workers
   #pending = []; // chunk parts being encoded by the pool, in file order: { entry, group }
 
@@ -263,10 +265,11 @@ export class JazminWriter {
     const {
       columns, metadata = {}, codec = DEFAULTS.codec, level, chunkRows = DEFAULTS.chunkRows,
       chunkBytes = DEFAULTS.chunkBytes, key, password, kdfIterations = DEFAULTS.kdfIterations, sortedBy, access, now,
-      layout, files, package: packageSettings, tables, priority = 'balanced',
+      layout, files, package: packageSettings, tables, priority = 'balanced', compactIndexes = false,
     } = options;
     const { maxDegreeOfParallelism = writeThreads(priority) } = options;
     checkPriority(priority);
+    if (typeof compactIndexes !== 'boolean') throw new JazminValidationError('compactIndexes must be true or false');
     if (!Number.isInteger(maxDegreeOfParallelism) || maxDegreeOfParallelism < 1) {
       throw new JazminValidationError('maxDegreeOfParallelism must be a positive integer');
     }
@@ -287,6 +290,8 @@ export class JazminWriter {
     };
     const cont = options[CONTINUE];
     this.#continue = cont ?? null;
+    // An append keeps the file's index encoding: its readers already support it (or the file would not use it).
+    this.#indexDeltas = cont ? cont.header.readerFeatures.includes(INDEX_DELTAS) : compactIndexes;
     if (access !== undefined) checkAccessOptions(access);
     if (tables !== undefined) {
       if (!Array.isArray(tables) || tables.length === 0) throw new JazminValidationError('tables must be a non-empty array of table definitions');
@@ -718,9 +723,12 @@ export class JazminWriter {
     const segment = cont ? cont.header.appendCount + 1 : 0;
     const tables = cont ? cont.header.tables.map((t, i) => this.#written[i]?.table ?? t) : this.#written.map((w) => w.table);
     const deltas = this.#deltas;
+    // Features are named when, and only when, the file uses them (spec 12); an append keeps the file's.
+    const readerFeatures = new Set(cont ? cont.header.readerFeatures : []);
+    if (this.#usesIndexDeltas) readerFeatures.add(INDEX_DELTAS);
     const header = {
-      readerFeatures: [],
-      writerFeatures: [],
+      readerFeatures: [...readerFeatures],
+      writerFeatures: cont ? cont.header.writerFeatures : [],
       created: cont ? cont.header.created : this.#options.now,
       modified: cont ? this.#options.now : 0,
       appendCount: segment,
@@ -825,7 +833,8 @@ export class JazminWriter {
       const base = `${this.#tableIndex}/index/${ix.column}/${ix.kind}${suffix}`;
       if (ix.kind === 'trigram') return { column: ix.column, kind: ix.kind, section: this.#writeSection(ix.builder.encode(), base, key(base)), segment };
       const pages = [];
-      for (const page of ix.builder.pages(this.#options.pageBytes)) {
+      for (const page of ix.builder.pages(this.#options.pageBytes, this.#indexDeltas)) {
+        this.#usesIndexDeltas ||= this.#indexDeltas;
         const sectionId = `${base}/page/${pages.length}`;
         pages.push({ first: page.first, count: page.count, ...this.#writeSection(page.raw, sectionId, key(sectionId)) });
       }

@@ -69,6 +69,8 @@ write(path.join(dir, 'js-access.jzm'), rows, { ...base, key: keys.key, access: a
 
 // Sorted indexes in many small pages (spec 8.3).
 write(path.join(dir, 'js-paged-key.jzm'), rows, { ...base, key: keys.key, [PAGING]: { pageBytes: 512 } });
+// The same, with keys and first row ids as differences (reader feature 'index-deltas', spec 8.1).
+write(path.join(dir, 'js-paged-compact.jzm'), rows, { ...base, compactIndexes: true, [PAGING]: { pageBytes: 512 } });
 
 // Embedded files (spec 6.8).
 const withFiles = { ...base, files: fixtureFiles(), package: FIXTURE_PACKAGE };

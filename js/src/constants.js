@@ -23,8 +23,15 @@ export const CODEC = Object.freeze({ none: 0, deflate: 1, brotli: 2 });
 
 export const KEYRING_GROUPS = Object.freeze({ data: 'data', index: 'index', files: 'files' });
 
-/** Reader features this implementation supports (spec 12). Format 1.0 defines none. */
-export const SUPPORTED_READER_FEATURES = new Set();
+/**
+ * Reader feature 'index-deltas' (spec 8.1): sorted index pages with encoding 1, whose keys and first row ids are
+ * differences from the previous entry's. Written only when asked for (compactIndexes) until 2.0.
+ */
+export const INDEX_DELTAS = 'index-deltas';
+export const INDEX_DELTAS_ENCODING = 1;
+
+/** Reader features this implementation supports (spec 12). */
+export const SUPPORTED_READER_FEATURES = new Set([INDEX_DELTAS]);
 export const SUPPORTED_WRITER_FEATURES = new Set();
 
 export const DEFAULTS = Object.freeze({

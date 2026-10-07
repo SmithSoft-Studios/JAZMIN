@@ -487,23 +487,29 @@ public class InteropTests
     [InlineData("js-key.jzm")]
     [InlineData("js-password.jzm")]
     [InlineData("js-paged-key.jzm")]
+    [InlineData("js-paged-compact.jzm")] // sorted index keys as differences (reader feature 'index-deltas')
     [InlineData("browser-plain.jzm")] // written by the browser writer (js/browser), without indexes
     [InlineData("browser-key.jzm")]
     [InlineData("browser-password.jzm")]
     public void ReadsFilesWrittenByJavaScript(string file) => AssertMatchesDataset(file);
 
-    /// <summary>Sorted indexes in many small pages (spec 8.1), read back by the JavaScript tests.</summary>
-    [Fact]
-    public void WritesPagedIndexFixtureForJavaScript()
+    /// <summary>
+    /// Sorted indexes in many small pages (spec 8.1), read back by the JavaScript tests; the compact one has keys and
+    /// first row ids as differences (reader feature 'index-deltas').
+    /// </summary>
+    [Theory]
+    [InlineData("dotnet-paged-key.jzm", false)]
+    [InlineData("dotnet-paged-compact.jzm", true)]
+    public void WritesPagedIndexFixtureForJavaScript(string file, bool compact)
     {
-        const string file = "dotnet-paged-key.jzm";
         var columns = DatasetColumns();
         var options = new JazminWriteOptions
         {
             ChunkRows = 64,
             Metadata = Dataset["metadata"]!.DeepClone().AsObject(),
-            Key = JazminKey.Parse((string)Keys["key"]!),
+            Key = compact ? null : JazminKey.Parse((string)Keys["key"]!),
             IndexPageBytes = 512,
+            CompactIndexes = compact,
         };
         using (var writer = JazminWriter.Create(Path.Combine(OutDir, file), columns, options))
         {

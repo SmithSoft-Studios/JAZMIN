@@ -147,6 +147,38 @@ A `sorted` index is stored in pages of about 64 KiB. For a column with
 millions of different account numbers, a lookup reads a small directory and
 one page, rather than the whole index. A small index is a single page.
 
+A `sorted` index on the first `sortedBy` column is not written: chunk
+statistics already find its values.
+
+**Compact indexes** (`compactIndexes: true`, .NET `CompactIndexes = true`)
+store each key as its difference from the previous one (text: only the part
+after what it shares with the previous key). Indexes on whole numbers and
+dates become much smaller, and lookups are as fast or faster: there is less
+to read and decompress.
+
+```js
+write('accounts.jzm', rows, { columns, compactIndexes: true });
+update('accounts.jzm', { compactIndexes: false }); // back to what every reader reads
+```
+
+```csharp
+using var writer = JazminWriter.Create(path, columns, new JazminWriteOptions { CompactIndexes = true });
+JazminFile.Update(path, new JazminUpdate { CompactIndexes = false });
+```
+
+- **Who can read them:** JAZMIN 1.2 and later, in Node, .NET and the
+  browser. Readers before 1.2 refuse such a file with a clear message that
+  names the feature (`index-deltas`). Use them once every reader of your
+  files is on 1.2.
+- **Default:** off until 2.0, so new files stay readable by 1.0 and 1.1.
+- **Appends** keep the file's choice; `update()` and `compact()` keep it
+  unless you pass the option.
+- **Measured** on 200,000 rows with indexes on an id, a code and a date: the
+  file is 1.8 MB instead of 4.5 MB, and lookups took 5–16% less time. On the
+  proposals benchmark (200,000 transactions, sorted by time) the indexes
+  are 2.4 MB instead of 3.4 MB: a unique random reference code can't be
+  stored in less space.
+
 ### 3.4 Encryption in one paragraph
 
 You supply either a **key** or a **password**:
@@ -749,6 +781,7 @@ again on 7 October 2026.
 | `chunkRows` | 4096 | Lower (e.g. 512) for many single-row lookups; higher for whole-file reads |
 | `select` (query option) | every column | List only the columns you need. Only those, and the columns the filter uses, are decoded, on every kind of query: scans, index lookups and access-controlled files. In access-controlled files, a column group none of whose columns is needed is not read at all. A one-column read through an index took 45% of the time of reading every column |
 | indexes | none | Add `sorted` to columns used in `eq` / range filters, and `trigram` to text searched with `contains`. A `sorted` index on the first `sortedBy` column is not written, because chunk statistics already find its values; readers never used it. Large sorted indexes are paged automatically |
+| `compactIndexes` (JS) / `CompactIndexes` (.NET) | off | Turn on for much smaller indexes on whole numbers and dates, once every reader of the file is on 1.2 or later (3.3) |
 | `kdfIterations` | 600,000 | Do not lower it in production. It only affects password-based files. Allowed: 1,000 to 10,000,000; readers refuse files outside that range |
 | `maxDegreeOfParallelism` (JS) / `MaxDegreeOfParallelism` (.NET writer) | By `priority` (20.4). Balanced: JS up to 2 worker threads; .NET one thread per core, up to 16 | Set 1, or `priority` memory, for the lowest memory. Raise it in .NET for faster writes. In JS, more than 2 gains little, because preparing rows on the main thread is the limit. JS compaction of a shared file is the exception: 2 threads made it only about 5% faster than 1, for about 35 MB more (250,000 records); for other files they made it about twice as fast |
 

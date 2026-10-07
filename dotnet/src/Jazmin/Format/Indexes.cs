@@ -259,20 +259,27 @@ internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
 
     /// <summary>
     /// The index as pages (spec 8.1) of about <paramref name="pageBytes"/> raw bytes each, built one at a time:
-    /// First is the page's smallest key in bound form, Raw = encoding byte + varint count + entries.
-    /// A small index is one page. Row ids of null cells are in <see cref="Nulls"/>.
+    /// First is the page's smallest key in bound form, Raw = encoding byte + varint count + entries. With
+    /// <paramref name="deltas"/>, encoding 1: keys and first row ids as differences from the previous entry's (reader
+    /// feature 'index-deltas'). A small index is one page. Row ids of null cells are in <see cref="Nulls"/>.
     /// </summary>
-    public IEnumerable<(byte[] First, int Count, byte[] Raw)> Pages(int pageBytes)
+    public IEnumerable<(byte[] First, int Count, byte[] Raw)> Pages(int pageBytes, bool deltas = false)
     {
         var body = new ByteWriter(Math.Min(pageBytes * 2, 1 << 20));
         var postings = new List<long>();
+        var keys = deltas ? new PageKeys(type) : null;
+        long previousFirst = 0;
+        // Encoding 1 pages are cut where encoding 0 pages would be, so they hold as many entries: a lookup decodes a whole
+        // page, and fuller pages made lookups up to 30% slower. They are smaller to read and decompress instead.
+        long plainBytes = 0;
         object? first = null;
         var count = 0;
         foreach (var (at, others) in SortedEntries())
         {
             var entry = At(at);
             if (count == 0) first = entry.Key;
-            Values.Encode(body, type, entry.Key);
+            var plainKey = keys?.Write(body, entry.Key) ?? 0;
+            if (keys is null) Values.Encode(body, type, entry.Key);
             postings.Clear();
             postings.Add(entry.FirstRow);
             if (entry.MoreRows is { } more) postings.AddRange(more);
@@ -281,20 +288,41 @@ internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
                 postings.Add(At(other).FirstRow);
                 if (At(other).MoreRows is { } later) postings.AddRange(later);
             }
-            RowSet.WritePostings(body, postings);
+            if (keys is not null)
+            {
+                var postingsStart = body.Length;
+                WriteRowIds(body, postings, previousFirst);
+                plainBytes += plainKey + body.Length - postingsStart - ByteWriter.VarIntSize(postings[0] - previousFirst) + ByteWriter.VarUIntSize((ulong)postings[0]);
+                previousFirst = postings[0];
+            }
+            else
+            {
+                RowSet.WritePostings(body, postings);
+            }
             count++;
-            if (body.Length < pageBytes) continue;
-            yield return (Bounds.Encode(type, first!), count, PageBytes(count, body));
+            if ((keys is null ? body.Length : plainBytes) < pageBytes) continue;
+            yield return (Bounds.Encode(type, first!), count, PageBytes(count, body, deltas));
             body.Reset();
             count = 0;
+            keys?.Reset(); // each page starts afresh, so it decodes on its own
+            previousFirst = 0;
+            plainBytes = 0;
         }
-        if (count > 0) yield return (Bounds.Encode(type, first!), count, PageBytes(count, body));
+        if (count > 0) yield return (Bounds.Encode(type, first!), count, PageBytes(count, body, deltas));
     }
 
-    private static byte[] PageBytes(int count, ByteWriter body)
+    /// <summary>Postings as <see cref="RowSet.WritePostings"/>, but the first row id as the zigzag difference from the previous entry's.</summary>
+    private static void WriteRowIds(ByteWriter writer, List<long> rowIds, long previousFirst)
+    {
+        writer.VarUInt((ulong)rowIds.Count);
+        writer.VarInt(rowIds[0] - previousFirst);
+        for (var i = 1; i < rowIds.Count; i++) writer.VarUInt((ulong)(rowIds[i] - rowIds[i - 1]));
+    }
+
+    private static byte[] PageBytes(int count, ByteWriter body, bool deltas)
     {
         var raw = new ByteWriter(body.Length + 11);
-        raw.Byte(FormatConstants.PostingsEncoding);
+        raw.Byte(deltas ? FormatConstants.IndexDeltasEncoding : FormatConstants.PostingsEncoding);
         raw.VarUInt((ulong)count);
         raw.Bytes(body.AsSpan());
         return raw.ToArray();
@@ -316,8 +344,12 @@ internal sealed class PagedSortedIndex : IIndex
     private readonly Dictionary<int, SortedIndex> _cache = new();
     private readonly LinkedList<int> _recent = new(); // least recently used first
 
-    public PagedSortedIndex(IndexDirectory directory, JazminType type, Func<string, SectionRef, byte[]> load)
+    private readonly bool _deltas;
+
+    /// <summary>With <paramref name="deltas"/> (the file has reader feature 'index-deltas'), pages may use encoding 1.</summary>
+    public PagedSortedIndex(IndexDirectory directory, JazminType type, Func<string, SectionRef, byte[]> load, bool deltas = false)
     {
+        _deltas = deltas;
         _pages = directory.Pages
             .Select(p => (Bounds.Decode(type, p.First) ?? throw new JazminFormatException("Index page has no first key"), p.Count, p.At))
             .ToArray();
@@ -334,7 +366,7 @@ internal sealed class PagedSortedIndex : IIndex
         }
         else
         {
-            page = SortedIndex.DecodePage(_load($"page/{i}", _pages[i].At), _type);
+            page = SortedIndex.DecodePage(_load($"page/{i}", _pages[i].At), _type, _deltas);
             if (page.Count != _pages[i].Count) throw new JazminFormatException("Index page does not match its directory");
             if (_cache.Count >= PagesCached)
             {
@@ -506,12 +538,18 @@ internal sealed class SortedIndex
 
     public int Count => _keys.Length;
 
-    /// <summary>One page of a sorted index (spec 8.1): encoding byte, then entries.</summary>
-    public static SortedIndex DecodePage(byte[] raw, JazminType type)
+    /// <summary>
+    /// One page of a sorted index (spec 8.1): encoding byte, then entries. <paramref name="deltas"/>: the file has reader
+    /// feature 'index-deltas', so the page may use encoding 1.
+    /// </summary>
+    public static SortedIndex DecodePage(byte[] raw, JazminType type, bool deltas = false)
     {
         var reader = new ByteReader(raw);
-        RowSet.CheckEncoding(reader, "Index page");
-        var (keys, postings) = ReadEntries(reader, type);
+        var encoding = reader.Byte();
+        var compact = deltas && encoding == FormatConstants.IndexDeltasEncoding;
+        if (encoding != FormatConstants.PostingsEncoding && !compact)
+            throw new JazminFormatException($"Index page uses encoding {encoding}, which this reader does not support");
+        var (keys, postings) = compact ? ReadCompactEntries(reader, type) : ReadEntries(reader, type);
         if (!reader.Eof) throw new JazminFormatException("Index page has trailing bytes");
         return new SortedIndex(keys, postings);
     }
@@ -528,6 +566,43 @@ internal sealed class SortedIndex
             postings[i] = RowSet.ReadPostings(reader);
         }
         return (keys, postings);
+    }
+
+    private static (object[] Keys, long[][] Postings) ReadCompactEntries(ByteReader reader, JazminType type)
+    {
+        var count = reader.Length();
+        if (count > reader.Remaining) throw new JazminFormatException("Index page is truncated");
+        var keys = new object[count];
+        var postings = new long[count][];
+        var pageKeys = new PageKeys(type);
+        long previousFirst = 0;
+        for (var i = 0; i < count; i++)
+        {
+            keys[i] = pageKeys.Read(reader);
+            postings[i] = ReadRowIds(reader, previousFirst);
+            previousFirst = postings[i][0];
+        }
+        return (keys, postings);
+    }
+
+    /// <summary>Postings of an entry in a page with encoding 1: the first row id is a zigzag difference from the previous entry's.</summary>
+    private static long[] ReadRowIds(ByteReader reader, long previousFirst)
+    {
+        var count = reader.Length();
+        if (count < 1 || count > reader.Remaining) throw new JazminFormatException("Postings are truncated"); // each takes at least one byte
+        var ids = new long[count];
+        var step = reader.VarInt();
+        var previous = unchecked(previousFirst + step);
+        if (previous < 0 || (step > 0 && previous < previousFirst)) throw new JazminFormatException("A row id is out of range");
+        ids[0] = previous;
+        for (var i = 1; i < count; i++)
+        {
+            var delta = reader.VarUInt();
+            if (delta > (ulong)(long.MaxValue - previous)) throw new JazminFormatException("A row id is out of range");
+            previous += (long)delta;
+            ids[i] = previous;
+        }
+        return ids;
     }
 
     /// <summary>First position whose key is &gt;= value (or &gt; value when strict).</summary>
@@ -669,5 +744,99 @@ internal sealed class TrigramIndex : IIndex
             if (result.Length == 0) return result;
         }
         return result ?? Array.Empty<long>();
+    }
+}
+
+/// <summary>
+/// The keys of a sorted index page with encoding 1 (reader feature 'index-deltas', spec 8.1), written or read in order:
+/// an int or datetime key as the difference from the previous key (the first as in encoding 0), a string key as the
+/// number of UTF-8 bytes it shares with the previous key and the bytes after them. Keys of other types are as in
+/// encoding 0.
+/// </summary>
+internal sealed class PageKeys(JazminType type)
+{
+    private bool _started;
+    private long _previous;
+    private byte[] _bytes = new byte[64]; // strings: the previous key's UTF-8 bytes (a buffer reused while reading)
+    private int _length;
+
+    public void Reset()
+    {
+        _started = false;
+        _length = 0;
+    }
+
+    /// <summary>Writes the key; returns the size it takes in encoding 0.</summary>
+    public int Write(ByteWriter writer, object key)
+    {
+        switch (type)
+        {
+            case JazminType.Int:
+            case JazminType.DateTime:
+            {
+                var value = (long)key;
+                if (_started) writer.VarUInt(unchecked((ulong)value - (ulong)_previous)); // keys ascend: the difference fits
+                else writer.VarInt(value);
+                (_previous, _started) = (value, true);
+                return ByteWriter.VarIntSize(value);
+            }
+            case JazminType.String:
+            {
+                var bytes = System.Text.Encoding.UTF8.GetBytes((string)key);
+                var max = Math.Min(bytes.Length, _length);
+                var shared = 0;
+                while (shared < max && bytes[shared] == _bytes[shared]) shared++;
+                writer.VarUInt((ulong)shared);
+                writer.VarUInt((ulong)(bytes.Length - shared));
+                writer.Bytes(bytes.AsSpan(shared));
+                (_bytes, _length) = (bytes, bytes.Length);
+                return ByteWriter.VarUIntSize((ulong)bytes.Length) + bytes.Length;
+            }
+            default:
+            {
+                var start = writer.Length;
+                Values.Encode(writer, type, key); // written as in encoding 0
+                return writer.Length - start;
+            }
+        }
+    }
+
+    public object Read(ByteReader reader)
+    {
+        switch (type)
+        {
+            case JazminType.Int:
+            case JazminType.DateTime:
+            {
+                long value;
+                if (!_started) value = reader.VarInt();
+                else
+                {
+                    var step = reader.VarUInt();
+                    if (step == 0 || step > unchecked((ulong)long.MaxValue - (ulong)_previous)) throw new JazminFormatException("Index page keys are not ascending");
+                    value = unchecked((long)((ulong)_previous + step));
+                }
+                (_previous, _started) = (value, true);
+                return value;
+            }
+            case JazminType.String:
+            {
+                var shared = reader.Length();
+                var rest = reader.Length();
+                if (shared > _length || rest > reader.Remaining) throw new JazminFormatException("Index page is truncated");
+                var length = shared + rest;
+                if (_bytes.Length < length)
+                {
+                    var grown = new byte[Math.Max(length, _bytes.Length * 2)];
+                    Array.Copy(_bytes, grown, shared);
+                    _bytes = grown;
+                }
+                reader.Bytes(rest).CopyTo(_bytes.AsSpan(shared));
+                _length = length;
+                return System.Text.Encoding.UTF8.GetString(_bytes, 0, length);
+            }
+            default:
+                return Values.DecodeKey(reader, type);
+        }
     }
 }

@@ -77,6 +77,12 @@ internal sealed class ByteWriter
     /// <summary>Signed varint using ZigZag encoding.</summary>
     public void VarInt(long value) => VarUInt((ulong)((value << 1) ^ (value >> 63)));
 
+    /// <summary>Bytes <see cref="VarUInt"/> writes for <paramref name="value"/>.</summary>
+    public static int VarUIntSize(ulong value) => (70 - System.Numerics.BitOperations.LeadingZeroCount(value | 1)) / 7;
+
+    /// <summary>Bytes <see cref="VarInt"/> writes for <paramref name="value"/>.</summary>
+    public static int VarIntSize(long value) => VarUIntSize((ulong)((value << 1) ^ (value >> 63)));
+
     /// <summary>varint length prefix followed by UTF-8 bytes.</summary>
     public void String(string value)
     {

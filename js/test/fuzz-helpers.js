@@ -230,6 +230,7 @@ export function exerciseDecoders(input, rnd) {
     () => decodeColumnDefinitions(input),
     () => decodeColumnar(input, Array.from({ length: 1 + rnd.int(4) }, () => rnd.pick(types)), rnd.int(300), 0),
     () => SortedIndex.decodePage(input, rnd.pick(types)),
+    () => SortedIndex.decodePage(input, rnd.pick(types), true), // keys as differences (reader feature index-deltas)
     () => TrigramIndex.decode(input),
     () => decodePostingsSection(input),
     () => findKeySlotPage(input, input.subarray(0, 8)),

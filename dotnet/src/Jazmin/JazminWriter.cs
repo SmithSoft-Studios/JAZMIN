@@ -53,6 +53,13 @@ public sealed class JazminWriteOptions
     public JazminPriority Priority { get; set; }
 
     /// <summary>
+    /// Sorted indexes with keys and first row ids as differences from the previous entry's (reader feature
+    /// 'index-deltas', spec 8.1): much smaller for whole numbers and dates. Readers before 1.2 refuse such files, naming
+    /// the feature. Default false until 2.0. An append keeps the file's choice.
+    /// </summary>
+    public bool CompactIndexes { get; set; }
+
+    /// <summary>
     /// Chunks encoded, compressed and encrypted at the same time on worker threads. 1 does everything on the calling
     /// thread. The file is the same either way. Default by <see cref="Priority"/>: Balanced and Speed one per
     /// processor, at most 16 (more threads did not write faster); Memory 1.
@@ -155,6 +162,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     private readonly byte[] _fileId;
     private readonly byte[] _salt;
     private readonly JazminReader.AppendStateInfo? _continue; // append mode: the file being continued
+    private readonly bool _indexDeltas; // sorted index pages with keys and first row ids as differences ('index-deltas')
+    private bool _usesIndexDeltas; // a page was written that way: the header names the feature
     private readonly KeySchedule? _keys; // key or password files
     private readonly AccessConfig? _access; // access mode: the grants
     private readonly FileSecrets? _secrets; // access mode
@@ -202,6 +211,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         _continue = cont;
         _leaveOpen = leaveOpen;
         _options = options ?? new JazminWriteOptions();
+        // An append keeps the file's index encoding: its readers already support it (or the file would not use it).
+        _indexDeltas = cont is not null ? cont.Header.ReaderFeatures.Contains(FormatConstants.IndexDeltas) : _options.CompactIndexes;
         if (_options.Key is not null && _options.Password is not null) throw new JazminValidationException("Supply either Key or Password, not both");
         if (_options.Password is not null && _options.KdfIterations is < FormatConstants.MinKdfIterations or > FormatConstants.MaxKdfIterations)
             throw new JazminValidationException($"KdfIterations must be from {FormatConstants.MinKdfIterations} to {FormatConstants.MaxKdfIterations}");
@@ -837,8 +848,13 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             ? Enumerable.Range(0, _tables.Length).Select(i => _written[i].Table).ToList()
             : cont.Header.Tables.Select((t, i) => _written.TryGetValue(i, out var w) ? w.Table : t).ToList();
         var deltas = _deltas;
+        // Features are named when, and only when, the file uses them (spec 12); an append keeps the file's.
+        var readerFeatures = new List<string>(cont?.Header.ReaderFeatures ?? []);
+        if (_usesIndexDeltas && !readerFeatures.Contains(FormatConstants.IndexDeltas)) readerFeatures.Add(FormatConstants.IndexDeltas);
         var header = new HeaderDef
         {
+            ReaderFeatures = readerFeatures,
+            WriterFeatures = new List<string>(cont?.Header.WriterFeatures ?? []),
             Created = cont?.Header.Created ?? Now.ToUnixTimeMilliseconds(),
             Modified = cont is null ? 0 : Now.ToUnixTimeMilliseconds(),
             AppendCount = segment,
@@ -968,8 +984,9 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                 for (var i = 0; i < batch.Count; i++) pages.Add(new IndexPageRef(batch[i].First, batch[i].Count, WriteEncoded(sections[i])));
                 batch.Clear();
             }
-            foreach (var page in sorted.Pages(_options.IndexPageBytes))
+            foreach (var page in sorted.Pages(_options.IndexPageBytes, _indexDeltas))
             {
+                _usesIndexDeltas |= _indexDeltas;
                 batch.Add(page);
                 if (batch.Count >= _options.MaxDegreeOfParallelism) WriteBatch();
             }

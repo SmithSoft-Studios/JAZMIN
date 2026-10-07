@@ -22,6 +22,9 @@ public sealed class JazminSerializerSettings
     /// <summary>Memory or speed first when files are read and written (default <see cref="JazminPriority.Balanced"/>).</summary>
     public JazminPriority Priority { get; set; }
 
+    /// <summary>Sorted indexes with keys as differences (see <see cref="JazminWriteOptions.CompactIndexes"/>; default false).</summary>
+    public bool CompactIndexes { get; set; }
+
     public JsonObject? Metadata { get; set; }
 
     /// <summary>Extra indexes by column name (in addition to [JazminIndex] attributes).</summary>
@@ -82,6 +85,7 @@ public sealed class JazminSerializerSettings
         Metadata = Metadata,
         JsonOptions = EffectiveJsonOptions,
         Priority = Priority,
+        CompactIndexes = CompactIndexes,
     };
 
     internal JazminReadOptions ToReadOptions() => new() { Key = Key, Password = Password, Priority = Priority };

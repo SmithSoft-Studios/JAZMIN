@@ -1163,9 +1163,77 @@
     return out;
   }
 
+  /**
+   * The keys of a sorted index page with encoding 1 (reader feature 'index-deltas', spec 8.1), read in order: an int or
+   * datetime key as the difference from the previous key, a string key as the number of UTF-8 bytes it shares with the
+   * previous key and the bytes after them. Keys of other types are as in encoding 0.
+   */
+  class PageKeys {
+    constructor(type) {
+      this.type = type;
+      this.previous = undefined;
+      this.bytes = new Uint8Array(64); // the previous string key's UTF-8 bytes
+      this.length = 0;
+    }
+
+    read(r) {
+      if (this.type === 'int' || this.type === 'datetime') {
+        let key;
+        if (this.previous === undefined) key = r.varInt();
+        else {
+          const step = r.numberVarUint();
+          if (!(step >= 1)) throw new JazminFormatError('Index page keys are not ascending');
+          if (typeof this.previous === 'number' && typeof step === 'number' && Number.isSafeInteger(this.previous + step)) key = this.previous + step;
+          else {
+            const big = BigInt(this.previous) + BigInt(step);
+            key = big >= BigInt(Number.MIN_SAFE_INTEGER) && big <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(big) : big;
+          }
+        }
+        if (this.type === 'datetime') msFromFile(key);
+        else if (typeof key === 'bigint' && (key > 2n ** 63n - 1n || key < -(2n ** 63n))) throw new JazminFormatError('An index key is out of range');
+        this.previous = key;
+        return key;
+      }
+      if (this.type === 'string') {
+        const shared = r.varUint();
+        const rest = r.varUint();
+        if (shared > this.length || rest > r.remaining) throw new JazminFormatError('Index page is truncated');
+        const length = shared + rest;
+        if (this.bytes.length < length) {
+          const grown = new Uint8Array(Math.max(length, this.bytes.length * 2));
+          grown.set(this.bytes.subarray(0, shared));
+          this.bytes = grown;
+        }
+        this.bytes.set(r.bytes(rest), shared);
+        this.length = length;
+        return fromUtf8.decode(this.bytes.subarray(0, length));
+      }
+      return readKey(r, this.type);
+    }
+  }
+
+  /** Postings of an entry in a page with encoding 1: the first row id is a zigzag difference from `previousFirst`. */
+  function readRowIds(r, previousFirst) {
+    const count = r.varUint();
+    if (count < 1 || count > r.remaining) throw new JazminFormatError('Postings are truncated');
+    const step = r.varInt();
+    let previous = previousFirst + step;
+    if (typeof step !== 'number' || !(previous >= 0) || previous > Number.MAX_SAFE_INTEGER) throw new JazminFormatError('A row id is out of range');
+    const ids = new Array(count);
+    ids[0] = previous;
+    for (let i = 1; i < count; i++) {
+      previous += r.varUint();
+      if (previous > Number.MAX_SAFE_INTEGER) throw new JazminFormatError('A row id is out of range');
+      ids[i] = previous;
+    }
+    return ids;
+  }
+
   /** A sorted index (spec 8.1): its directory is read up front; pages as lookups need them (a few kept). */
   class PagedIndex {
-    constructor(directory, type, load) {
+    /** `deltas`: the file has reader feature 'index-deltas', so pages may use encoding 1. */
+    constructor(directory, type, load, deltas = false) {
+      this.deltas = deltas;
       this.type = type;
       this.pages = directory.pages.map((p) => ({ ...p, first: decodeBound(type, p.first) }));
       if (this.pages.some((p) => p.first === undefined)) throw new JazminFormatError('Index page has no first key');
@@ -1180,13 +1248,22 @@
         this.cache.delete(i);
       } else {
         const r = new Reader(await this.load(`page/${i}`, this.pages[i]));
-        if (r.byte() !== 0) throw new JazminFormatError('Index page uses an encoding this reader does not support');
+        const encoding = r.byte();
+        const keys = this.deltas && encoding === 1 ? new PageKeys(this.type) : null;
+        if (encoding !== 0 && !keys) throw new JazminFormatError('Index page uses an encoding this reader does not support');
         const count = r.varUint();
         if (count > r.remaining || count !== this.pages[i].count) throw new JazminFormatError('Index page does not match its directory');
         page = { keys: new Array(count), postings: new Array(count) };
+        let previousFirst = 0;
         for (let k = 0; k < count; k++) {
-          page.keys[k] = readKey(r, this.type);
-          page.postings[k] = readPostings(r);
+          if (keys) {
+            page.keys[k] = keys.read(r);
+            page.postings[k] = readRowIds(r, previousFirst);
+            previousFirst = page.postings[k][0];
+          } else {
+            page.keys[k] = readKey(r, this.type);
+            page.postings[k] = readPostings(r);
+          }
         }
         if (!r.eof) throw new JazminFormatError('Index page has trailing bytes');
         if (this.cache.size >= PAGES_CACHED) this.cache.delete(this.cache.keys().next().value);
@@ -1737,7 +1814,8 @@
     if (access?.expires !== undefined && Date.now() + 5 * 60000 < (header.modified || header.created)) {
       throw new JazminKeyError('The clock reads earlier than when this file was written - access refused'); // spec 7.7, check 2
     }
-    if (header.readerFeatures.length) throw new JazminFormatError(`This file needs features this reader does not support: ${header.readerFeatures.join(', ')}`);
+    const unsupported = header.readerFeatures.filter((feature) => feature !== 'index-deltas');
+    if (unsupported.length) throw new JazminFormatError(`This file needs features this reader does not support: ${unsupported.join(', ')}`);
     if (!header.tables.length) throw new JazminFormatError('Catalog: the file lists no tables');
 
     const file = {
@@ -2069,7 +2147,8 @@
           const parts = [];
           for (const ix of refs) {
             const sectionId = sectionIdOf(ix);
-            parts.push(new PagedIndex(readIndexDirectory(await readIndex(sectionId, ix.section)), type, (part, ref) => readIndex(`${sectionId}/${part}`, ref)));
+            parts.push(new PagedIndex(readIndexDirectory(await readIndex(sectionId, ix.section)), type, (part, ref) => readIndex(`${sectionId}/${part}`, ref),
+              file.header.readerFeatures.includes('index-deltas')));
           }
           result = combine(parts);
         }

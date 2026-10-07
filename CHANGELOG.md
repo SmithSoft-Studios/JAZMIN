@@ -148,6 +148,23 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   write loop.
 
 ### Added
+- **Compact indexes, opt-in: `compactIndexes` (.NET `CompactIndexes`).**
+  Sorted indexes store each key as its difference from the previous one
+  (text: only the part after what it shares with the previous key), and
+  each entry's first row id the same way. Part of TASKS P-13.
+  - **Smaller files:** 200,000 rows indexed on an id, a code and a date:
+    1.8 MB instead of 4.5 MB. The time-sorted proposals benchmark file:
+    7.0 MB instead of 8.0 MB (its indexes 2.4 MB instead of 3.4 MB).
+  - **Lookups as fast or faster** (5-16% less time in Node, 4-14% in .NET):
+    pages are cut where they would be without the option, so a lookup
+    decodes as many entries, and there is less to read and decompress.
+  - **A new format feature,** `index-deltas` (spec 8.1). Readers before 1.2
+    refuse such files with a message that names it, so the option is off
+    by default until 2.0. Appends keep a file's choice; `update` and
+    `compact` keep it unless told otherwise.
+  - **Checked across libraries:** fixtures written by each
+    (`js-paged-compact.jzm`, `dotnet-paged-compact.jzm`) are read by the
+    other and by the browser reader; the published 1.1.0 refuses them.
 - **Choose memory or speed first: the `priority` setting.** `'memory'`,
   `'balanced'` (the default, as before) or `'speed'` (.NET:
   `JazminPriority`), on reads and writes, updates and appends, and .NET's

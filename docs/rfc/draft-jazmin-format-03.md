@@ -938,6 +938,24 @@ section in front:
   `page_digests`; and `nulls`, a section holding the encoding byte and the
   postings of null cells (absent when there are none).
 
+**Page payload, encoding 1** (reader feature `index-deltas`, 12): as
+encoding 0, with keys and first row ids as differences from the previous
+entry's. Each page decodes on its own:
+
+- **`int` and `datetime` keys:** the page's first key is a zigzag varint, as
+  in encoding 0; each later key is a varint of its difference from the
+  previous key (at least 1, as keys ascend).
+- **`string` keys:** varint *shared*, varint *rest*, then *rest* bytes. The
+  key's UTF-8 bytes are the first *shared* bytes of the previous key's,
+  followed by those (*shared* is 0 for the page's first key).
+- **Keys of other types:** as in encoding 0.
+- **Postings:** varint count (at least 1); the first row id as a zigzag
+  varint of its difference from the previous entry's first row id (from 0
+  for the page's first entry); then varint deltas, as in encoding 0.
+
+A file with a page in encoding 1 lists `index-deltas` in `reader_features`.
+Readers MUST reject encoding 1 in a file that does not.
+
 A key *v* can only be on the last page whose first key is at most *v*. `eq`
 and `in` read that page; `gt` and `gte` read it and every later page; `lt`
 and `lte` read every page up to it; `startsWith` reads from the prefix's page
@@ -945,7 +963,9 @@ while the next page's first key still starts with the prefix. Readers MUST
 check that a page holds `entry_count` entries.
 
 Informative: the reference writers cut pages of about 64 KiB of raw entries,
-so a small index is one page.
+so a small index is one page. They cut encoding 1 pages where encoding 0
+pages would be cut, so a lookup decodes as many entries, and write encoding
+1 only when asked to, until a major version makes it the default.
 
 ### 8.2. Trigram Index (`trigram`)
 
@@ -1190,8 +1210,9 @@ fresh secrets. The result has `append_count` 0 and the APPENDED flag clear.
   is announced by a **writer feature** (`writer_features`). A writer MUST
   refuse to modify a file with a writer feature it does not support.
   Reader features are also writer features.
-- Feature names are lowercase ASCII letters, digits and `-`. This version
-  defines none, so every 1.0 file has empty lists.
+- Feature names are lowercase ASCII letters, digits and `-`. Format 1.0
+  defined none. Defined since: the reader feature `index-deltas` (8.1). A
+  file that uses none has empty lists.
 - The magic `JZM1` changes only if the container itself changes
   incompatibly.
 
@@ -1337,6 +1358,10 @@ indexes, embedded files) written by both reference implementations.
   sections referenced from `TableIndexes.chunk_map` and
   `chunk_map_appended` in the owner catalog. Readers that don't know them
   ignore them, as Protocol Buffers readers do with unknown fields.
+- **Since format 1.0, a reader feature:** `index-deltas` (8.1), sorted
+  index pages (encoding 1) whose keys and first row ids are differences from
+  the previous entry's. Readers that do not know it refuse such files,
+  naming it, as 12 requires.
 - **Since format 1.0, a rule writers already kept:** no name twice in one
   object of the JSON texts readers use themselves (2). Readers reject such a
   file; before, one library kept the last value and the other failed.

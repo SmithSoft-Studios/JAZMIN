@@ -14,7 +14,7 @@ import {
 import { decodeColumnar } from './columnar.js';
 import {
   CODEC, DRAFT_MAGIC, ENVELOPE_SIZE, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, KEYRING_GROUPS,
-  KNOWN_FLAGS, MAGIC, MAX_KDF_ITERATIONS, MIN_KDF_ITERATIONS, PREAMBLE_SIZE, SUPPORTED_READER_FEATURES, TRAILER_SIZE, WHOLE_TABLE,
+  INDEX_DELTAS, KNOWN_FLAGS, MAGIC, MAX_KDF_ITERATIONS, MIN_KDF_ITERATIONS, PREAMBLE_SIZE, SUPPORTED_READER_FEATURES, TRAILER_SIZE, WHOLE_TABLE,
 } from './constants.js';
 import { JazminFormatError, JazminKeyError, JazminValidationError } from './errors.js';
 import { enforceExpiry, toMs } from './expiry.js';
@@ -181,6 +181,8 @@ function pinnedPartitionStats(plan, col) {
 }
 
 /** Internal: state the appender needs to continue an existing file (see append.js). */
+/** Internal: whether a reader's file uses compact sorted indexes (update keeps them). */
+export const COMPACT_INDEXES = Symbol('jazmin.compactIndexes');
 export const APPEND_STATE = Symbol('jazmin.appendState');
 
 /** Internal: yields [rowId, row object] for visible, non-deleted rows matching a filter. */
@@ -1589,7 +1591,8 @@ export class JazminReader {
         // Only the directory is read now; pages are read (and a few kept) as lookups need them.
         index = combine(descriptors.map((ix) => {
           const sectionId = sectionIdOf(ix);
-          return new PagedSortedIndex(decodeIndexDirectory(read(sectionId, ix.section)), type, (part, ref) => read(`${sectionId}/${part}`, ref));
+          return new PagedSortedIndex(decodeIndexDirectory(read(sectionId, ix.section)), type, (part, ref) => read(`${sectionId}/${part}`, ref),
+            this.#header.readerFeatures.includes(INDEX_DELTAS));
         }));
       }
     }
@@ -2107,6 +2110,11 @@ export class JazminReader {
         }
       }
     }
+  }
+
+  /** Internal: whether the file's sorted indexes may use keys as differences (reader feature 'index-deltas'). */
+  get [COMPACT_INDEXES]() {
+    return this.#header.readerFeatures.includes(INDEX_DELTAS);
   }
 
   /** Internal: what the appender needs to continue this file. Owner (or the single key / password) only. */

@@ -52,6 +52,12 @@ public sealed class JazminUpdate
     /// <summary>Memory or speed first while the file is read and rewritten (default <see cref="JazminPriority.Balanced"/>).</summary>
     public JazminPriority Priority { get; set; }
 
+    /// <summary>
+    /// Sorted indexes with keys as differences (see <see cref="JazminWriteOptions.CompactIndexes"/>); null (the default)
+    /// keeps the file's choice.
+    /// </summary>
+    public bool? CompactIndexes { get; set; }
+
     /// <summary>Clock used to drop expired grants (default: the system clock).</summary>
     public DateTimeOffset? Now { get; set; }
 
@@ -202,6 +208,7 @@ public static class JazminFile
                 Access = access is null ? null : several ? new JazminAccessOptions { Grants = access.Grants } : access,
                 Now = update.Now, // expired grants are dropped; the new version's fresh secrets lock them out
                 Priority = update.Priority,
+                CompactIndexes = update.CompactIndexes ?? reader.CompactIndexes,
                 Tables = several ? readers.Select(TableFor).ToList() : null,
             };
             writer = several ? JazminWriter.Create(temp, options) : JazminWriter.Create(temp, columns, options);
