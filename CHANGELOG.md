@@ -70,6 +70,19 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     `TextWriter`, which declares that writer's encoding.
 
 ### Changed
+- **Files with `sortedBy` are smaller: no `sorted` index on the leading sort
+  column.** Readers find that column's values from chunk statistics, and
+  have never used such an index; the spec already said writers should not
+  build it (6.7). Both writers now leave it out (TASKS P-13).
+  - **Proposals benchmark** (200,000 transactions, sorted by time, four
+    sorted indexes): the file is 8.0 MB instead of 9.2 MB, its indexes
+    3.4 MB instead of 4.6 MB.
+  - **Unchanged:** query results and bytes read (the benchmark's check
+    passes); a `trigram` index on that column is still written.
+  - **Compatible both ways:** 1.1.0 reads these files, and appends to them,
+    with the same results, and these libraries append to files that still
+    have the index (checked against the published 1.1.0).
+  - **`reader.indexes`** no longer lists that index for new files.
 - **JS: trigram indexes are built faster.** Grams of ASCII text are keyed as
   small integers, which V8 looks up fastest, and the builder remembers the
   grams of up to 4,096 values (a value seen again only adds its row): the

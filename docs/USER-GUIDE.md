@@ -748,7 +748,7 @@ again on 7 October 2026.
 | `codec` | `deflate` | Use `brotli` for archives (smaller, slower to write), or `none` for already-compressed data |
 | `chunkRows` | 4096 | Lower (e.g. 512) for many single-row lookups; higher for whole-file reads |
 | `select` (query option) | every column | List only the columns you need. Only those, and the columns the filter uses, are decoded, on every kind of query: scans, index lookups and access-controlled files. In access-controlled files, a column group none of whose columns is needed is not read at all. A one-column read through an index took 45% of the time of reading every column |
-| indexes | none | Add `sorted` to columns used in `eq` / range filters, and `trigram` to text searched with `contains`. Skip `sorted` on the first `sortedBy` column: chunk statistics already find its values. Large sorted indexes are paged automatically |
+| indexes | none | Add `sorted` to columns used in `eq` / range filters, and `trigram` to text searched with `contains`. A `sorted` index on the first `sortedBy` column is not written, because chunk statistics already find its values; readers never used it. Large sorted indexes are paged automatically |
 | `kdfIterations` | 600,000 | Do not lower it in production. It only affects password-based files. Allowed: 1,000 to 10,000,000; readers refuse files outside that range |
 | `maxDegreeOfParallelism` (JS) / `MaxDegreeOfParallelism` (.NET writer) | By `priority` (20.4). Balanced: JS up to 2 worker threads; .NET one thread per core, up to 16 | Set 1, or `priority` memory, for the lowest memory. Raise it in .NET for faster writes. In JS, more than 2 gains little, because preparing rows on the main thread is the limit. JS compaction of a shared file is the exception: 2 threads made it only about 5% faster than 1, for about 35 MB more (250,000 records); for other files they made it about twice as fast |
 
@@ -2204,7 +2204,7 @@ span. Each reader keeps at most 8 decoded pages per index.
 
 | Do | Avoid |
 |---|---|
-| `sortedBy` on the column you look up by | An index on that same column (statistics already locate it) |
+| `sortedBy` on the column you look up by | Counting on an index there: statistics locate it, and the writers leave a `sorted` index on it out |
 | `select` the columns you need | Reading whole rows of a wide table |
 | Stream with `for…of`, `DeserializeEnumerable`, `await foreach` | `ToList()` / `[...rows]` on millions of rows |
 | One reader per thread, reused | Opening the file for every row |

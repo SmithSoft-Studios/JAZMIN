@@ -468,6 +468,9 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         {
             foreach (var kind in _columns[i].Indexes.Distinct())
             {
+                // Readers find the leading SortedBy column's values from chunk statistics and have never used its
+                // sorted index (spec 6.7): it is not written.
+                if (kind == JazminIndexKind.Sorted && table.SortCols is [var leading, ..] && leading == i) continue;
                 IIndexBuilder builder = kind == JazminIndexKind.Sorted ? new SortedIndexBuilder(_columns[i].Type) : new TrigramIndexBuilder();
                 _indexBuilders.Add((i, _columns[i].Name, TypeNames.IndexName(kind), builder));
             }

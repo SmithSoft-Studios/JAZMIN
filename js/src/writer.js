@@ -415,6 +415,9 @@ export class JazminWriter {
     this.#indexBuilders = [];
     def.columns.forEach((column, col) => {
       for (const kind of column.index) {
+        // Readers find the leading sortedBy column's values from chunk statistics and have never used its sorted
+        // index (spec 6.7): it is not written.
+        if (kind === 'sorted' && def.sortCols?.[0] === col) continue;
         this.#indexBuilders.push({ col, column: column.name, kind, builder: new INDEX_BUILDERS[kind](column.type) });
       }
     });
