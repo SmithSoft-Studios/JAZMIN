@@ -75,13 +75,13 @@ public class AsyncTests
         using var reader = JazminReader.Open(gated, leaveOpen: true);
         await using (var rows = reader.RowsAsync().GetAsyncEnumerator())
         {
-            gated.Close(); // chunk reads now wait until the gate opens
+            gated.CloseGate(); // chunk reads now wait until the gate opens
             // MoveNextAsync must return at once (the batch runs elsewhere), not block at the gate.
             var call = Task.Factory.StartNew(() => rows.MoveNextAsync().AsTask());
             Assert.True(call.Wait(TimeSpan.FromSeconds(10)), "MoveNextAsync blocked its caller");
             var first = call.Result;
             Assert.False(first.IsCompleted); // the batch is still waiting at the gate on a thread-pool thread
-            gated.Open();
+            gated.OpenGate();
             Assert.True(await first);
         }
 
@@ -128,9 +128,9 @@ public class AsyncTests
     {
         private readonly ManualResetEventSlim _gate = new(true);
 
-        public void Close() => _gate.Reset();
+        public void CloseGate() => _gate.Reset();
 
-        public void Open() => _gate.Set();
+        public void OpenGate() => _gate.Set();
 
         public override int Read(byte[] buffer, int offset, int count)
         {
