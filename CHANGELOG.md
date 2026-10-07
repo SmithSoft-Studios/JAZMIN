@@ -75,6 +75,18 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   column name, one column after another; they now read a query's values by
   position. 200,000 rows x 300 columns: 24.4 s -> 7.4 s, with the same
   bytes and memory.
+- **.NET: reading a wide row's values by name is up to 5 times faster.**
+  `row["name"]` (and `TryGetValue`, `ContainsKey`, `Get<T>`, `GetDecimal`)
+  checked the row's column names one at a time. The rows of a query now
+  share a name lookup, built the first time a value is read by name; rows of
+  8 columns or fewer still check each name, which is faster for so few.
+  - **200,000 rows x 300 columns, every value by name:** 15.1 s -> 3.1 s
+    (by position: 2.6 s). Three values near the end of each row: 2.2-2.5 s
+    -> 2.0 s, the time to walk the rows.
+  - **Memory:** each row object is 8 bytes smaller; the lookup is one per
+    query.
+  - **Unchanged:** names match exactly, as before, and reading by position
+    or into typed objects.
 - **Files with `sortedBy` are smaller: no `sorted` index on the leading sort
   column.** Readers find that column's values from chunk statistics, and
   have never used such an index; the spec already said writers should not

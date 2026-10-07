@@ -188,6 +188,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private readonly GroupInfo[] _groups;
     private readonly int[] _groupOf; // position -> column group index (-1: hidden)
     private readonly int[] _visibleCols;
+    private readonly RowShape _visibleShape; // rows with every visible column: one name lookup for all queries
     private readonly IReadOnlyList<JazminColumn> _visibleColumns;
     private readonly Dictionary<string, PartitionInfo> _partitions = new(StringComparer.Ordinal); // looked up so far
     private readonly Dictionary<string, List<SectionRef>> _deltaSegments = new(StringComparer.Ordinal); // added by appends
@@ -291,6 +292,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             _types = _allColumns.Select(c => c.Type).ToArray();
             _visibleCols = Enumerable.Range(0, _allColumns.Length).Where(i => _groupOf[i] >= 0).ToArray();
             _visibleColumns = _visibleCols.Select(i => _allColumns[i]).ToList();
+            _visibleShape = new RowShape(_allColumns, _visibleCols);
             OpenPartitions();
             if (_table.Deletes is { } deletes)
             {
@@ -1547,8 +1549,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         return i;
     }
 
-    private int[] Selection(IReadOnlyList<string>? select) =>
-        select is null ? _visibleCols : select.Select(name => VisibleIndex(name, "select")).ToArray();
+    private int[] Selection(IReadOnlyList<string> select) => select.Select(name => VisibleIndex(name, "select")).ToArray();
 
     private int PartitionCol() => _table.PartitionBy.Length == 0 ? -1 : Array.FindIndex(_allColumns, c => c.Name == _table.PartitionBy);
 
@@ -1732,7 +1733,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         if (ordinal < 0 || _visibleCols.Length == 0) throw new JazminKeyException($"Row {rowId} is not visible with this key");
         var values = ChunkRows(ordinal)[rowId - _rowStart[ordinal]]
             ?? throw new JazminValidationException($"Row {rowId} was deleted");
-        return new JazminRow(rowId, _allColumns, _visibleCols, values);
+        return new JazminRow(rowId, _visibleShape, values);
     }
 
     /// <summary>Streams all visible rows.</summary>
@@ -1764,21 +1765,21 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     {
         // Validate eagerly so errors surface at the call, not on first enumeration.
         var plan = Plan(filter);
-        var selection = Selection(options?.Select);
-        return FindIterator(plan, selection, options?.Offset ?? 0, options?.Limit ?? long.MaxValue);
+        var shape = options?.Select is { } select ? new RowShape(_allColumns, Selection(select)) : _visibleShape;
+        return FindIterator(plan, shape, options?.Offset ?? 0, options?.Limit ?? long.MaxValue);
     }
 
-    private IEnumerable<JazminRow> FindIterator(BoundFilter? plan, int[] selection, long offset, long limit)
+    private IEnumerable<JazminRow> FindIterator(BoundFilter? plan, RowShape shape, long offset, long limit)
     {
         long skipped = 0, yielded = 0;
         var rowIds = Candidates(plan);
         if (_access is null)
         {
             // Decode only the filter's and the selected columns, of the chunks the index candidates (or the scan) name.
-            foreach (var row in ScanColumns(plan, selection, offset, limit, rowIds)) yield return row;
+            foreach (var row in ScanColumns(plan, shape, offset, limit, rowIds)) yield return row;
             yield break;
         }
-        var wanted = WantedColumns(plan, selection); // only the filter's and the selected columns are decoded
+        var wanted = WantedColumns(plan, shape.Selection); // only the filter's and the selected columns are decoded
 
         bool Accept(object?[]? row)
         {
@@ -1810,7 +1811,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 var r = rowIds is null ? k : (int)(rowIds[from + k] - start);
                 if (!Accept(rows[r])) continue;
                 yielded++;
-                yield return new JazminRow(start + r, _allColumns, selection, rows[r]);
+                yield return new JazminRow(start + r, shape, rows[r]);
             }
         }
     }
@@ -1853,9 +1854,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// A query on a file with one column group: only the columns the filter and the selection use are decoded, and with
     /// index candidates (<paramref name="rowIds"/>) only their chunks are read and only their rows checked.
     /// </summary>
-    private IEnumerable<JazminRow> ScanColumns(BoundFilter? plan, int[] selection, long offset, long limit, long[]? rowIds = null)
+    private IEnumerable<JazminRow> ScanColumns(BoundFilter? plan, RowShape shape, long offset, long limit, long[]? rowIds = null)
     {
-        var wanted = WantedColumns(plan, selection);
+        var wanted = WantedColumns(plan, shape.Selection);
         var all = !wanted.Contains(false);
         var planColumns = new HashSet<int>();
         CollectColumns(plan, planColumns);
@@ -1890,7 +1891,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                     continue;
                 }
                 yielded++;
-                yield return new JazminRow(rowId, _allColumns, selection, columns, r); // points into the chunk: no copy per row
+                yield return new JazminRow(rowId, shape, columns, r); // points into the chunk: no copy per row
             }
         }
 
@@ -2105,7 +2106,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 var rows = ChunkRows(ordinal);
                 var start = _rowStart[ordinal];
                 for (var r = 0; r < rows.Length; r++)
-                    if (rows[r] is { } values) yield return new JazminRow(start + r, _allColumns, _visibleCols, values);
+                    if (rows[r] is { } values) yield return new JazminRow(start + r, _visibleShape, values);
             }
         }
     }
