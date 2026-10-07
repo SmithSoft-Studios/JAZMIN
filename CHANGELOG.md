@@ -36,6 +36,15 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   built to break out of the generated code never run.
 
 ### Changed
+- **JS: writing decimals is faster.**
+  Format 1.0 stores a decimal as a scale and an integer, and the writer
+  worked each value out with BigInt arithmetic two or three times (its
+  canonical text, its encoding, the chunk statistics): a write of 300 mixed
+  columns became 41% slower. Decimals of up to 15 digits now take a path
+  without BigInt that gives the same text, bytes and statistics (checked
+  against the BigInt path on random values); longer ones keep it.
+  - **Wide write** (200,000 rows × 300 columns): 18.5 -> 14.4 s. With
+    1,000,000 rows: 69 s, against 81.8 s for `JSON.stringify`.
 - **.NET: opening a file to read a few rows is about 1.5 times faster (#70).**
   On the benchmark, finding one record by id (open the file, look it up)
   went from about 2.0 to 1.4 ms, and from 2.0 to 1.3 ms encrypted.

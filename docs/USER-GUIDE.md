@@ -714,14 +714,15 @@ Re-run with `node bench/wide.js [rows] [columns]` (in `js/`), or
 | Sum 3 of the 300 columns | 70.6 s, 293 MB | **3.4 s**, 121 MB | 35.5 s, 47 MB | **1.1 s**, 67 MB |
 | Filter on 2 columns | 75.4 s, 293 MB | **3.4 s**, 134 MB | 33.5 s, 49 MB | **1.2 s**, 67 MB |
 | Read every row | 100.2 s, 292 MB | **15.9 s**, 204 MB (98 MB¹) | 38.2 s, 47 MB | **10.4 s**, 64 MB |
-| Write | 83.2 s, 245 MB | **66.2 s**, 307 MB² | 14.8 s, 48 MB | **11.3 s**, 144 MB |
+| Write | 81.8 s, 251 MB | **69 s**, 338 MB² | 14.8 s, 48 MB | **11.3 s**, 144 MB |
 
 Times include generating the rows, which both sides do in the same way.
 Memory is the peak working set of the process doing that step. On this
 machine, repeated runs of the same step vary by up to 20%, so the Node writes
 were run back to back. ¹ With `node --max-semi-space-size=8` (see 20.5).
 ² With 2 worker threads (the default). On the main thread only
-(`maxDegreeOfParallelism: 1`): 86.2 s, 298 MB.
+(`maxDegreeOfParallelism: 1`): 90 s, 319 MB. The Node writes were measured
+again on 7 October 2026.
 
 - **Reads:** they decode only the columns a query uses. Chunk statistics are
   loaded per column, on demand, so opening a file costs the same however
@@ -735,8 +736,10 @@ were run back to back. ¹ With `node --max-semi-space-size=8` (see 20.5).
   reading. Most of the remaining read memory is
   garbage V8 has not yet collected: JAZMIN itself keeps about 11 MB alive
   during a full scan (see 20.5).
-- **Still open:** writing in Node uses about 25% more memory than
-  `JSON.stringify` (TASKS P-15).
+- **Still open:** with Node's default settings, writing uses about a third
+  more memory than `JSON.stringify`, mostly garbage collected late. With
+  `--max-old-space-size=64 --max-semi-space-size=2`, 200,000 of these rows
+  are written in 123 MB (JSON: 108 MB). TASKS P-15.
 
 ### 9.5 Tuning
 

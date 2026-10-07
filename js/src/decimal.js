@@ -28,10 +28,48 @@ export function formatDecimal(m, s) {
   return negative ? `-${text}` : text;
 }
 
-/** Canonical text of a decimal value (number or text). */
-export function canonicalDecimal(value, column) {
-  const { m, s } = parseDecimal(value, column);
-  return formatDecimal(m, s);
+/**
+ * Canonical text of a decimal value (number or text): formatDecimal(parseDecimal(value)), worked out with string
+ * operations (leading zeros of the whole part dropped, and the sign of zero), with no BigInt arithmetic per value.
+ */
+export function canonicalDecimal(value, column = 'decimal') {
+  const text = typeof value === 'number' ? String(value) : value;
+  const match = typeof text === 'string' ? PATTERN.exec(text) : null;
+  if (!match) throw new JazminValidationError(`Column '${column}': expected a decimal string like '-12.50', got '${value}'`);
+  const [, sign, whole, fraction = ''] = match;
+  if (fraction.length > MAX_SCALE) throw new JazminValidationError(`Column '${column}': more than ${MAX_SCALE} digits after the point`);
+  if (whole.length + fraction.length > MAX_DIGITS && (whole + fraction).replace(/^0+(?=\d)/, '').length > MAX_DIGITS) {
+    throw new JazminValidationError(`Column '${column}': more than ${MAX_DIGITS} significant digits`);
+  }
+  let w = 0;
+  while (w < whole.length - 1 && whole.charCodeAt(w) === 48) w++;
+  const digits = w ? whole.slice(w) : whole;
+  const out = fraction ? `${digits}.${fraction}` : digits;
+  return sign && (digits !== '0' || /[1-9]/.test(fraction)) ? `-${out}` : out; // zero has no sign
+}
+
+/**
+ * m and s of decimal text with at most 15 digits, as numbers (exact: below 2^53), or undefined for anything else:
+ * the common case, read without BigInt.
+ */
+export function smallDecimal(text) {
+  if (typeof text !== 'string' || text.length > 17) return undefined;
+  let i = text.charCodeAt(0) === 45 ? 1 : 0; // '-'
+  const negative = i === 1;
+  let m = 0;
+  let digits = 0;
+  let s = -1;
+  for (; i < text.length; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 46 && s < 0) s = 0; // '.'
+    else if (c >= 48 && c <= 57) {
+      m = m * 10 + (c - 48);
+      digits++;
+      if (s >= 0) s++;
+    } else return undefined;
+  }
+  if (digits === 0 || digits > 15 || s === 0) return undefined;
+  return { m: negative ? -m : m, s: s < 0 ? 0 : s };
 }
 
 /** Key form of a decimal: reduced (trailing zeros removed), compared numerically. */
@@ -75,6 +113,13 @@ export function compareDecimalKeys(a, b) {
 
 /** Writes a decimal (text or key) as varint scale + big zigzag varint m (spec 5.1). */
 export function writeDecimal(writer, value) {
+  const small = smallDecimal(value);
+  if (small) {
+    // The same bytes, with numbers: |m| < 10^15, so 2|m| is exact.
+    writer.varUint(small.s);
+    writer.varUint(small.m > 0 ? small.m * 2 : small.m < 0 ? -small.m * 2 - 1 : 0);
+    return;
+  }
   const { m, s } = value instanceof DecimalKey ? value : parseDecimal(value);
   writer.varUint(s);
   writer.varUint(m >= 0n ? m << 1n : ((-m) << 1n) - 1n);
