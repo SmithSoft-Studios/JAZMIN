@@ -54,6 +54,8 @@
   "types": "src/index.d.ts",
   "devDependencies": {
     "@types/node": "^22.20.4",
+    "playwright-core": "^1.63.0",
+    "puppeteer-core": "^25.12.0",
     "typescript": "^5.9.3"
   }
 }

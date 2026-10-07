@@ -6,6 +6,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Fixed
+- **Viewer: a document's `jazmin.query(…, { orderBy })` sorted decimals as
+  text.** `"99.00"` came after `"100.00"` in descending order, because
+  decimals are exact strings. They are now compared by value, as the
+  libraries compare them; other types sort as before.
 - **Viewer: fonts, audio and video from a package's allowed origins were
   blocked.** A template could load scripts, styles, images and data from the
   origins its package settings allow (`allowedOrigins`), but not fonts or
@@ -192,6 +196,23 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   write loop.
 
 ### Added
+- **JS: serving a file's embedded files, and its document as a PDF (TASKS
+  F-3).**
+  - **`serveFiles(reader, { prefix })`**, a Node request handler (http,
+    Express), and **`createFileHandler(reader)`** for request interception:
+    only the files the key can see, one byte range per request (from the
+    blocks it falls in), ETags from each file's SHA-256, and pages and SVG
+    served with the document's security policy and a sandbox, so a stored
+    page cannot act as your site.
+  - **`renderPdf({ file, key, browser })`** prints the file's document in a
+    Playwright or Puppeteer browser you supply, with the viewer's
+    `window.jazmin` API answered from the file: one template serves the
+    viewer and PDFs (a test renders the viewer's test template and gets the
+    same answers). Each document gets a browser context of its own and can
+    reach only its files and allowed origins. About 0.3-0.5 s per PDF.
+  - **The library still has no dependencies.** Its tests use
+    `playwright-core` and `puppeteer-core` (development only, no browser
+    download: the installed Chrome or Edge).
 - **.NET: LINQ queries that run in the reader: `reader.AsQueryable<T>()`
   (TASKS J-2).** Write the query with the usual LINQ operators; the reader
   does as much of it as it can, and the rest runs in memory. Results are

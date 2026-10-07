@@ -2122,6 +2122,67 @@ JazminFile.Append("statements.jzm", new JazminAppend { Key = owner, AddFiles = [
 - **Already-compressed files** (JPEG, PNG, MP4, PDF) are stored as they are.
   Compressing them would not help.
 
+### 19.4 On a server: serving files and rendering PDFs (JavaScript)
+
+**Serving a file's embedded files** to browsers or apps, for example the
+invoices, photos or videos stored with the records:
+
+```js
+import http from 'node:http';
+import { open, serveFiles } from '@smithsoft-studios/jazmin';
+
+const reader = open('claims.jzm', { key: accessKey });   // what this key can see is what is served
+const files = serveFiles(reader, { prefix: '/files/' });
+http.createServer((req, res) => files(req, res, () => { res.writeHead(404); res.end(); })).listen(8080);
+// GET /files/claims/CL-0015/photo-1.png; Express: app.use(files)
+```
+
+- **Byte ranges** (`Range: bytes=…`, one range per request) are served
+  from the blocks they fall in, so a video can be streamed and sought without
+  reading the whole file. Whole files stream block by block.
+- **Caching:** each file's ETag is its SHA-256, so an unchanged file is
+  answered with 304.
+- **Only what the key can see:** other files are 404, as if absent.
+- **Pages and SVG are sandboxed:** they get the document's security policy
+  (section 24.1) and a sandbox, so a file's page served from your site cannot
+  act as your site (read its cookies, call its APIs). To show a document,
+  open the `.jzm` in the viewer instead.
+- **Your own server, interception or tests:** `createFileHandler(reader)`
+  gives `handle(path, { method, range, ifNoneMatch })` →
+  `{ status, headers, body, stream() }` without a server.
+
+**Rendering a document to PDF.** `renderPdf` opens the file's document (its
+package's entry page) in a browser you supply, gives it the viewer's
+`window.jazmin` API (section 24.1), answered from the file, and prints it.
+The same template therefore serves the viewer and batch PDFs.
+
+```js
+import { chromium } from 'playwright';                  // or: import puppeteer from 'puppeteer'
+import { renderPdf } from '@smithsoft-studios/jazmin';
+
+const browser = await chromium.launch();                  // or: await puppeteer.launch()
+for (const account of accounts) {
+  const pdf = await renderPdf({ file: `statements/${account}.jzm`, key, browser, pdf: { format: 'A4' } });
+  fs.writeFileSync(`out/${account}.pdf`, pdf);
+}
+await browser.close();
+```
+
+- **The browser is yours:** a Playwright or Puppeteer browser (Chromium).
+  The library itself still needs no packages.
+- **When it prints:** when the document calls `jazmin.ready()`. For a page
+  that never does, pass `waitFor: 'load'`. After `timeout` (30 s) it gives up
+  with an error.
+- **Locked down:** each document gets a browser context of its own (no
+  cookies or storage shared). It can reach only its own files and its
+  package's allowed origins: every other request, including to your
+  internal network, is refused.
+- **Downloads** the document makes (`jazmin.download`) come to
+  `onDownload({ filename, type, bytes })`; what it passes to `jazmin.ready()`
+  comes to `onReady(info)`.
+- **Measured** with the test template (120 rows, 4 queries, an image, a file):
+  about 0.3-0.5 s per PDF in Chrome, browser already running.
+
 ## 20. Speed and memory: practical recipes
 
 The examples below use a statements file of transactions, sorted by account:

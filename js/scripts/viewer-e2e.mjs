@@ -12,6 +12,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { JazminAccessKey, JazminKey, issueUnlockToken, open, write } from '../src/index.js';
+import { TEMPLATE_READY, writeTemplate } from '../test/template-fixture.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const fixtures = path.join(root, 'spec/fixtures');
@@ -39,26 +40,11 @@ for (const writer of ['js', 'dotnet']) {
   for (const key of ['bob', 'sally', 'carol']) CASES.push({ file: `${writer}-files-access.jzm`, key, files: FILES[key] }); // never the master key: see below
 }
 
-// A package whose template uses the API: count, a sorted page of rows (queried in the viewer), all rows, and ready().
+// A package whose template uses the API (test/template-fixture.js): count, sorted queries, a date, all rows, a file, an
+// image, and ready().
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-viewer-e2e-files-'));
 const templateKey = JazminKey.generate();
-write(path.join(temp, 'template.jzm'), Array.from({ length: 120 }, (_, n) => ({ n, label: `row ${n}` })), {
-  columns: [{ name: 'n', type: 'int' }, { name: 'label', type: 'string' }],
-  key: templateKey,
-  files: [
-    { path: 'index.html', content: '<!doctype html><title>Template</title><body><p id="out">…</p><script src="js/app.js"></script></body>' },
-    {
-      path: 'js/app.js',
-      content: `(async () => {
-        const total = await jazmin.count();
-        const top = (await jazmin.query({ n: { gte: 100 } }, { orderBy: '-n', limit: 3, select: ['n'] })).map((r) => r.n);
-        document.getElementById('out').textContent = 'JAZMIN interop template: ' + total + ' rows';
-        jazmin.ready({ total, top, all: jazmin.rows().length, columns: jazmin.columns.map((c) => c.name) });
-      })();`,
-    },
-  ],
-  package: { entry: 'index.html', title: 'Template' },
-});
+writeTemplate(write, path.join(temp, 'template.jzm'), { key: templateKey }); // the template renderPdf's test renders too
 
 // A package allowed to reach one origin: its fonts and media load from there, and from no other origin. The template
 // asks for a font and an audio file from the allowed origin and from another, and reports what the policy refused.
@@ -377,8 +363,8 @@ for (const name of chosen) {
     keys.template = templateKey.export();
     await unlock(page, { file: 'template.jzm', key: 'template' });
     const ready = await waitFor(page, 'JazminViewer.state.lastReady && JazminViewer.state.lastReady.info', 'the template to call jazmin.ready()');
-    const expected = { total: 120, top: [119, 118, 117], all: 120, columns: ['n', 'label'] };
-    results.push({ browser: name, label: 'template API: count, sorted query, rows, ready', ok: JSON.stringify(ready) === JSON.stringify(expected), problems: JSON.stringify(ready) === JSON.stringify(expected) ? [] : [JSON.stringify(ready)] });
+    const expected = TEMPLATE_READY;
+    results.push({ browser: name, label: 'template API: count, sorted queries, a date, rows, a file, an image, ready', ok: JSON.stringify(ready) === JSON.stringify(expected), problems: JSON.stringify(ready) === JSON.stringify(expected) ? [] : [JSON.stringify(ready)] });
 
     // Fonts and media load from the package's allowed origins, and only from those.
     await page.navigate(`${base}/js/viewer/index.html`);

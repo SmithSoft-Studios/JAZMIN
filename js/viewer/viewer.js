@@ -271,20 +271,46 @@
     }
   });
 
+  /** Exact decimal strings ("-12.50", "3", "0.001") by value: -1, 0 or 1. */
+  function compareDecimals(a, b) {
+    const parse = (text) => {
+      const negative = text.startsWith('-');
+      const [whole, fraction = ''] = (negative || text.startsWith('+') ? text.slice(1) : text).split('.');
+      return { negative, whole: whole.replace(/^0+/, ''), fraction: fraction.replace(/0+$/, '') };
+    };
+    const x = parse(a);
+    const y = parse(b);
+    const zero = (v) => v.whole === '' && v.fraction === '';
+    const xn = x.negative && !zero(x);
+    const yn = y.negative && !zero(y);
+    if (xn !== yn) return xn ? -1 : 1;
+    let c = x.whole.length - y.whole.length || (x.whole < y.whole ? -1 : x.whole > y.whole ? 1 : 0);
+    if (c === 0) {
+      const w = Math.max(x.fraction.length, y.fraction.length);
+      const xf = x.fraction.padEnd(w, '0');
+      const yf = y.fraction.padEnd(w, '0');
+      c = xf < yf ? -1 : xf > yf ? 1 : 0;
+    }
+    return c === 0 ? 0 : xn ? -Math.sign(c) : Math.sign(c);
+  }
+
   /** A page of rows for a template: { select, orderBy ('col' or '-col'), offset, limit }. */
   async function queryPage(reader, filter, options) {
     const { select, orderBy, offset = 0, limit = 100 } = options || {};
     if (!orderBy) return (await reader.query(filter, { select, offset, limit, total: false })).rows;
     const desc = orderBy.startsWith('-');
     const name = desc ? orderBy.slice(1) : orderBy;
-    if (!reader.columns.some((c) => c.name === name)) throw new Error(`orderBy: unknown column '${name}'`);
+    const column = reader.columns.find((c) => c.name === name);
+    if (!column) throw new Error(`orderBy: unknown column '${name}'`);
     const all = [];
     for await (const row of reader.find(filter)) all.push(row);
     const key = (v) => (v instanceof Date ? v.getTime() : v);
+    // Decimals are exact strings: compared by value, not as text ("100.00" after "99.00"), as the library does.
+    const less = column.type === 'decimal' ? (x, y) => compareDecimals(x, y) < 0 : (x, y) => x < y;
     all.sort((a, b) => {
       const x = key(a[name]);
       const y = key(b[name]);
-      const c = x === y ? 0 : x === null || x === undefined ? -1 : y === null || y === undefined ? 1 : x < y ? -1 : 1;
+      const c = x === y ? 0 : x === null || x === undefined ? -1 : y === null || y === undefined ? 1 : less(x, y) ? -1 : less(y, x) ? 1 : 0;
       return desc ? -c : c;
     });
     return all.slice(offset, offset + limit).map((row) => (select ? Object.fromEntries(select.map((s) => [s, row[s]])) : row));

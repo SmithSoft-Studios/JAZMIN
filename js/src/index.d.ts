@@ -627,3 +627,63 @@ export const JAZMIN: {
   stringify(rows: Iterable<Record<string, unknown>>, options?: WriteOptions): Buffer;
   parse(bytes: Uint8Array, options?: ReadOptions): JazminRow[];
 };
+
+// ---- Server-side helpers (TASKS F-3) --------------------------------------------------------------------------------
+
+/** A response for an embedded file: the bytes are read only when `body` or `stream()` is used. */
+export interface FileResponse {
+  status: 200 | 206 | 304 | 400 | 404 | 405 | 416;
+  headers: Record<string, string>;
+  /** The bytes (whole file, or the requested range). */
+  readonly body: Buffer;
+  /** The same bytes, block by block. */
+  stream(): import('node:stream').Readable;
+}
+
+/** Answers a request for an embedded file by path. */
+export type FileHandler = (path: string, request?: { method?: string; range?: string; ifNoneMatch?: string }) => FileResponse;
+
+/**
+ * Serves a reader's embedded files by path, for request interception or a web server: one byte range per request,
+ * ETags from the files' SHA-256, and the document's security policy (sandboxed by default) on pages and SVG.
+ * Only files the reader's key can see are served.
+ */
+export function createFileHandler(reader: JazminReader, options?: { origin?: string; sandbox?: boolean }): FileHandler;
+
+/** A Node request handler (http.createServer, Express) serving a reader's embedded files under `prefix`. */
+export function serveFiles(
+  reader: JazminReader,
+  options?: { prefix?: string; origin?: string },
+): (req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse, next?: () => void) => void;
+
+/** The security policy the viewer gives a package's document; `self` adds the origin its files are served from. */
+export function documentPolicy(settings?: PackageSettings, options?: { self?: string | null }): string;
+
+export interface RenderPdfOptions {
+  /** A path, a Buffer or an open reader. */
+  file: string | Uint8Array | JazminReader;
+  key?: string | JazminKey | JazminAccessKey;
+  password?: string;
+  unlockToken?: string;
+  table?: string;
+  /** The page to render (default: the package's entry). */
+  entry?: string;
+  /** A Puppeteer or Playwright Browser (Chromium), or a Playwright BrowserContext. */
+  browser: unknown;
+  /** The browser's PDF options (default A4, with backgrounds). */
+  pdf?: Record<string, unknown>;
+  /** Render when the document calls jazmin.ready() (default), or when it has loaded. */
+  waitFor?: 'ready' | 'load';
+  /** Milliseconds to wait (default 30,000). */
+  timeout?: number;
+  /** What the document passed to jazmin.ready(). */
+  onReady?(info: unknown): void;
+  /** Files the document saved with jazmin.download(). */
+  onDownload?(file: { filename: string; type: string; bytes: Buffer }): void;
+}
+
+/**
+ * Renders a file's document to PDF with the viewer's window.jazmin API, answered from the file: one template serves
+ * the viewer and PDFs. Only the package's files and allowed origins are reachable.
+ */
+export function renderPdf(options: RenderPdfOptions): Promise<Buffer>;
