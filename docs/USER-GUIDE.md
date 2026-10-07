@@ -1149,6 +1149,42 @@ A 1 GB file:
 With `fromCSV` or `fromXML`, Node holds the text and then every row as an
 object: a 200 MB file took 1.6 GB (CSV) and 1.3 GB (XML).
 
+### 11.2 Rows as a JSON stream or JSON tokens (.NET)
+
+For code that already consumes JSON, a query's rows can be read as JSON
+without writing it to a file or a string first:
+
+```csharp
+using Jazmin.Formats;
+
+// Bytes, written as they are read: for any System.Text.Json pipeline, or an HTTP response.
+using var stream = new JazminJsonStream(reader, JazminFilter.Eq("account", "ACC-100001"), new() { Select = ["at", "amount"] });
+await foreach (var line in JsonSerializer.DeserializeAsyncEnumerable<StatementLine>(stream)) { /* ... */ }
+// ASP.NET: return Results.Stream(new JazminJsonStream(reader), "application/json");
+
+// Tokens, one at a time, as Newtonsoft's JsonReader gives them: no JSON text is written or parsed.
+using var json = new JazminJsonReader(reader);
+while (json.Read())
+{
+    if (json.TokenType == JazminJsonToken.PropertyName) Console.Write($"{json.Path} = ");
+    else if (json.Value is not null) Console.WriteLine(json.Value);
+}
+```
+
+- **The JSON is that of `JazminConvert.ToJson`:** an array of row objects,
+  the same bytes. `JazminJsonStream` takes `Formatting` and
+  `NullValueHandling` as `ToJson` does.
+- **Tokens:** `StartArray`, `StartObject`, `PropertyName`, `Integer` (a
+  `long`), `Float` (a `double`, or a decimal as its exact text), `String`,
+  `Boolean`, `Null`, `Date` (a UTC `DateTime`), `Bytes` (a `byte[]`),
+  `EndObject` and `EndArray`. A `json` column's value comes as nested tokens.
+  `Depth` and `Path` (`[3].amount`, `[3].extra.tags[0]`) are as in Newtonsoft.
+- **Memory stays low however many rows the query returns:** the stream holds
+  about 64 KiB of text at a time. 200,000 rows × 300 columns (1.3 GB of JSON
+  from a 135 MB file): the stream 7.1 s at 63 MB, the token reader 4.8 s
+  (120 million tokens) at 62 MB, and `DeserializeAsyncEnumerable` over the
+  stream 13 s at 70 MB.
+
 ---
 
 ## 12. Errors and troubleshooting

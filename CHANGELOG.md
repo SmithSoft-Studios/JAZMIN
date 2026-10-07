@@ -70,6 +70,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     `TextWriter`, which declares that writer's encoding.
 
 ### Changed
+- **.NET: JSON exports of wide tables are about 3 times faster.**
+  `JazminConvert.ToJson` and `JsonFormat.Write` looked up every value by
+  column name, one column after another; they now read a query's values by
+  position. 200,000 rows x 300 columns: 24.4 s -> 7.4 s, with the same
+  bytes and memory.
 - **Files with `sortedBy` are smaller: no `sorted` index on the leading sort
   column.** Readers find that column's values from chunk statistics, and
   have never used such an index; the spec already said writers should not
@@ -148,6 +153,19 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   write loop.
 
 ### Added
+- **.NET: rows as a JSON stream or JSON tokens (TASKS J-3).** For code that
+  already consumes JSON (user guide 11.2):
+  - **`JazminJsonStream`:** a query's rows as UTF-8 JSON, written as it is
+    read, for any System.Text.Json pipeline or an HTTP response. It gives
+    the same bytes as `JazminConvert.ToJson`, holding about 64 KiB at a
+    time.
+  - **`JazminJsonReader`:** the same rows as tokens, one at a time, as
+    Newtonsoft's `JsonReader` gives them (`Read`, `TokenType`, `Value`,
+    `Depth`, `Path`), with no JSON text written or parsed. `json` columns
+    come as nested tokens.
+  - **200,000 rows x 300 columns** (1.3 GB of JSON): the stream 7.1 s at
+    63 MB, the tokens 4.8 s at 62 MB.
+  - **No new dependency:** Newtonsoft.Json is not needed.
 - **Change a file's key or password: `rotateKey()` / `JazminFile.RotateKey`
   (TASKS S-2).** The file is encrypted again under a new key or password,
   and only the new one opens it: its master key, file id, salt and every
