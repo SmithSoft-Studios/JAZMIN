@@ -858,6 +858,32 @@
     }
   }
 
+  /** A key's identity for hash sets: equal keys share it (decimals by value: 7.5 and 7.50 alike). */
+  function keyHash(type, key) {
+    if (type !== 'decimal') return key;
+    let { digits, scale } = key;
+    while (scale > 0 && digits % 10n === 0n) {
+      digits /= 10n;
+      scale--;
+    }
+    return digits === 0n ? '0' : `${key.sign < 0n ? '-' : ''}${digits}e${scale}`;
+  }
+
+  /**
+   * An `in` list's keys as a hash set (to check rows) and in order (to check chunk statistics), as in the library's
+   * filter.js. Null and NaN are left out: they equal nothing.
+   */
+  function inKeys(type, operand) {
+    const usable = new Map();
+    for (const v of operand) {
+      if (v === null || v === undefined) continue;
+      const key = keyOf(type, v);
+      if (typeof key === 'number' && Number.isNaN(key)) continue;
+      usable.set(keyHash(type, key), key);
+    }
+    return { set: new Set(usable.keys()), sorted: [...usable.values()].sort((a, b) => compare(type, a, b)) };
+  }
+
   function compare(type, a, b) {
     if (type === 'decimal') {
       const scale = Math.max(a.scale, b.scale);
@@ -914,8 +940,8 @@
     if (op === 'startsWith') return (row) => row[name] != null && row[name].startsWith(operand);
     if (op === 'in') {
       if (!Array.isArray(operand)) throw new JazminError(`'in' takes an array`);
-      const keys = operand.filter((v) => v !== null).map((v) => keyOf(type, v));
-      return (row) => row[name] != null && keys.some((k) => keyCompare(type, keyOf(type, row[name]), k) === 0);
+      const { set } = inKeys(type, operand);
+      return (row) => row[name] != null && set.has(keyHash(type, keyOf(type, row[name])));
     }
     const key = keyOf(type, operand);
     const test = { eq: (c) => c === 0, ne: (c) => c !== 0, gt: (c) => c > 0, gte: (c) => c >= 0, lt: (c) => c < 0, lte: (c) => c <= 0 }[op];
@@ -984,7 +1010,7 @@
     if (op === 'isNull') return { ...leaf, value: Boolean(operand) };
     if (STRING_OPS.has(op)) return { ...leaf, value: String(operand) };
     if (!ORDERED_TYPES.has(column.type)) return { ...leaf, op: 'opaque' }; // binary / json: not planned
-    if (op === 'in') return { ...leaf, value: operand.filter((v) => v !== null && v !== undefined).map((v) => keyOf(column.type, v)) };
+    if (op === 'in') return { ...leaf, value: operand.filter((v) => v !== null && v !== undefined).map((v) => keyOf(column.type, v)), ...inKeys(column.type, operand) };
     return { ...leaf, value: keyOf(column.type, operand) };
   }
 
@@ -1076,7 +1102,18 @@
     const aboveMin = (v, inclusive) => min === undefined || (inclusive ? cmp(v, min) >= 0 : cmp(v, min) > 0);
     switch (leaf.op) {
       case 'eq': return aboveMin(leaf.value, true) && belowMax(leaf.value, true);
-      case 'in': return leaf.value.some((v) => aboveMin(v, true) && belowMax(v, true));
+      case 'in': { // the first listed key at or above the minimum, if it is not above the maximum
+        let lo = 0;
+        let hi = leaf.sorted.length;
+        if (min !== undefined) {
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (cmp(leaf.sorted[mid], min) < 0) lo = mid + 1;
+            else hi = mid;
+          }
+        }
+        return lo < leaf.sorted.length && belowMax(leaf.sorted[lo], true);
+      }
       case 'gt': return max === undefined || cmp(max, leaf.value) > 0;
       case 'gte': return max === undefined || cmp(max, leaf.value) >= 0;
       case 'lt': return min === undefined || cmp(min, leaf.value) < 0;
@@ -1105,7 +1142,7 @@
     switch (leaf.op) {
       case 'eq': return cmp(min, leaf.value) === 0 && cmp(max, leaf.value) === 0;
       case 'ne': return cmp(max, leaf.value) < 0 || cmp(min, leaf.value) > 0;
-      case 'in': return cmp(min, max) === 0 && leaf.value.some((v) => cmp(min, v) === 0);
+      case 'in': return cmp(min, max) === 0 && leaf.set.has(keyHash(leaf.column.type, min));
       case 'gt': return cmp(min, leaf.value) > 0;
       case 'gte': return cmp(min, leaf.value) >= 0;
       case 'lt': return cmp(max, leaf.value) < 0;

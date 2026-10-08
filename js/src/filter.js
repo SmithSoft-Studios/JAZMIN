@@ -1,6 +1,6 @@
 import { JazminValidationError } from './errors.js';
 import { intersect, unionAll } from './rowset.js';
-import { EQUATABLE_TYPES, ORDERED_TYPES, compareKeys, normalizeValue, toKey } from './types.js';
+import { EQUATABLE_TYPES, ORDERED_TYPES, compareKeys, keyId, normalizeValue, toKey } from './types.js';
 
 // Filter language (spec section 9). GraphQL-style "where" objects:
 //   { age: { gte: 18 }, country: 'ZA', or: [{ name: { contains: 'son' } }, { vip: true }] }
@@ -27,6 +27,30 @@ function coerce(column, value) {
   if (column.type === 'bool' && (v === 'true' || v === 'false')) v = v === 'true';
   if (column.type === 'string' && typeof v === 'number') v = String(v);
   return toKey(column.type, normalizeValue(column.type, v, column.name));
+}
+
+/**
+ * An `in` list's keys as a hash set (to check rows) and in order (to check chunk statistics), so a long list costs about
+ * as much as a short one. Null and NaN are left out: they equal nothing.
+ */
+function inKeys(keys) {
+  const usable = new Map();
+  for (const key of keys) if (key !== null && !(typeof key === 'number' && Number.isNaN(key))) usable.set(keyId(key), key);
+  return { set: new Set(usable.keys()), sorted: [...usable.values()].sort(compareKeys) };
+}
+
+/** Whether keys sorted by compareKeys hold one within [min, max]; an absent bound is open. */
+function anyBetween(sorted, min, max) {
+  let lo = 0;
+  let hi = sorted.length;
+  if (min !== undefined) {
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (compareKeys(sorted[mid], min) < 0) lo = mid + 1;
+      else hi = mid;
+    }
+  }
+  return lo < sorted.length && (max === undefined || compareKeys(sorted[lo], max) <= 0);
 }
 
 /**
@@ -77,7 +101,8 @@ export function normalizeFilter(filter, columns) {
     if (!allowed.has(column.type)) throw invalid(`'${op}' is not supported on ${column.type} column '${column.name}'`);
     if (op === 'in') {
       if (!Array.isArray(value)) throw invalid(`'in' needs an array`);
-      return { ...base, value: value.map((v) => coerce(column, v)) };
+      const keys = value.map((v) => coerce(column, v));
+      return { ...base, value: keys, ...inKeys(keys) };
     }
     const operand = coerce(column, value);
     if (operand === null) {
@@ -105,7 +130,7 @@ function evaluateLeaf(leaf, row) {
   switch (leaf.op) {
     case 'eq': return compareKeys(key, leaf.value) === 0;
     case 'ne': return !(compareKeys(key, leaf.value) === 0);
-    case 'in': return leaf.value.some((v) => v !== null && compareKeys(key, v) === 0);
+    case 'in': return leaf.set.has(keyId(key));
     case 'gt': return compareKeys(key, leaf.value) > 0;
     case 'gte': return compareKeys(key, leaf.value) >= 0;
     case 'lt': return compareKeys(key, leaf.value) < 0;
@@ -251,7 +276,7 @@ function leafMayMatch(leaf, stat, rowCount) {
   const aboveMin = (v, inclusive) => min === undefined || (inclusive ? compareKeys(v, min) >= 0 : compareKeys(v, min) > 0);
   switch (leaf.op) {
     case 'eq': return aboveMin(leaf.value, true) && belowMax(leaf.value, true);
-    case 'in': return leaf.value.some((v) => v !== null && aboveMin(v, true) && belowMax(v, true));
+    case 'in': return anyBetween(leaf.sorted, min, max);
     case 'gt': return max === undefined || compareKeys(max, leaf.value) > 0;
     case 'gte': return max === undefined || compareKeys(max, leaf.value) >= 0;
     case 'lt': return min === undefined || compareKeys(min, leaf.value) < 0;
@@ -281,7 +306,7 @@ function leafMustMatch(leaf, stat, rowCount) {
   switch (leaf.op) {
     case 'eq': return compareKeys(min, leaf.value) === 0 && compareKeys(max, leaf.value) === 0;
     case 'ne': return compareKeys(max, leaf.value) < 0 || compareKeys(min, leaf.value) > 0;
-    case 'in': return compareKeys(min, max) === 0 && leaf.value.some((v) => v !== null && compareKeys(min, v) === 0);
+    case 'in': return compareKeys(min, max) === 0 && leaf.set.has(keyId(min));
     case 'gt': return compareKeys(min, leaf.value) > 0;
     case 'gte': return compareKeys(min, leaf.value) >= 0;
     case 'lt': return compareKeys(max, leaf.value) < 0;
