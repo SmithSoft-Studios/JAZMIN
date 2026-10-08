@@ -2009,12 +2009,19 @@ export class JazminReader {
 
   /**
    * A filtered query on a file with one column group: only the columns the filter and the selection use are decoded,
-   * and with index candidates (`rowIds`) only their chunks are read and only their rows checked.
+   * and with index candidates (`rowIds`) only their chunks are read and only their rows checked. The filter's columns
+   * are decoded first. The others are decoded only for chunks with matching rows, and of those only the matching rows'
+   * text, decimal, json and binary values, so a selective scan makes few values it would throw away.
    */
   *#scanColumns(plan, selection, offset, limit, ticks, rowIds, sink) {
     const wanted = this.#wantedColumns(plan, selection);
     const make = sink ? null : this.#maker(selection);
     const row = new Array(this.#columns.length);
+    const wantedAt = wanted.flatMap((w, c) => (w ? [c] : []));
+    const filterCols = plan ? this.#wantedColumns(plan, []) : null;
+    const filterAt = filterCols ? filterCols.flatMap((w, c) => (w ? [c] : [])) : [];
+    const rest = filterCols ? wanted.map((w, c) => w && !filterCols[c]) : null;
+    const restCount = rest ? rest.filter(Boolean).length : 0;
     const whole = this.#wholeChunkTest(plan);
     let skipped = 0;
     let yielded = 0;
@@ -2028,15 +2035,37 @@ export class JazminReader {
       if (ticks) yield NEXT_CHUNK;
       const start = this.#rowStart[ordinal];
       const count = rowIds === null ? this.#rowCount[ordinal] : to - from;
-      const columns = this.#decodeChunk(ordinal, wanted, sink !== undefined); // filters compare dates as milliseconds
+      let columns;
+      let matches = null;
+      if (!plan) columns = this.#decodeChunk(ordinal, wanted, sink !== undefined); // filters compare dates as milliseconds
+      else {
+        const raw = this.#readChunk(ordinal);
+        const rowCount = this.#rowCount[ordinal];
+        columns = decodeColumnar(raw, this.#types, rowCount, ordinal, filterCols, sink !== undefined);
+        matches = new Uint8Array(rowCount);
+        let any = false;
+        for (let k = 0; k < count; k++) {
+          const r = rowIds === null ? k : rowIds[from + k] - start;
+          for (const c of filterAt) row[c] = columns[c][r];
+          if (evaluate(plan, row)) any = matches[r] = 1;
+        }
+        if (any && restCount) {
+          const more = decodeColumnar(raw, this.#types, rowCount, ordinal, rest, sink !== undefined, matches);
+          for (let c = 0; c < more.length; c++) if (rest[c]) columns[c] = more[c];
+        }
+        if (this.#cost) {
+          this.#cost.chunksRead++;
+          this.#cost.columnsDecoded += filterAt.length + (any ? restCount : 0);
+        }
+      }
       for (let k = 0; k < count; k++) {
         if (yielded >= limit) return;
         const r = rowIds === null ? k : rowIds[from + k] - start;
         const rowId = start + r;
         while (deleted < this.#deleted.length && this.#deleted[deleted] < rowId) deleted++;
         if (deleted < this.#deleted.length && this.#deleted[deleted] === rowId) continue;
-        for (let c = 0; c < columns.length; c++) if (wanted[c]) row[c] = columns[c][r];
-        if (!evaluate(plan, row)) continue;
+        if (matches && !matches[r]) continue; // the filter, checked as the chunk was decoded
+        for (const c of wantedAt) row[c] = columns[c][r];
         if (skipped < offset) {
           skipped++;
           continue;

@@ -145,6 +145,14 @@ export function readDecimalParts(reader) {
   return { m: z & 1n ? -((z + 1n) >> 1n) : z >> 1n, s };
 }
 
+/** Passes over a decimal without making its text (a row a query does not return). */
+export function skipDecimal(reader) {
+  const s = reader.varUint();
+  if (typeof s !== 'number' || s > MAX_SCALE) throw new JazminFormatError('Decimal scale is invalid');
+  for (let n = 0; n < MAX_VARINT_BYTES; n++) if (!(reader.byte() & 0x80)) return;
+  throw new JazminFormatError('Decimal value is too long');
+}
+
 /** Reads a decimal as canonical text. */
 export function readDecimal(reader) {
   const { m, s } = readDecimalParts(reader);

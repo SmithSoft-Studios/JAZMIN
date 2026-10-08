@@ -1,6 +1,6 @@
 // Columnar chunk layout (spec section 5.4): one stream per column, with per-type encodings.
 import { ByteReader, ByteWriter, dateFromMs, msFromFile, normalizeBigInt, parseJsonText } from './binary.js';
-import { readDecimal, writeDecimal } from './decimal.js';
+import { readDecimal, skipDecimal, writeDecimal } from './decimal.js';
 import { JazminFormatError } from './errors.js';
 
 export const ENCODING = Object.freeze({ plain: 0, delta: 1, dictionary: 2, bitmap: 3, scaled: 4 });
@@ -419,12 +419,22 @@ function readPlain(r, type) {
   }
 }
 
+/** Passes over a plain value of a row no one reads: text, decimals, json and binary are not made. */
+function skipPlain(r, type) {
+  if (type === 'decimal') skipDecimal(r);
+  else r.skip(r.varUint()); // string, json and binary: a length, then bytes
+  return undefined;
+}
+
+const MADE_PER_ROW = new Set(['string', 'decimal', 'json', 'binary']); // values worth skipping for rows not returned
+
 /**
  * Decodes a columnar payload into one array per column (public value forms, null for null).
  * `wanted[j] === false` skips column j without decoding it. With `datesAsMs`, datetimes are milliseconds since 1970
- * instead of Date objects (for column arrays: no object per value).
+ * instead of Date objects (for column arrays: no object per value). With `rows` (by row: truthy for the rows a query
+ * returns), plain text, decimal, json and binary values are made only for those rows; the others are left undefined.
  */
-export function decodeColumnar(raw, types, rowCount, ordinal, wanted, datesAsMs = false) {
+export function decodeColumnar(raw, types, rowCount, ordinal, wanted, datesAsMs = false, rows = null) {
   // Every column stream holds at least one bit per row (a null bitmap or values): a larger row count is damage,
   // caught before allocating for it.
   if (!Number.isSafeInteger(rowCount) || rowCount < 0 || (rowCount > 0 && rowCount > raw.length * 8)) {
@@ -457,7 +467,12 @@ export function decodeColumnar(raw, types, rowCount, ordinal, wanted, datesAsMs 
     switch (encoding) {
       case ENCODING.plain:
         if (datesAsMs && type === 'datetime') for (let i = 0; i < count; i++) values[i] = msFromFile(stream.varInt());
-        else for (let i = 0; i < count; i++) values[i] = readPlain(stream, type);
+        else if (rows && MADE_PER_ROW.has(type)) {
+          for (let r = 0, i = 0; i < count; r++) {
+            if (isNull(r)) continue;
+            values[i++] = rows[r] ? readPlain(stream, type) : skipPlain(stream, type);
+          }
+        } else for (let i = 0; i < count; i++) values[i] = readPlain(stream, type);
         break;
       case ENCODING.delta: {
         let prev = 0;

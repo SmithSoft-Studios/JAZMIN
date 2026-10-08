@@ -1266,10 +1266,11 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <see cref="JazminReadOptions.MaxDegreeOfParallelism"/> ahead on worker threads: the file is read in order here,
     /// while decryption, decompression and decoding run in parallel.
     /// </summary>
-    private IEnumerable<(int Ordinal, DecodedColumn?[] Columns)> DecodeAhead(IEnumerable<int> ordinals, JazminType[] types, bool[]? wanted, bool rampUp = false)
+    private IEnumerable<DecodedChunk> DecodeAhead(IEnumerable<int> ordinals, JazminType[] types, bool[]? wanted, bool rampUp = false, ChunkFilter? filter = null)
     {
         var (fileId, keys, group) = (_fileId, _keys, _groups[0].Name);
-        DecodedColumn?[] Decode(int ordinal, byte[] section, int length, StringPool? strings)
+        var decodedColumns = wanted is null ? types.Length : wanted.Count(w => w);
+        DecodedChunk Decode(int ordinal, byte[] section, int length, StringPool? strings)
         {
             var sectionId = FormatConstants.ChunkSectionId(_tableIndex, ordinal, group);
             try
@@ -1277,7 +1278,10 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 var (raw, rawLength) = SectionCodec.DecodePooled(section, length, keys?.SectionKey(FormatConstants.KeyringData, sectionId), fileId, sectionId);
                 try
                 {
-                    return Columnar.DecodeTyped(raw, rawLength, types, _rowCount[ordinal], ordinal, wanted, strings ?? (_workerStrings ??= new StringPool()));
+                    var pool = strings ?? (_workerStrings ??= new StringPool());
+                    return filter is null
+                        ? new DecodedChunk(ordinal, Columnar.DecodeTyped(raw, rawLength, types, _rowCount[ordinal], ordinal, wanted, pool), null, decodedColumns)
+                        : filter.Decode(raw, rawLength, types, _rowCount[ordinal], ordinal, pool);
                 }
                 finally
                 {
@@ -1292,7 +1296,11 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
         // Memory first: about 128 decoded columns in flight (Speed: 1,024). Narrow queries read far ahead; full reads
         // of wide files (where read-ahead gains little) stay sequential unless speed was asked for.
-        var decodedColumns = wanted is null ? types.Length : wanted.Count(w => w);
+        DecodedChunk Counted(DecodedChunk chunk)
+        {
+            if (_cost is not null) _cost.ColumnsDecoded += chunk.Decoded; // here: the thread that iterates
+            return chunk;
+        }
         var ahead = Math.Clamp(_columnsInFlight / Math.Max(1, decodedColumns), 1, _readAhead);
         (byte[] Section, int Length) ReadChunk(int ordinal)
         {
@@ -1302,7 +1310,6 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             {
                 _cost.BytesRead += at.Length;
                 _cost.ChunksRead++;
-                _cost.ColumnsDecoded += decodedColumns;
             }
             return read;
         }
@@ -1311,12 +1318,12 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             foreach (var ordinal in ordinals)
             {
                 var (section, length) = ReadChunk(ordinal);
-                yield return (ordinal, Decode(ordinal, section, length, _strings));
+                yield return Counted(Decode(ordinal, section, length, _strings));
             }
             yield break;
         }
 
-        var queue = new Queue<(int Ordinal, Task<DecodedColumn?[]> Work)>();
+        var queue = new Queue<(int Ordinal, Task<DecodedChunk> Work)>();
         using var next = ordinals.GetEnumerator();
         var window = rampUp ? 1 : ahead; // rampUp: read ahead 1, 2, 4... chunks, so a query that stops early reads little more
         try
@@ -1330,9 +1337,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                     queue.Enqueue((ordinal, Task.Run(() => Decode(ordinal, section, length, null))));
                 }
                 if (queue.Count == 0) yield break;
-                var (done, work) = queue.Dequeue();
+                var (_, work) = queue.Dequeue();
                 window = Math.Min(window * 2, ahead);
-                yield return (done, work.GetAwaiter().GetResult());
+                yield return Counted(work.GetAwaiter().GetResult());
             }
         }
         finally
@@ -1348,6 +1355,71 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                     // the scan was abandoned
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// A decoded chunk: with a scan's filter, the rows that match it (null: not checked), and the number of columns
+    /// decoded (for the query cost).
+    /// </summary>
+    private readonly record struct DecodedChunk(int Ordinal, DecodedColumn?[] Columns, bool[]? Matches, int Decoded)
+    {
+        public void Deconstruct(out int ordinal, out DecodedColumn?[] columns) => (ordinal, columns) = (Ordinal, Columns);
+    }
+
+    /// <summary>
+    /// A scan's filter, checked as each chunk is decoded (on the worker that decodes it): the filter's columns first, then
+    /// the other wanted columns only when rows match, and of those only the matching rows' text, decimal, json and binary
+    /// values. A selective scan makes few values it would throw away. With index candidates, only their rows are checked.
+    /// </summary>
+    private sealed class ChunkFilter
+    {
+        private readonly BoundFilter _plan;
+        private readonly int[] _planColumns;
+        private readonly bool[] _filterColumns;
+        private readonly bool[]? _rest;
+        private readonly int _restCount;
+        private readonly long[]? _rowIds;
+        private readonly Dictionary<int, (int From, int To)>? _runs;
+        private readonly long[] _rowStart;
+
+        public ChunkFilter(BoundFilter plan, bool[] wanted, long[]? rowIds, Dictionary<int, (int From, int To)>? runs, long[] rowStart)
+        {
+            var used = new HashSet<int>();
+            CollectColumns(plan, used);
+            _plan = plan;
+            _planColumns = [.. used];
+            _filterColumns = new bool[wanted.Length];
+            foreach (var c in used) _filterColumns[c] = true;
+            _rest = new bool[wanted.Length];
+            for (var c = 0; c < wanted.Length; c++)
+                if (wanted[c] && !_filterColumns[c]) (_rest[c], _restCount) = (true, _restCount + 1);
+            if (_restCount == 0) _rest = null;
+            (_rowIds, _runs, _rowStart) = (rowIds, runs, rowStart);
+        }
+
+        public DecodedChunk Decode(byte[] raw, int rawLength, JazminType[] types, int rowCount, int ordinal, StringPool strings)
+        {
+            var columns = Columnar.DecodeTyped(raw, rawLength, types, rowCount, ordinal, _filterColumns, strings);
+            var matches = new bool[rowCount];
+            var any = false;
+            void Check(int r)
+            {
+                if (FilterEngine.Evaluate(_plan, columns, r)) any = matches[r] = true;
+            }
+            if (_rowIds is null)
+            {
+                for (var r = 0; r < rowCount; r++) Check(r);
+            }
+            else if (_runs!.TryGetValue(ordinal, out var run))
+            {
+                for (var k = run.From; k < run.To; k++) Check((int)(_rowIds[k] - _rowStart[ordinal]));
+            }
+            if (!any || _rest is null) return new DecodedChunk(ordinal, columns, matches, _planColumns.Length);
+            var rest = Columnar.DecodeTyped(raw, rawLength, types, rowCount, ordinal, _rest, strings, matches);
+            for (var c = 0; c < rest.Length; c++)
+                if (rest[c] is { } column) columns[c] = column;
+            return new DecodedChunk(ordinal, columns, matches, _planColumns.Length + _restCount);
         }
     }
 
@@ -1861,16 +1933,14 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     {
         var wanted = WantedColumns(plan, shape.Selection);
         var all = !wanted.Contains(false);
-        var planColumns = new HashSet<int>();
-        CollectColumns(plan, planColumns);
-        var scratch = new object?[_types.Length];
         long skipped = 0, yielded = 0;
         var deleted = 0;
         var runs = ChunkRuns(plan, rowIds);
         var ordinals = runs.Select(run => run.Ordinal).ToArray();
         var whole = WholeChunkTest(plan);
+        var filter = plan is null ? null : new ChunkFilter(plan, wanted, rowIds, rowIds is null ? null : runs.ToDictionary(run => run.Ordinal, run => (run.From, run.To)), _rowStart);
         var next = 0; // the run of the chunk being read (chunks come in order; some are skipped)
-        foreach (var (ordinal, columns) in Chunks())
+        foreach (var (ordinal, columns, matches, _) in Chunks())
         {
             while (runs[next].Ordinal != ordinal) next++;
             var (_, from, to) = runs[next];
@@ -1883,11 +1953,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 var rowId = start + r;
                 while (deleted < _deleted.Length && _deleted[deleted] < rowId) deleted++;
                 if (deleted < _deleted.Length && _deleted[deleted] == rowId) continue; // removed by an append
-                if (plan is not null)
-                {
-                    foreach (var c in planColumns) scratch[c] = columns[c]!.Get(r);
-                    if (!FilterEngine.Evaluate(plan, scratch)) continue;
-                }
+                if (matches is not null && !matches[r]) continue; // the filter, checked as the chunk was decoded
                 if (skipped < offset)
                 {
                     skipped++;
@@ -1902,7 +1968,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         // time, since each one read decides whether the next can be skipped; then they are read ahead and decoded in
         // parallel. Without a filter a limit says exactly which chunks are needed; with one, a limited query reads
         // ahead gradually (1, 2, 4... chunks), so a small page reads little more than it uses.
-        IEnumerable<(int Ordinal, DecodedColumn?[] Columns)> Chunks()
+        IEnumerable<DecodedChunk> Chunks()
         {
             var i = 0;
             for (; i < ordinals.Length && skipped < offset && yielded < limit; i++)
@@ -1913,13 +1979,13 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                     skipped += LiveRows(ordinal);
                     continue;
                 }
-                foreach (var chunk in DecodeAhead([ordinal], _types, all ? null : wanted)) yield return chunk;
+                foreach (var chunk in DecodeAhead([ordinal], _types, all ? null : wanted, filter: filter)) yield return chunk;
             }
             if (i >= ordinals.Length || yielded >= limit) yield break;
             var rest = ordinals[i..];
             var limited = limit != long.MaxValue;
             if (limited && plan is null) rest = rest[..NeededChunks(rest, limit - yielded + Math.Max(0, offset - skipped))];
-            foreach (var chunk in DecodeAhead(rest.TakeWhile(_ => yielded < limit), _types, all ? null : wanted, rampUp: limited)) yield return chunk;
+            foreach (var chunk in DecodeAhead(rest.TakeWhile(_ => yielded < limit), _types, all ? null : wanted, rampUp: limited, filter: filter)) yield return chunk;
         }
     }
 
@@ -1986,8 +2052,6 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             }
             return n;
         }
-        var planColumns = Enumerable.Range(0, wanted.Length).Where(c => wanted[c]).ToArray();
-        var scratch = new object?[_types.Length];
         var deleted = 0;
         var next = 0; // the run of the chunk being counted (chunks come in run order)
         foreach (var (ordinal, columns) in DecodeAhead(runs.Select(run => run.Ordinal), _types, wanted))
@@ -2002,8 +2066,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 var rowId = start + r;
                 while (deleted < _deleted.Length && _deleted[deleted] < rowId) deleted++;
                 if (deleted < _deleted.Length && _deleted[deleted] == rowId) continue; // removed by an append
-                foreach (var c in planColumns) scratch[c] = columns[c]!.Get(r);
-                if (FilterEngine.Evaluate(plan, scratch)) n++;
+                if (FilterEngine.Evaluate(plan, columns, r)) n++;
             }
         }
         return n;

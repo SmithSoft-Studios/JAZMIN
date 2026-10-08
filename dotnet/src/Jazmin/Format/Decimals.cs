@@ -222,6 +222,15 @@ internal static class Decimals
         return big is { } m ? Format(m, s) : Format(negative, magnitude, s);
     }
 
+    /// <summary>Passes over a decimal without making its text (a row a query does not return).</summary>
+    public static void Skip(ByteReader reader)
+    {
+        ReadScale(reader);
+        for (var n = 0; n < MaxVarintBytes; n++)
+            if ((reader.Byte() & 0x80) == 0) return;
+        throw new JazminFormatException("Decimal value is too long");
+    }
+
     /// <summary>Reads a decimal in key form.</summary>
     public static DecimalKey ReadKey(ByteReader reader)
     {

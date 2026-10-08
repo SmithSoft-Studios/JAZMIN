@@ -124,7 +124,11 @@ internal sealed class InKeys
         _set = set;
         _sorted = [.. set];
         Array.Sort(_sorted, (a, b) => Values.Compare(a, b)!.Value);
+        if (set.All(k => k is long)) Longs = set.Select(k => (long)k).ToHashSet();
     }
+
+    /// <summary>The keys of an integer or date column, to check values as stored (no object per value).</summary>
+    public HashSet<long>? Longs { get; }
 
     public static InKeys Of(IEnumerable<object?> keys) => new(keys.Where(k => k is not null && !Values.IsNaN(k)).Select(k => k!).ToHashSet());
 
@@ -168,6 +172,45 @@ internal static class FilterEngine
             default: return false;
         }
     }
+
+    /// <summary>
+    /// Whether row <paramref name="r"/> of a decoded chunk matches, read from its typed columns: integers and dates are
+    /// compared as stored, without an object per value.
+    /// </summary>
+    public static bool Evaluate(BoundFilter node, DecodedColumn?[] columns, int r)
+    {
+        switch (node)
+        {
+            case BoundFilter.Leaf l:
+                var column = columns[l.Col]!;
+                if (l.Op == "isNull") return column.IsNull(r) == (bool)l.Value!;
+                if (column is LongValues longs && !longs.IsNull(r) && LongLeaf(l, longs.Values[r]) is { } match) return match;
+                return EvaluateLeaf(l, column.Get(r));
+            case BoundFilter.And a:
+                foreach (var item in a.Items)
+                    if (!Evaluate(item, columns, r)) return false;
+                return true;
+            case BoundFilter.Or o:
+                foreach (var item in o.Items)
+                    if (Evaluate(item, columns, r)) return true;
+                return false;
+            case BoundFilter.Not n: return !Evaluate(n.Item, columns, r);
+            default: return false;
+        }
+    }
+
+    /// <summary>An integer or date (as stored) against the leaf's operand; null when the leaf compares otherwise.</summary>
+    private static bool? LongLeaf(BoundFilter.Leaf leaf, long value) => leaf.Op switch
+    {
+        "in" when leaf.Keys!.Longs is { } keys => keys.Contains(value),
+        "eq" when leaf.Value is long x => value == x,
+        "ne" when leaf.Value is long x => value != x,
+        "gt" when leaf.Value is long x => value > x,
+        "gte" when leaf.Value is long x => value >= x,
+        "lt" when leaf.Value is long x => value < x,
+        "lte" when leaf.Value is long x => value <= x,
+        _ => null,
+    };
 
     private static bool EvaluateLeaf(BoundFilter.Leaf leaf, object? value)
     {

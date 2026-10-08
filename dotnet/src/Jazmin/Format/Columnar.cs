@@ -212,9 +212,12 @@ internal static class Columnar
 
     /// <summary>
     /// Decodes a columnar payload into typed columns (no boxing): values are boxed only when read with
-    /// <see cref="DecodedColumn.Get"/>. Columns with <paramref name="wanted"/>[j] false are skipped and left null.
+    /// <see cref="DecodedColumn.Get"/>. Columns with <paramref name="wanted"/>[j] false are skipped and left null. With
+    /// <paramref name="rows"/>, plain text, decimal, json and binary values are made only for the rows it marks (the rows
+    /// a query returns); the others are passed over and left null.
     /// </summary>
-    public static DecodedColumn?[] DecodeTyped(byte[] raw, int rawLength, IReadOnlyList<JazminType> types, int rowCount, int ordinal, bool[]? wanted = null, StringPool? strings = null)
+    public static DecodedColumn?[] DecodeTyped(byte[] raw, int rawLength, IReadOnlyList<JazminType> types, int rowCount, int ordinal, bool[]? wanted = null, StringPool? strings = null,
+        bool[]? rows = null)
     {
         // Every column takes at least a bit per row: a damaged row count fails here instead of sizing the arrays.
         if (rowCount < 0 || (rowCount > 0 && rowCount > (long)rawLength * 8)) throw new JazminFormatException($"Chunk {ordinal}: row count does not match its size");
@@ -252,7 +255,17 @@ internal static class Columnar
             switch (encoding)
             {
                 case Plain:
-                    for (var i = 0; i < count; i++) column.ReadPlain(NextRow(), reader, strings);
+                    if (rows is null)
+                    {
+                        for (var i = 0; i < count; i++) column.ReadPlain(NextRow(), reader, strings);
+                        break;
+                    }
+                    for (var i = 0; i < count; i++)
+                    {
+                        var r = NextRow();
+                        if (rows[r]) column.ReadPlain(r, reader, strings);
+                        else column.SkipPlain(r, reader);
+                    }
                     break;
                 case Delta:
                 {
@@ -329,6 +342,9 @@ internal abstract class DecodedColumn(byte[]? nulls)
 
     public abstract void ReadPlain(int row, ByteReader reader, StringPool? strings);
 
+    /// <summary>Passes over a plain value of a row no one reads. Numbers and bools cost as little to read.</summary>
+    public virtual void SkipPlain(int row, ByteReader reader) => ReadPlain(row, reader, null);
+
     public static DecodedColumn For(JazminType type, int rows, byte[]? nulls) => type switch
     {
         JazminType.Int => new LongValues(rows, nulls, dates: false),
@@ -368,6 +384,12 @@ internal sealed class StringValues(int rows, byte[]? nulls, bool decimals) : Dec
     protected override object Box(int row) => Values[row];
     public override void ReadPlain(int row, ByteReader reader, StringPool? strings) =>
         Values[row] = decimals ? Decimals.ReadText(reader) : strings?.Read(reader) ?? reader.String();
+
+    public override void SkipPlain(int row, ByteReader reader)
+    {
+        if (decimals) Decimals.Skip(reader);
+        else reader.Skip(reader.Length());
+    }
 }
 
 internal sealed class ObjectValues(int rows, byte[]? nulls, bool json) : DecodedColumn(nulls)
@@ -376,4 +398,6 @@ internal sealed class ObjectValues(int rows, byte[]? nulls, bool json) : Decoded
     protected override object Box(int row) => Values[row];
     public override void ReadPlain(int row, ByteReader reader, StringPool? strings) =>
         Values[row] = json ? Format.Values.ParseJson(reader.String(), "A json value") ?? throw new JazminFormatException("json value is null") : reader.Blob();
+
+    public override void SkipPlain(int row, ByteReader reader) => reader.Skip(reader.Length()); // json text and blobs: a length, then bytes
 }
