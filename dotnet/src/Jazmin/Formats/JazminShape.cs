@@ -30,7 +30,11 @@ public sealed class JazminShape
     public static JazminShape FromJson(JsonObject shape) => new((JsonObject)shape.DeepClone());
 
     /// <summary>Checks the shape against the columns this reader can see; throws naming the first mistake.</summary>
-    public void Validate(JazminReader reader) => Compile(reader);
+    public void Validate(JazminReader reader)
+    {
+        using var tables = new TableReaders(reader);
+        Compile(reader, tables);
+    }
 
     /// <summary>The shape's output for these rows as JSON text.</summary>
     public string ToJson(JazminReader reader, JazminFilter? filter = null, bool indented = false)
@@ -43,9 +47,12 @@ public sealed class JazminShape
     /// <summary>Streams the shape's output as JSON (UTF-8).</summary>
     public void WriteJson(JazminReader reader, Stream output, JazminFilter? filter = null, bool indented = false)
     {
-        var root = Compile(reader);
+        using var tables = new TableReaders(reader);
+        var root = Compile(reader, tables);
         using var sink = new JsonSink(output, indented);
-        new Engine(reader, sink, BatchRowsFor(reader)).Run(root, filter);
+        var engine = NewEngine(reader, sink, tables);
+        engine.Run(root, filter);
+        LinkStreams = engine.Streams;
     }
 
     /// <summary>The shape's output for these rows as XML text.</summary>
@@ -60,15 +67,19 @@ public sealed class JazminShape
     public void WriteXml(JazminReader reader, TextWriter output, JazminFilter? filter = null, string root = "export")
     {
         if (!XmlName.IsMatch(root)) throw new JazminValidationException($"'{root}' is not a valid XML element name");
-        var compiled = Compile(reader);
+        using var tables = new TableReaders(reader);
+        var compiled = Compile(reader, tables);
         using var sink = new XmlSink(output, root);
-        new Engine(reader, sink, BatchRowsFor(reader)).Run(compiled, filter);
+        var engine = NewEngine(reader, sink, tables);
+        engine.Run(compiled, filter);
+        LinkStreams = engine.Streams;
     }
 
     /// <summary>A JSON Schema (draft 2020-12) describing the shape's JSON output for this reader.</summary>
     public JsonObject ToJsonSchema(JazminReader reader)
     {
-        var schema = Schema(Compile(reader), mayBeEmpty: true);
+        JsonObject schema;
+        using (var tables = new TableReaders(reader)) schema = Schema(Compile(reader, tables), mayBeEmpty: true);
         var result = new JsonObject { ["$schema"] = "https://json-schema.org/draft/2020-12/schema" };
         foreach (var (key, value) in schema) result[key] = value?.DeepClone();
         return result;
@@ -76,7 +87,11 @@ public sealed class JazminShape
 
     // ---- compiled templates ------------------------------------------------------------------------
 
-    private abstract class Node;
+    private abstract class Node
+    {
+        /// <summary>What the node uses as a set (see SetNeeds), worked out once: a $one writes it for every parent.</summary>
+        public (Dictionary<string, JazminColumn> Columns, List<Agg> Aggs)? Needs { get; set; }
+    }
 
     private sealed class Col(JazminColumn column) : Node
     {
@@ -104,7 +119,7 @@ public sealed class JazminShape
         public JazminColumn? Column { get; } = column;
     }
 
-    private sealed class ListNode : Node
+    private class ListNode : Node
     {
         public required Node Item { get; init; }
         public JazminFilter? Filter { get; init; }
@@ -112,12 +127,107 @@ public sealed class JazminShape
         public required List<(JazminColumn Column, bool Desc)> Sort { get; init; }
         public long Limit { get; init; } = long.MaxValue;
         public required string XmlItem { get; init; }
+
+        /// <summary>The links the item's rows are the parents of (worked out once).</summary>
+        public List<LinkNode>? ItemLinks { get; set; }
+
+        /// <summary>Parents per batch of linked rows (worked out once).</summary>
+        public int? LinkBatch { get; set; }
+
+        /// <summary>The columns the item's rows read (worked out once).</summary>
+        public HashSet<string>? RowNames { get; set; }
+
+        /// <summary>Whether the item has lists, which read its rows again (worked out once).</summary>
+        public bool? ItemHasList { get; set; }
+    }
+
+    /// <summary>
+    /// A link to another table (docs/design/export-shapes.md section 7): a list of the linked rows, or (One) the linked
+    /// rows as one set. Its template's columns are the linked table's. The run state is one export's.
+    /// </summary>
+    private sealed class LinkNode : ListNode
+    {
+        public required string Table { get; init; }
+        public required IReadOnlyList<JazminColumn> Columns { get; init; }
+        public required List<(JazminColumn Child, JazminColumn Parent)> On { get; init; }
+        public JazminFilter? Where { get; init; }
+        public bool One { get; init; }
+
+        public JazminReader? Reader { get; set; }
+        public Layout? Layout { get; set; }
+        public List<string>? Select { get; set; }
+        public List<LinkNode>? Nested { get; set; }
+        public Dictionary<object, List<CompactRow>>? Held { get; set; }
+        public Dictionary<object, List<CompactRow>> Cache { get; } = new();
+
+        /// <summary>Scratch for a batch: the keys asked for (with a parent each) and the linked rows to follow further.</summary>
+        public Dictionary<object, IReadOnlyDictionary<string, object?>> Want { get; } = new();
+        public List<CompactRow> Children { get; } = [];
+
+        /// <summary>While the link is read in step with its parents (see EmitRows): that pass, otherwise null.</summary>
+        public LinkStream? Stream { get; set; }
+    }
+
+    /// <summary>
+    /// A link read in step with its parents: its table is sorted by the linked columns and the parents arrive in that
+    /// order, so one forward pass over the table finds every parent's rows, and only one parent's rows are held.
+    /// </summary>
+    private sealed class LinkStream(int[] order)
+    {
+        /// <summary>The linked columns in the table's sort order (positions in On): how keys are ordered.</summary>
+        public int[] Order { get; } = order;
+        public IEnumerator<IReadOnlyDictionary<string, object?>>? Rows { get; set; }
+        public CompactRow? Next { get; set; } // read, not yet given to a parent
+        public object? NextKey { get; set; }
+        public object? LastKey { get; set; } // the key last asked for, and its rows (parents with equal keys)
+        public List<CompactRow>? Last { get; set; }
+    }
+
+    /// <summary>The file's tables a shape links to, opened once (they share the reader's open file and key).</summary>
+    private sealed class TableReaders(JazminReader reader) : IDisposable
+    {
+        private readonly Dictionary<string, JazminReader> _open = new(StringComparer.Ordinal);
+
+        public JazminReader? Open(string name)
+        {
+            if (!reader.Tables.Contains(name)) return null;
+            if (name == reader.TableName) return reader;
+            if (!_open.TryGetValue(name, out var table)) _open[name] = table = reader.OpenTable(name);
+            return table;
+        }
+
+        public void Dispose()
+        {
+            foreach (var table in _open.Values) table.Dispose();
+            _open.Clear();
+        }
+    }
+
+    /// <summary>A link key of several columns: equal when every part is.</summary>
+    private sealed class CompositeKey(object[] parts) : IEquatable<CompositeKey>
+    {
+        private readonly object[] _parts = parts;
+
+        public object Part(int i) => _parts[i];
+
+        public bool Equals(CompositeKey? other) => other is not null && _parts.SequenceEqual(other._parts);
+
+        public override bool Equals(object? obj) => Equals(obj as CompositeKey);
+
+        public override int GetHashCode()
+        {
+            var hash = new HashCode();
+            foreach (var part in _parts) hash.Add(part);
+            return hash.ToHashCode();
+        }
     }
 
     private static readonly HashSet<JazminType> Ordered = [JazminType.Bool, JazminType.Int, JazminType.Float, JazminType.String, JazminType.DateTime, JazminType.Decimal];
     private static readonly HashSet<JazminType> Groupable = Ordered;
     private static readonly HashSet<JazminType> Summable = [JazminType.Int, JazminType.Float, JazminType.Decimal];
     private static readonly HashSet<string> ListKeys = ["$rows", "$filter", "$groupBy", "$sort", "$limit", "$xmlItem"];
+    private static readonly HashSet<string> LinkKeys = ["$from", "$on", .. ListKeys];
+    private static readonly HashSet<string> OneKeys = ["$from", "$on", "$one", "$filter"];
     private static readonly Regex XmlName = new(@"^[A-Za-z_][A-Za-z0-9_.-]*$", RegexOptions.Compiled);
 
     private static JazminValidationException Fail(string path, string message) =>
@@ -127,25 +237,29 @@ public sealed class JazminShape
 
     private static string TypeName(JazminType type) => TypeNames.ToName(type);
 
-    private Node Compile(JazminReader reader)
-    {
-        var columns = reader.Columns.ToDictionary(c => c.Name, StringComparer.Ordinal);
+    /// <summary>A table's columns for compiling: the reader's (Table null), or a linked table's (<c>$from</c>).</summary>
+    private sealed record Scope(string? Table, Dictionary<string, JazminColumn> Columns, JazminReader Reader);
 
-        JazminColumn Column(JsonNode? name, string path, HashSet<JazminType>? allowed, string what)
+    private Node Compile(JazminReader reader, TableReaders tables)
+    {
+        Scope ScopeOf(string? table, JazminReader r) => new(table, r.Columns.ToDictionary(c => c.Name, StringComparer.Ordinal), r);
+
+        JazminColumn Column(Scope scope, JsonNode? name, string path, HashSet<JazminType>? allowed, string what)
         {
             if (name is not JsonValue v || !v.TryGetValue<string>(out var text)) throw Fail(path, $"{what} must name a column");
-            if (!columns.TryGetValue(text, out var column)) throw Fail(path, $"unknown or hidden column '{text}'");
+            if (!scope.Columns.TryGetValue(text, out var column))
+                throw Fail(path, $"unknown or hidden column '{text}'{(scope.Table is null ? "" : $" in table '{scope.Table}'")}");
             if (allowed is not null && !allowed.Contains(column.Type)) throw Fail(path, $"{what} is not supported on {TypeName(column.Type)} column '{text}'");
             return column;
         }
 
-        JazminFilter? FilterOf(JsonNode? filter, string path)
+        JazminFilter? FilterOf(Scope scope, JsonNode? filter, string path)
         {
             if (filter is null) return null;
             try
             {
                 var parsed = JazminFilter.Parse(filter.ToJsonString());
-                reader.Explain(parsed); // validates columns, operators and operands
+                scope.Reader.Explain(parsed); // validates columns, operators and operands
                 return parsed;
             }
             catch (JazminException e)
@@ -154,63 +268,111 @@ public sealed class JazminShape
             }
         }
 
-        Node Node(JsonNode? value, string path, bool inRow)
+        (JazminColumn[]? GroupBy, List<(JazminColumn, bool)> Sort, long Limit, string XmlItem) ListOptions(Scope scope, JsonObject obj, string path)
+        {
+            JazminColumn[]? groupBy = null;
+            if (obj.TryGetPropertyValue("$groupBy", out var g))
+            {
+                var names = g is JsonArray a ? a.ToList() : [g];
+                groupBy = names.Select((n, i) => Column(scope, n, Child(path, $"$groupBy[{i}]"), Groupable, "grouping")).ToArray();
+                if (groupBy.Length == 0) throw Fail(path, "$groupBy needs at least one column");
+            }
+            var sort = new List<(JazminColumn, bool)>();
+            if (obj.TryGetPropertyValue("$sort", out var s))
+            {
+                if (s is not JsonArray entries) throw Fail(Child(path, "$sort"), "must be an array of column names");
+                for (var i = 0; i < entries.Count; i++)
+                {
+                    var text = entries[i] is JsonValue ev && ev.TryGetValue<string>(out var t) ? t : null;
+                    var desc = text?.StartsWith('-') == true;
+                    sort.Add((Column(scope, desc ? JsonValue.Create(text![1..]) : entries[i], Child(path, $"$sort[{i}]"), Groupable, "sorting"), desc));
+                }
+            }
+            var limit = long.MaxValue;
+            if (obj.TryGetPropertyValue("$limit", out var l))
+            {
+                if (l is not JsonValue lv || lv.GetValueKind() != JsonValueKind.Number || !lv.TryGetValue<long>(out limit) || limit < 0)
+                    throw Fail(Child(path, "$limit"), "must be a non-negative integer");
+            }
+            var xmlItem = "item";
+            if (obj.TryGetPropertyValue("$xmlItem", out var x))
+            {
+                if (x is not JsonValue xv || !xv.TryGetValue<string>(out var name) || !XmlName.IsMatch(name)) throw Fail(Child(path, "$xmlItem"), "must be a valid XML element name");
+                xmlItem = name;
+            }
+            return (groupBy, sort, limit, xmlItem);
+        }
+
+        // A link to another table (section 7): a list of the linked rows ($rows), or the linked rows as one set ($one).
+        LinkNode Link(Scope scope, JsonObject obj, string path, List<string> keys)
+        {
+            var one = obj.ContainsKey("$one");
+            if (one == obj.ContainsKey("$rows")) throw Fail(path, "a link needs one of $rows or $one");
+            foreach (var k in keys)
+                if (!(one ? OneKeys : LinkKeys).Contains(k)) throw Fail(path, $"unknown option '{k}' {(one ? "with $one" : "in a linked list")}");
+            if (obj["$from"] is not JsonValue fv || !fv.TryGetValue<string>(out var table)) throw Fail(Child(path, "$from"), "$from must name a table");
+            var linkedReader = tables.Open(table) ?? throw Fail(Child(path, "$from"), $"unknown table '{table}'");
+            var linked = ScopeOf(table, linkedReader);
+            if (obj["$on"] is not JsonObject on || on.Count == 0)
+                throw Fail(Child(path, "$on"), "$on needs at least one column pair, such as { \"customer_id\": \"id\" }");
+            var pairs = new List<(JazminColumn, JazminColumn)>();
+            foreach (var (childName, parentName) in on)
+            {
+                var where = Child(path, $"$on.{childName}");
+                var c = Column(linked, JsonValue.Create(childName), where, Groupable, "a link");
+                var p = Column(scope, parentName, where, Groupable, "a link");
+                if (c.Type != p.Type)
+                    throw Fail(where, $"$on links {TypeName(c.Type)} column '{c.Name}' to {TypeName(p.Type)} column '{p.Name}': the types must match");
+                pairs.Add((c, p));
+            }
+            var filter = FilterOf(linked, obj["$filter"], Child(path, "$filter"));
+            if (one)
+            {
+                return new LinkNode
+                {
+                    Table = table, Columns = linkedReader.Columns, On = pairs, Where = filter, One = true,
+                    Sort = [], XmlItem = "item",
+                    Item = Node(linked, obj["$one"], Child(path.Length > 0 ? path : "shape", "$one"), inRow: false),
+                };
+            }
+            var (groupBy, sort, limit, xmlItem) = ListOptions(linked, obj, path);
+            return new LinkNode
+            {
+                Table = table, Columns = linkedReader.Columns, On = pairs, Where = filter,
+                GroupBy = groupBy, Sort = sort, Limit = limit, XmlItem = xmlItem,
+                Item = Node(linked, obj["$rows"], $"{(path.Length > 0 ? path : "shape")}[]", groupBy is null),
+            };
+        }
+
+        Node Node(Scope scope, JsonNode? value, string path, bool inRow)
         {
             switch (value)
             {
                 case null: return new Lit(null);
-                case JsonValue v when v.GetValueKind() == JsonValueKind.String: return new Col(Column(v, path, null, "a value"));
+                case JsonValue v when v.GetValueKind() == JsonValueKind.String: return new Col(Column(scope, v, path, null, "a value"));
                 case JsonValue v: return new Lit(v.DeepClone());
                 case JsonArray: throw Fail(path, "arrays are not templates; use { \"$rows\": ... } for a list");
             }
             var obj = (JsonObject)value;
             var keys = obj.Select(p => p.Key).ToList();
             var special = keys.Where(k => k.StartsWith('$')).ToList();
-            if (special.Count == 0) return new Obj(obj.Select(p => (p.Key, Node(p.Value, Child(path, p.Key), inRow))).ToList());
+            if (special.Count == 0) return new Obj(obj.Select(p => (p.Key, Node(scope, p.Value, Child(path, p.Key), inRow))).ToList());
             if (special.Count != keys.Count) throw Fail(path, $"'$' members cannot be mixed with other members ({string.Join(", ", keys)})");
+            if (obj.ContainsKey("$from")) return Link(scope, obj, path, keys); // allowed in a row: how a row's details nest
             if (obj.ContainsKey("$rows"))
             {
                 if (inRow) throw Fail(path, "a list inside a row list needs $groupBy on the outer list");
                 foreach (var k in keys)
                     if (!ListKeys.Contains(k)) throw Fail(path, $"unknown list option '{k}'");
-                JazminColumn[]? groupBy = null;
-                if (obj.TryGetPropertyValue("$groupBy", out var g))
-                {
-                    var names = g is JsonArray a ? a.ToList() : [g];
-                    groupBy = names.Select((n, i) => Column(n, Child(path, $"$groupBy[{i}]"), Groupable, "grouping")).ToArray();
-                    if (groupBy.Length == 0) throw Fail(path, "$groupBy needs at least one column");
-                }
-                var sort = new List<(JazminColumn, bool)>();
-                if (obj.TryGetPropertyValue("$sort", out var s))
-                {
-                    if (s is not JsonArray entries) throw Fail(Child(path, "$sort"), "must be an array of column names");
-                    for (var i = 0; i < entries.Count; i++)
-                    {
-                        var text = entries[i] is JsonValue ev && ev.TryGetValue<string>(out var t) ? t : null;
-                        var desc = text?.StartsWith('-') == true;
-                        sort.Add((Column(desc ? JsonValue.Create(text![1..]) : entries[i], Child(path, $"$sort[{i}]"), Groupable, "sorting"), desc));
-                    }
-                }
-                var limit = long.MaxValue;
-                if (obj.TryGetPropertyValue("$limit", out var l))
-                {
-                    if (l is not JsonValue lv || lv.GetValueKind() != JsonValueKind.Number || !lv.TryGetValue<long>(out limit) || limit < 0)
-                        throw Fail(Child(path, "$limit"), "must be a non-negative integer");
-                }
-                var xmlItem = "item";
-                if (obj.TryGetPropertyValue("$xmlItem", out var x))
-                {
-                    if (x is not JsonValue xv || !xv.TryGetValue<string>(out var name) || !XmlName.IsMatch(name)) throw Fail(Child(path, "$xmlItem"), "must be a valid XML element name");
-                    xmlItem = name;
-                }
+                var (groupBy, sort, limit, xmlItem) = ListOptions(scope, obj, path);
                 return new ListNode
                 {
-                    Filter = FilterOf(obj["$filter"], Child(path, "$filter")),
+                    Filter = FilterOf(scope, obj["$filter"], Child(path, "$filter")),
                     GroupBy = groupBy,
                     Sort = sort,
                     Limit = limit,
                     XmlItem = xmlItem,
-                    Item = Node(obj["$rows"], $"{(path.Length > 0 ? path : "shape")}[]", groupBy is null),
+                    Item = Node(scope, obj["$rows"], $"{(path.Length > 0 ? path : "shape")}[]", groupBy is null),
                 };
             }
             if (keys.Count != 1) throw Fail(path, $"expected one '$' member, found {string.Join(", ", keys)}");
@@ -229,19 +391,21 @@ public sealed class JazminShape
                     return new Agg("count", null);
                 case "$sum" or "$min" or "$max":
                     if (inRow) throw Fail(path, "aggregates need a set of rows (use $groupBy on the list)");
-                    return new Agg(key[1..], Column(arg, Child(path, key), key == "$sum" ? Summable : Ordered, key));
+                    return new Agg(key[1..], Column(scope, arg, Child(path, key), key == "$sum" ? Summable : Ordered, key));
                 default:
                     throw Fail(path, $"unknown operator '{key}'");
             }
         }
 
-        return Node(_shape, "", inRow: false);
+        return Node(ScopeOf(null, reader), _shape, "", inRow: false);
     }
 
     // ---- needs ---------------------------------------------------------------------------------------
 
     /// <summary>Columns (first values) and aggregates a set-context template uses directly (not inside its lists).</summary>
-    private static (Dictionary<string, JazminColumn> Columns, List<Agg> Aggs) SetNeeds(Node node)
+    private static (Dictionary<string, JazminColumn> Columns, List<Agg> Aggs) SetNeeds(Node node) => node.Needs ??= FindSetNeeds(node);
+
+    private static (Dictionary<string, JazminColumn> Columns, List<Agg> Aggs) FindSetNeeds(Node node)
     {
         var columns = new Dictionary<string, JazminColumn>(StringComparer.Ordinal);
         var aggs = new List<Agg>();
@@ -252,6 +416,7 @@ public sealed class JazminShape
                 case Col c: columns[c.Column.Name] = c.Column; break;
                 case Agg a: aggs.Add(a); break;
                 case Obj o: foreach (var (_, m) in o.Members) Walk(m); break;
+                case LinkNode link: foreach (var (_, parent) in link.On) columns[parent.Name] = parent; break; // the set's first values link
             }
         }
         Walk(node);
@@ -262,6 +427,23 @@ public sealed class JazminShape
     {
         if (node is Col c) names.Add(c.Column.Name);
         else if (node is Obj o) foreach (var (_, m) in o.Members) RowColumns(m, names);
+        else if (node is LinkNode link) foreach (var (_, parent) in link.On) names.Add(parent.Name);
+    }
+
+    /// <summary>
+    /// The links a template's rows are the parents of: in its objects and in its lists of the same rows, not inside
+    /// other links (those are the linked rows' own, fetched with them).
+    /// </summary>
+    private static List<LinkNode> LinksIn(Node node, List<LinkNode>? found = null)
+    {
+        found ??= [];
+        switch (node)
+        {
+            case LinkNode link: found.Add(link); break;
+            case Obj o: foreach (var (_, m) in o.Members) LinksIn(m, found); break;
+            case ListNode list: LinksIn(list.Item, found); break;
+        }
+        return found;
     }
 
     // ---- values --------------------------------------------------------------------------------------
@@ -377,6 +559,22 @@ public sealed class JazminShape
 
     private int BatchRowsFor(JazminReader reader) => BatchRows ?? (reader.Priority == JazminPriority.Speed ? 1_000_000 : 100_000);
 
+    /// <summary>
+    /// Links: parents written per batch (their linked rows fetched together). Null: by priority, and by whether every link
+    /// follows the tables' sort order (then small batches each read just their own chunks; otherwise each batch reads
+    /// about the whole linked table, so larger batches mean fewer passes). Tests set it.
+    /// </summary>
+    internal int? LinkBatch { get; set; }
+
+    /// <summary>Links: the largest linked table read once and kept by key. Null: by priority. Tests set it.</summary>
+    internal int? LinkTableRows { get; set; }
+
+    /// <summary>Linked tables the last export read in step with their parents (tests check the path taken).</summary>
+    internal int LinkStreams { get; private set; }
+
+    private Engine NewEngine(JazminReader reader, ISink sink, TableReaders tables) => new(reader, sink, BatchRowsFor(reader), tables, LinkBatch,
+        LinkTableRows ?? reader.Priority switch { JazminPriority.Memory => 10_000, JazminPriority.Speed => 1_000_000, _ => 100_000 });
+
     private static bool HasList(Node node) => node switch
     {
         ListNode => true,
@@ -392,6 +590,7 @@ public sealed class JazminShape
             case Col c: names.Add(c.Column.Name); break;
             case Agg { Column: { } column }: names.Add(column.Name); break;
             case Obj o: foreach (var (_, m) in o.Members) DeepColumns(m, names); break;
+            case LinkNode link: foreach (var (_, parent) in link.On) names.Add(parent.Name); break; // the linked rows are read with the link
             case ListNode list:
                 if (list.Filter is not null) FilterColumns(list.Filter, names);
                 foreach (var c in list.GroupBy ?? []) names.Add(c.Name);
@@ -479,9 +678,15 @@ public sealed class JazminShape
 
         public IEnumerable<IReadOnlyDictionary<string, object?>> Find(JazminFilter? filter, IReadOnlyCollection<string> names, long limit = long.MaxValue)
         {
+            if (filter is null && limit >= rows.Count) return rows; // all of them (per parent: no iterator)
             BoundFilter? test = null;
             if (filter is not null && !layout.Bound.TryGetValue(filter, out test))
                 layout.Bound[filter] = test = BoundFilter.Bind(filter, layout.Columns);
+            return Matches(test, limit);
+        }
+
+        private IEnumerable<IReadOnlyDictionary<string, object?>> Matches(BoundFilter? test, long limit)
+        {
             long n = 0;
             foreach (var row in rows)
             {
@@ -493,11 +698,12 @@ public sealed class JazminShape
         }
     }
 
-    private sealed record Context(ISource? Source, JazminFilter? Filter, IReadOnlyDictionary<string, object?> Values, IReadOnlyDictionary<Agg, object?>? Aggs);
+    private readonly record struct Context(ISource? Source, JazminFilter? Filter, IReadOnlyDictionary<string, object?> Values, IReadOnlyDictionary<Agg, object?>? Aggs);
 
     private static readonly IReadOnlyDictionary<string, object?> NoValues = new Dictionary<string, object?>();
+    private static readonly IReadOnlyDictionary<Agg, object?> NoAggs = new Dictionary<Agg, object?>();
 
-    private sealed class Engine(JazminReader reader, ISink sink, int batchRows)
+    private sealed class Engine(JazminReader reader, ISink sink, int batchRows, TableReaders tables, int? linkBatch, int tableRows)
     {
         private readonly JsonObject _metadata = reader.Metadata;
         private readonly IReadOnlyList<string> _sortedBy = reader.SortedBy ?? [];
@@ -510,9 +716,15 @@ public sealed class JazminShape
         }
 
         /// <summary>First values and aggregates of a set, from rows (first values alone stop at the first row).</summary>
-        private static (IReadOnlyDictionary<string, object?> First, Dictionary<Agg, object?> Aggs) SetValues(Node node, IEnumerable<IReadOnlyDictionary<string, object?>> rows)
+        private static (IReadOnlyDictionary<string, object?> First, IReadOnlyDictionary<Agg, object?> Aggs) SetValues(Node node, IEnumerable<IReadOnlyDictionary<string, object?>> rows)
         {
             var (_, aggs) = SetNeeds(node);
+            if (aggs.Count == 0)
+            {
+                if (rows is IReadOnlyList<IReadOnlyDictionary<string, object?>> held) return (held.Count > 0 ? held[0] : NoValues, NoAggs);
+                foreach (var row in rows) return (row, NoAggs);
+                return (NoValues, NoAggs);
+            }
             var accumulators = aggs.Select(a => (a, new Accumulator(a))).ToList();
             IReadOnlyDictionary<string, object?>? first = null;
             foreach (var row in rows)
@@ -527,7 +739,7 @@ public sealed class JazminShape
         private static Context ScanSet(Node node, ISource source, JazminFilter? filter)
         {
             var (columns, aggs) = SetNeeds(node);
-            if (columns.Count == 0 && aggs.Count == 0) return new Context(source, filter, NoValues, new Dictionary<Agg, object?>());
+            if (columns.Count == 0 && aggs.Count == 0) return new Context(source, filter, NoValues, NoAggs);
             var names = columns.Keys.Concat(aggs.Where(a => a.Column is not null).Select(a => a.Column!.Name)).ToHashSet(StringComparer.Ordinal);
             var (first, values) = SetValues(node, source.Find(filter, names, aggs.Count > 0 ? long.MaxValue : 1));
             return new Context(source, filter, first, values);
@@ -553,6 +765,7 @@ public sealed class JazminShape
                     }
                     sink.EndObject();
                     break;
+                case LinkNode link: EmitLink(link, ctx); break;
                 case ListNode list:
                     sink.StartArray(list.XmlItem);
                     if (list.GroupBy is null) EmitRows(list, ctx);
@@ -563,15 +776,359 @@ public sealed class JazminShape
             sink.FlushIfLarge();
         }
 
+        // ---- links between tables (section 7) ----
+
+        // While a batch of parents is written (_batching > 0), the rows linked to them stay in each link's cache; they
+        // are released when the batch is done. A link written on its own (for the root or a group) is a batch of one.
+        private int _batching;
+        private static readonly List<CompactRow> NoRows = [];
+
+        /// <summary>A value's identity as a link key (as in filters: decimals by value), or null: null and NaN link nothing.</summary>
+        private static object? KeyFor(JazminType type, object? value)
+        {
+            if (value is null) return null;
+            var key = Format.Values.ToKey(type, value);
+            return Format.Values.IsNaN(key) ? null : key;
+        }
+
+        private static object? LinkKey(List<(JazminColumn Child, JazminColumn Parent)> on, IReadOnlyDictionary<string, object?> values, bool child)
+        {
+            JazminColumn ColumnOf(int i) => child ? on[i].Child : on[i].Parent;
+            object? ValueOf(int i) => values.TryGetValue(ColumnOf(i).Name, out var v) ? v : null;
+            if (on.Count == 1) return KeyFor(ColumnOf(0).Type, ValueOf(0));
+            var parts = new object[on.Count];
+            for (var i = 0; i < parts.Length; i++)
+            {
+                if (KeyFor(ColumnOf(i).Type, ValueOf(i)) is not { } key) return null;
+                parts[i] = key;
+            }
+            return new CompositeKey(parts);
+        }
+
+        private static void Add(Dictionary<object, List<CompactRow>> map, object key, CompactRow row)
+        {
+            if (map.TryGetValue(key, out var rows)) rows.Add(row);
+            else map[key] = [row];
+        }
+
+        /// <summary>Readies a link once: its table's reader, the columns read, and (a small table) every row, kept by key.</summary>
+        private void Prepare(LinkNode link)
+        {
+            if (link.Reader is null) Open(link); // called per parent: the closures below would be made on every call
+        }
+
+        private void Open(LinkNode link)
+        {
+            link.Reader = tables.Open(link.Table)!;
+            var names = new HashSet<string>(link.On.Select(p => p.Child.Name), StringComparer.Ordinal);
+            DeepColumns(link.Item, names);
+            foreach (var c in link.GroupBy ?? []) names.Add(c.Name);
+            foreach (var (c, _) in link.Sort) names.Add(c.Name);
+            link.Layout = new Layout(link.Columns.Where(c => names.Contains(c.Name)).ToArray());
+            link.Select = link.Layout.Columns.Select(c => c.Name).ToList();
+            link.Nested = LinksIn(link.Item);
+            if (link.Reader.RowCount > tableRows) return;
+            link.Held = new Dictionary<object, List<CompactRow>>();
+            foreach (var row in link.Reader.Find(link.Where, new JazminQueryOptions { Select = link.Select }))
+                if (LinkKey(link.On, row, child: true) is { } key) Add(link.Held, key, link.Layout.Copy(row));
+        }
+
+        /// <summary>
+        /// Whether these links follow the sort order of their parents and of their own tables: each linked table is sorted
+        /// by the linked columns, and the parents arrive in that order (<paramref name="parentSorted"/>: the parents'
+        /// table order, or empty when it is not known). Then a batch's linked rows lie together.
+        /// </summary>
+        private bool Aligned(List<LinkNode> links, IReadOnlyList<string> parentSorted) => links.All(link =>
+        {
+            Prepare(link);
+            var sorted = link.Reader!.SortedBy ?? [];
+            IReadOnlyList<string> nestedOrder = link.Sort.Count > 0 || link.GroupBy is not null ? [] : sorted;
+            if (link.Held is not null) return Aligned(link.Nested!, []); // held: looked up in the parents' order
+            for (var i = 0; i < link.On.Count; i++)
+            {
+                var pair = link.On.FirstOrDefault(p => i < sorted.Count && p.Child.Name == sorted[i]);
+                if (pair.Child is null || pair.Child.Type == JazminType.Float || i >= parentSorted.Count || parentSorted[i] != pair.Parent.Name) return false;
+            }
+            return Aligned(link.Nested!, nestedOrder);
+        });
+
+        /// <summary>
+        /// Parents per batch, or null to read the links in step with the parents instead (every link follows the tables'
+        /// sort order). A batch's linked rows are found with one query per link, which reads about the whole linked table
+        /// when the rows lie scattered: larger batches mean fewer passes, and more rows held.
+        /// </summary>
+        private int? LinkBatchFor(ListNode list, ISource source, List<LinkNode> links)
+        {
+            if (linkBatch is { } fixedSize) return fixedSize;
+            if (list.LinkBatch is { } known) return known == 0 ? null : known;
+            IReadOnlyList<string> parentOrder = source.InMemory || list.Sort.Count > 0 ? [] : _sortedBy;
+            list.LinkBatch = Aligned(links, parentOrder) ? 0 : reader.Priority switch
+            {
+                JazminPriority.Memory => 2_500,
+                JazminPriority.Speed => 20_000,
+                _ => 10_000,
+            };
+            return list.LinkBatch == 0 ? null : list.LinkBatch;
+        }
+
+        // ---- links read in step with their parents ----
+
+        // Rows skipped before a stream looks for its next key with a query instead (parents far apart: a filtered export).
+        private const int SeekAfter = 2_048;
+
+        /// <summary>Linked tables read in step with their parents (counted for tests).</summary>
+        public int Streams { get; private set; }
+
+        private void StartStreams(List<LinkNode> links)
+        {
+            foreach (var link in links)
+            {
+                if (link.Held is null)
+                {
+                    Streams++;
+                    var sorted = link.Reader!.SortedBy!;
+                    link.Stream = new LinkStream(Enumerable.Range(0, link.On.Count).Select(i => link.On.FindIndex(p => p.Child.Name == sorted[i])).ToArray());
+                }
+                StartStreams(link.Nested!);
+            }
+        }
+
+        private static void StopStreams(List<LinkNode> links)
+        {
+            foreach (var link in links)
+            {
+                link.Stream?.Rows?.Dispose();
+                link.Stream = null;
+                StopStreams(link.Nested!);
+            }
+        }
+
+        /// <summary>Keys in the linked table's order: by the linked columns in its sort order.</summary>
+        private static int CompareKeys(LinkStream stream, object a, object b)
+        {
+            if (stream.Order.Length == 1) return Format.Values.Compare(a, b) ?? 0;
+            var (x, y) = ((CompositeKey)a, (CompositeKey)b);
+            foreach (var i in stream.Order)
+            {
+                var c = Format.Values.Compare(x.Part(i), y.Part(i)) ?? 0;
+                if (c != 0) return c;
+            }
+            return 0;
+        }
+
+        private static object Leading(LinkStream stream, object key) => stream.Order.Length == 1 ? key : ((CompositeKey)key).Part(stream.Order[0]);
+
+        /// <summary>(Re)starts a stream's pass at a parent: the rows from its leading linked value on (statistics skip the rest).</summary>
+        private static void Seek(LinkNode link, LinkStream stream, IReadOnlyDictionary<string, object?> parent)
+        {
+            stream.Rows?.Dispose();
+            var (child, parentColumn) = link.On[stream.Order[0]];
+            parent.TryGetValue(parentColumn.Name, out var from); // not null: the parent has a key
+            stream.Rows = link.Reader!.Find(And(JazminFilter.Gte(child.Name, from!), link.Where), new JazminQueryOptions { Select = link.Select }).GetEnumerator();
+            stream.Next = null;
+        }
+
+        /// <summary>
+        /// A streamed link's rows for one parent: read on from where the last parent's ended. Parents out of order (equal
+        /// parents apart, or a nested link under one) still get their rows, with a query of their own.
+        /// </summary>
+        private List<CompactRow> StreamRows(LinkNode link, LinkStream stream, object key, IReadOnlyDictionary<string, object?> parent)
+        {
+            if (stream.LastKey is { } last)
+            {
+                var order = CompareKeys(stream, key, last);
+                if (order == 0) return stream.Last!;
+                if (order < 0)
+                {
+                    if (!link.Cache.ContainsKey(key)) Prefetch(link, [parent]);
+                    return link.Cache[key];
+                }
+            }
+            if (stream.Rows is null) Seek(link, stream, parent);
+            List<CompactRow>? rows = null;
+            var skipped = 0;
+            while (true)
+            {
+                if (stream.Next is null)
+                {
+                    if (!stream.Rows!.MoveNext()) break;
+                    stream.Next = link.Layout!.Copy(stream.Rows.Current);
+                    stream.NextKey = LinkKey(link.On, stream.Next, child: true);
+                }
+                var order = stream.NextKey is { } next ? CompareKeys(stream, next, key) : -1; // a null key links nothing
+                if (order > 0) break;
+                if (order == 0) (rows ??= []).Add(stream.Next);
+                else if (++skipped > SeekAfter && stream.NextKey is { } behind
+                         && (Format.Values.Compare(Leading(stream, behind), Leading(stream, key)) ?? 0) < 0)
+                {
+                    Seek(link, stream, parent); // far behind: skip ahead with the table's statistics
+                    skipped = 0;
+                    continue;
+                }
+                stream.Next = null;
+            }
+            stream.LastKey = key;
+            return stream.Last = rows ?? NoRows;
+        }
+
+        /// <summary>
+        /// Fetches the rows linked to these parents (one query: `in` conditions on the linked columns, and the link's
+        /// filter), or takes them from a held table, then the linked rows' own links, recursively. Kept in each cache.
+        /// </summary>
+        private void Prefetch(LinkNode link, IEnumerable<IReadOnlyDictionary<string, object?>> parents)
+        {
+            Prepare(link);
+            if (link.Held is not null && link.Nested!.Count == 0) return; // looked up directly when written
+            var want = link.Want;
+            foreach (var values in parents)
+                if (LinkKey(link.On, values, child: false) is { } key && !link.Cache.ContainsKey(key)) want.TryAdd(key, values);
+            if (want.Count == 0) return;
+            if (link.Held is null)
+            {
+                var where = JazminFilter.And(link.On.Select(p => JazminFilter.In(p.Child.Name,
+                    want.Values.Select(v => v.TryGetValue(p.Parent.Name, out var x) ? x : null).ToArray())).ToArray());
+                foreach (var row in link.Reader!.Find(And(where, link.Where), new JazminQueryOptions { Select = link.Select }))
+                {
+                    // Several columns: their in-conditions together select a superset.
+                    var copy = link.Layout!.Copy(row);
+                    if (LinkKey(link.On, copy, child: true) is { } key && want.ContainsKey(key)) Add(link.Cache, key, copy);
+                }
+            }
+            var children = link.Children;
+            foreach (var key in want.Keys)
+            {
+                if (!link.Cache.TryGetValue(key, out var rows)) link.Cache[key] = rows = link.Held?.GetValueOrDefault(key) ?? NoRows;
+                if (link.Nested!.Count > 0) children.AddRange(rows);
+            }
+            want.Clear();
+            foreach (var nested in link.Nested!) Prefetch(nested, children);
+            children.Clear();
+        }
+
+        /// <summary>The rows linked to one parent: fetched with its batch, or now (with their own links).</summary>
+        private List<CompactRow> LinkedRows(LinkNode link, IReadOnlyDictionary<string, object?> values)
+        {
+            Prepare(link);
+            if (LinkKey(link.On, values, child: false) is not { } key) return NoRows;
+            if (link.Held is not null && link.Nested!.Count == 0) return link.Held.GetValueOrDefault(key) ?? NoRows;
+            if (link.Stream is { } stream) return StreamRows(link, stream, key, values);
+            if (!link.Cache.ContainsKey(key)) Prefetch(link, [values]);
+            return link.Cache[key];
+        }
+
+        private static void Release(List<LinkNode> links)
+        {
+            foreach (var link in links)
+            {
+                if (link.Cache.Count > 0) link.Cache.Clear();
+                Release(link.Nested!);
+            }
+        }
+
+        private void EmitLink(LinkNode link, Context ctx)
+        {
+            var top = _batching == 0;
+            if (top) _batching++;
+            try
+            {
+                var rows = LinkedRows(link, ctx.Values);
+                var lists = link.ItemHasList ??= HasList(link.Item);
+                var linked = new Context(link.One && !lists ? null : new MemorySource(rows, link.Layout!), null, NoValues, null);
+                if (link.One)
+                {
+                    if (rows.Count == 0) sink.Literal(null);
+                    else
+                    {
+                        var (first, aggs) = SetValues(link.Item, rows);
+                        Emit(link.Item, linked with { Values = first, Aggs = aggs });
+                    }
+                }
+                else
+                {
+                    sink.StartArray(link.XmlItem);
+                    if (link.GroupBy is null) EmitRows(link, linked);
+                    else EmitGroups(link, linked);
+                    sink.EndArray();
+                }
+            }
+            finally
+            {
+                if (top)
+                {
+                    Release([link]);
+                    _batching--;
+                }
+            }
+        }
+
         private void EmitRows(ListNode list, Context ctx)
         {
-            var names = new HashSet<string>(StringComparer.Ordinal);
-            RowColumns(list.Item, names);
-            foreach (var (column, _) in list.Sort) names.Add(column.Name);
+            var names = list.RowNames;
+            if (names is null)
+            {
+                names = new HashSet<string>(StringComparer.Ordinal);
+                RowColumns(list.Item, names);
+                foreach (var (column, _) in list.Sort) names.Add(column.Name);
+                list.RowNames = names;
+            }
             var filter = And(ctx.Filter, list.Filter);
             var rows = ctx.Source!.Find(filter, names, list.Sort.Count == 0 ? list.Limit : long.MaxValue);
             if (list.Sort.Count > 0)
                 rows = rows.ToList().OrderBy(r => r, new SortComparer(list.Sort)).Take((int)Math.Min(list.Limit, int.MaxValue));
+            var links = list.ItemLinks ??= LinksIn(list.Item);
+            if (links.Count > 0 && _batching == 0 && LinkBatchFor(list, ctx.Source!, links) is null)
+            {
+                // Every link follows the tables' sort order: each linked table is read once, in step with the rows.
+                StartStreams(links);
+                _batching++;
+                try
+                {
+                    foreach (var row in rows)
+                    {
+                        Emit(list.Item, new Context(null, null, row, null));
+                        Release(links); // rows a parent fetched for itself (out of order, or under a held link)
+                    }
+                }
+                finally
+                {
+                    _batching--;
+                    StopStreams(links);
+                }
+                return;
+            }
+            if (links.Count > 0 && _batching == 0)
+            {
+                // Rows with links: written in batches, each batch's linked rows fetched together (one query per link).
+                var size = LinkBatchFor(list, ctx.Source!, links)!.Value;
+                _batching++;
+                try
+                {
+                    var batch = new List<IReadOnlyDictionary<string, object?>>();
+                    void Flush()
+                    {
+                        foreach (var link in links) Prefetch(link, batch);
+                        foreach (var row in batch) Emit(list.Item, new Context(null, null, row, null));
+                        Release(links);
+                        batch.Clear();
+                    }
+                    foreach (var row in rows)
+                    {
+                        batch.Add(row);
+                        if (batch.Count >= size) Flush();
+                    }
+                    if (batch.Count > 0) Flush();
+                }
+                finally
+                {
+                    _batching--;
+                }
+                return;
+            }
+            if (rows is IReadOnlyList<IReadOnlyDictionary<string, object?>> held)
+            {
+                for (var i = 0; i < held.Count; i++) Emit(list.Item, new Context(null, null, held[i], null)); // no enumerator per parent
+                return;
+            }
             foreach (var row in rows) Emit(list.Item, new Context(null, null, row, null));
         }
 
@@ -930,6 +1487,7 @@ public sealed class JazminShape
             ["required"] = new JsonArray(o.Members.Select(m => (JsonNode?)JsonValue.Create(m.Name)).ToArray()),
             ["additionalProperties"] = false,
         },
+        LinkNode { One: true } link => Nullable(Schema(link.Item, false)),
         ListNode list => new JsonObject { ["type"] = "array", ["items"] = Schema(list.Item, false) },
         _ => throw new InvalidOperationException(),
     };

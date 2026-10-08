@@ -242,7 +242,7 @@ export interface ExportOptions extends QueryOptions {
  */
 export type ShapeNode =
   | string | number | boolean | null
-  | ShapeObject | ShapeList
+  | ShapeObject | ShapeList | ShapeLinkedList | ShapeLinkedOne
   | { $value: JsonValue } | { $meta: string }
   | { $count: true } | { $sum: string } | { $min: string } | { $max: string };
 
@@ -258,6 +258,26 @@ export interface ShapeList {
   $limit?: number;
   /** XML element name of each item (default 'item'). */
   $xmlItem?: string;
+}
+
+/**
+ * A list of the rows of another table of the file, linked to the row (or set) it is written for
+ * (docs/design/export-shapes.md section 7). Column names inside are the linked table's.
+ */
+export interface ShapeLinkedList extends Omit<ShapeList, '$rows'> {
+  /** The linked table. */
+  $from: string;
+  /** Linked table's column -> this row's column, e.g. { customer_id: 'id' }; every pair must be equal. */
+  $on: Record<string, string>;
+  $rows: ShapeNode;
+}
+
+/** The linked rows of another table as one set: first values, aggregates and lists; null when none are linked. */
+export interface ShapeLinkedOne {
+  $from: string;
+  $on: Record<string, string>;
+  $filter?: Filter;
+  $one: ShapeNode;
 }
 
 export type ExportShape = ShapeObject | ShapeList;
@@ -578,8 +598,11 @@ export function inferSchema(rows: Iterable<Record<string, unknown>>, options?: {
 export function exportString(reader: JazminReader, format: 'json' | 'csv' | 'xml', options?: ExportOptions): string;
 export function exportFile(reader: JazminReader, format: 'json' | 'csv' | 'xml', path: string, options?: ExportOptions): void;
 export function toJSON(reader: JazminReader, options?: ExportOptions): string;
-/** Validates a shape against the columns a reader can see; throws JazminValidationError naming the mistake. */
-export function compileShape(columns: JazminColumn[], shape: ExportShape): unknown;
+/**
+ * Validates a shape against the columns a reader can see; throws JazminValidationError naming the mistake. `tables`: the
+ * columns of the file's other tables by name, for links ($from).
+ */
+export function compileShape(columns: JazminColumn[], shape: ExportShape, tables?: Record<string, JazminColumn[]>): unknown;
 /** JSON Schema (draft 2020-12) of a shape's JSON output. */
 export function shapeSchema(reader: JazminReader, shape: ExportShape): Record<string, JsonValue>;
 export function toCSV(reader: JazminReader, options?: ExportOptions): string;

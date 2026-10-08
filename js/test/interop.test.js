@@ -17,6 +17,8 @@ const dataset = JSON.parse(fs.readFileSync(path.join(dir, 'dataset.json'), 'utf8
 const keys = JSON.parse(fs.readFileSync(path.join(dir, 'keys.json'), 'utf8'));
 const exportShape = JSON.parse(fs.readFileSync(path.join(dir, 'shape.json'), 'utf8'));
 const expectedShape = JSON.parse(fs.readFileSync(path.join(dir, 'shape-expected.json'), 'utf8'));
+const linkShape = JSON.parse(fs.readFileSync(path.join(dir, 'shape-links.json'), 'utf8'));
+const expectedLinks = JSON.parse(fs.readFileSync(path.join(dir, 'shape-links-expected.json'), 'utf8'));
 
 function optionsFor(file) {
   if (file.endsWith('-key.jzm')) return { key: keys.key };
@@ -139,6 +141,8 @@ for (const writer of ['js', 'dotnet']) {
           if (keyName !== 'bob' && keyName !== 'sally' && keyName !== 'erin') {
             assert.deepEqual([...countries.find({ country: 'NA' })].map((r) => r.country), ['NA']); // its own index
           }
+          // A shape linking the two tables gives the same output from files written by either library.
+          if (keyName === 'plain') assert.deepEqual(JSON.parse(toJSON(people, { shape: linkShape })), expectedLinks);
         } finally {
           countries.close();
           people.close();

@@ -150,14 +150,24 @@ internal sealed class InKeys
 /// <summary>Evaluation, index planning and chunk pruning for bound filters.</summary>
 internal static class FilterEngine
 {
-    public static bool Evaluate(BoundFilter node, object?[] row) => node switch
+    /// <summary>Whether a row matches. Called for every row a query checks, so it allocates nothing (no lambdas).</summary>
+    public static bool Evaluate(BoundFilter node, object?[] row)
     {
-        BoundFilter.And a => a.Items.All(i => Evaluate(i, row)),
-        BoundFilter.Or o => o.Items.Any(i => Evaluate(i, row)),
-        BoundFilter.Not n => !Evaluate(n.Item, row),
-        BoundFilter.Leaf l => EvaluateLeaf(l, row[l.Col]),
-        _ => false,
-    };
+        switch (node)
+        {
+            case BoundFilter.Leaf l: return EvaluateLeaf(l, row[l.Col]);
+            case BoundFilter.And a:
+                foreach (var item in a.Items)
+                    if (!Evaluate(item, row)) return false;
+                return true;
+            case BoundFilter.Or o:
+                foreach (var item in o.Items)
+                    if (Evaluate(item, row)) return true;
+                return false;
+            case BoundFilter.Not n: return !Evaluate(n.Item, row);
+            default: return false;
+        }
+    }
 
     private static bool EvaluateLeaf(BoundFilter.Leaf leaf, object? value)
     {

@@ -458,6 +458,15 @@ public class InteropTests
             var expected = CountryRows().Where(r => visible((string)r[0]!)).Select(r => string.Join("|", r.Select(v => Canonical(JazminType.String, v)))).ToList();
             Assert.Equal(expected, countries.Rows().Select(r => string.Join("|", CountryColumns.Select(c => Canonical(c.Type, r[c.Name])))));
         }
+        if (!accessControlled)
+        {
+            // A shape linking the two tables gives the same output from files written by either library.
+            using var people = JazminReader.Open(path);
+            var shape = JazminShape.Parse(File.ReadAllText(Path.Combine(Dir, "shape-links.json")));
+            var expectedLinks = JsonNode.Parse(File.ReadAllText(Path.Combine(Dir, "shape-links-expected.json")));
+            var actualLinks = JsonNode.Parse(shape.ToJson(people));
+            Assert.True(JsonNode.DeepEquals(expectedLinks, actualLinks), actualLinks!.ToJsonString());
+        }
     }
 
     [Theory]

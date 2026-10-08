@@ -1,0 +1,21 @@
+{
+  "people": {
+    "$rows": {
+      "id": "id",
+      "country": { "$from": "countries", "$on": { "country": "country" }, "$one": { "code": "country", "people": "people", "firstId": "firstId" } },
+      "sameCountry": {
+        "$from": "people", "$on": { "country": "country" }, "$filter": { "active": true },
+        "$one": { "count": { "$count": true }, "balance": { "$sum": "balance" }, "best": { "$max": "score" }, "since": { "$min": "joined" } }
+      },
+      "latest": { "$from": "people", "$on": { "country": "country" }, "$sort": ["-joined", "id"], "$limit": 3, "$rows": { "id": "id", "joined": "joined" } }
+    },
+    "$filter": { "id": { "lte": 40 } }
+  },
+  "byCountry": {
+    "$rows": {
+      "country": "country",
+      "summary": { "$from": "countries", "$on": { "country": "country" }, "$one": { "people": "people", "firstId": "firstId" } }
+    },
+    "$groupBy": "country", "$sort": ["country"]
+  }
+}

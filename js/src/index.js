@@ -9,7 +9,7 @@ import { PREAMBLE_SIZE } from './constants.js';
 import { inferSchema } from './schema.js';
 import { TextColumnInference, textToValue, toObject } from './formats/text.js';
 import { setField } from './schema.js';
-import { shapePieces } from './shape.js';
+import { writeShape } from './shape.js';
 import { JazminWriter } from './writer.js';
 
 export { JazminReader } from './reader.js';
@@ -242,23 +242,29 @@ function* xmlRows(inputPath, columns, byName) {
 
 const EXPORTERS = { json: jsonPieces, csv: csvPieces, xml: xmlPieces };
 
-function pieces(reader, format, options = {}) {
+/**
+ * Writes an export: `write(text)` receives it in pieces. An export shape (docs/design/export-shapes.md) decides the
+ * structure itself, so select/limit/offset belong in it.
+ */
+function exportTo(reader, format, options, write) {
   const exporter = EXPORTERS[format];
   if (!exporter) throw new JazminValidationError(`Unknown export format '${format}'`);
-  const { filter, select, limit, offset, shape, ...formatOptions } = options;
+  const { filter, select, limit, offset, shape, ...formatOptions } = options ?? {};
   if (shape !== undefined) {
-    // An export shape (docs/design/export-shapes.md) decides the structure; select/limit/offset belong in it.
     if (select || limit !== undefined || offset !== undefined) throw new JazminValidationError('With a shape, use $rows/$limit in the shape instead of select, limit or offset');
-    return shapePieces(reader, shape, format, { filter, ...formatOptions });
+    writeShape(reader, shape, format, { filter, ...formatOptions }, write);
+    return;
   }
   const columns = select ? reader.columns.filter((c) => select.includes(c.name)) : reader.columns;
-  return exporter(columns, reader.find(filter, { select, limit, offset }), formatOptions);
+  for (const piece of exporter(columns, reader.find(filter, { select, limit, offset }), formatOptions)) write(piece);
 }
 
 /** Converts (optionally filtered) rows to a JSON / CSV / XML string. */
 export function exportString(reader, format, options) {
   let out = '';
-  for (const piece of pieces(reader, format, options)) out += piece;
+  exportTo(reader, format, options, (piece) => {
+    out += piece;
+  });
   return out;
 }
 
@@ -267,13 +273,13 @@ export function exportFile(reader, format, path, options) {
   const fd = fs.openSync(path, 'w');
   try {
     let buffer = '';
-    for (const piece of pieces(reader, format, options)) {
+    exportTo(reader, format, options, (piece) => {
       buffer += piece;
       if (buffer.length >= 65536) {
         fs.writeSync(fd, buffer);
         buffer = '';
       }
-    }
+    });
     if (buffer) fs.writeSync(fd, buffer);
   } finally {
     fs.closeSync(fd);

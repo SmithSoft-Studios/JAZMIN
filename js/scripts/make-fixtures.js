@@ -114,4 +114,10 @@ write(path.join(dir, 'js-tables-access.jzm'), { people: rows, countries: country
 const shape = JSON.parse(fs.readFileSync(path.join(dir, 'shape.json'), 'utf8'));
 fs.writeFileSync(path.join(dir, 'shape-expected.json'), `${toJSON(open(write(null, rows, base)), { shape, pretty: true })}`);
 
+// Links between tables (export-shapes.md section 7): spec/fixtures/shape-links.json on js-tables.jzm.
+const linkShape = JSON.parse(fs.readFileSync(path.join(dir, 'shape-links.json'), 'utf8'));
+const tablesFile = open(path.join(dir, 'js-tables.jzm'));
+fs.writeFileSync(path.join(dir, 'shape-links-expected.json'), `${toJSON(tablesFile, { shape: linkShape, pretty: true })}`);
+tablesFile.close();
+
 console.log(`Fixtures written to ${dir}`);
