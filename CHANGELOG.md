@@ -22,6 +22,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     release.
   - Untyped rows and JSON, CSV and XML output show nested values as `json` columns show them, except that dates are
     written as `datetime` columns write them (with milliseconds).
+  - **Fields can be added by appending** (spec 5.4, 11.2): `JazminFile.Append` and `JazminFile.Update` add the new
+    members of nested objects as fields at the end of their objects; rows written before read them as null. For JSON
+    rows, `JazminAppend.Columns` / `JazminUpdate.Columns` give the grown definitions. Other changes need the file
+    written again.
 
 ## 1.3.0 - 2026-10-08 (file format 1.0)
 

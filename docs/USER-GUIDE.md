@@ -476,6 +476,13 @@ Good to know:
   33.5 KB.
 - Nested columns and their fields can't be indexed. Filter on top-level
   columns; `isNull` works on nested columns.
+- **Classes can gain members.** `JazminFile.Append` and `JazminFile.Update`
+  add the new members of your nested objects as fields at the end; rows
+  written before read them as `null` (or the member's default). For rows
+  given as JSON, pass the grown definitions in `JazminAppend.Columns`.
+  Removing, renaming or retyping a field needs the file written again. A
+  member the file has no field for is never left out silently: writing it
+  any other way is an error that names it.
 - Today a query reads the whole nested column it uses. Reading only the
   fields a query uses is planned.
 

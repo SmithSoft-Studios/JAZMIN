@@ -181,6 +181,87 @@ internal static class Nested
 
     private static readonly PerSettings<Type, TypeMap?> Maps = new();
 
+    private static readonly JazminSerializerSettings NestedDefaults = new() { NestedColumns = true };
+
+    /// <summary>
+    /// A nested column's definition grown to hold values of a .NET type: members its objects have that it has no field
+    /// for become fields at the end of their objects, nullable (spec 5.4); lists and objects inside grow likewise. The
+    /// same definition when there is nothing to add.
+    /// </summary>
+    public static JazminColumn Grow(JazminColumn column, Type type)
+    {
+        var t = Nullable.GetUnderlyingType(type) ?? type;
+        if (column.Type == JazminType.List)
+        {
+            return TypeNames.IsNested(column.Item!.Type) && ElementOf(t) is { } element && Grow(column.Item, element) is var item && !ReferenceEquals(item, column.Item)
+                ? Copy(column, item: item)
+                : column;
+        }
+        if (column.Type != JazminType.Object || MapOf(t, null) is not { } map) return column;
+        var fields = column.Fields!.ToList();
+        var changed = false;
+        for (var i = 0; i < fields.Count; i++)
+        {
+            if (TypeNames.IsNested(fields[i].Type) && map.MemberProperty(fields[i].Name) is { } property && Grow(fields[i], property.PropertyType) is var grown && !ReferenceEquals(grown, fields[i]))
+                (fields[i], changed) = (grown, true);
+        }
+        // New members, as the serializer would store them (lists and classes as nested columns where they can be).
+        if (MapOf(t, NestedDefaults) is { } definitions)
+        {
+            foreach (var member in definitions.Columns)
+            {
+                if (fields.Any(f => string.Equals(f.Name, member.Name, StringComparison.OrdinalIgnoreCase))) continue;
+                fields.Add(Copy(member, nullable: true));
+                changed = true;
+            }
+        }
+        return changed ? Copy(column, fields: fields) : column;
+    }
+
+    /// <summary>A nested column's definition grown to hold this value (.NET objects; JSON and dictionaries add nothing).</summary>
+    public static JazminColumn GrowFor(JazminColumn column, object? value) =>
+        value is null or JsonNode or JsonElement or string or IDictionary || !TypeNames.IsNested(column.Type) ? column : Grow(column, value.GetType());
+
+    /// <summary>
+    /// Why <paramref name="grown"/> is not <paramref name="column"/> with fields added at the end of its objects (nullable
+    /// ones), or null when it is: the only change a definition may have when rows are added to a file (spec 5.4).
+    /// </summary>
+    public static string? NotGrown(JazminColumn column, JazminColumn grown, string path)
+    {
+        if (grown.Type != column.Type) return $"Column '{path}': a {TypeNames.ToName(column.Type)} cannot become a {TypeNames.ToName(grown.Type)}";
+        if (grown.Nullable != column.Nullable) return $"Column '{path}': whether it may be null cannot change";
+        if (column.Type == JazminType.List) return NotGrown(column.Item!, grown.Item!, path + "[]");
+        if (column.Type != JazminType.Object) return null;
+        var (before, after) = (column.Fields!, grown.Fields!);
+        if (after.Count < before.Count) return $"Column '{path}': fields cannot be removed (rewrite the file to change its fields)";
+        for (var i = 0; i < before.Count; i++)
+        {
+            if (after[i].Name != before[i].Name) return $"Column '{path}': fields cannot be renamed or reordered; new fields go at the end";
+            if (NotGrown(before[i], after[i], $"{path}.{before[i].Name}") is { } why) return why;
+        }
+        for (var i = before.Count; i < after.Count; i++)
+            if (!after[i].Nullable) return $"Column '{path}.{after[i].Name}': a field added later must allow null (rows written before have none)";
+        return null;
+    }
+
+    private static Type? ElementOf(Type t)
+    {
+        if (t.IsArray) return t.GetArrayRank() == 1 ? t.GetElementType() : null;
+        if (!t.IsGenericType || t.GetGenericArguments().Length != 1) return null;
+        var element = t.GetGenericArguments()[0];
+        return t.IsAssignableFrom(typeof(List<>).MakeGenericType(element)) ? element : null;
+    }
+
+    private static JazminColumn Copy(JazminColumn c, JazminColumn? item = null, IReadOnlyList<JazminColumn>? fields = null, bool? nullable = null) => new(c.Name, c.Type)
+    {
+        Nullable = nullable ?? c.Nullable,
+        Description = c.Description,
+        Attributes = c.Attributes,
+        Indexes = c.Indexes,
+        Item = item ?? c.Item,
+        Fields = fields ?? c.Fields,
+    };
+
     /// <summary>The serializer's map of a .NET type used as a nested object (null when there is none).</summary>
     public static TypeMap? MapOf(Type type, JazminSerializerSettings? settings) => Maps.For(settings).GetOrAdd(type, static (t, s) =>
     {
@@ -387,10 +468,15 @@ internal sealed class NestedColumn : ColumnBuffer
         };
     }
 
-    /// <summary>For a .NET type, the stored value of each field: its member of that name, as the serializer maps it.</summary>
+    /// <summary>
+    /// For a .NET type, the stored value of each field: its member of that name, as the serializer maps it. A member with
+    /// no field is refused, never left out: appending rows adds such members as fields (spec 5.4).
+    /// </summary>
     private Func<object, object?>[] Getters(Type type)
     {
         var map = Nested.MapOf(type, _settings) ?? throw new JazminValidationException($"Column '{_path}': {type.Name} cannot be stored as an object");
+        if (map.Columns.FirstOrDefault(c => !_fieldColumns!.Any(f => string.Equals(f.Name, c.Name, StringComparison.OrdinalIgnoreCase))) is { } extra)
+            throw new JazminValidationException($"Column '{_path}': {type.Name} has '{extra.Name}', which is not one of its fields (JazminFile.Append adds it)");
         return [.. _fieldColumns!.Select(f => map.StoredGetter(f.Name, _settings)
             ?? throw new JazminValidationException($"Column '{_path}': {type.Name} has no member for field '{f.Name}'"))];
     }
@@ -480,7 +566,7 @@ internal sealed class NestedValues : DecodedColumn
     {
         (_column, _rows, _ordinal, _raw, _end) = (column, rows, ordinal, raw, end);
         var (lo, hi, mask) = Span(wanted, rows);
-        Root = Nest(column, rows, NullBits, lo, hi, mask, ref at);
+        Root = Nest(column, rows, NullBits, lo, hi, mask, ref at, end);
         if (at != end) throw Bad("bytes left over");
         _raw = null;
     }
@@ -502,7 +588,7 @@ internal sealed class NestedValues : DecodedColumn
     private static bool Bit(byte[] bits, int i) => (bits[i >> 3] & (1 << (i & 7))) != 0;
 
     /// <summary>A list's or object's children, for its entries [lo, hi) of <paramref name="entries"/> (bitmap: its nulls).</summary>
-    private NestedNode Nest(JazminColumn c, int entries, byte[]? bitmap, int lo, int hi, bool[]? mask, ref int at)
+    private NestedNode Nest(JazminColumn c, int entries, byte[]? bitmap, int lo, int hi, bool[]? mask, ref int at, int end)
     {
         int[]? ranks = null;
         int present = entries, childLo = lo, childHi = hi;
@@ -533,10 +619,10 @@ internal sealed class NestedValues : DecodedColumn
         if (c.Type == JazminType.List)
         {
             // The lengths of every list that is not null place the items (with a mask, every list is in [childLo, childHi)).
-            var end = Limit(at);
-            var starts = ColumnarRange.Starts(_raw!, at, end, present, childLo, childHi, _ordinal, out var total);
-            at = end;
-            if (total > (long)(_end - at) * 8 + 8) throw Bad("list items do not match their size");
+            var lengthsEnd = Limit(at);
+            var starts = ColumnarRange.Starts(_raw!, at, lengthsEnd, present, childLo, childHi, _ordinal, out var total);
+            at = lengthsEnd;
+            if (total > (long)(end - at) * 8 + 8) throw Bad("list items do not match their size");
             bool[]? itemMask = null;
             if (childMask is not null)
             {
@@ -548,8 +634,20 @@ internal sealed class NestedValues : DecodedColumn
             return new NestedNode { Column = c, Nulls = bitmap, Lo = lo, Ranks = ranks, Starts = starts, ChildLo = childLo, Items = items };
         }
         var fields = new NestedNode[c.Fields!.Count];
-        for (var i = 0; i < fields.Length; i++) fields[i] = Entry(c.Fields[i], present, childLo, childHi, childMask, ref at);
+        for (var i = 0; i < fields.Length; i++)
+            fields[i] = at == end ? Missing(c.Fields[i], present) : Entry(c.Fields[i], present, childLo, childHi, childMask, ref at); // none: added since (spec 5.4)
         return new NestedNode { Column = c, Nulls = bitmap, Lo = lo, Ranks = ranks, ChildLo = childLo, Fields = fields };
+    }
+
+    /// <summary>A field this chunk has no stream for (added later, spec 5.4): null for each of its entries.</summary>
+    private NestedNode Missing(JazminColumn c, int entries)
+    {
+        if (!c.Nullable) throw Bad($"field '{c.Name}' may not be null but has no stream");
+        var nulls = new byte[(entries + 7) >> 3];
+        Array.Fill(nulls, (byte)0xff);
+        return TypeNames.IsNested(c.Type)
+            ? new NestedNode { Column = c, Nulls = nulls }
+            : new NestedNode { Column = c, Leaf = DecodedColumn.For(c.Type, 0, nulls) };
     }
 
     /// <summary>Where the stream that starts at <paramref name="at"/> ends.</summary>
@@ -580,7 +678,7 @@ internal sealed class NestedValues : DecodedColumn
         if ((flags & 0x0f) != Nested.Encoding || (flags & 0xe0) != 0) throw Bad($"field '{c.Name}' has an invalid encoding");
         byte[]? bitmap = (flags & 0x10) != 0 ? reader.Bytes((entries + 7) >> 3).ToArray() : null;
         var inner = reader.Position;
-        var node = Nest(c, entries, bitmap, lo, hi, mask, ref inner);
+        var node = Nest(c, entries, bitmap, lo, hi, mask, ref inner, end);
         if (inner != end) throw Bad($"field '{c.Name}': stream length does not match its contents");
         at = end;
         return node;

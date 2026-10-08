@@ -392,6 +392,14 @@ list body   = stream_length : varint
   stream uses the encodings of its type (5.3).
 - An item or field that is not `required` may be null; its stream's null
   bitmap says which.
+- **Fields added later.** An object's body MAY end before its last fields:
+  their streams are missing, and each of its entries has null for them.
+  This is how a file gains fields when rows are appended (11.2): chunks
+  written before keep their bytes, and the definition in the catalog gains
+  the fields. Writers add fields only at the end of an object, and only
+  fields that are not `required`; they never remove, rename, reorder or
+  change fields of a file they append to (a rewrite can). Readers MUST
+  reject a missing stream of a `required` field.
 
 Example: a column `staff`, a list of objects {`name`: string, `tags`: list of
 string}, with three rows: `[{"name":"A","tags":["x"]},{"name":null,"tags":[]}]`,
@@ -411,7 +419,7 @@ As bytes, with each stream's length first (a chunk part holding only this
 column): `17 15 02 03 00 04 00 10 05 04 10 02 01 41 09 05 03 00 02 00 03 00 01
 78`.
 
-In addition to 5.3, readers MUST reject: a lengths stream with HAS_NULLS set
+In addition to 5.3 (and the missing fields above), readers MUST reject: a lengths stream with HAS_NULLS set
 or a negative length; lengths whose sum exceeds 2^31 − 1; a definition nested
 more than 64 levels below its column (6.2); a list without an item, an object
 without fields, or either on another type.
@@ -1240,6 +1248,11 @@ opened.
 
 The previous header and trailer become unused bytes, which a compaction
 removes.
+
+An append MAY give objects of nested columns new fields at their end (5.4):
+the new header (or, for a restricted column group, a new definitions
+section) holds the grown definitions, and the chunks written before have no
+streams for those fields. No other change to the columns is allowed.
 
 **Deleted rows.** Readers MUST NOT return rows in the table's deletes, and
 row counts exclude them. Upserts are a deletion plus an appended row.

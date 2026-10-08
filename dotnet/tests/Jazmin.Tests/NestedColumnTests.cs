@@ -263,6 +263,117 @@ public sealed class NestedColumnTests : IDisposable
         Assert.True(double.IsNegative(back[1].Readings[0].Value));
     }
 
+    // A class as first written, and as it is later: a new member, a new list member, a new member inside the list's items.
+    public sealed class TaskV1
+    {
+        public string Title { get; set; } = "";
+    }
+
+    public sealed class TaskV2
+    {
+        public string Title { get; set; } = "";
+        public int? Hours { get; set; }
+    }
+
+    public sealed class TeamV1
+    {
+        public int Id { get; set; }
+        public string Tier { get; set; } = "";
+        public List<TaskV1> Tasks { get; set; } = [];
+    }
+
+    public sealed class TeamV2
+    {
+        public int Id { get; set; }
+        public string Tier { get; set; } = "";
+        public List<TaskV2> Tasks { get; set; } = [];
+        public List<string>? Tags { get; set; }
+    }
+
+    private static readonly JazminSerializerSettings Grown = new() { NestedColumns = true, ChunkRows = 8 };
+
+    private static Dictionary<string, object?> RowOf(TeamV2 t) => new() { ["Id"] = (long)t.Id, ["Tier"] = t.Tier, ["Tasks"] = t.Tasks };
+
+    [Fact]
+    public void AppendedObjectsWithNewMembers_AddFields_AndEarlierRowsReadThemAsNull()
+    {
+        var path = Path.Combine(_dir, "grown.jzm");
+        var before = Enumerable.Range(0, 20).Select(i => new TeamV1 { Id = i, Tier = i % 2 == 0 ? "Gold" : "Silver", Tasks = [.. Enumerable.Range(0, i % 3).Select(k => new TaskV1 { Title = $"T{i}-{k}" })] }).ToList();
+        File.WriteAllBytes(path, JazminConvert.SerializeObject(before, Grown));
+        var after = Enumerable.Range(20, 20).Select(i => new TeamV2 { Id = i, Tier = "Gold", Tasks = [.. Enumerable.Range(0, i % 3).Select(k => new TaskV2 { Title = $"T{i}-{k}", Hours = k == 1 ? null : k * 4 })] }).ToList();
+        JazminFile.Append(path, new JazminAppend { Insert = [.. after.Select(RowOf)] });
+
+        var expected = before.Select(t => new TeamV2 { Id = t.Id, Tier = t.Tier, Tasks = [.. t.Tasks.Select(k => new TaskV2 { Title = k.Title })] }).Concat(after).ToList();
+        void Check()
+        {
+            var bytes = File.ReadAllBytes(path);
+            Assert.Equal(Text(expected), Text(JazminConvert.DeserializeObject<List<TeamV2>>(bytes)));
+            using var reader = JazminReader.Open(bytes);
+            Assert.Equal("Tasks: list<object{Title: string?, Hours: int?}?>?", reader.Columns.Single(c => c.Name == "Tasks").ToString());
+            foreach (var id in new[] { 0, 5, 19, 20, 33 }) // lookups in chunks written before and after
+                Assert.Equal(Text(expected[id]), Text(reader.AsQueryable<TeamV2>().Single(t => t.Id == id)));
+            Assert.Equal(Text(expected.Where(t => t.Id % 3 == 0)), Text(reader.AsQueryable<TeamV2>().Where(t => t.Id % 3 == 0).ToList()));
+            Assert.Equal("""[{"Title":"T1-0","Hours":null}]""", ((JsonNode)reader.Find(JazminFilter.Eq("Id", 1L)).Single()["Tasks"]!).ToJsonString());
+        }
+        Check();
+        JazminFile.Compact(path); // every chunk written again, with every field
+        Check();
+    }
+
+    [Fact]
+    public void FieldsAreAddedFromDefinitionsGiven_AndOtherChangesAreRefused()
+    {
+        var path = Path.Combine(_dir, "given.jzm");
+        JazminColumn[] columns = [new("id", JazminType.Int), JazminColumn.ObjectOf("head", new JazminColumn("city", JazminType.String))];
+        using (var w = JazminWriter.Create(path, columns)) w.WriteValues([1L, JsonNode.Parse("""{"city":"Durban"}""")]);
+        JazminColumn Head(params JazminColumn[] fields) => JazminColumn.ObjectOf("head", fields);
+        IReadOnlyDictionary<string, object?> Row(long id, string head) => new Dictionary<string, object?> { ["id"] = id, ["head"] = JsonNode.Parse(head) };
+
+        // JSON rows: the new field's definition is given.
+        Assert.Throws<JazminValidationException>(() => JazminFile.Append(path, new JazminAppend { Insert = [Row(2, """{"city":"Gqeberha","zip":"6001"}""")] }));
+        JazminFile.Append(path, new JazminAppend { Insert = [Row(2, """{"city":"Gqeberha","zip":"6001"}""")], Columns = [Head(new JazminColumn("city", JazminType.String), new JazminColumn("zip", JazminType.String))] });
+        Assert.Equal(["""{"city":"Durban","zip":null}""", """{"city":"Gqeberha","zip":"6001"}"""], JazminReader.Open(path).Rows().Select(r => ((JsonNode)r["head"]!).ToJsonString()));
+
+        void Refused(JazminColumn definition, string message) =>
+            Assert.Contains(message, Assert.Throws<JazminValidationException>(() => JazminFile.Append(path, new JazminAppend { Columns = [definition] })).Message);
+        Refused(Head(new JazminColumn("city", JazminType.String)), "fields cannot be removed");
+        Refused(Head(new JazminColumn("zip", JazminType.String), new JazminColumn("city", JazminType.String)), "fields cannot be renamed or reordered");
+        Refused(Head(new JazminColumn("city", JazminType.Int), new JazminColumn("zip", JazminType.String)), "a string cannot become a int");
+        Refused(Head(new JazminColumn("city", JazminType.String), new JazminColumn("zip", JazminType.String), new JazminColumn("country", JazminType.String) { Nullable = false }), "a field added later must allow null");
+        Refused(new JazminColumn("id", JazminType.Int), "only those can be given fields");
+
+        // Writing .NET objects that have members the definition lacks is refused, never left out.
+        using var writer = new JazminWriter(new MemoryStream(), [JazminColumn.ListOf("tasks", JazminColumn.ObjectOf("item", new JazminColumn("Title", JazminType.String)))]);
+        var error = Assert.Throws<JazminValidationException>(() => writer.WriteValues([new List<TaskV2> { new() { Title = "a", Hours = 2 } }]));
+        Assert.Contains("TaskV2 has 'Hours', which is not one of its fields", error.Message);
+    }
+
+    [Fact]
+    public void AnAccessControlledFile_GrowsALockedColumnGroup_AndUpdateGrowsToo()
+    {
+        var owner = JazminKey.Generate();
+        var gold = owner.CreateAccessKey();
+        var path = Path.Combine(_dir, "grown-access.jzm");
+        var map = TypeMap.For(typeof(TeamV1), Grown);
+        using (var writer = JazminWriter.Create(path, map.Columns, new JazminWriteOptions
+        {
+            Key = owner,
+            ChunkRows = 4,
+            Access = new JazminAccessOptions { PartitionBy = "Tier", ColumnGroups = new() { ["work"] = ["Tasks"] }, Grants = [new JazminGrant(gold) { Rows = ["Gold"] }] },
+        }))
+            writer.WriteValues(map.ToValues(new TeamV1 { Id = 1, Tier = "Gold", Tasks = [new() { Title = "a" }] }, Grown));
+        JazminFile.Append(path, new JazminAppend { Key = owner, Insert = [RowOf(new TeamV2 { Id = 2, Tier = "Gold", Tasks = [new() { Title = "b", Hours = 3 }] })] });
+        using (var reader = JazminReader.Open(path, new JazminReadOptions { AccessKey = gold, CheckClockRollback = false }))
+            Assert.Equal("""[{"Id":1,"Tier":"Gold","Tasks":[{"Title":"a","Hours":null}],"Tags":null},{"Id":2,"Tier":"Gold","Tasks":[{"Title":"b","Hours":3}],"Tags":null}]""",
+                JsonSerializer.Serialize(reader.Rows<TeamV2>()));
+
+        // Update (a rewrite) adds fields from objects the same way.
+        var plain = Path.Combine(_dir, "grown-update.jzm");
+        File.WriteAllBytes(plain, JazminConvert.SerializeObject(new List<TeamV1> { new() { Id = 1, Tasks = [new() { Title = "a" }] } }, Grown));
+        JazminFile.Update(plain, new JazminUpdate { Insert = [RowOf(new TeamV2 { Id = 2, Tasks = [new() { Title = "b", Hours = 5 }] })] });
+        Assert.Equal([null, 5], JazminConvert.DeserializeObject<List<TeamV2>>(File.ReadAllBytes(plain))!.Select(t => t.Tasks[0].Hours));
+    }
+
     [Fact]
     public void AnAccessControlledFile_ReadsItsRows_WithTheSameObjects()
     {

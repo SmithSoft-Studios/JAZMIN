@@ -35,6 +35,12 @@ public sealed class JazminUpdate
     /// <summary>Access-controlled files: keys whose access is removed.</summary>
     public List<JazminAccessKey> Revoke { get; set; } = new();
 
+    /// <summary>
+    /// Nested columns given fields at the end of their objects (nullable ones, spec 5.4): their new definitions. Fields of
+    /// .NET objects are added without it; it is for rows given as JSON or dictionaries.
+    /// </summary>
+    public IReadOnlyList<JazminColumn>? Columns { get; set; }
+
     public JazminCodec Codec { get; set; } = JazminCodec.Deflate;
 
     public int? CompressionLevel { get; set; }
@@ -117,6 +123,12 @@ public sealed class JazminAppend
     public IReadOnlyList<string>? KeyColumns { get; set; }
 
     public JazminFilter? Delete { get; set; }
+
+    /// <summary>
+    /// Nested columns given fields at the end of their objects (nullable ones, spec 5.4): their new definitions. Fields of
+    /// .NET objects are added without it; it is for rows given as JSON or dictionaries.
+    /// </summary>
+    public IReadOnlyList<JazminColumn>? Columns { get; set; }
 
     public JsonObject? Metadata { get; set; }
 
@@ -351,7 +363,7 @@ public static class JazminFile
                     $"or one that starts with the partition column '{partitionBy}' (then rows are already grouped)");
 
             var shape = new RowShape(ColumnsWithIndexes(reader));
-            var columns = shape.Columns;
+            IReadOnlyList<JazminColumn> columns = shape.Columns;
             var keyCols = update.KeyColumns?.Select(shape.Ordinal).ToArray() ?? Array.Empty<int>();
             var sortedBy = reader.SortedBy;
             var sortCols = sortedBy?.Select(shape.Ordinal).ToArray();
@@ -366,6 +378,7 @@ public static class JazminFile
                 pending[KeyText(values)] = (values, false);
             }
             var deletePlan = BoundFilter.Bind(update.Delete, reader.Columns);
+            columns = Grown(columns, update.Insert.Concat(update.Upsert).Select(ValuesOf).ToList(), update.Columns);
 
             // The other tables of the file are copied as they are: a new version has fresh secrets throughout (spec 7.6.7).
             var access = ownerGrants is null ? null : AccessFor(reader, ownerGrants, update);
@@ -386,7 +399,7 @@ public static class JazminFile
                 Now = update.Now, // expired grants are dropped; the new version's fresh secrets lock them out
                 Priority = update.Priority,
                 CompactIndexes = update.CompactIndexes ?? reader.CompactIndexes,
-                Tables = several ? readers.Select(TableFor).ToList() : null,
+                Tables = several ? readers.Select(r => TableFor(r, ReferenceEquals(r, reader) ? columns : null)).ToList() : null,
             };
             writer = several ? JazminWriter.Create(temp, options) : JazminWriter.Create(temp, columns, options);
             foreach (var source in CarriedFiles(reader, update)) writer.AddSource(source);
@@ -476,11 +489,39 @@ public static class JazminFile
         }
     }
 
+    /// <summary>
+    /// The table's columns, with nested columns grown to hold the rows to be written (spec 5.4): the definitions given
+    /// (checked: fields added at the end, nullable), then the members of .NET objects the definitions lack.
+    /// </summary>
+    private static IReadOnlyList<JazminColumn> Grown(IReadOnlyList<JazminColumn> columns, IReadOnlyList<object?[]> rows, IReadOnlyList<JazminColumn>? given)
+    {
+        var grown = columns.ToArray();
+        foreach (var definition in given ?? [])
+        {
+            var i = Array.FindIndex(grown, c => c.Name == definition.Name);
+            if (i < 0) throw new JazminValidationException($"Columns: unknown column '{definition.Name}'");
+            if (!TypeNames.IsNested(grown[i].Type)) throw new JazminValidationException($"Columns: '{definition.Name}' is not a list or object column; only those can be given fields");
+            TypeNames.Validate([definition]);
+            if (Nested.NotGrown(grown[i], definition, definition.Name) is { } why) throw new JazminValidationException(why);
+            grown[i] = definition.Indexes.Count == grown[i].Indexes.Count ? definition : definition.With(grown[i].Indexes);
+        }
+        for (var i = 0; i < grown.Length; i++)
+        {
+            if (!TypeNames.IsNested(grown[i].Type)) continue;
+            var seen = new HashSet<Type>();
+            foreach (var row in rows)
+                if (row[i] is { } value && seen.Add(value.GetType())) grown[i] = Nested.GrowFor(grown[i], value);
+        }
+        return grown;
+    }
+
     /// <summary>A table of the file as writer options for a rewrite: its columns with their indexes, sort order and layout.</summary>
-    private static JazminTable TableFor(JazminReader reader)
+    private static JazminTable TableFor(JazminReader reader) => TableFor(reader, null);
+
+    private static JazminTable TableFor(JazminReader reader, IReadOnlyList<JazminColumn>? columns)
     {
         var (partitionBy, groups) = reader.AccessLayout;
-        return new JazminTable(reader.TableName, ColumnsWithIndexes(reader))
+        return new JazminTable(reader.TableName, columns ?? ColumnsWithIndexes(reader))
         {
             SortedBy = reader.SortedBy,
             PartitionBy = partitionBy,
@@ -543,6 +584,7 @@ public static class JazminFile
             var state = reader.AppendState();
             var allDeleted = state.Deleted.Concat(removed).Distinct().Order().ToArray();
             var incoming = append.Insert.Concat(append.Upsert).Select(shape.ValuesOf).ToList();
+            var columns = Grown(shape.Columns, incoming, append.Columns);
             var sortedBy = reader.SortedBy;
             if (sortedBy is not null)
             {
@@ -555,8 +597,9 @@ public static class JazminFile
             var (rowCountBefore, appendCountBefore) = (reader.RowCount, reader.AppendCount);
             reader.Dispose();
 
-            writer = JazminWriter.Continue(path, shape.Columns, new JazminWriteOptions
+            writer = JazminWriter.Continue(path, columns, new JazminWriteOptions
             {
+                Grown = columns.Where((c, i) => !ReferenceEquals(c, shape.Columns[i])).Select(c => c.Name).ToHashSet(StringComparer.Ordinal),
                 Key = append.Key,
                 Metadata = MergeMetadata(metadata, append.Metadata),
                 SortedBy = sortedBy,

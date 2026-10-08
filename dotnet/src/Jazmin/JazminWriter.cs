@@ -21,6 +21,9 @@ public sealed class JazminWriteOptions
 
     public int ChunkBytes { get; set; } = FormatConstants.DefaultChunkBytes;
 
+    /// <summary>Appends: nested columns whose definitions gained fields (their restricted groups' definitions are written again).</summary>
+    internal IReadOnlySet<string>? Grown { get; init; }
+
     /// <summary>Encrypt with this master key (the owner key for access-controlled files).</summary>
     public JazminKey? Key { get; set; }
 
@@ -959,7 +962,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             if (_access is null || part.Name == FormatConstants.DefaultColumnGroup)
                 return new ColumnGroupDef { Name = part.Name, Columns = part.Cols.Select(Definition).ToList() };
             var definitions = previous.GetValueOrDefault(part.Name)?.Definitions;
-            if (definitions is null)
+            if (definitions is null || part.Cols.Any(c => _options.Grown?.Contains(_columns[c].Name) == true)) // new, or nested columns grew
             {
                 var sectionId = $"{_tableIndex}/columns/{part.Name}";
                 definitions = WriteSection(Catalog.EncodeColumnDefinitions(part.Cols.Select(Definition)), sectionId,
