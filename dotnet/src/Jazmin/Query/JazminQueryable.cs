@@ -9,6 +9,15 @@ namespace Jazmin.Query;
 internal interface IJazminQueryProvider : IQueryProvider
 {
     IEnumerable<T> Enumerate<T>(Expression expression);
+
+    /// <summary>Finds the members of this provider's rows that a query reads (for a query that uses this one as a source).</summary>
+    QueryUsage NewUsage();
+
+    /// <summary>
+    /// This provider's query used as a source of another query: when it gives rows, it reads the columns of
+    /// <paramref name="columns"/> (what the other query reads of them; null: every column) and those its own conditions need.
+    /// </summary>
+    IQueryable SubQuery(Expression expression, HashSet<string>? columns);
 }
 
 /// <summary>A LINQ query over a reader's rows (see <see cref="JazminReader.AsQueryable{T}"/>).</summary>
@@ -39,8 +48,8 @@ internal sealed class JazminQueryable<T> : IOrderedQueryable<T>
 /// pushed down: Where conditions become its filter (inexact parts are checked on each object, as
 /// <see cref="JazminReader.Query{T}"/> does), Skip/Take its offset and limit, OrderBy/ThenBy along the file's sortedBy
 /// columns are dropped (rows are already in that order), and Count/LongCount/Any are answered without building objects.
-/// When the objects never leave the query (a Select, or Count, Sum, Min, Max... with a selector), only the columns they
-/// use are read. The remaining operators run in memory, as LINQ to Objects runs them.
+/// When the objects never leave the query, only the columns of the members it reads are read, wherever it reads them
+/// (see <see cref="ColumnsUsed"/>). The remaining operators run in memory, as LINQ to Objects runs them.
 /// </summary>
 internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
 {
@@ -96,11 +105,22 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
 
     public IEnumerable<T> Enumerate<T>(Expression expression) => ExecuteSequence<T>(expression);
 
-    private IEnumerable<T> ExecuteSequence<T>(Expression expression)
+    private IEnumerable<T> ExecuteSequence<T>(Expression expression) => Sequence<T>(expression, null);
+
+    private IEnumerable<T> Sequence<T>(Expression expression, HashSet<string>? columns)
     {
-        var plan = Plan(expression);
+        var plan = Plan(expression, columns);
         return plan.Tail is null ? (IEnumerable<T>)plan.Rows : new EnumerableQuery<T>(plan.Tail);
     }
+
+    public QueryUsage NewUsage() => new(typeof(TRow), _map, _reader);
+
+    private static readonly MethodInfo SubQueryMethod = typeof(JazminQueryProvider<TRow>).GetMethod(nameof(SubQueryOf), BindingFlags.NonPublic | BindingFlags.Instance)!;
+
+    public IQueryable SubQuery(Expression expression, HashSet<string>? columns) =>
+        (IQueryable)SubQueryMethod.MakeGenericMethod(ElementType(expression.Type)).Invoke(this, [expression, columns])!;
+
+    private IQueryable<T> SubQueryOf<T>(Expression expression, HashSet<string>? columns) => Sequence<T>(expression, columns).AsQueryable();
 
     /// <summary>The element type of a queryable or sequence type.</summary>
     private static Type ElementType(Type type)
@@ -140,7 +160,20 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
         return Expression.Call(without.MakeGenericMethod(element), [filtered, .. call.Arguments.Skip(2)]);
     }
 
-    private QueryPlan Plan(Expression expression)
+    /// <summary>
+    /// A query of a reader's provider used directly as an argument of an operator (Join's inner rows, Concat, Zip...): the
+    /// provider, or null for anything else.
+    /// </summary>
+    private static IJazminQueryProvider? SubQueryProvider(Expression argument)
+    {
+        var e = argument;
+        while (e is MethodCallExpression call && call.Method.DeclaringType == typeof(Queryable)) e = call.Arguments[0];
+        return e is ConstantExpression { Value: IQueryable { Provider: IJazminQueryProvider provider } root } && root.Expression == e ? provider : null;
+    }
+
+    /// <param name="expression">The query, from this provider's root.</param>
+    /// <param name="hint">Used as a source of another query: what that query reads of the rows this one gives.</param>
+    private QueryPlan Plan(Expression expression, HashSet<string>? hint = null)
     {
         var calls = new List<MethodCallExpression>();
         var e = expression;
@@ -215,11 +248,20 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
             1 => compiled[0],
             _ => row => Array.TrueForAll(compiled, c => c(row)),
         };
-        var columns = ColumnsUsed(checks, tail);
+        var operators = tail.Count == 0 ? null : tail.Aggregate((Expression)Expression.Parameter(typeof(IQueryable<TRow>), "rows"),
+            (source, call) => Expression.Call(call.Method, [source, .. call.Arguments.Skip(1)]));
+        var columns = ColumnsUsed(checks, operators, hint);
         var rows = _reader.TypedRows(_map, _settings, filter, check, offset, limit, columns?.ToList());
         if (tail.Count == 0) return new QueryPlan(rows, null, null);
         Expression rest = Expression.Constant(rows.AsQueryable(), typeof(IQueryable<TRow>));
-        foreach (var call in tail) rest = Expression.Call(call.Method, [rest, .. call.Arguments.Skip(1)]);
+        foreach (var call in tail)
+        {
+            var parameters = call.Method.GetParameters();
+            var arguments = call.Arguments.Select((argument, i) => i == 0 ? rest
+                : SubQueryProvider(argument) is { } provider ? Expression.Constant(provider.SubQuery(argument, SubQueryColumns(provider, operators!)), parameters[i].ParameterType)
+                : argument);
+            rest = Expression.Call(call.Method, arguments);
+        }
         return new QueryPlan(rows, rest, null);
     }
 
@@ -253,58 +295,37 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
     }
 
     /// <summary>
-    /// The columns the objects need, or null for all: the members the remaining conditions and the operators after the
-    /// pushed-down part read, when the objects never leave the query (they end in a Select, or in Count, Any, All, Sum,
-    /// Average, Min or Max). Objects the caller receives, or passes whole to anything, need every column.
+    /// The columns the objects need, or null for all: the members of the rows that the remaining conditions and the
+    /// operators after the pushed-down part (<paramref name="tail"/>, over a placeholder source) read, at any depth:
+    /// through SelectMany, GroupBy, Join, nested queries, anonymous types and groups. Rows the caller receives, or that
+    /// may be read in ways the query does not show, need every column (see <see cref="QueryUsage"/>).
     /// </summary>
-    private HashSet<string>? ColumnsUsed(List<LambdaExpression> checks, List<MethodCallExpression> tail)
+    private HashSet<string>? ColumnsUsed(List<LambdaExpression> checks, Expression? tail, HashSet<string>? hint)
     {
-        var used = new HashSet<string>(StringComparer.Ordinal);
-        var all = false;
-        void Collect(LambdaExpression lambda)
+        if (tail is null && hint is null) return null; // the caller receives the objects
+        var finder = NewUsage();
+        foreach (var check in checks) finder.Visit(check.Body); // conditions checked on each object
+        if (tail is not null)
         {
-            if (lambda.Parameters.Count == 0 || lambda.Parameters[0].Type != typeof(TRow)) return;
-            var finder = new MemberFinder(lambda.Parameters[0], _map, _reader, used);
-            finder.Visit(lambda.Body);
-            all |= finder.Whole;
-        }
-        foreach (var check in checks) Collect(check);
-        foreach (var call in tail)
-        {
-            var lambdas = call.Arguments.Skip(1).Select(Lambda).OfType<LambdaExpression>().ToList();
-            var name = call.Method.Name;
-            if (name is "Where" or "OrderBy" or "OrderByDescending" or "ThenBy" or "ThenByDescending" or "Skip" or "Take" or "SkipWhile" or "TakeWhile" or "Reverse")
+            if (finder.Carries(tail.Type))
             {
-                lambdas.ForEach(Collect);
-                continue;
+                if (hint is null) return null;
+                finder.Allow(tail); // the rows go to the query this one is a source of, which says what it reads of them
             }
-            var ends = name is "Select" or "Count" or "LongCount" or "Any" or "All" or "Sum" or "Average"
-                || (name is "Min" or "Max" && lambdas.Count == 1);
-            if (!ends) return null;
-            lambdas.ForEach(Collect);
-            return all ? null : used;
+            finder.Visit(tail);
         }
-        return null; // the caller receives the objects
+        if (finder.Whole) return null;
+        if (hint is not null) finder.Used.UnionWith(hint);
+        return finder.Used;
     }
 
-    /// <summary>The columns of the members a lambda reads from its parameter; <see cref="Whole"/> when it uses the object otherwise.</summary>
-    private sealed class MemberFinder(ParameterExpression parameter, TypeMap map, JazminReader reader, HashSet<string> used) : ExpressionVisitor
+    /// <summary>What a query reads of the rows of a sub-query of <paramref name="provider"/> it uses as a source (null: every column).</summary>
+    private static HashSet<string>? SubQueryColumns(IJazminQueryProvider provider, Expression operators)
     {
-        public bool Whole { get; private set; }
-
-        protected override Expression VisitMember(MemberExpression node)
-        {
-            if (node.Expression != parameter) return base.VisitMember(node);
-            if (map.ColumnRead(node.Member) is not { } name) Whole = true;
-            else if (reader.VisibleColumnName(name) is { } column) used.Add(column); // not in the file: the member keeps its default
-            return node;
-        }
-
-        protected override Expression VisitParameter(ParameterExpression node)
-        {
-            if (node == parameter) Whole = true;
-            return node;
-        }
+        var finder = provider.NewUsage();
+        if (finder.Carries(operators.Type)) return null;
+        finder.Visit(operators);
+        return finder.Whole ? null : finder.Used;
     }
 
     private static LambdaExpression? Lambda(Expression e) => e switch
@@ -316,4 +337,149 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
 
     private static object? Evaluate(Expression e) =>
         e is ConstantExpression c ? c.Value : Expression.Lambda<Func<object?>>(Expression.Convert(e, typeof(object))).Compile(preferInterpretation: true)();
+}
+
+/// <summary>
+/// Collects the columns of the row members a query reads. A row (or anything holding rows: sequences, groups,
+/// anonymous objects) may only flow where every read of it shows in the query: into a member read, into LINQ
+/// operators that pass elements on (as their source, or as what a Select, SelectMany, Join or GroupBy result makes),
+/// and into new objects and arrays. Anywhere else (a method call, a cast, an equality or a sort on the rows
+/// themselves, a comparer, a computed property, the query's result) it is <see cref="Whole"/>: every column.
+/// </summary>
+internal sealed class QueryUsage(Type row, TypeMap map, JazminReader reader) : ExpressionVisitor
+{
+    private static readonly HashSet<string> ByElementEquality =
+        ["Distinct", "Union", "Intersect", "Except", "SequenceEqual", "Contains", "ToHashSet", "Order", "OrderDescending", "Cast", "OfType"];
+
+    // Places a parent allows rows to flow into, each for one visit: one parameter object stands for all its uses.
+    private readonly Dictionary<Expression, int> _allowed = new(ReferenceEqualityComparer.Instance);
+    private readonly Dictionary<Type, bool> _carries = [];
+
+    public HashSet<string> Used { get; } = new(StringComparer.Ordinal);
+
+    public bool Whole { get; private set; }
+
+    /// <summary>Whether values of this type can hold rows: the row type, or a type built from it.</summary>
+    public bool Carries(Type type)
+    {
+        if (type == row) return true;
+        if (_carries.TryGetValue(type, out var known)) return known;
+        _carries[type] = false; // a type that refers to itself
+        var carries = type.HasElementType && Carries(type.GetElementType()!)
+            || type.IsGenericType && type.GetGenericArguments().Any(Carries)
+            || IsAnonymous(type) && type.GetProperties().Any(p => Carries(p.PropertyType));
+        return _carries[type] = carries;
+    }
+
+    private static bool IsAnonymous(Type type) =>
+        type.IsDefined(typeof(System.Runtime.CompilerServices.CompilerGeneratedAttribute), false) && type.Name.Contains("AnonymousType", StringComparison.Ordinal);
+
+    public override Expression? Visit(Expression? node)
+    {
+        if (node is null || Whole) return node;
+        if (node is not LambdaExpression && node.NodeType != ExpressionType.Quote && Carries(node.Type) && !Consume(node))
+        {
+            Whole = true; // rows reach a place where their reads do not show
+            return node;
+        }
+        return base.Visit(node);
+    }
+
+    public void Allow(Expression node) => _allowed[node] = _allowed.GetValueOrDefault(node) + 1;
+
+    private bool Consume(Expression node)
+    {
+        if (!_allowed.TryGetValue(node, out var n)) return false;
+        if (n == 1) _allowed.Remove(node);
+        else _allowed[node] = n - 1;
+        return true;
+    }
+
+    protected override Expression VisitLambda<T>(Expression<T> node)
+    {
+        Visit(node.Body); // the parameters are declarations: their uses are checked where they appear
+        return node;
+    }
+
+    protected override Expression VisitMember(MemberExpression node)
+    {
+        if (node.Expression is { } target && Carries(target.Type))
+        {
+            Allow(target);
+            if (target.Type == row)
+            {
+                if (map.ColumnRead(node.Member) is not { } name) Whole = true; // a computed property may read anything
+                else if (reader.VisibleColumnName(name) is { } column) Used.Add(column); // not in the file: keeps its default
+            }
+        }
+        return base.VisitMember(node);
+    }
+
+    protected override Expression VisitMethodCall(MethodCallExpression node)
+    {
+        var type = node.Method.DeclaringType;
+        if (type != typeof(Queryable) && type != typeof(Enumerable))
+        {
+            if (node.Method.Name == "get_Item" && node.Object is { } list) Allow(list); // rows[i]: the row is checked where it goes
+            return base.VisitMethodCall(node);
+        }
+        var name = node.Method.Name;
+        var args = node.Arguments;
+        if (!ByElementEquality.Contains(name) && !(name is "Min" or "Max" && args.Count == 1)) Allow(args[0]);
+        for (var i = 1; i < args.Count; i++)
+        {
+            if (QueryLambda(args[i]) is { } lambda)
+            {
+                if (Projects(name, i)) Allow(lambda.Body); // a key or comparison of whole rows stays unallowed
+            }
+            else if (name is "Join" or "GroupJoin" or "Concat" or "Zip" && i == 1) Allow(args[i]); // a second source
+            else if (name is "Append" or "Prepend") Allow(args[i]); // one more element
+        }
+        return base.VisitMethodCall(node);
+    }
+
+    /// <summary>Whether the lambda at argument <paramref name="i"/> makes the operator's results (not keys it compares).</summary>
+    private static bool Projects(string name, int i) => name switch
+    {
+        "Select" or "SelectMany" or "Aggregate" => true,
+        "Join" or "GroupJoin" => i == 4,
+        "GroupBy" => i >= 2,
+        "Zip" => i == 2,
+        _ => false,
+    };
+
+    protected override Expression VisitNew(NewExpression node)
+    {
+        foreach (var arg in node.Arguments) Allow(arg); // stored in a new object, checked where it goes
+        return base.VisitNew(node);
+    }
+
+    protected override MemberAssignment VisitMemberAssignment(MemberAssignment node)
+    {
+        Allow(node.Expression);
+        return base.VisitMemberAssignment(node);
+    }
+
+    protected override Expression VisitNewArray(NewArrayExpression node)
+    {
+        if (node.NodeType == ExpressionType.NewArrayInit) foreach (var item in node.Expressions) Allow(item);
+        return base.VisitNewArray(node);
+    }
+
+    protected override Expression VisitConditional(ConditionalExpression node)
+    {
+        if (Carries(node.Type)) // allowed itself, or it would not be visited
+        {
+            Allow(node.IfTrue);
+            Allow(node.IfFalse);
+        }
+        return base.VisitConditional(node);
+    }
+
+    private static LambdaExpression? QueryLambda(Expression e) => e switch
+    {
+        UnaryExpression { NodeType: ExpressionType.Quote, Operand: LambdaExpression lambda } => lambda,
+        LambdaExpression lambda => lambda,
+        _ => null,
+    };
 }
