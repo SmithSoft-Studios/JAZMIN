@@ -139,6 +139,56 @@ public sealed class NestedQueryTests
         Assert.Equal((true, true, true, true), Reads(q => q.Where(c => c.Id > 100).ToList()));
     }
 
+    public sealed class Step
+    {
+        public string Title { get; set; } = "";
+        public string Owner { get; set; } = "";
+    }
+
+    public sealed class Plan
+    {
+        public int Id { get; set; }
+        public List<Step> Steps { get; set; } = [];
+    }
+
+    public sealed class StepLater
+    {
+        public string Title { get; set; } = "";
+        public string Owner { get; set; } = "";
+        public int? Hours { get; set; }
+    }
+
+    public sealed class PlanLater
+    {
+        public int Id { get; set; }
+        public List<StepLater> Steps { get; set; } = [];
+    }
+
+    [Fact]
+    public void AFieldAddedByAppending_IsNullInEarlierChunks_WhenOnlySomeFieldsAreRead()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"jazmin-plans-{Guid.NewGuid():N}.jzm");
+        try
+        {
+            System.IO.File.WriteAllBytes(path, JazminConvert.SerializeObject(Enumerable.Range(0, 30).Select(i => new Plan { Id = i, Steps = [new() { Title = $"t{i}", Owner = "a" }] }).ToList(), Nested));
+            JazminFile.Append(path, new JazminAppend
+            {
+                Insert = [.. Enumerable.Range(30, 30).Select(i => (IReadOnlyDictionary<string, object?>)new Dictionary<string, object?>
+                {
+                    ["Id"] = (long)i, ["Steps"] = new List<StepLater> { new() { Title = $"t{i}", Owner = "b", Hours = i } },
+                })],
+            });
+            using var reader = JazminReader.Open(path);
+            var hours = reader.AsQueryable<PlanLater>(Nested).SelectMany(p => p.Steps).Select(s => s.Hours).ToList(); // Title and Owner not read
+            Assert.Equal(Enumerable.Repeat<int?>(null, 30).Concat(Enumerable.Range(30, 30).Select(i => (int?)i)), hours);
+            Assert.Equal([null], reader.AsQueryable<PlanLater>(Nested).Where(p => p.Id == 3).SelectMany(p => p.Steps).Select(s => s.Hours).ToList());
+        }
+        finally
+        {
+            System.IO.File.Delete(path);
+        }
+    }
+
     [Fact]
     public void ItemsAndObjectsNotRead_KeepTheirDefaults_AndTheRowsOfAScanAreAllThere()
     {
