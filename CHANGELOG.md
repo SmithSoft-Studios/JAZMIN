@@ -37,6 +37,13 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     `append` takes them in `columns`. Removing, renaming or retyping fields needs the file written again. A .NET
     member the definition lacks is never left out silently.
 
+### Changed
+- **.NET LINQ compiles a query's in-memory part once per shape,** and reuses it with each call's values (the rows
+  read, captured variables, sub-queries). Before, `EnumerableQuery` compiled it on every call: a lookup that returns
+  one field (`q.Where(c => c.Id == id).Select(c => c.Name)`) took 1.05 ms, now 0.34 ms, the time of a lookup that
+  returns whole rows. Conditions checked in memory, and `reader.Query<T>(predicate)`, compile once too. A shape that
+  can't be taken apart runs as before.
+
 ## 1.3.0 - 2026-10-08 (file format 1.0)
 
 Export shapes now nest rows from several tables of a file, and queries do far

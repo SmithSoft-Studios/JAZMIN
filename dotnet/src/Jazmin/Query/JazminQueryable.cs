@@ -109,7 +109,8 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
     {
         var plan = Plan(Normalize(expression));
         if (plan.Answer is { } answer) return (TResult)answer();
-        return plan.Rows.AsQueryable().Provider.Execute<TResult>(plan.Tail!);
+        // The in-memory part, compiled once per query shape (EnumerableQuery would compile it on every call).
+        return CompiledQueries.TryExecute<TResult>(plan.Tail!, out var result) ? result : plan.Rows.AsQueryable().Provider.Execute<TResult>(plan.Tail!);
     }
 
     public IEnumerable<T> Enumerate<T>(Expression expression) => ExecuteSequence<T>(expression);
@@ -119,7 +120,7 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
     private IEnumerable<T> Sequence<T>(Expression expression, HashSet<string>? columns)
     {
         var plan = Plan(expression, columns);
-        return plan.Tail is null ? (IEnumerable<T>)plan.Rows : new EnumerableQuery<T>(plan.Tail);
+        return plan.Tail is null ? (IEnumerable<T>)plan.Rows : CompiledQueries.Sequence<T>(plan.Tail) ?? new EnumerableQuery<T>(plan.Tail);
     }
 
     public QueryUsage NewUsage() => new(typeof(TRow), _map, _reader, _settings);
@@ -266,7 +267,7 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
             return new QueryPlan([], null, answer);
         }
 
-        var compiled = checks.Select(c => (Func<TRow, bool>)c.Compile()).ToArray();
+        var compiled = checks.Select(c => c is Expression<Func<TRow, bool>> typed ? CompiledQueries.Predicate(typed) : (Func<TRow, bool>)c.Compile()).ToArray();
         Func<TRow, bool>? check = compiled.Length switch
         {
             0 => null,

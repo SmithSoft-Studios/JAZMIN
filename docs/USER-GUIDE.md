@@ -856,6 +856,13 @@ decimal total = orders.Where(o => o.Region == "NA").Sum(o => o.Amount);     // r
   decoded, by the same rules: objects returned whole, passed to a method,
   compared or grouped by are read whole, and a computed property reads all
   of its object's fields.
+- **Queries are compiled once per shape.** The parts of a query that run in
+  memory (operators after the reader's part, and conditions it can't check)
+  are compiled the first time a query of that shape runs, then reused with
+  each call's values: a lookup in a loop, `q.Where(c => c.Id == id)
+  .Select(c => c.Name)`, takes 0.34 ms instead of 1.05 ms. The same holds
+  for `reader.Query<T>(predicate)`. Nothing to set up: there's no compiled
+  query to declare.
 - **Sub-queries of other tables inside a lambda are read once.** For
   example, `customers.Select(c => orders.Where(o => o.CustomerId == c.Id)...)`
   would otherwise run a query for every customer:

@@ -2134,7 +2134,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         // checked as an object.
         var translation = predicate is null ? null : map.PreservesReferences ? new Translation(null, false) : Translate(predicate, map);
         // An exact translation already selects precisely the predicate's rows: skip compiling it.
-        var check = predicate is null || translation!.Exact ? null : predicate.Compile();
+        var check = predicate is null || translation!.Exact ? null : Jazmin.Query.CompiledQueries.Predicate(predicate); // compiled once per shape
         return TypedRows(map, settings, translation?.Filter, check);
     }
 
