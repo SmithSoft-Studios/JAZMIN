@@ -9,7 +9,7 @@ import { JazminAccessKey, issueUnlockToken, open, toJSON } from '../src/index.js
 import { APPEND_STATE } from '../src/reader.js';
 import {
   ACCESS_VIEWS, COUNTRY_COLUMNS, COUNTRY_VIEWS, FILES_VIEWS, FIXTURE_EXPIRY, FIXTURE_PACKAGE, PARTITIONS_SPLIT, PARTITION_VIEWS, appendedLive,
-  countryRows, fixtureFiles, toCanonical,
+  NESTED_COLUMNS, countryRows, fixtureFiles, toCanonical,
 } from './fixture-helpers.js';
 
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../spec/fixtures');
@@ -26,7 +26,7 @@ function optionsFor(file) {
   return {};
 }
 
-const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jzm') && !f.endsWith('-access.jzm'));
+const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jzm') && !f.endsWith('-access.jzm') && !f.endsWith('-nested.jzm'));
 const accessFiles = fs.readdirSync(dir).filter((f) => f.endsWith('-access.jzm'));
 /** Dataset rows a fixture should contain: appended fixtures have rows with id < 10 deleted. */
 const liveRows = (file) => {
@@ -190,6 +190,24 @@ for (const file of files) {
         expectIds({ id: { lte: '20' } }, (r) => BigInt(r.id) <= 20n);
         expectIds({ country: { isNull: true } }, (r) => r.country === null);
       }
+    } finally {
+      reader.close();
+    }
+  });
+}
+
+// Nested columns (spec 5.4): files written by either library from spec/fixtures/nested.json read back as its rows.
+const nested = JSON.parse(fs.readFileSync(path.join(dir, 'nested.json'), 'utf8'));
+for (const writer of ['js', 'dotnet']) {
+  test(`interop: ${writer}-nested.jzm reads back as nested.json`, (t) => {
+    const full = path.join(dir, `${writer}-nested.jzm`);
+    if (!fs.existsSync(full)) return t.skip(`run the ${writer === 'js' ? 'fixture script' : '.NET tests'} to generate ${writer}-nested.jzm`);
+    const reader = open(full);
+    try {
+      assert.deepEqual(nested.columns, NESTED_COLUMNS);
+      assert.deepEqual(JSON.parse(toJSON(reader)), nested.rows);
+      assert.equal(reader.columns.find((c) => c.name === 'staff').item.fields.length, 9);
+      for (const id of [0, 37, 149]) assert.deepEqual(JSON.parse(toJSON(reader, { filter: { id } })), [nested.rows[id]]);
     } finally {
       reader.close();
     }

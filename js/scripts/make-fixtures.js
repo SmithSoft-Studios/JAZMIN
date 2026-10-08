@@ -7,7 +7,7 @@ import { JazminKey, append, open, toJSON, write } from '../src/index.js';
 import { CHUNK_MAP, PAGING } from '../src/writer.js';
 import {
   APPEND_DELETE, APPEND_SPLIT, COUNTRY_COLUMNS, FIXTURE_PACKAGE, PARTITIONS_SPLIT, accessFixture, countryRows, filesAccessFixture, fixtureFiles,
-  fromCanonical, partitionsFixture, tablesFixture,
+  NESTED_COLUMNS, fromCanonical, nestedFixtureRows, partitionsFixture, tablesFixture,
 } from '../test/fixture-helpers.js';
 
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../spec/fixtures');
@@ -119,5 +119,11 @@ const linkShape = JSON.parse(fs.readFileSync(path.join(dir, 'shape-links.json'),
 const tablesFile = open(path.join(dir, 'js-tables.jzm'));
 fs.writeFileSync(path.join(dir, 'shape-links-expected.json'), `${toJSON(tablesFile, { shape: linkShape, pretty: true })}`);
 tablesFile.close();
+
+// Nested columns (spec 5.4): the columns and rows both libraries write their *-nested.jzm from.
+const nestedRows = nestedFixtureRows();
+fs.writeFileSync(path.join(dir, 'nested.json'), `${JSON.stringify({ columns: NESTED_COLUMNS, rows: nestedRows }, null, 1)}
+`);
+write(path.join(dir, 'js-nested.jzm'), nestedRows, { columns: NESTED_COLUMNS, chunkRows: 64 });
 
 console.log(`Fixtures written to ${dir}`);

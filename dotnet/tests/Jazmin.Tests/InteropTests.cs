@@ -2,6 +2,7 @@ using Jazmin.Formats;
 using System.Globalization;
 using System.Text.Json.Nodes;
 using Jazmin.Query;
+using Jazmin.Serialization;
 using Xunit;
 
 namespace Jazmin.Tests;
@@ -551,5 +552,39 @@ public class InteropTests
                 writer.WriteValues(columns.Select(c => FromDataset(c.Type, row[c.Name])).ToArray());
         }
         AssertMatchesDataset(file, OutDir);
+    }
+
+    // ---- nested columns (spec 5.4): spec/fixtures/nested.json, in the form JSON output writes its rows ----
+
+    private static readonly JsonObject NestedFixture = JsonNode.Parse(File.ReadAllText(Path.Combine(Dir, "nested.json")))!.AsObject();
+
+    private static JazminColumn NestedDefinition(JsonNode c, string name) => new((string?)c["name"] ?? name, TypeNames.Parse((string)c["type"]!))
+    {
+        Nullable = (bool?)c["nullable"] ?? true,
+        Item = c["item"] is { } item ? NestedDefinition(item, "item") : null,
+        Fields = c["fields"]?.AsArray().Select(f => NestedDefinition(f!, "")).ToArray(),
+    };
+
+    private static void AssertNested(byte[] bytes)
+    {
+        var rows = NestedFixture["rows"]!;
+        var actual = JsonNode.Parse(JazminConvert.ToJson(bytes));
+        Assert.True(JsonNode.DeepEquals(rows, actual), "JSON output differs from nested.json");
+        foreach (var id in new[] { 0, 37, 149 })
+            Assert.True(JsonNode.DeepEquals(new JsonArray(rows[id]!.DeepClone()), JsonNode.Parse(JazminConvert.ToJson(bytes, null, JazminFilter.Eq("id", (long)id)))), $"row {id}");
+    }
+
+    [Fact]
+    public void ReadsNestedColumnsWrittenByJavaScript() => AssertNested(File.ReadAllBytes(Path.Combine(Dir, "js-nested.jzm")));
+
+    [Fact]
+    public void WritesNestedColumnsForJavaScript()
+    {
+        var columns = NestedFixture["columns"]!.AsArray().Select(c => NestedDefinition(c!, "")).ToArray();
+        var path = Path.Combine(OutDir, "dotnet-nested.jzm");
+        using (var writer = JazminWriter.Create(path, columns, new JazminWriteOptions { ChunkRows = 64 }))
+            foreach (var row in NestedFixture["rows"]!.AsArray())
+                writer.WriteValues(columns.Select(c => c.Type == JazminType.Int ? (object?)(long)row![c.Name]! : row![c.Name]?.DeepClone()).ToArray());
+        AssertNested(File.ReadAllBytes(path));
     }
 }

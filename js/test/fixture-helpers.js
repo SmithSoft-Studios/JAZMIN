@@ -153,3 +153,48 @@ export const FILES_VIEWS = {
   carol: ['docs/shared.bin', 'docs/za.bin', 'empty.txt', 'index.html'],
   erin: ['docs/shared.bin', 'docs/za.bin', 'empty.txt', 'index.html'],
 };
+
+/**
+ * Nested columns (spec 5.4): spec/fixtures/nested.json holds these columns and rows, the rows in the form JSON output
+ * writes them (all fields, nulls written; decimals as numbers, so without trailing zeros; dates with milliseconds;
+ * binary as base64). Each library writes <writer>-nested.jzm from it, and its JSON output of either file is the rows.
+ */
+export const NESTED_COLUMNS = [
+  { name: 'id', type: 'int', nullable: false },
+  {
+    name: 'staff', type: 'list', item: {
+      type: 'object', fields: [
+        { name: 'name', type: 'string' },
+        { name: 'active', type: 'bool' },
+        { name: 'score', type: 'float' },
+        { name: 'pay', type: 'decimal' },
+        { name: 'since', type: 'datetime' },
+        { name: 'photo', type: 'binary' },
+        { name: 'extra', type: 'json' },
+        { name: 'tags', type: 'list', item: { type: 'string', nullable: false } },
+        { name: 'projects', type: 'list', item: { type: 'object', fields: [{ name: 'code', type: 'string' }, { name: 'hours', type: 'int' }] } },
+      ],
+    },
+  },
+  { name: 'head', type: 'object', fields: [{ name: 'city', type: 'string' }, { name: 'at', type: 'object', fields: [{ name: 'lat', type: 'float' }, { name: 'lng', type: 'float' }] }] },
+  { name: 'grid', type: 'list', item: { type: 'list', item: { type: 'int' } } },
+];
+
+export function nestedFixtureRows() {
+  return Array.from({ length: 150 }, (_, i) => ({
+    id: i,
+    staff: i % 7 === 0 ? null : i % 5 === 0 ? [] : Array.from({ length: 1 + (i % 4) }, (_, n) => (n === 2 ? null : {
+      name: n === 1 ? null : `E${i}-${n} ${['Zoë 👋', 'Côte d’Ivoire', 'plain'][i % 3]}`,
+      active: n === 3 ? null : (i + n) % 2 === 0,
+      score: (i * 10 + n) / 4,
+      pay: n === 1 ? null : i * 100 + n + 0.5,
+      since: new Date(Date.UTC(2024, 0, 1) + (i + n) * 86_400_000 + n * 1_000).toISOString(),
+      photo: n === 0 ? Buffer.from([i & 255, 0, 255]).toString('base64') : null,
+      extra: n === 3 ? { i, list: [1, 'x', null] } : null,
+      tags: i % 4 === 0 ? [] : ['a', `t${n}`],
+      projects: n === 1 ? null : Array.from({ length: (i + n) % 3 }, (_, k) => ({ code: k === 1 ? null : `P${(i + k) % 9}`, hours: k === 2 ? null : k * 8 })),
+    })),
+    head: i % 3 === 0 ? null : { city: i % 2 === 0 ? 'Durban' : null, at: i % 4 === 1 ? null : { lat: -29.5 + i / 8, lng: 31 - i / 16 } },
+    grid: i % 4 === 0 ? null : [[], [1, null, i], [null]],
+  }));
+}

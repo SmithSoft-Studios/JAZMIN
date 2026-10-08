@@ -56,6 +56,26 @@ const row = (i) => ({
   extra: i % 8 === 0 ? null : { i, list: [i % 3, 'x'] },
 });
 
+/** Nested columns (reader feature nested-columns): a list of objects with a list inside, and an object. */
+const NESTED_COLUMNS = [
+  {
+    name: 'staff', type: 'list', item: {
+      type: 'object', fields: [
+        { name: 'name', type: 'string' }, { name: 'pay', type: 'decimal' }, { name: 'since', type: 'datetime' },
+        { name: 'tags', type: 'list', item: { type: 'string' } },
+      ],
+    },
+  },
+  { name: 'head', type: 'object', fields: [{ name: 'city', type: 'string' }, { name: 'score', type: 'float' }, { name: 'open', type: 'bool' }] },
+];
+
+const nestedRow = (i) => ({
+  staff: i % 6 === 0 ? null : i % 5 === 0 ? [] : [
+    { name: `N${i % 7}`, pay: `${i}.5`, since: new Date(Date.UTC(2020, 0, 1 + (i % 9))), tags: ['a', `t${i % 3}`] }, null, { name: null, tags: [] },
+  ],
+  head: i % 4 === 0 ? null : { city: `C${i % 3}`, score: i / 4, open: i % 2 === 0 },
+});
+
 /** Plain files covering the reader's features: indexes in several pages, sort order, appends, embedded files, codecs. */
 export function corpus() {
   const rows = Array.from({ length: 120 }, (_, i) => row(i));
@@ -69,6 +89,7 @@ export function corpus() {
       files: [{ path: 'index.html', content: '<p>x</p>' }, { path: 'a/b.bin', content: Buffer.alloc(300, 7) }],
       package: { entry: 'index.html', title: 'Fuzz' },
     }),
+    write(null, rows.slice(0, 60).map((r, i) => ({ ...r, ...nestedRow(i) })), { ...base, columns: [...COLUMNS, ...NESTED_COLUMNS], codec: 'none' }),
   ];
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-fuzz-'));
   const file = path.join(dir, 'appended.jzm');
@@ -228,7 +249,7 @@ export function exerciseDecoders(input, rnd) {
     () => decodeOwnerCatalog(input),
     () => joinChunkMaps(decodeChunkMap(input), decodeChunkMap(input.subarray(input.length >> 1))),
     () => decodeColumnDefinitions(input),
-    () => decodeColumnar(input, Array.from({ length: 1 + rnd.int(4) }, () => rnd.pick(types)), rnd.int(300), 0),
+    () => decodeColumnar(input, Array.from({ length: 1 + rnd.int(4) }, () => rnd.pick([...types, ...NESTED_COLUMNS])), rnd.int(300), 0),
     () => SortedIndex.decodePage(input, rnd.pick(types)),
     () => SortedIndex.decodePage(input, rnd.pick(types), true), // keys as differences (reader feature index-deltas)
     () => TrigramIndex.decode(input),

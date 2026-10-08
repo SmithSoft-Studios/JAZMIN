@@ -1,0 +1,6376 @@
+{
+ "columns": [
+  {
+   "name": "id",
+   "type": "int",
+   "nullable": false
+  },
+  {
+   "name": "staff",
+   "type": "list",
+   "item": {
+    "type": "object",
+    "fields": [
+     {
+      "name": "name",
+      "type": "string"
+     },
+     {
+      "name": "active",
+      "type": "bool"
+     },
+     {
+      "name": "score",
+      "type": "float"
+     },
+     {
+      "name": "pay",
+      "type": "decimal"
+     },
+     {
+      "name": "since",
+      "type": "datetime"
+     },
+     {
+      "name": "photo",
+      "type": "binary"
+     },
+     {
+      "name": "extra",
+      "type": "json"
+     },
+     {
+      "name": "tags",
+      "type": "list",
+      "item": {
+       "type": "string",
+       "nullable": false
+      }
+     },
+     {
+      "name": "projects",
+      "type": "list",
+      "item": {
+       "type": "object",
+       "fields": [
+        {
+         "name": "code",
+         "type": "string"
+        },
+        {
+         "name": "hours",
+         "type": "int"
+        }
+       ]
+      }
+     }
+    ]
+   }
+  },
+  {
+   "name": "head",
+   "type": "object",
+   "fields": [
+    {
+     "name": "city",
+     "type": "string"
+    },
+    {
+     "name": "at",
+     "type": "object",
+     "fields": [
+      {
+       "name": "lat",
+       "type": "float"
+      },
+      {
+       "name": "lng",
+       "type": "float"
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "name": "grid",
+   "type": "list",
+   "item": {
+    "type": "list",
+    "item": {
+     "type": "int"
+    }
+   }
+  }
+ ],
+ "rows": [
+  {
+   "id": 0,
+   "staff": null,
+   "head": null,
+   "grid": null
+  },
+  {
+   "id": 1,
+   "staff": [
+    {
+     "name": "E1-0 Côte d’Ivoire",
+     "active": false,
+     "score": 2.5,
+     "pay": 100.5,
+     "since": "2024-01-02T00:00:00.000Z",
+     "photo": "AQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P1",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 2.75,
+     "pay": null,
+     "since": "2024-01-03T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     1
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 2,
+   "staff": [
+    {
+     "name": "E2-0 plain",
+     "active": true,
+     "score": 5,
+     "pay": 200.5,
+     "since": "2024-01-03T00:00:00.000Z",
+     "photo": "AgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P2",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 5.25,
+     "pay": null,
+     "since": "2024-01-04T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -29.25,
+     "lng": 30.875
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     2
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 3,
+   "staff": [
+    {
+     "name": "E3-0 Zoë 👋",
+     "active": false,
+     "score": 7.5,
+     "pay": 300.5,
+     "since": "2024-01-04T00:00:00.000Z",
+     "photo": "AwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 7.75,
+     "pay": null,
+     "since": "2024-01-05T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E3-3 Zoë 👋",
+     "active": null,
+     "score": 8.25,
+     "pay": 303.5,
+     "since": "2024-01-07T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 3,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     3
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 4,
+   "staff": [
+    {
+     "name": "E4-0 Côte d’Ivoire",
+     "active": true,
+     "score": 10,
+     "pay": 400.5,
+     "since": "2024-01-05T00:00:00.000Z",
+     "photo": "BAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P4",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -29,
+     "lng": 30.75
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 5,
+   "staff": [],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     5
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 6,
+   "staff": [
+    {
+     "name": "E6-0 Zoë 👋",
+     "active": true,
+     "score": 15,
+     "pay": 600.5,
+     "since": "2024-01-07T00:00:00.000Z",
+     "photo": "BgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 15.25,
+     "pay": null,
+     "since": "2024-01-08T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     6
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 7,
+   "staff": null,
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -28.625,
+     "lng": 30.5625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     7
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 8,
+   "staff": [
+    {
+     "name": "E8-0 plain",
+     "active": true,
+     "score": 20,
+     "pay": 800.5,
+     "since": "2024-01-09T00:00:00.000Z",
+     "photo": "CAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P8",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -28.5,
+     "lng": 30.5
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 9,
+   "staff": [
+    {
+     "name": "E9-0 Zoë 👋",
+     "active": false,
+     "score": 22.5,
+     "pay": 900.5,
+     "since": "2024-01-10T00:00:00.000Z",
+     "photo": "CQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 22.75,
+     "pay": null,
+     "since": "2024-01-11T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     9
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 10,
+   "staff": [],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -28.25,
+     "lng": 30.375
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     10
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 11,
+   "staff": [
+    {
+     "name": "E11-0 plain",
+     "active": false,
+     "score": 27.5,
+     "pay": 1100.5,
+     "since": "2024-01-12T00:00:00.000Z",
+     "photo": "CwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P2",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 27.75,
+     "pay": null,
+     "since": "2024-01-13T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E11-3 plain",
+     "active": null,
+     "score": 28.25,
+     "pay": 1103.5,
+     "since": "2024-01-15T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 11,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P2",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -28.125,
+     "lng": 30.3125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     11
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 12,
+   "staff": [
+    {
+     "name": "E12-0 Zoë 👋",
+     "active": true,
+     "score": 30,
+     "pay": 1200.5,
+     "since": "2024-01-13T00:00:00.000Z",
+     "photo": "DAD/",
+     "extra": null,
+     "tags": [],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": null
+  },
+  {
+   "id": 13,
+   "staff": [
+    {
+     "name": "E13-0 Côte d’Ivoire",
+     "active": false,
+     "score": 32.5,
+     "pay": 1300.5,
+     "since": "2024-01-14T00:00:00.000Z",
+     "photo": "DQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P4",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 32.75,
+     "pay": null,
+     "since": "2024-01-15T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     13
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 14,
+   "staff": null,
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -27.75,
+     "lng": 30.125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     14
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 15,
+   "staff": [],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     15
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 16,
+   "staff": [
+    {
+     "name": "E16-0 Côte d’Ivoire",
+     "active": true,
+     "score": 40,
+     "pay": 1600.5,
+     "since": "2024-01-17T00:00:00.000Z",
+     "photo": "EAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P7",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -27.5,
+     "lng": 30
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 17,
+   "staff": [
+    {
+     "name": "E17-0 plain",
+     "active": false,
+     "score": 42.5,
+     "pay": 1700.5,
+     "since": "2024-01-18T00:00:00.000Z",
+     "photo": "EQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P8",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 42.75,
+     "pay": null,
+     "since": "2024-01-19T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     17
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 18,
+   "staff": [
+    {
+     "name": "E18-0 Zoë 👋",
+     "active": true,
+     "score": 45,
+     "pay": 1800.5,
+     "since": "2024-01-19T00:00:00.000Z",
+     "photo": "EgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 45.25,
+     "pay": null,
+     "since": "2024-01-20T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     18
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 19,
+   "staff": [
+    {
+     "name": "E19-0 Côte d’Ivoire",
+     "active": false,
+     "score": 47.5,
+     "pay": 1900.5,
+     "since": "2024-01-20T00:00:00.000Z",
+     "photo": "EwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P1",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 47.75,
+     "pay": null,
+     "since": "2024-01-21T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E19-3 Côte d’Ivoire",
+     "active": null,
+     "score": 48.25,
+     "pay": 1903.5,
+     "since": "2024-01-23T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 19,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P1",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -27.125,
+     "lng": 29.8125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     19
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 20,
+   "staff": [],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -27,
+     "lng": 29.75
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 21,
+   "staff": null,
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     21
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 22,
+   "staff": [
+    {
+     "name": "E22-0 Côte d’Ivoire",
+     "active": true,
+     "score": 55,
+     "pay": 2200.5,
+     "since": "2024-01-23T00:00:00.000Z",
+     "photo": "FgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P4",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 55.25,
+     "pay": null,
+     "since": "2024-01-24T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -26.75,
+     "lng": 29.625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     22
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 23,
+   "staff": [
+    {
+     "name": "E23-0 plain",
+     "active": false,
+     "score": 57.5,
+     "pay": 2300.5,
+     "since": "2024-01-24T00:00:00.000Z",
+     "photo": "FwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P5",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 57.75,
+     "pay": null,
+     "since": "2024-01-25T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E23-3 plain",
+     "active": null,
+     "score": 58.25,
+     "pay": 2303.5,
+     "since": "2024-01-27T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 23,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P5",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -26.625,
+     "lng": 29.5625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     23
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 24,
+   "staff": [
+    {
+     "name": "E24-0 Zoë 👋",
+     "active": true,
+     "score": 60,
+     "pay": 2400.5,
+     "since": "2024-01-25T00:00:00.000Z",
+     "photo": "GAD/",
+     "extra": null,
+     "tags": [],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": null
+  },
+  {
+   "id": 25,
+   "staff": [],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     25
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 26,
+   "staff": [
+    {
+     "name": "E26-0 plain",
+     "active": true,
+     "score": 65,
+     "pay": 2600.5,
+     "since": "2024-01-27T00:00:00.000Z",
+     "photo": "GgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P8",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 65.25,
+     "pay": null,
+     "since": "2024-01-28T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -26.25,
+     "lng": 29.375
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     26
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 27,
+   "staff": [
+    {
+     "name": "E27-0 Zoë 👋",
+     "active": false,
+     "score": 67.5,
+     "pay": 2700.5,
+     "since": "2024-01-28T00:00:00.000Z",
+     "photo": "GwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 67.75,
+     "pay": null,
+     "since": "2024-01-29T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E27-3 Zoë 👋",
+     "active": null,
+     "score": 68.25,
+     "pay": 2703.5,
+     "since": "2024-01-31T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 27,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     27
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 28,
+   "staff": null,
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -26,
+     "lng": 29.25
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 29,
+   "staff": [
+    {
+     "name": "E29-0 plain",
+     "active": false,
+     "score": 72.5,
+     "pay": 2900.5,
+     "since": "2024-01-30T00:00:00.000Z",
+     "photo": "HQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P2",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 72.75,
+     "pay": null,
+     "since": "2024-01-31T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     29
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 30,
+   "staff": [],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     30
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 31,
+   "staff": [
+    {
+     "name": "E31-0 Côte d’Ivoire",
+     "active": false,
+     "score": 77.5,
+     "pay": 3100.5,
+     "since": "2024-02-01T00:00:00.000Z",
+     "photo": "HwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P4",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 77.75,
+     "pay": null,
+     "since": "2024-02-02T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E31-3 Côte d’Ivoire",
+     "active": null,
+     "score": 78.25,
+     "pay": 3103.5,
+     "since": "2024-02-04T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 31,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P4",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -25.625,
+     "lng": 29.0625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     31
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 32,
+   "staff": [
+    {
+     "name": "E32-0 plain",
+     "active": true,
+     "score": 80,
+     "pay": 3200.5,
+     "since": "2024-02-02T00:00:00.000Z",
+     "photo": "IAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P5",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -25.5,
+     "lng": 29
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 33,
+   "staff": [
+    {
+     "name": "E33-0 Zoë 👋",
+     "active": false,
+     "score": 82.5,
+     "pay": 3300.5,
+     "since": "2024-02-03T00:00:00.000Z",
+     "photo": "IQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 82.75,
+     "pay": null,
+     "since": "2024-02-04T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     33
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 34,
+   "staff": [
+    {
+     "name": "E34-0 Côte d’Ivoire",
+     "active": true,
+     "score": 85,
+     "pay": 3400.5,
+     "since": "2024-02-04T00:00:00.000Z",
+     "photo": "IgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P7",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 85.25,
+     "pay": null,
+     "since": "2024-02-05T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -25.25,
+     "lng": 28.875
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     34
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 35,
+   "staff": null,
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -25.125,
+     "lng": 28.8125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     35
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 36,
+   "staff": [
+    {
+     "name": "E36-0 Zoë 👋",
+     "active": true,
+     "score": 90,
+     "pay": 3600.5,
+     "since": "2024-02-06T00:00:00.000Z",
+     "photo": "JAD/",
+     "extra": null,
+     "tags": [],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": null
+  },
+  {
+   "id": 37,
+   "staff": [
+    {
+     "name": "E37-0 Côte d’Ivoire",
+     "active": false,
+     "score": 92.5,
+     "pay": 3700.5,
+     "since": "2024-02-07T00:00:00.000Z",
+     "photo": "JQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P1",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 92.75,
+     "pay": null,
+     "since": "2024-02-08T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     37
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 38,
+   "staff": [
+    {
+     "name": "E38-0 plain",
+     "active": true,
+     "score": 95,
+     "pay": 3800.5,
+     "since": "2024-02-08T00:00:00.000Z",
+     "photo": "JgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P2",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 95.25,
+     "pay": null,
+     "since": "2024-02-09T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -24.75,
+     "lng": 28.625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     38
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 39,
+   "staff": [
+    {
+     "name": "E39-0 Zoë 👋",
+     "active": false,
+     "score": 97.5,
+     "pay": 3900.5,
+     "since": "2024-02-09T00:00:00.000Z",
+     "photo": "JwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 97.75,
+     "pay": null,
+     "since": "2024-02-10T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E39-3 Zoë 👋",
+     "active": null,
+     "score": 98.25,
+     "pay": 3903.5,
+     "since": "2024-02-12T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 39,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     39
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 40,
+   "staff": [],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -24.5,
+     "lng": 28.5
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 41,
+   "staff": [
+    {
+     "name": "E41-0 plain",
+     "active": false,
+     "score": 102.5,
+     "pay": 4100.5,
+     "since": "2024-02-11T00:00:00.000Z",
+     "photo": "KQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P5",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 102.75,
+     "pay": null,
+     "since": "2024-02-12T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     41
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 42,
+   "staff": null,
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     42
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 43,
+   "staff": [
+    {
+     "name": "E43-0 Côte d’Ivoire",
+     "active": false,
+     "score": 107.5,
+     "pay": 4300.5,
+     "since": "2024-02-13T00:00:00.000Z",
+     "photo": "KwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P7",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 107.75,
+     "pay": null,
+     "since": "2024-02-14T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E43-3 Côte d’Ivoire",
+     "active": null,
+     "score": 108.25,
+     "pay": 4303.5,
+     "since": "2024-02-16T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 43,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P7",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -24.125,
+     "lng": 28.3125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     43
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 44,
+   "staff": [
+    {
+     "name": "E44-0 plain",
+     "active": true,
+     "score": 110,
+     "pay": 4400.5,
+     "since": "2024-02-14T00:00:00.000Z",
+     "photo": "LAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P8",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -24,
+     "lng": 28.25
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 45,
+   "staff": [],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     45
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 46,
+   "staff": [
+    {
+     "name": "E46-0 Côte d’Ivoire",
+     "active": true,
+     "score": 115,
+     "pay": 4600.5,
+     "since": "2024-02-16T00:00:00.000Z",
+     "photo": "LgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P1",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 115.25,
+     "pay": null,
+     "since": "2024-02-17T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -23.75,
+     "lng": 28.125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     46
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 47,
+   "staff": [
+    {
+     "name": "E47-0 plain",
+     "active": false,
+     "score": 117.5,
+     "pay": 4700.5,
+     "since": "2024-02-17T00:00:00.000Z",
+     "photo": "LwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P2",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 117.75,
+     "pay": null,
+     "since": "2024-02-18T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E47-3 plain",
+     "active": null,
+     "score": 118.25,
+     "pay": 4703.5,
+     "since": "2024-02-20T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 47,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P2",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -23.625,
+     "lng": 28.0625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     47
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 48,
+   "staff": [
+    {
+     "name": "E48-0 Zoë 👋",
+     "active": true,
+     "score": 120,
+     "pay": 4800.5,
+     "since": "2024-02-18T00:00:00.000Z",
+     "photo": "MAD/",
+     "extra": null,
+     "tags": [],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": null
+  },
+  {
+   "id": 49,
+   "staff": null,
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     49
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 50,
+   "staff": [],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -23.25,
+     "lng": 27.875
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     50
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 51,
+   "staff": [
+    {
+     "name": "E51-0 Zoë 👋",
+     "active": false,
+     "score": 127.5,
+     "pay": 5100.5,
+     "since": "2024-02-21T00:00:00.000Z",
+     "photo": "MwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 127.75,
+     "pay": null,
+     "since": "2024-02-22T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E51-3 Zoë 👋",
+     "active": null,
+     "score": 128.25,
+     "pay": 5103.5,
+     "since": "2024-02-24T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 51,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     51
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 52,
+   "staff": [
+    {
+     "name": "E52-0 Côte d’Ivoire",
+     "active": true,
+     "score": 130,
+     "pay": 5200.5,
+     "since": "2024-02-22T00:00:00.000Z",
+     "photo": "NAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P7",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -23,
+     "lng": 27.75
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 53,
+   "staff": [
+    {
+     "name": "E53-0 plain",
+     "active": false,
+     "score": 132.5,
+     "pay": 5300.5,
+     "since": "2024-02-23T00:00:00.000Z",
+     "photo": "NQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P8",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 132.75,
+     "pay": null,
+     "since": "2024-02-24T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     53
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 54,
+   "staff": [
+    {
+     "name": "E54-0 Zoë 👋",
+     "active": true,
+     "score": 135,
+     "pay": 5400.5,
+     "since": "2024-02-24T00:00:00.000Z",
+     "photo": "NgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 135.25,
+     "pay": null,
+     "since": "2024-02-25T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     54
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 55,
+   "staff": [],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -22.625,
+     "lng": 27.5625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     55
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 56,
+   "staff": null,
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -22.5,
+     "lng": 27.5
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 57,
+   "staff": [
+    {
+     "name": "E57-0 Zoë 👋",
+     "active": false,
+     "score": 142.5,
+     "pay": 5700.5,
+     "since": "2024-02-27T00:00:00.000Z",
+     "photo": "OQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 142.75,
+     "pay": null,
+     "since": "2024-02-28T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     57
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 58,
+   "staff": [
+    {
+     "name": "E58-0 Côte d’Ivoire",
+     "active": true,
+     "score": 145,
+     "pay": 5800.5,
+     "since": "2024-02-28T00:00:00.000Z",
+     "photo": "OgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P4",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 145.25,
+     "pay": null,
+     "since": "2024-02-29T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -22.25,
+     "lng": 27.375
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     58
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 59,
+   "staff": [
+    {
+     "name": "E59-0 plain",
+     "active": false,
+     "score": 147.5,
+     "pay": 5900.5,
+     "since": "2024-02-29T00:00:00.000Z",
+     "photo": "OwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P5",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 147.75,
+     "pay": null,
+     "since": "2024-03-01T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E59-3 plain",
+     "active": null,
+     "score": 148.25,
+     "pay": 5903.5,
+     "since": "2024-03-03T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 59,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P5",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -22.125,
+     "lng": 27.3125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     59
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 60,
+   "staff": [],
+   "head": null,
+   "grid": null
+  },
+  {
+   "id": 61,
+   "staff": [
+    {
+     "name": "E61-0 Côte d’Ivoire",
+     "active": false,
+     "score": 152.5,
+     "pay": 6100.5,
+     "since": "2024-03-02T00:00:00.000Z",
+     "photo": "PQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P7",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 152.75,
+     "pay": null,
+     "since": "2024-03-03T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     61
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 62,
+   "staff": [
+    {
+     "name": "E62-0 plain",
+     "active": true,
+     "score": 155,
+     "pay": 6200.5,
+     "since": "2024-03-03T00:00:00.000Z",
+     "photo": "PgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P8",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 155.25,
+     "pay": null,
+     "since": "2024-03-04T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -21.75,
+     "lng": 27.125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     62
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 63,
+   "staff": null,
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     63
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 64,
+   "staff": [
+    {
+     "name": "E64-0 Côte d’Ivoire",
+     "active": true,
+     "score": 160,
+     "pay": 6400.5,
+     "since": "2024-03-05T00:00:00.000Z",
+     "photo": "QAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P1",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -21.5,
+     "lng": 27
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 65,
+   "staff": [],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     65
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 66,
+   "staff": [
+    {
+     "name": "E66-0 Zoë 👋",
+     "active": true,
+     "score": 165,
+     "pay": 6600.5,
+     "since": "2024-03-07T00:00:00.000Z",
+     "photo": "QgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 165.25,
+     "pay": null,
+     "since": "2024-03-08T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     66
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 67,
+   "staff": [
+    {
+     "name": "E67-0 Côte d’Ivoire",
+     "active": false,
+     "score": 167.5,
+     "pay": 6700.5,
+     "since": "2024-03-08T00:00:00.000Z",
+     "photo": "QwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P4",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 167.75,
+     "pay": null,
+     "since": "2024-03-09T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E67-3 Côte d’Ivoire",
+     "active": null,
+     "score": 168.25,
+     "pay": 6703.5,
+     "since": "2024-03-11T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 67,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P4",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -21.125,
+     "lng": 26.8125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     67
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 68,
+   "staff": [
+    {
+     "name": "E68-0 plain",
+     "active": true,
+     "score": 170,
+     "pay": 6800.5,
+     "since": "2024-03-09T00:00:00.000Z",
+     "photo": "RAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P5",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -21,
+     "lng": 26.75
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 69,
+   "staff": [
+    {
+     "name": "E69-0 Zoë 👋",
+     "active": false,
+     "score": 172.5,
+     "pay": 6900.5,
+     "since": "2024-03-10T00:00:00.000Z",
+     "photo": "RQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 172.75,
+     "pay": null,
+     "since": "2024-03-11T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     69
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 70,
+   "staff": null,
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -20.75,
+     "lng": 26.625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     70
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 71,
+   "staff": [
+    {
+     "name": "E71-0 plain",
+     "active": false,
+     "score": 177.5,
+     "pay": 7100.5,
+     "since": "2024-03-12T00:00:00.000Z",
+     "photo": "RwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P8",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 177.75,
+     "pay": null,
+     "since": "2024-03-13T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E71-3 plain",
+     "active": null,
+     "score": 178.25,
+     "pay": 7103.5,
+     "since": "2024-03-15T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 71,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P8",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -20.625,
+     "lng": 26.5625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     71
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 72,
+   "staff": [
+    {
+     "name": "E72-0 Zoë 👋",
+     "active": true,
+     "score": 180,
+     "pay": 7200.5,
+     "since": "2024-03-13T00:00:00.000Z",
+     "photo": "SAD/",
+     "extra": null,
+     "tags": [],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": null
+  },
+  {
+   "id": 73,
+   "staff": [
+    {
+     "name": "E73-0 Côte d’Ivoire",
+     "active": false,
+     "score": 182.5,
+     "pay": 7300.5,
+     "since": "2024-03-14T00:00:00.000Z",
+     "photo": "SQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P1",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 182.75,
+     "pay": null,
+     "since": "2024-03-15T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     73
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 74,
+   "staff": [
+    {
+     "name": "E74-0 plain",
+     "active": true,
+     "score": 185,
+     "pay": 7400.5,
+     "since": "2024-03-15T00:00:00.000Z",
+     "photo": "SgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P2",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 185.25,
+     "pay": null,
+     "since": "2024-03-16T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -20.25,
+     "lng": 26.375
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     74
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 75,
+   "staff": [],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     75
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 76,
+   "staff": [
+    {
+     "name": "E76-0 Côte d’Ivoire",
+     "active": true,
+     "score": 190,
+     "pay": 7600.5,
+     "since": "2024-03-17T00:00:00.000Z",
+     "photo": "TAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P4",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -20,
+     "lng": 26.25
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 77,
+   "staff": null,
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     77
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 78,
+   "staff": [
+    {
+     "name": "E78-0 Zoë 👋",
+     "active": true,
+     "score": 195,
+     "pay": 7800.5,
+     "since": "2024-03-19T00:00:00.000Z",
+     "photo": "TgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 195.25,
+     "pay": null,
+     "since": "2024-03-20T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     78
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 79,
+   "staff": [
+    {
+     "name": "E79-0 Côte d’Ivoire",
+     "active": false,
+     "score": 197.5,
+     "pay": 7900.5,
+     "since": "2024-03-20T00:00:00.000Z",
+     "photo": "TwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P7",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 197.75,
+     "pay": null,
+     "since": "2024-03-21T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E79-3 Côte d’Ivoire",
+     "active": null,
+     "score": 198.25,
+     "pay": 7903.5,
+     "since": "2024-03-23T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 79,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P7",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -19.625,
+     "lng": 26.0625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     79
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 80,
+   "staff": [],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -19.5,
+     "lng": 26
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 81,
+   "staff": [
+    {
+     "name": "E81-0 Zoë 👋",
+     "active": false,
+     "score": 202.5,
+     "pay": 8100.5,
+     "since": "2024-03-22T00:00:00.000Z",
+     "photo": "UQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 202.75,
+     "pay": null,
+     "since": "2024-03-23T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     81
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 82,
+   "staff": [
+    {
+     "name": "E82-0 Côte d’Ivoire",
+     "active": true,
+     "score": 205,
+     "pay": 8200.5,
+     "since": "2024-03-23T00:00:00.000Z",
+     "photo": "UgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P1",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 205.25,
+     "pay": null,
+     "since": "2024-03-24T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -19.25,
+     "lng": 25.875
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     82
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 83,
+   "staff": [
+    {
+     "name": "E83-0 plain",
+     "active": false,
+     "score": 207.5,
+     "pay": 8300.5,
+     "since": "2024-03-24T00:00:00.000Z",
+     "photo": "UwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P2",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 207.75,
+     "pay": null,
+     "since": "2024-03-25T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E83-3 plain",
+     "active": null,
+     "score": 208.25,
+     "pay": 8303.5,
+     "since": "2024-03-27T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 83,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P2",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -19.125,
+     "lng": 25.8125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     83
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 84,
+   "staff": null,
+   "head": null,
+   "grid": null
+  },
+  {
+   "id": 85,
+   "staff": [],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     85
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 86,
+   "staff": [
+    {
+     "name": "E86-0 plain",
+     "active": true,
+     "score": 215,
+     "pay": 8600.5,
+     "since": "2024-03-27T00:00:00.000Z",
+     "photo": "VgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P5",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 215.25,
+     "pay": null,
+     "since": "2024-03-28T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -18.75,
+     "lng": 25.625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     86
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 87,
+   "staff": [
+    {
+     "name": "E87-0 Zoë 👋",
+     "active": false,
+     "score": 217.5,
+     "pay": 8700.5,
+     "since": "2024-03-28T00:00:00.000Z",
+     "photo": "VwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 217.75,
+     "pay": null,
+     "since": "2024-03-29T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E87-3 Zoë 👋",
+     "active": null,
+     "score": 218.25,
+     "pay": 8703.5,
+     "since": "2024-03-31T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 87,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     87
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 88,
+   "staff": [
+    {
+     "name": "E88-0 Côte d’Ivoire",
+     "active": true,
+     "score": 220,
+     "pay": 8800.5,
+     "since": "2024-03-29T00:00:00.000Z",
+     "photo": "WAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P7",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -18.5,
+     "lng": 25.5
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 89,
+   "staff": [
+    {
+     "name": "E89-0 plain",
+     "active": false,
+     "score": 222.5,
+     "pay": 8900.5,
+     "since": "2024-03-30T00:00:00.000Z",
+     "photo": "WQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P8",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 222.75,
+     "pay": null,
+     "since": "2024-03-31T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     89
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 90,
+   "staff": [],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     90
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 91,
+   "staff": null,
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -18.125,
+     "lng": 25.3125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     91
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 92,
+   "staff": [
+    {
+     "name": "E92-0 plain",
+     "active": true,
+     "score": 230,
+     "pay": 9200.5,
+     "since": "2024-04-02T00:00:00.000Z",
+     "photo": "XAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P2",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -18,
+     "lng": 25.25
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 93,
+   "staff": [
+    {
+     "name": "E93-0 Zoë 👋",
+     "active": false,
+     "score": 232.5,
+     "pay": 9300.5,
+     "since": "2024-04-03T00:00:00.000Z",
+     "photo": "XQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 232.75,
+     "pay": null,
+     "since": "2024-04-04T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     93
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 94,
+   "staff": [
+    {
+     "name": "E94-0 Côte d’Ivoire",
+     "active": true,
+     "score": 235,
+     "pay": 9400.5,
+     "since": "2024-04-04T00:00:00.000Z",
+     "photo": "XgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P4",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 235.25,
+     "pay": null,
+     "since": "2024-04-05T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -17.75,
+     "lng": 25.125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     94
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 95,
+   "staff": [],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -17.625,
+     "lng": 25.0625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     95
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 96,
+   "staff": [
+    {
+     "name": "E96-0 Zoë 👋",
+     "active": true,
+     "score": 240,
+     "pay": 9600.5,
+     "since": "2024-04-06T00:00:00.000Z",
+     "photo": "YAD/",
+     "extra": null,
+     "tags": [],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": null
+  },
+  {
+   "id": 97,
+   "staff": [
+    {
+     "name": "E97-0 Côte d’Ivoire",
+     "active": false,
+     "score": 242.5,
+     "pay": 9700.5,
+     "since": "2024-04-07T00:00:00.000Z",
+     "photo": "YQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P7",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 242.75,
+     "pay": null,
+     "since": "2024-04-08T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     97
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 98,
+   "staff": null,
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -17.25,
+     "lng": 24.875
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     98
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 99,
+   "staff": [
+    {
+     "name": "E99-0 Zoë 👋",
+     "active": false,
+     "score": 247.5,
+     "pay": 9900.5,
+     "since": "2024-04-09T00:00:00.000Z",
+     "photo": "YwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 247.75,
+     "pay": null,
+     "since": "2024-04-10T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E99-3 Zoë 👋",
+     "active": null,
+     "score": 248.25,
+     "pay": 9903.5,
+     "since": "2024-04-12T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 99,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     99
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 100,
+   "staff": [],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -17,
+     "lng": 24.75
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 101,
+   "staff": [
+    {
+     "name": "E101-0 plain",
+     "active": false,
+     "score": 252.5,
+     "pay": 10100.5,
+     "since": "2024-04-11T00:00:00.000Z",
+     "photo": "ZQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P2",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 252.75,
+     "pay": null,
+     "since": "2024-04-12T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     101
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 102,
+   "staff": [
+    {
+     "name": "E102-0 Zoë 👋",
+     "active": true,
+     "score": 255,
+     "pay": 10200.5,
+     "since": "2024-04-12T00:00:00.000Z",
+     "photo": "ZgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 255.25,
+     "pay": null,
+     "since": "2024-04-13T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     102
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 103,
+   "staff": [
+    {
+     "name": "E103-0 Côte d’Ivoire",
+     "active": false,
+     "score": 257.5,
+     "pay": 10300.5,
+     "since": "2024-04-13T00:00:00.000Z",
+     "photo": "ZwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P4",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 257.75,
+     "pay": null,
+     "since": "2024-04-14T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E103-3 Côte d’Ivoire",
+     "active": null,
+     "score": 258.25,
+     "pay": 10303.5,
+     "since": "2024-04-16T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 103,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P4",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -16.625,
+     "lng": 24.5625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     103
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 104,
+   "staff": [
+    {
+     "name": "E104-0 plain",
+     "active": true,
+     "score": 260,
+     "pay": 10400.5,
+     "since": "2024-04-14T00:00:00.000Z",
+     "photo": "aAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P5",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -16.5,
+     "lng": 24.5
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 105,
+   "staff": null,
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     105
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 106,
+   "staff": [
+    {
+     "name": "E106-0 Côte d’Ivoire",
+     "active": true,
+     "score": 265,
+     "pay": 10600.5,
+     "since": "2024-04-16T00:00:00.000Z",
+     "photo": "agD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P7",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 265.25,
+     "pay": null,
+     "since": "2024-04-17T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -16.25,
+     "lng": 24.375
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     106
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 107,
+   "staff": [
+    {
+     "name": "E107-0 plain",
+     "active": false,
+     "score": 267.5,
+     "pay": 10700.5,
+     "since": "2024-04-17T00:00:00.000Z",
+     "photo": "awD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P8",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 267.75,
+     "pay": null,
+     "since": "2024-04-18T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E107-3 plain",
+     "active": null,
+     "score": 268.25,
+     "pay": 10703.5,
+     "since": "2024-04-20T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 107,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P8",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -16.125,
+     "lng": 24.3125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     107
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 108,
+   "staff": [
+    {
+     "name": "E108-0 Zoë 👋",
+     "active": true,
+     "score": 270,
+     "pay": 10800.5,
+     "since": "2024-04-18T00:00:00.000Z",
+     "photo": "bAD/",
+     "extra": null,
+     "tags": [],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": null
+  },
+  {
+   "id": 109,
+   "staff": [
+    {
+     "name": "E109-0 Côte d’Ivoire",
+     "active": false,
+     "score": 272.5,
+     "pay": 10900.5,
+     "since": "2024-04-19T00:00:00.000Z",
+     "photo": "bQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P1",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 272.75,
+     "pay": null,
+     "since": "2024-04-20T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     109
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 110,
+   "staff": [],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -15.75,
+     "lng": 24.125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     110
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 111,
+   "staff": [
+    {
+     "name": "E111-0 Zoë 👋",
+     "active": false,
+     "score": 277.5,
+     "pay": 11100.5,
+     "since": "2024-04-21T00:00:00.000Z",
+     "photo": "bwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 277.75,
+     "pay": null,
+     "since": "2024-04-22T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E111-3 Zoë 👋",
+     "active": null,
+     "score": 278.25,
+     "pay": 11103.5,
+     "since": "2024-04-24T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 111,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     111
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 112,
+   "staff": null,
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -15.5,
+     "lng": 24
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 113,
+   "staff": [
+    {
+     "name": "E113-0 plain",
+     "active": false,
+     "score": 282.5,
+     "pay": 11300.5,
+     "since": "2024-04-23T00:00:00.000Z",
+     "photo": "cQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P5",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 282.75,
+     "pay": null,
+     "since": "2024-04-24T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     113
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 114,
+   "staff": [
+    {
+     "name": "E114-0 Zoë 👋",
+     "active": true,
+     "score": 285,
+     "pay": 11400.5,
+     "since": "2024-04-24T00:00:00.000Z",
+     "photo": "cgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 285.25,
+     "pay": null,
+     "since": "2024-04-25T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     114
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 115,
+   "staff": [],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -15.125,
+     "lng": 23.8125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     115
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 116,
+   "staff": [
+    {
+     "name": "E116-0 plain",
+     "active": true,
+     "score": 290,
+     "pay": 11600.5,
+     "since": "2024-04-26T00:00:00.000Z",
+     "photo": "dAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P8",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -15,
+     "lng": 23.75
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 117,
+   "staff": [
+    {
+     "name": "E117-0 Zoë 👋",
+     "active": false,
+     "score": 292.5,
+     "pay": 11700.5,
+     "since": "2024-04-27T00:00:00.000Z",
+     "photo": "dQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 292.75,
+     "pay": null,
+     "since": "2024-04-28T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     117
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 118,
+   "staff": [
+    {
+     "name": "E118-0 Côte d’Ivoire",
+     "active": true,
+     "score": 295,
+     "pay": 11800.5,
+     "since": "2024-04-28T00:00:00.000Z",
+     "photo": "dgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P1",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 295.25,
+     "pay": null,
+     "since": "2024-04-29T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -14.75,
+     "lng": 23.625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     118
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 119,
+   "staff": null,
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -14.625,
+     "lng": 23.5625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     119
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 120,
+   "staff": [],
+   "head": null,
+   "grid": null
+  },
+  {
+   "id": 121,
+   "staff": [
+    {
+     "name": "E121-0 Côte d’Ivoire",
+     "active": false,
+     "score": 302.5,
+     "pay": 12100.5,
+     "since": "2024-05-01T00:00:00.000Z",
+     "photo": "eQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P4",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 302.75,
+     "pay": null,
+     "since": "2024-05-02T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     121
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 122,
+   "staff": [
+    {
+     "name": "E122-0 plain",
+     "active": true,
+     "score": 305,
+     "pay": 12200.5,
+     "since": "2024-05-02T00:00:00.000Z",
+     "photo": "egD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P5",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 305.25,
+     "pay": null,
+     "since": "2024-05-03T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -14.25,
+     "lng": 23.375
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     122
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 123,
+   "staff": [
+    {
+     "name": "E123-0 Zoë 👋",
+     "active": false,
+     "score": 307.5,
+     "pay": 12300.5,
+     "since": "2024-05-03T00:00:00.000Z",
+     "photo": "ewD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 307.75,
+     "pay": null,
+     "since": "2024-05-04T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E123-3 Zoë 👋",
+     "active": null,
+     "score": 308.25,
+     "pay": 12303.5,
+     "since": "2024-05-06T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 123,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     123
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 124,
+   "staff": [
+    {
+     "name": "E124-0 Côte d’Ivoire",
+     "active": true,
+     "score": 310,
+     "pay": 12400.5,
+     "since": "2024-05-04T00:00:00.000Z",
+     "photo": "fAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P7",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -14,
+     "lng": 23.25
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 125,
+   "staff": [],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     125
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 126,
+   "staff": null,
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     126
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 127,
+   "staff": [
+    {
+     "name": "E127-0 Côte d’Ivoire",
+     "active": false,
+     "score": 317.5,
+     "pay": 12700.5,
+     "since": "2024-05-07T00:00:00.000Z",
+     "photo": "fwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P1",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 317.75,
+     "pay": null,
+     "since": "2024-05-08T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E127-3 Côte d’Ivoire",
+     "active": null,
+     "score": 318.25,
+     "pay": 12703.5,
+     "since": "2024-05-10T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 127,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P1",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -13.625,
+     "lng": 23.0625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     127
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 128,
+   "staff": [
+    {
+     "name": "E128-0 plain",
+     "active": true,
+     "score": 320,
+     "pay": 12800.5,
+     "since": "2024-05-08T00:00:00.000Z",
+     "photo": "gAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P2",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -13.5,
+     "lng": 23
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 129,
+   "staff": [
+    {
+     "name": "E129-0 Zoë 👋",
+     "active": false,
+     "score": 322.5,
+     "pay": 12900.5,
+     "since": "2024-05-09T00:00:00.000Z",
+     "photo": "gQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 322.75,
+     "pay": null,
+     "since": "2024-05-10T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     129
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 130,
+   "staff": [],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -13.25,
+     "lng": 22.875
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     130
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 131,
+   "staff": [
+    {
+     "name": "E131-0 plain",
+     "active": false,
+     "score": 327.5,
+     "pay": 13100.5,
+     "since": "2024-05-11T00:00:00.000Z",
+     "photo": "gwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P5",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 327.75,
+     "pay": null,
+     "since": "2024-05-12T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E131-3 plain",
+     "active": null,
+     "score": 328.25,
+     "pay": 13103.5,
+     "since": "2024-05-14T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 131,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P5",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -13.125,
+     "lng": 22.8125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     131
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 132,
+   "staff": [
+    {
+     "name": "E132-0 Zoë 👋",
+     "active": true,
+     "score": 330,
+     "pay": 13200.5,
+     "since": "2024-05-12T00:00:00.000Z",
+     "photo": "hAD/",
+     "extra": null,
+     "tags": [],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": null
+  },
+  {
+   "id": 133,
+   "staff": null,
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     133
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 134,
+   "staff": [
+    {
+     "name": "E134-0 plain",
+     "active": true,
+     "score": 335,
+     "pay": 13400.5,
+     "since": "2024-05-14T00:00:00.000Z",
+     "photo": "hgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P8",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 335.25,
+     "pay": null,
+     "since": "2024-05-15T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -12.75,
+     "lng": 22.625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     134
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 135,
+   "staff": [],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     135
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 136,
+   "staff": [
+    {
+     "name": "E136-0 Côte d’Ivoire",
+     "active": true,
+     "score": 340,
+     "pay": 13600.5,
+     "since": "2024-05-16T00:00:00.000Z",
+     "photo": "iAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P1",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -12.5,
+     "lng": 22.5
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 137,
+   "staff": [
+    {
+     "name": "E137-0 plain",
+     "active": false,
+     "score": 342.5,
+     "pay": 13700.5,
+     "since": "2024-05-17T00:00:00.000Z",
+     "photo": "iQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P2",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 342.75,
+     "pay": null,
+     "since": "2024-05-18T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     137
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 138,
+   "staff": [
+    {
+     "name": "E138-0 Zoë 👋",
+     "active": true,
+     "score": 345,
+     "pay": 13800.5,
+     "since": "2024-05-18T00:00:00.000Z",
+     "photo": "igD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 345.25,
+     "pay": null,
+     "since": "2024-05-19T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     138
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 139,
+   "staff": [
+    {
+     "name": "E139-0 Côte d’Ivoire",
+     "active": false,
+     "score": 347.5,
+     "pay": 13900.5,
+     "since": "2024-05-19T00:00:00.000Z",
+     "photo": "iwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P4",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 347.75,
+     "pay": null,
+     "since": "2024-05-20T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E139-3 Côte d’Ivoire",
+     "active": null,
+     "score": 348.25,
+     "pay": 13903.5,
+     "since": "2024-05-22T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 139,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P4",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -12.125,
+     "lng": 22.3125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     139
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 140,
+   "staff": null,
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -12,
+     "lng": 22.25
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 141,
+   "staff": [
+    {
+     "name": "E141-0 Zoë 👋",
+     "active": false,
+     "score": 352.5,
+     "pay": 14100.5,
+     "since": "2024-05-21T00:00:00.000Z",
+     "photo": "jQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": []
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 352.75,
+     "pay": null,
+     "since": "2024-05-22T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     141
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 142,
+   "staff": [
+    {
+     "name": "E142-0 Côte d’Ivoire",
+     "active": true,
+     "score": 355,
+     "pay": 14200.5,
+     "since": "2024-05-22T00:00:00.000Z",
+     "photo": "jgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P7",
+       "hours": 0
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 355.25,
+     "pay": null,
+     "since": "2024-05-23T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -11.75,
+     "lng": 22.125
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     142
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 143,
+   "staff": [
+    {
+     "name": "E143-0 plain",
+     "active": false,
+     "score": 357.5,
+     "pay": 14300.5,
+     "since": "2024-05-23T00:00:00.000Z",
+     "photo": "jwD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P8",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 357.75,
+     "pay": null,
+     "since": "2024-05-24T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null,
+    {
+     "name": "E143-3 plain",
+     "active": null,
+     "score": 358.25,
+     "pay": 14303.5,
+     "since": "2024-05-26T00:00:03.000Z",
+     "photo": null,
+     "extra": {
+      "i": 143,
+      "list": [
+       1,
+       "x",
+       null
+      ]
+     },
+     "tags": [
+      "a",
+      "t3"
+     ],
+     "projects": [
+      {
+       "code": "P8",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": {
+     "lat": -11.625,
+     "lng": 22.0625
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     143
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 144,
+   "staff": [
+    {
+     "name": "E144-0 Zoë 👋",
+     "active": true,
+     "score": 360,
+     "pay": 14400.5,
+     "since": "2024-05-24T00:00:00.000Z",
+     "photo": "kAD/",
+     "extra": null,
+     "tags": [],
+     "projects": []
+    }
+   ],
+   "head": null,
+   "grid": null
+  },
+  {
+   "id": 145,
+   "staff": [],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     145
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 146,
+   "staff": [
+    {
+     "name": "E146-0 plain",
+     "active": true,
+     "score": 365,
+     "pay": 14600.5,
+     "since": "2024-05-26T00:00:00.000Z",
+     "photo": "kgD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P2",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": false,
+     "score": 365.25,
+     "pay": null,
+     "since": "2024-05-27T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    },
+    null
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -11.25,
+     "lng": 21.875
+    }
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     146
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 147,
+   "staff": null,
+   "head": null,
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     147
+    ],
+    [
+     null
+    ]
+   ]
+  },
+  {
+   "id": 148,
+   "staff": [
+    {
+     "name": "E148-0 Côte d’Ivoire",
+     "active": true,
+     "score": 370,
+     "pay": 14800.5,
+     "since": "2024-05-28T00:00:00.000Z",
+     "photo": "lAD/",
+     "extra": null,
+     "tags": [],
+     "projects": [
+      {
+       "code": "P4",
+       "hours": 0
+      }
+     ]
+    }
+   ],
+   "head": {
+    "city": "Durban",
+    "at": {
+     "lat": -11,
+     "lng": 21.75
+    }
+   },
+   "grid": null
+  },
+  {
+   "id": 149,
+   "staff": [
+    {
+     "name": "E149-0 plain",
+     "active": false,
+     "score": 372.5,
+     "pay": 14900.5,
+     "since": "2024-05-29T00:00:00.000Z",
+     "photo": "lQD/",
+     "extra": null,
+     "tags": [
+      "a",
+      "t0"
+     ],
+     "projects": [
+      {
+       "code": "P5",
+       "hours": 0
+      },
+      {
+       "code": null,
+       "hours": 8
+      }
+     ]
+    },
+    {
+     "name": null,
+     "active": true,
+     "score": 372.75,
+     "pay": null,
+     "since": "2024-05-30T00:00:01.000Z",
+     "photo": null,
+     "extra": null,
+     "tags": [
+      "a",
+      "t1"
+     ],
+     "projects": null
+    }
+   ],
+   "head": {
+    "city": null,
+    "at": null
+   },
+   "grid": [
+    [],
+    [
+     1,
+     null,
+     149
+    ],
+    [
+     null
+    ]
+   ]
+  }
+ ]
+}
