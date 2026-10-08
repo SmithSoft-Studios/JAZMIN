@@ -12,7 +12,11 @@ internal abstract record BoundFilter
 
     public sealed record Not(BoundFilter Item) : BoundFilter;
 
-    public sealed record Leaf(int Col, string Name, JazminType Type, string Op, object? Value) : BoundFilter;
+    public sealed record Leaf(int Col, string Name, JazminType Type, string Op, object? Value) : BoundFilter
+    {
+        /// <summary>For `in`: the listed keys as a hash set and in order (null for other operators).</summary>
+        public InKeys? Keys { get; init; }
+    }
 
     private static readonly HashSet<string> RangeOps = new() { "gt", "gte", "lt", "lte" };
     private static readonly HashSet<string> StringOps = new() { "contains", "icontains", "startsWith" };
@@ -55,7 +59,8 @@ internal abstract record BoundFilter
         if (c.Op == "in")
         {
             if (c.Value is not System.Collections.IEnumerable list || c.Value is string) throw JazminFilter.Invalid("'in' needs an array");
-            return Make("in", list.Cast<object?>().Select(v => Coerce(column, v)).ToArray());
+            var keys = list.Cast<object?>().Select(v => Coerce(column, v)).ToArray();
+            return Make("in", keys) with { Keys = InKeys.Of(keys) };
         }
         var operand = Coerce(column, c.Value);
         if (operand is null)
@@ -104,6 +109,44 @@ internal abstract record BoundFilter
     }
 }
 
+/// <summary>
+/// An `in` list's keys as a hash set (to check rows) and in order (to check chunk statistics), so a long list costs about
+/// as much as a short one. Null and NaN are left out: they equal nothing. Keys of one column type are equal exactly when
+/// <see cref="Values.Compare"/> says so (decimal keys are normalized, -0 is folded into 0).
+/// </summary>
+internal sealed class InKeys
+{
+    private readonly HashSet<object> _set;
+    private readonly object[] _sorted;
+
+    private InKeys(HashSet<object> set)
+    {
+        _set = set;
+        _sorted = [.. set];
+        Array.Sort(_sorted, (a, b) => Values.Compare(a, b)!.Value);
+    }
+
+    public static InKeys Of(IEnumerable<object?> keys) => new(keys.Where(k => k is not null && !Values.IsNaN(k)).Select(k => k!).ToHashSet());
+
+    public bool Contains(object key) => _set.Contains(key);
+
+    /// <summary>Whether one of the keys lies within [min, max]; an absent bound is open.</summary>
+    public bool AnyBetween(object? min, object? max)
+    {
+        int lo = 0, hi = _sorted.Length;
+        if (min is not null)
+        {
+            while (lo < hi)
+            {
+                var mid = (lo + hi) >>> 1;
+                if (Values.Compare(_sorted[mid], min) < 0) lo = mid + 1;
+                else hi = mid;
+            }
+        }
+        return lo < _sorted.Length && (max is null || Values.Compare(_sorted[lo], max) <= 0);
+    }
+}
+
 /// <summary>Evaluation, index planning and chunk pruning for bound filters.</summary>
 internal static class FilterEngine
 {
@@ -131,7 +174,7 @@ internal static class FilterEngine
         {
             "eq" => Values.Compare(key, leaf.Value!) == 0,
             "ne" => Values.Compare(key, leaf.Value!) != 0,
-            "in" => ((object?[])leaf.Value!).Any(v => v is not null && Values.Compare(key, v) == 0),
+            "in" => leaf.Keys!.Contains(key),
             "gt" => Values.Compare(key, leaf.Value!) > 0,
             "gte" => Values.Compare(key, leaf.Value!) >= 0,
             "lt" => Values.Compare(key, leaf.Value!) < 0,
@@ -288,7 +331,7 @@ internal static class FilterEngine
         return leaf.Op switch
         {
             "eq" => InRange(leaf.Value!),
-            "in" => ((object?[])leaf.Value!).Any(v => v is not null && InRange(v)),
+            "in" => leaf.Keys!.AnyBetween(min, max),
             "gt" => max is null || Values.Compare(max, leaf.Value!) > 0,
             "gte" => max is null || Values.Compare(max, leaf.Value!) >= 0,
             "lt" => min is null || Values.Compare(min, leaf.Value!) < 0,
@@ -322,7 +365,7 @@ internal static class FilterEngine
         {
             "eq" => Values.Compare(min, leaf.Value!) == 0 && Values.Compare(max, leaf.Value!) == 0,
             "ne" => Values.Compare(max, leaf.Value!) < 0 || Values.Compare(min, leaf.Value!) > 0,
-            "in" => Values.Compare(min, max) == 0 && ((object?[])leaf.Value!).Any(v => v is not null && Values.Compare(min, v) == 0),
+            "in" => Values.Compare(min, max) == 0 && leaf.Keys!.Contains(min),
             "gt" => Values.Compare(min, leaf.Value!) > 0,
             "gte" => Values.Compare(min, leaf.Value!) >= 0,
             "lt" => Values.Compare(max, leaf.Value!) < 0,
