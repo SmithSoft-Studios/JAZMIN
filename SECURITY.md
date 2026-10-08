@@ -18,9 +18,10 @@ it, and credit you in the release notes unless you prefer not to be named.
 
 | Version | Supported |
 |---|---|
-| 1.2.x | Yes |
-| 1.1.x | No: upgrade to 1.2 (the same file format, and no breaking changes) |
-| 1.0.x | No: upgrade to 1.2 (1.1 fixed a data-loss bug in the JS writer) |
+| 1.3.x | Yes |
+| 1.2.x | No: upgrade to 1.3 (the same file format, and no breaking changes) |
+| 1.1.x | No: upgrade to 1.3 (the same file format, and no breaking changes) |
+| 1.0.x | No: upgrade to 1.3 (1.1 fixed a data-loss bug in the JS writer) |
 | Pre-release versions (before 1.0.0) | No |
 
 ## Scope

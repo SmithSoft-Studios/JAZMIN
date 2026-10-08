@@ -3,7 +3,28 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
-## Unreleased
+## 1.3.0 - 2026-10-08 (file format 1.0)
+
+Export shapes now nest rows from several tables of a file, and queries do far
+less work for the same results. Filtered queries decode the columns they
+return only for the rows that match. .NET LINQ reads only the columns a
+query uses, reads sub-queries per row once, and reads JSON columns straight
+into your types.
+
+- **Files:** still format 1.0, with no new options. Versions 1.2.0 of both
+  libraries read files written by 1.3.0, and 1.3.0 reads theirs (tested with
+  the published packages).
+- **Changed behaviour:**
+  - .NET reports a JSON value that is not valid JSON when the value is read,
+    not when its chunk is decoded. The exception types are the same as
+    before.
+  - `explain` with `analyze` counts only the filter's columns as decoded for
+    a chunk without matching rows.
+  - .NET LINQ holds a sub-query's table in memory while the query runs. It
+    reads only the columns the query uses, and holds no table larger than
+    the reader's priority allows.
+- **Still deprecated, removed in 2.0:** getting a key's secret with
+  `toString()` (use `export()`), and the reader's clock option.
 
 ### Added
 - **Export shapes across tables: `$from`, `$on` and `$one`.** In a file with several tables, a list in a shape can
