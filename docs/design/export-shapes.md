@@ -124,9 +124,16 @@ evaluates in a set and produces an array:
   - When the file is sorted by the group columns (`sortedBy` starts with them), groups arrive
     one after another. One pass holds a single group's rows at a time.
   - Otherwise, a first pass finds the groups and their sizes. The groups' rows are then
-    collected in batches of about 100,000 rows, one pass per batch, so memory stays bounded.
-  - On 1M rows with 10,000 groups, a sorted file takes 2.3 s in Node and 1.8 s / 66 MB in .NET.
-    An unsorted one takes 8.7 s in Node and 5.6 s / 153 MB in .NET.
+    collected in batches of 100,000 rows (1,000,000 when the reader's priority is `speed`), one
+    pass per batch, so memory stays bounded.
+  - On 1M rows with 10,000 groups, a sorted file takes 1.9 s / 147 MB in Node and 1.6-1.8 s /
+    69 MB in .NET. An unsorted one takes 9.1 s in Node and 9.4 s / 116-132 MB in .NET; with
+    priority `speed`, 4.0 s / 559 MB and 5.3 s / 381 MB.
+- **Writing (JS).** A template without lists is compiled, once per place in the output, into a
+  function from a row (or a group's first values and aggregates) to its text: member names are
+  escaped once, each column type has its own text function, and indentation is fixed by depth.
+  A list's rows then cost one call each. `test/shape-output.test.js` keeps the output byte for
+  byte the same as 1.2.0's.
   - Held rows keep only the columns the group's template reads (.NET copies them out of the
     decoded chunk, so a batch never keeps whole chunks alive).
 - **Sorting.** `$sort` holds its list's items (or groups) before writing. Prefer file order

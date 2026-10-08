@@ -5,6 +5,19 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased
 
+### Changed
+- **JS: export shapes are written 2-2.6 times faster, with less memory.** Each template is compiled once into a
+  function per place in the output, so a list's rows cost one call each instead of work per value. The output is the
+  same, byte for byte (a new test compares 30 exports recorded with 1.2.0).
+  - 2.5M rows x 16 columns, one item per row: 30 s -> 11.3-13.1 s. Grouped by customer and order: 25.8 s ->
+    10.5-13.6 s, peak memory 301 -> 214 MB.
+  - 1M transactions for 10,000 clients, sorted by client: 2.8-3.0 s -> 1.9 s, peak memory 285 -> 147 MB.
+- **Shapes over unsorted files: `priority: 'speed'` reads them in fewer passes.** Groups with nested lists are
+  collected in batches, one pass over the file per batch: 100,000 rows by default, 1,000,000 with a reader opened
+  with priority `speed`. 1M rows of 10,000 groups: JS 9.1 -> 4.0 s (559 MB peak), .NET 9.4 -> 5.3 s (381 MB).
+  `memory` keeps the default: smaller batches saved little memory for several times the time.
+- **.NET: grouping by one column builds no text per row,** so the export above went from 12.6 to 9.4 s.
+
 ### Fixed
 - **Long `in` lists were slow: every row was compared with every listed value** (JS, the browser reader and .NET).
   20,000 values against 100,000 rows took 24 s in JS and 7.3 s in .NET. Rows are now checked against a hash set of

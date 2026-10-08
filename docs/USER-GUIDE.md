@@ -2346,6 +2346,7 @@ var settings = new JazminSerializerSettings { Priority = JazminPriority.Memory }
 | .NET writes | the calling thread only | one thread per processor, up to 16 | as balanced: more threads did not write faster |
 | Node writes | this thread only | up to 2 worker threads | as balanced: 4 threads were no faster than 2 |
 | Node reads | this thread | this thread | the next chunks decompressed on worker threads while rows are built: up to 4, or 2 when a scan decodes more than a quarter of the columns |
+| Export shapes over unsorted files (21.5) | batches of 100,000 rows | batches of 100,000 rows | batches of 1,000,000 rows: fewer passes over the file |
 
 Measured on 200,000 rows × 300 columns (20 cores; medians of 3 to 5 runs,
 each in its own process, the modes taking turns; peak memory of the
@@ -2687,12 +2688,16 @@ File.WriteAllText("statement.schema.json", shape.ToJsonSchema(reader).ToJsonStri
   Groups then arrive one after another, and one pass writes each group as
   soon as it is complete. That pass holds only one group's rows. On 1M
   transactions for 10,000 clients, with nested lines, the export takes
-  2.3 s in Node, and 1.8 s with a 66 MB peak in .NET.
+  1.9 s with a 147 MB peak in Node, and 1.6-1.8 s with a 69 MB peak in .NET.
 - **Without that sort,** groups whose items use only first values and
   totals still take one pass, and memory grows with the number of groups.
-  Groups with nested lists are collected in batches of about 100,000 rows,
-  one pass per batch. The same 1M-row export then takes 8.7 s in Node, and
-  5.6 s with a 153 MB peak in .NET.
+  Groups with nested lists are collected in batches of 100,000 rows, one
+  pass over the file per batch. The same 1M-row export then takes 9.1 s
+  (about 330 MB peak) in Node, and 9.4 s (116-132 MB) in .NET.
+  - **With `priority: 'speed'`** on the reader (section 20.4), a batch holds
+    1,000,000 rows: 4.0 s (559 MB) in Node, 5.3 s (381 MB) in .NET.
+  - Measured on 8 October 2026, on a machine busier than for the other
+    figures in this guide.
 - **`$sort` holds its list in memory before writing.** For very large lists,
   rely on the file's own order instead.
 - **Stream to disk** with `exportFile` (JS) or `WriteJson` / `WriteXml`
