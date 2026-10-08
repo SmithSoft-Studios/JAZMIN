@@ -4,7 +4,8 @@
 import { normalizeBigInt } from './binary.js';
 import { JazminValidationError } from './errors.js';
 import { compileFilter, normalizeFilter } from './filter.js';
-import { valueToJson, valueToText } from './formats/text.js';
+import { READ_PRIORITY } from './reader.js';
+import { valueToText } from './formats/text.js';
 import { compareKeys, toKey } from './types.js';
 
 const ORDERED = new Set(['bool', 'int', 'float', 'string', 'datetime', 'decimal']);
@@ -194,15 +195,17 @@ function typeOf(node) {
   return 'json';
 }
 
-const keyOf = (values) => values.map((v) => (v === null || v === undefined ? '\u0000' : v instanceof Date ? `d${v.getTime()}` : `${typeof v}:${String(v)}`)).join('\u0001');
+const keyPart = (v) => (v === null || v === undefined ? '\u0000' : v instanceof Date ? `d${v.getTime()}` : `${typeof v}:${String(v)}`);
+const keyOf = (values) => values.map(keyPart).join('\u0001');
 const and = (a, b) => (!a ? b ?? null : !b ? a : { and: [a, b] });
 
 // ---- output sinks ------------------------------------------------------------------------------------
 
 class JsonSink {
-  constructor(pretty) {
+  constructor(pretty, metadata) {
     this.out = '';
     this.pretty = pretty;
+    this.metadata = metadata;
     this.stack = []; // per open container: has an item been written?
     this.pendingKey = null;
   }
@@ -235,8 +238,17 @@ class JsonSink {
   startArray() { this.open('['); }
   endArray() { this.close(']'); }
 
-  value(type, v) {
-    this.out += this.#prefix() + (type === 'json' ? JSON.stringify(v ?? null) ?? 'null' : valueToJson(type, v ?? null));
+  /**
+   * A writer for a template without lists at this place (the next item or member): (values, aggs) appends its text.
+   * The template is compiled once per depth, so a list's rows cost one call each, not one per value.
+   */
+  writer(node) {
+    const depth = this.stack.length;
+    const cache = (node.json ??= []);
+    const text = (cache[depth] ??= compileJson(node, depth, this.pretty, this.metadata));
+    return (values, aggs) => {
+      this.out += this.#prefix() + text(values, aggs);
+    };
   }
 
   end() { if (this.pretty) this.out += '\n'; }
@@ -254,19 +266,22 @@ const xmlTag = (name) => (XML_NAME.test(name) && !/^xml/i.test(name)
   : { open: `<field name="${xmlEscape(name)}">`, close: '</field>' });
 
 class XmlSink {
-  constructor(root) {
+  constructor(root, metadata) {
     this.out = '<?xml version="1.0" encoding="UTF-8"?>\n';
     this.root = root;
+    this.metadata = metadata;
     this.stack = []; // open elements: { close, item } (item: element name for array items)
     this.pendingKey = null;
   }
 
-  #tag() {
+  #name() {
     const parent = this.stack[this.stack.length - 1];
     const name = this.stack.length === 0 ? this.root : this.pendingKey ?? parent?.item ?? 'item';
     this.pendingKey = null;
-    return xmlTag(name);
+    return name;
   }
+
+  #tag() { return xmlTag(this.#name()); }
 
   #indent() { return '  '.repeat(this.stack.length); }
 
@@ -291,20 +306,128 @@ class XmlSink {
 
   endArray() { this.endObject(); }
 
-  value(type, v) {
-    const tag = this.#tag();
-    if (v === null || v === undefined || (type === 'float' && !Number.isFinite(v))) return; // nulls are omitted
-    const text = type === 'json' ? (typeof v === 'string' ? v : JSON.stringify(v)) : valueToText(type, v);
-    this.out += `${this.#indent()}${tag.open}${xmlEscape(text)}${tag.close}\n`;
+  /** As JsonSink.writer: compiled once per depth and element name. */
+  writer(node) {
+    const depth = this.stack.length;
+    const name = this.#name();
+    const cache = (node.xml ??= new Map());
+    const key = `${depth}\u0000${name}`;
+    let text = cache.get(key);
+    if (!text) cache.set(key, (text = compileXml(node, depth, xmlTag(name), this.metadata)));
+    return (values, aggs) => {
+      this.pendingKey = null;
+      this.out += text(values, aggs);
+    };
   }
 
   end() {}
 }
 
+// ---- compiled templates: a template without lists becomes one function from values to text -----------------
+
+/** JSON text of a non-null value of a column type, as valueToJson; other values ('json': literals, metadata) as JSON. */
+const JSON_TEXT = {
+  int: String,
+  decimal: String,
+  float: (v) => (Number.isFinite(v) ? String(v) : 'null'),
+  datetime: (v) => `"${v.toISOString()}"`, // ISO-8601 text needs no escaping
+  bool: (v) => (v ? 'true' : 'false'),
+  binary: (v) => `"${Buffer.from(v).toString('base64')}"`,
+};
+const jsonText = (type) => {
+  const text = JSON_TEXT[type] ?? ((v) => JSON.stringify(v) ?? 'null');
+  return (v) => (v === null || v === undefined ? 'null' : text(v));
+};
+
+/** (values, aggs) => JSON text of a template without lists, written where `depth` containers are open. */
+function compileJson(node, depth, pretty, metadata) {
+  switch (node.kind) {
+    case 'col': {
+      const text = jsonText(node.column.type);
+      const { name } = node.column;
+      return (values) => text(values[name]);
+    }
+    case 'lit': {
+      const text = jsonText('json')(node.value);
+      return () => text;
+    }
+    case 'meta': {
+      const text = jsonText('json')(metadata[node.key]);
+      return () => text;
+    }
+    case 'agg': {
+      const text = jsonText(typeOf(node));
+      return (values, aggs) => text(aggs.get(node));
+    }
+    case 'obj': {
+      if (!node.members.length) return () => '{}';
+      const indent = pretty ? `\n${'  '.repeat(depth + 1)}` : '';
+      const colon = pretty ? ': ' : ':';
+      const members = node.members.map(([name, member], i) => [
+        `${i ? ',' : ''}${indent}${JSON.stringify(name)}${colon}`,
+        compileJson(member, depth + 1, pretty, metadata),
+      ]);
+      const close = `${pretty ? `\n${'  '.repeat(depth)}` : ''}}`;
+      return (values, aggs) => {
+        let out = '{';
+        for (const [prefix, text] of members) out += prefix + text(values, aggs);
+        return out + close;
+      };
+    }
+    default: throw new Error(`a ${node.kind} has no compiled form`);
+  }
+}
+
+/** An XML element for a value; nulls and non-finite floats are omitted. */
+function xmlElement(type, v, indent, tag) {
+  if (v === null || v === undefined || (type === 'float' && !Number.isFinite(v))) return '';
+  const text = type === 'json' ? (typeof v === 'string' ? v : JSON.stringify(v)) : valueToText(type, v);
+  return `${indent}${tag.open}${xmlEscape(text)}${tag.close}\n`;
+}
+
+/** (values, aggs) => XML text of a template without lists: element `tag` where `depth` elements are open. */
+function compileXml(node, depth, tag, metadata) {
+  const indent = '  '.repeat(depth);
+  switch (node.kind) {
+    case 'col': {
+      const { name, type } = node.column;
+      return (values) => xmlElement(type, values[name], indent, tag);
+    }
+    case 'lit': {
+      const text = xmlElement('json', node.value, indent, tag);
+      return () => text;
+    }
+    case 'meta': {
+      const text = xmlElement('json', metadata[node.key], indent, tag);
+      return () => text;
+    }
+    case 'agg': {
+      const type = typeOf(node);
+      return (values, aggs) => xmlElement(type, aggs.get(node), indent, tag);
+    }
+    case 'obj': {
+      const members = node.members.map(([name, member]) => compileXml(member, depth + 1, xmlTag(name), metadata));
+      const open = `${indent}${tag.open}\n`;
+      const close = `${indent}${tag.close}\n`;
+      return (values, aggs) => {
+        let out = open;
+        for (const text of members) out += text(values, aggs);
+        return out + close;
+      };
+    }
+    default: throw new Error(`a ${node.kind} has no compiled form`);
+  }
+}
+
 // ---- evaluation --------------------------------------------------------------------------------------
 
 const FLUSH = 64 * 1024;
-const BATCH_ROWS = 100_000; // rows held at a time when grouping an unsorted file with nested lists
+// Rows held at a time when grouping an unsorted file with nested lists: each batch is one pass over the file. With
+// priority 'speed', larger batches: 1M rows of 10,000 groups took 4.8 s in one pass against 9.4 s in ten, for about
+// 90 MB more. Smaller batches than the default saved little memory (25,000 rows: 294 against 337 MB) for 2-4 times
+// the time, so 'memory' keeps the default.
+const BATCH_ROWS = 100_000;
+const SPEED_BATCH_ROWS = 1_000_000;
 
 /** Internal option: rows per batch (tests use small batches). */
 export const SHAPE_BATCH_ROWS = Symbol('jazmin.shapeBatchRows');
@@ -313,6 +436,14 @@ export const SHAPE_BATCH_ROWS = Symbol('jazmin.shapeBatchRows');
 function hasList(node) {
   if (node.kind === 'list') return true;
   return node.kind === 'obj' && node.members.some(([, member]) => hasList(member));
+}
+
+/** Marks each node with whether it holds a list (`lists`): nodes without one are written by compiled writers. */
+function markLists(node) {
+  if (node.kind === 'obj') for (const [, member] of node.members) markLists(member);
+  if (node.kind === 'list') markLists(node.item);
+  node.lists = hasList(node);
+  return node;
 }
 
 /** Every column a template reads, including its lists' filters, groups and sorts (at any depth). */
@@ -345,13 +476,13 @@ function deepColumns(node, columns, names = new Set()) {
  */
 export function* shapePieces(reader, shape, format, options = {}) {
   const { filter = null, pretty = false, root = 'export' } = options;
-  const batchRows = options[SHAPE_BATCH_ROWS] ?? BATCH_ROWS;
-  const compiled = compileShape(reader.columns, shape);
+  const batchRows = options[SHAPE_BATCH_ROWS] ?? (reader[READ_PRIORITY] === 'speed' ? SPEED_BATCH_ROWS : BATCH_ROWS);
+  const compiled = markLists(compileShape(reader.columns, shape));
   if (format !== 'json' && format !== 'xml') throw new JazminValidationError(`Shapes export JSON or XML, not '${format}'`);
   if (format === 'xml' && !XML_NAME.test(root)) throw new JazminValidationError(`'${root}' is not a valid XML element name`);
   if (filter) normalizeFilter(filter, reader.columns);
-  const sink = format === 'json' ? new JsonSink(pretty) : new XmlSink(root);
   const metadata = reader.metadata ?? {};
+  const sink = format === 'json' ? new JsonSink(pretty, metadata) : new XmlSink(root, metadata);
   const sortedBy = reader.sortedBy ?? [];
   const anyColumn = reader.columns[0]?.name;
   const predicates = new WeakMap(); // filter object -> predicate over row objects (rows held in memory)
@@ -364,21 +495,17 @@ export function* shapePieces(reader, shape, format, options = {}) {
   };
   const memorySource = (rows) => ({
     inMemory: true,
-    *find(where, _names, limit = Infinity) {
-      if (!where) {
-        yield* rows.slice(0, limit);
-        return;
-      }
+    /** The rows (held already) matching `where`, as an array: no copy without a filter or a limit. */
+    find(where, _names, limit = Infinity) {
+      if (!where) return limit < rows.length ? rows.slice(0, limit) : rows;
       let test = predicates.get(where);
       if (!test) predicates.set(where, (test = compileFilter(where, reader.columns)));
-      let n = 0;
+      const found = [];
       for (const row of rows) {
-        if (n >= limit) return;
-        if (test(row)) {
-          n++;
-          yield row;
-        }
+        if (found.length >= limit) break;
+        if (test(row)) found.push(row);
       }
+      return found;
     },
   });
 
@@ -403,15 +530,15 @@ export function* shapePieces(reader, shape, format, options = {}) {
   }
 
   function* emit(node, ctx) {
-    switch (node.kind) {
-      case 'col': {
-        const values = ctx.row ?? ctx.first;
-        sink.value(node.column.type, values[node.column.name] ?? null);
-        break;
+    if (!node.lists) {
+      sink.writer(node)(ctx.row ?? ctx.first, ctx.aggs);
+      if (sink.out.length >= FLUSH) {
+        yield sink.out;
+        sink.out = '';
       }
-      case 'lit': sink.value('json', node.value); break;
-      case 'meta': sink.value('json', metadata[node.key] ?? null); break;
-      case 'agg': sink.value(typeOf(node), ctx.aggs.get(node)); break;
+      return;
+    }
+    switch (node.kind) {
       case 'obj':
         sink.startObject();
         for (const [name, member] of node.members) {
@@ -434,15 +561,27 @@ export function* shapePieces(reader, shape, format, options = {}) {
   }
 
   function* emitRows(node, ctx) {
-    const names = rowColumns(node.item);
-    for (const { column } of node.sort) names.add(column.name);
+    if (!node.names) { // the columns a list reads: worked out once, not per group it is written for
+      node.names = rowColumns(node.item);
+      for (const { column } of node.sort) node.names.add(column.name);
+    }
+    const { names } = node;
     const where = and(ctx.filter, node.filter);
-    if (!node.sort.length) {
-      for (const row of ctx.source.find(where, names, node.limit)) yield* emit(node.item, { row });
+    const rows = node.sort.length
+      ? [...ctx.source.find(where, names)].sort(compareBy(node.sort, (r) => r)).slice(0, node.limit)
+      : ctx.source.find(where, names, node.limit);
+    if (node.item.lists) {
+      for (const row of rows) yield* emit(node.item, { row });
       return;
     }
-    const rows = [...ctx.source.find(where, names)].sort(compareBy(node.sort, (r) => r));
-    for (const row of rows.slice(0, node.limit)) yield* emit(node.item, { row });
+    const write = sink.writer(node.item); // every item is written at the same place: one compiled writer
+    for (const row of rows) {
+      write(row);
+      if (sink.out.length >= FLUSH) {
+        yield sink.out;
+        sink.out = '';
+      }
+    }
   }
 
   /** Emits one group: its first values and aggregates, and nested lists over its rows (held in memory). */
@@ -452,7 +591,8 @@ export function* shapePieces(reader, shape, format, options = {}) {
 
   function* emitGroups(node, ctx) {
     const where = and(ctx.filter, node.filter);
-    const keyOfRow = (row) => keyOf(node.groupBy.map((c) => row[c.name]));
+    const single = node.groupBy.length === 1 ? node.groupBy[0].name : null;
+    const keyOfRow = single ? (row) => keyPart(row[single]) : (row) => keyOf(node.groupBy.map((c) => row[c.name]));
     // Rows sorted by the group columns arrive group by group: each group is written when the next begins.
     const contiguous = !ctx.source.inMemory && !node.sort.length
       && node.groupBy.every((c) => sortedBy.slice(0, node.groupBy.length).includes(c.name));
