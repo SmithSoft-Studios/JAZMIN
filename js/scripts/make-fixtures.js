@@ -7,7 +7,7 @@ import { JazminKey, append, open, toJSON, write } from '../src/index.js';
 import { CHUNK_MAP, PAGING } from '../src/writer.js';
 import {
   APPEND_DELETE, APPEND_SPLIT, COUNTRY_COLUMNS, FIXTURE_PACKAGE, PARTITIONS_SPLIT, accessFixture, countryRows, filesAccessFixture, fixtureFiles,
-  NESTED_COLUMNS, NESTED_GROWN_SPLIT, fromCanonical, nestedColumnsBefore, nestedFixtureRows, nestedRowBefore, partitionsFixture, tablesFixture,
+  NESTED_COLUMNS, NESTED_FILTERS, NESTED_GROWN_SPLIT, fromCanonical, nestedColumnsBefore, nestedFixtureRows, nestedRowBefore, partitionsFixture, tablesFixture,
 } from '../test/fixture-helpers.js';
 
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../spec/fixtures');
@@ -125,6 +125,9 @@ const nestedRows = nestedFixtureRows();
 fs.writeFileSync(path.join(dir, 'nested.json'), `${JSON.stringify({ columns: NESTED_COLUMNS, rows: nestedRows }, null, 1)}
 `);
 write(path.join(dir, 'js-nested.jzm'), nestedRows, { columns: NESTED_COLUMNS, chunkRows: 64 });
+// Filters on nested columns (spec 9.2), with the ids each selects in nested.json.
+fs.writeFileSync(path.join(dir, 'nested-filters.json'), `${JSON.stringify(NESTED_FILTERS.map(([filter, test]) => ({ filter, ids: nestedRows.filter(test).map((r) => r.id) })), null, 1)}
+`);
 // Fields added by appending (spec 5.4): the first rows written before the last fields existed, the rest appended.
 const grownFile = path.join(dir, 'js-nested-grown.jzm');
 write(grownFile, nestedRows.slice(0, NESTED_GROWN_SPLIT).map((row) => nestedRowBefore(row, false)), { columns: nestedColumnsBefore(NESTED_COLUMNS), chunkRows: 64 });

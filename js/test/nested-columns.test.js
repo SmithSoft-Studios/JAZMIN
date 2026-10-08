@@ -285,3 +285,16 @@ test('a locked column group gains fields by appending, and update gives fields t
   update(plain, { insert: [{ id: 2, head: { city: 'Polokwane', zip: '0700' } }], columns: [head2] });
   assert.deepEqual([...open(plain).find()].map((x) => x.head), [{ city: 'Durban', zip: null }, { city: 'Polokwane', zip: '0700' }]);
 });
+
+test('filters on nested columns: misuse is refused with a message that says why', () => {
+  const r = open(file);
+  const refused = (filter, pattern) => assert.throws(() => [...r.find(filter)], pattern);
+  refused({ head: { any: { city: 'x' } } }, /'any' only applies to list columns, and 'head' is a object/);
+  refused({ staff: { match: { name: 'x' } } }, /'match' only applies to object columns/);
+  refused({ staff: { any: { colour: 'x' } } }, /unknown column 'colour'/);
+  refused({ staff: { eq: 1 } }, /'eq' is not supported on list column 'staff'/);
+  // { col: null } is isNull for every type; empty lists pass `all` and fail `any`.
+  assert.deepEqual([...r.find({ staff: null })].map((x) => x.id), rows.filter((x) => x.staff === null).map((x) => x.id));
+  assert.deepEqual([...r.find({ staff: { all: { name: 'nobody' } } })].map((x) => x.id), rows.filter((x) => x.staff?.length === 0).map((x) => x.id));
+  r.close();
+});

@@ -649,4 +649,22 @@ public class InteropTests
         });
         AssertNestedGrown(File.ReadAllBytes(path));
     }
+
+    /// <summary>Filters on nested columns (spec 9.2), with the ids each selects in nested.json: the same from either writer's file.</summary>
+    [Theory]
+    [InlineData("js-nested.jzm")]
+    [InlineData("dotnet-nested.jzm")]
+    public void FiltersOnNestedColumns_SelectTheRowsTheFixtureLists(string file)
+    {
+        var path = Path.Combine(Dir, file);
+        if (!File.Exists(path)) return; // dotnet-nested.jzm: written by WritesNestedColumnsForJavaScript
+        using var reader = JazminReader.Open(path);
+        foreach (var item in JsonNode.Parse(File.ReadAllText(Path.Combine(Dir, "nested-filters.json")))!.AsArray())
+        {
+            var filter = JazminFilter.Parse(item!["filter"]!.ToJsonString());
+            var ids = item["ids"]!.AsArray().Select(x => (long)x!).ToList();
+            Assert.True(ids.SequenceEqual(reader.Find(filter).Select(r => (long)r["id"]!)), item["filter"]!.ToJsonString());
+            Assert.Equal(ids.Count, reader.Count(filter));
+        }
+    }
 }

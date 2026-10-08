@@ -230,3 +230,19 @@ test('the browser reader reads integers and dates at the edges of a safe number 
     assert.deepEqual([...arrays.values.at], expected.map((r) => r.at.getTime()), name);
   }
 });
+
+test('browser reader: filters on nested columns select the rows nested-filters.json lists, from either writer', async (t) => {
+  const filters = JSON.parse(fs.readFileSync(path.join(dir, 'nested-filters.json'), 'utf8'));
+  for (const name of ['js-nested.jzm', 'dotnet-nested.jzm']) {
+    if (!fs.existsSync(path.join(dir, name))) {
+      t.diagnostic(`${name} not written yet`);
+      continue;
+    }
+    const reader = await JazminBrowser.open(new Blob([fixture(name)]));
+    for (const { filter, ids } of filters) {
+      const found = [];
+      for await (const row of reader.find(filter)) found.push(row.id);
+      assert.deepEqual(found, ids, `${name}: ${JSON.stringify(filter)}`);
+    }
+  }
+});

@@ -926,7 +926,7 @@
 
   // ---- filters (spec 9) ----------------------------------------------------------------------------
 
-  const OPS = new Set(['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'in', 'contains', 'icontains', 'startsWith', 'isNull']);
+  const OPS = new Set(['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'in', 'contains', 'icontains', 'startsWith', 'isNull', 'any', 'all', 'match']);
   const STRING_OPS = new Set(['contains', 'icontains', 'startsWith']);
 
   /** A comparable form of a value of a column type: numbers and BigInts, ms for dates, [m, s] for decimals, text, booleans. */
@@ -1020,6 +1020,18 @@
 
   function condition(column, op, operand) {
     const { name, type } = column;
+    if (op === 'any' || op === 'all' || op === 'match') {
+      // Nested columns (spec 9.2): match on an object's fields; any / all on a list's items (the same item meets every
+      // condition of one filter). A null list or object matches nothing; an empty list fails any, passes all.
+      const isMatch = op === 'match';
+      if (type !== (isMatch ? 'object' : 'list')) throw new JazminError(`'${op}' only applies to ${isMatch ? 'object' : 'list'} columns, and '${name}' is a ${type}`);
+      const part = isMatch ? column : column.item;
+      const objects = part.type === 'object';
+      const test = objects ? compileFilter(operand, part.fields) : compileFilter({ '': operand }, [{ ...part, name: '' }]);
+      if (isMatch) return (row) => row[name] != null && test(row[name]);
+      const check = (item) => (objects ? item != null && test(item) : test({ '': item ?? null }));
+      return (row) => Array.isArray(row[name]) && (op === 'any' ? row[name].some(check) : row[name].every(check));
+    }
     if ((op === 'eq' || op === 'ne') && (operand === null || operand === undefined)) return condition(column, 'isNull', op === 'eq');
     if (op === 'isNull') return (row) => (row[name] === null || row[name] === undefined) === Boolean(operand);
     if (op === 'contains') return (row) => row[name] != null && row[name].includes(operand);

@@ -223,3 +223,20 @@ export function nestedRowBefore(row, asRead) {
   };
   return { ...row, staff: row.staff && row.staff.map((s) => strip(s, 'projects')), head: strip(row.head, 'at') };
 }
+
+/**
+ * Filters on nested columns (spec 9.2) over nested.json's rows, each with the condition it means in plain JavaScript (on
+ * the rows as nested.json holds them): spec/fixtures/nested-filters.json lists each filter and the ids it selects.
+ */
+export const NESTED_FILTERS = [
+  [{ staff: { any: { pay: { gte: 1000 }, active: true } } }, (r) => r.staff?.some((s) => s && s.pay !== null && s.pay >= 1000 && s.active === true)],
+  [{ staff: { all: { score: { gt: 3 } } } }, (r) => r.staff !== null && r.staff.every((s) => s && s.score > 3)],
+  [{ staff: { any: { tags: { any: 't1' } } } }, (r) => r.staff?.some((s) => s?.tags?.includes('t1'))],
+  [{ staff: { any: { projects: { any: { hours: 8, code: null } } } } }, (r) => r.staff?.some((s) => s?.projects?.some((p) => p.hours === 8 && p.code === null))],
+  [{ head: { match: { city: 'Durban', at: { match: { lat: { lt: -20 } } } } } }, (r) => r.head?.city === 'Durban' && r.head.at !== null && r.head.at.lat < -20],
+  [{ head: { match: { at: null } } }, (r) => r.head !== null && r.head.at === null],
+  [{ grid: { any: { any: { gte: 100 } } } }, (r) => r.grid?.some((row) => row?.some((v) => v !== null && v >= 100))],
+  [{ or: [{ staff: { any: { name: { startsWith: 'E1' } } } }, { head: null }] }, (r) => r.staff?.some((s) => s?.name?.startsWith('E1')) || r.head === null],
+  [{ not: { staff: { any: { since: { gte: '2024-03-01T00:00:00.000Z' } } } } }, (r) => !r.staff?.some((s) => s && s.since >= '2024-03-01T00:00:00.000Z')],
+  [{ staff: { any: { pay: 100.5 } } }, (r) => r.staff?.some((s) => s?.pay === 100.5)],
+];

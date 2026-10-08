@@ -7,7 +7,9 @@ import { EQUATABLE_TYPES, ORDERED_TYPES, compareKeys, keyId, normalizeValue, toK
 
 const RANGE_OPS = new Set(['gt', 'gte', 'lt', 'lte']);
 const STRING_OPS = new Set(['contains', 'icontains', 'startsWith']);
-const ALL_OPS = new Set(['eq', 'ne', 'in', 'isNull', ...RANGE_OPS, ...STRING_OPS]);
+const ALL_OPS = new Set(['eq', 'ne', 'in', 'isNull', 'any', 'all', 'match', ...RANGE_OPS, ...STRING_OPS]);
+/** In a condition on list items that are not objects: the item itself ({ tags: { any: 'vip' } } is { '': 'vip' } per item). */
+const ITSELF = '';
 
 function invalid(message) {
   return new JazminValidationError(`Invalid filter: ${message}`);
@@ -56,6 +58,8 @@ function anyBetween(sorted, min, max) {
 /**
  * Validates a filter against the schema and returns a normalized tree:
  *   { kind: 'and'|'or', items } | { kind: 'not', item } | { kind: 'leaf', col, name, type, op, value }
+ *   | { kind: 'nested', col, name, op: 'any'|'all'|'match', inner, part } (spec 9.2: `inner` is about `part`, a list's
+ *     item or an object: its fields by position, or the item itself at position 0)
  */
 export function normalizeFilter(filter, columns) {
   const byName = new Map(columns.map((c, i) => [c.name, { ...c, col: i }]));
@@ -87,11 +91,25 @@ export function normalizeFilter(filter, columns) {
 
   function leaf(column, op, value) {
     if (!ALL_OPS.has(op)) throw invalid(`unknown operator '${op}'`);
+    if (op === 'any' || op === 'all' || op === 'match') {
+      const isMatch = op === 'match';
+      if (column.type !== (isMatch ? 'object' : 'list')) {
+        throw invalid(`'${op}' only applies to ${isMatch ? 'object' : 'list'} columns, and '${column.name}' is a ${column.type}`);
+      }
+      const part = isMatch ? column : column.item; // what the inner filter is about
+      const inner = part.type === 'object'
+        ? normalizeFilter(value, part.fields)
+        : normalizeFilter({ [ITSELF]: value }, [{ ...part, name: ITSELF }]);
+      if (inner === null) throw invalid(`'${op}' needs a filter`);
+      return { kind: 'nested', col: column.col, name: column.name, op, inner, part };
+    }
     const base = { kind: 'leaf', col: column.col, name: column.name, type: column.type, op };
     if (op === 'isNull') {
       if (typeof value !== 'boolean') throw invalid(`'isNull' needs true or false`);
       return { ...base, value };
     }
+    // { col: null } means isNull, for every type (spec 9.1): json, binary, lists and objects included.
+    if ((op === 'eq' || op === 'ne') && (value === null || value === undefined)) return { ...base, op: 'isNull', value: op === 'eq' };
     if (STRING_OPS.has(op)) {
       if (column.type !== 'string') throw invalid(`'${op}' only applies to string columns`);
       if (typeof value !== 'string') throw invalid(`'${op}' needs a string`);
@@ -152,8 +170,27 @@ export function evaluate(node, row) {
     case 'and': return node.items.every((n) => evaluate(n, row));
     case 'or': return node.items.some((n) => evaluate(n, row));
     case 'not': return !evaluate(node.item, row);
+    case 'nested': return evaluateNested(node, row[node.col]);
     default: return evaluateLeaf(node, row);
   }
+}
+
+const fieldsOf = (part, object) => part.fields.map((f) => (Object.hasOwn(object, f.name) ? object[f.name] ?? null : null));
+
+/**
+ * A nested column's condition (spec 9.2): `match` on an object's fields; `any` / `all` on a list's items (the same item
+ * meets every condition of one filter). A null list or object matches nothing; an empty list fails `any`, passes `all`.
+ */
+function evaluateNested(node, value) {
+  if (value === null || value === undefined) return false;
+  if (node.op === 'match') return evaluate(node.inner, fieldsOf(node.part, value));
+  if (!Array.isArray(value)) return false;
+  const objects = node.part.type === 'object';
+  for (const item of value) {
+    const matched = objects ? item !== null && item !== undefined && evaluate(node.inner, fieldsOf(node.part, item)) : evaluate(node.inner, [item ?? null]);
+    if (matched === (node.op === 'any')) return matched;
+  }
+  return node.op === 'all';
 }
 
 /** The index lookup a condition can use - [index kind, lookup] (see indexes.js) - or null. */

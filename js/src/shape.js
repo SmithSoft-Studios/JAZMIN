@@ -591,7 +591,7 @@ function deepColumns(node, columns, names = new Set()) {
     case 'list': {
       if (node.filter) {
         (function collect(n) {
-          if (n.kind === 'leaf') names.add(n.name);
+          if (n.kind === 'leaf' || n.kind === 'nested') names.add(n.name);
           else if (n.kind === 'not') collect(n.item);
           else n.items.forEach(collect);
         })(normalizeFilter(node.filter, columns));

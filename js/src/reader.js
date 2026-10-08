@@ -147,7 +147,7 @@ const decodedAll = (have, need) => have === null || (need !== null && need.every
 function planColumns(plan) {
   const cols = new Set();
   (function collect(node) {
-    if (node.kind === 'leaf') cols.add(node.col);
+    if (node.kind === 'leaf' || node.kind === 'nested') cols.add(node.col);
     else (node.items ?? [node.item]).forEach(collect);
   })(plan);
   return cols;

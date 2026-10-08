@@ -736,6 +736,23 @@ An `in` list can be long: it is checked with a hash set, so counting the
 matches of 20,000 values among 100,000 rows takes 18 ms in JavaScript and
 36 ms in .NET (where LINQ's `ids.Contains(x.Id)` becomes `in` too).
 
+**Nested columns** (lists and objects, 4.2 and 6.2) take three more
+operators, each with a filter of their own:
+
+```json
+{
+  "lines": { "any": { "sku": "A", "qty": { "gt": 5 } } },  // a line with sku A and more than 5 (the same line)
+  "steps": { "all": { "done": true } },                     // every step done (an empty list: yes)
+  "head":  { "match": { "city": "Durban" } },               // the object's fields
+  "tags":  { "any": "vip" }                                 // items that are not objects: the item itself
+}
+```
+
+They nest: `{ "departments": { "any": { "employees": { "any": { "role":
+"Lead" } } } } }`. A null list or object matches nothing. In .NET,
+`JazminFilter.Any`, `All` and `Match` build the same filters
+(`JazminFilter.Itself` names the item of a list of plain values).
+
 ### 8.2 GraphQL
 
 JAZMIN does not depend on a GraphQL server. Instead, its filter objects

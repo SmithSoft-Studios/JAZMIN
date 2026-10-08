@@ -1106,17 +1106,41 @@ A filter is a JSON object, deliberately the same shape as common GraphQL
 | `icontains`           | `string`           | case-insensitive substring                      |
 | `startsWith`          | `string`           | case-sensitive prefix                           |
 | `isNull`              | all                | `true`: cell is null; `false`: cell is not null |
+| `any`, `all`          | `list`             | at least one item / every item matches a filter |
+| `match`               | `object`           | the object's fields match a filter              |
 
 Operands are converted to the column type: `"42"` is accepted for an `int`
 column, an ISO-8601 string for a `datetime` column, and a number or decimal
 text for a `decimal` column. An unknown column, an unknown operator, or an
 operator invalid for the column type MUST be reported as an error.
 
+**Lists and objects (5.4).** The operand of `any`, `all` and `match` is a
+filter:
+
+```json
+{ "lines": { "any": { "sku": "A", "qty": { "gt": 5 } } },
+  "head":  { "match": { "city": "Durban", "geo": { "match": { "lat": { "lt": 0 } } } } },
+  "tags":  { "any": "vip" } }
+```
+
+- For an object (`match`), or a list whose items are objects, the filter is
+  over the fields, as a filter is over columns: fields by name, with `and`,
+  `or` and `not`. All the conditions of one filter apply to the same item.
+- For a list whose items are not objects, the filter is a condition on the
+  item itself: an operator object (`{ "startsWith": "v" }`), or a value as
+  shorthand for `eq`. A list whose items are lists takes `any` or `all`
+  again.
+- `any` is true when at least one item matches, `all` when every item
+  does: an empty list fails `any` and passes `all`. A null list or object
+  matches neither (9.3), nor `match`. An item that is a null object matches
+  no filter of its fields.
+
 ### 9.3. Null Semantics
 
 As in SQL, every operator except `isNull` is false when the cell is null. In
 particular, `ne` does not match nulls; to include them, combine it with
-`isNull`.
+`isNull`. `{ "col": null }` means `isNull: true` for every type, and so does
+`{ "field": null }` in a filter of a list's or object's fields.
 
 ### 9.4. Evaluation Strategy (informative)
 

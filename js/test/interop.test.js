@@ -229,3 +229,22 @@ for (const writer of ['js', 'dotnet']) {
     }
   });
 }
+
+// Filters on nested columns (spec 9.2): the same rows from either writer's file, and as nested.json's rows select.
+const nestedFilters = JSON.parse(fs.readFileSync(path.join(dir, 'nested-filters.json'), 'utf8'));
+for (const writer of ['js', 'dotnet']) {
+  test(`interop: filters on ${writer}-nested.jzm select the rows nested-filters.json lists`, (t) => {
+    const full = path.join(dir, `${writer}-nested.jzm`);
+    if (!fs.existsSync(full)) return t.skip(`run the ${writer === 'js' ? 'fixture script' : '.NET tests'} to generate ${writer}-nested.jzm`);
+    const reader = open(full);
+    try {
+      for (const { filter, ids } of nestedFilters) {
+        assert.ok(ids.length > 0 && ids.length < nested.rows.length, JSON.stringify(filter));
+        assert.deepEqual([...reader.find(filter)].map((r) => r.id), ids, JSON.stringify(filter));
+        assert.equal(reader.count(filter), ids.length);
+      }
+    } finally {
+      reader.close();
+    }
+  });
+}
