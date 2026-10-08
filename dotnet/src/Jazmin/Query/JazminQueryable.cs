@@ -18,6 +18,15 @@ internal interface IJazminQueryProvider : IQueryProvider
     /// <paramref name="columns"/> (what the other query reads of them; null: every column) and those its own conditions need.
     /// </summary>
     IQueryable SubQuery(Expression expression, HashSet<string>? columns);
+
+    /// <summary>The root of this provider's queries: all rows.</summary>
+    Expression RootExpression { get; }
+
+    /// <summary>The rows of its table.</summary>
+    long RowCount { get; }
+
+    /// <summary>Whether its table is small enough, for the reader's priority, to be read once and held for a query's sub-queries.</summary>
+    bool CanHold { get; }
 }
 
 /// <summary>A LINQ query over a reader's rows (see <see cref="JazminReader.AsQueryable{T}"/>).</summary>
@@ -115,6 +124,21 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
 
     public QueryUsage NewUsage() => new(typeof(TRow), _map, _reader);
 
+    public Expression RootExpression => _root;
+
+    public long RowCount => _reader.RowCount;
+
+    // Rows held for sub-queries read once (Decorrelator): fewer with priority memory, more with speed.
+    public bool CanHold => _reader.RowCount <= _reader.Priority switch
+    {
+        JazminPriority.Memory => 100_000,
+        JazminPriority.Speed => 10_000_000,
+        _ => 1_000_000,
+    };
+
+    /// <summary>Queries planned (tests check that a sub-query is not run per row).</summary>
+    internal int Plans { get; private set; }
+
     private static readonly MethodInfo SubQueryMethod = typeof(JazminQueryProvider<TRow>).GetMethod(nameof(SubQueryOf), BindingFlags.NonPublic | BindingFlags.Instance)!;
 
     public IQueryable SubQuery(Expression expression, HashSet<string>? columns) =>
@@ -175,6 +199,7 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
     /// <param name="hint">Used as a source of another query: what that query reads of the rows this one gives.</param>
     private QueryPlan Plan(Expression expression, HashSet<string>? hint = null)
     {
+        Plans++;
         var calls = new List<MethodCallExpression>();
         var e = expression;
         while (e is MethodCallExpression call && call.Method.DeclaringType == typeof(Queryable))
@@ -254,12 +279,13 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
         var rows = _reader.TypedRows(_map, _settings, filter, check, offset, limit, columns?.ToList());
         if (tail.Count == 0) return new QueryPlan(rows, null, null);
         Expression rest = Expression.Constant(rows.AsQueryable(), typeof(IQueryable<TRow>));
+        var decorrelator = new Decorrelator(provider => SubQueryColumns(provider, operators!)); // sub-queries inside lambdas: read once
         foreach (var call in tail)
         {
             var parameters = call.Method.GetParameters();
             var arguments = call.Arguments.Select((argument, i) => i == 0 ? rest
                 : SubQueryProvider(argument) is { } provider ? Expression.Constant(provider.SubQuery(argument, SubQueryColumns(provider, operators!)), parameters[i].ParameterType)
-                : argument);
+                : decorrelator.Visit(argument));
             rest = Expression.Call(call.Method, arguments);
         }
         return new QueryPlan(rows, rest, null);
