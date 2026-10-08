@@ -109,7 +109,7 @@ public sealed class JazminJsonReader : IDisposable
                 var value = positions[c] >= 0 ? row.ValueAt(positions[c]) : null;
                 _path.Add(column.Name);
                 yield return Set(JazminJsonToken.PropertyName, column.Name);
-                if (value is JsonNode node)
+                if (Format.Nested.ForOutput(column, value) is JsonNode node)
                     foreach (var token in Node(node)) yield return token;
                 else
                     yield return ColumnValue(column.Type, value);

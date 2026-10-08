@@ -230,6 +230,39 @@ public sealed class NestedColumnTests : IDisposable
         Assert.Equal(JazminType.List, reader.Columns.Single(c => c.Name == "Staff").Type);
     }
 
+    public sealed class Reading
+    {
+        public double Value { get; set; }
+        public string Label { get; set; } = "";
+    }
+
+    public sealed class Sensor
+    {
+        public int Id { get; set; }
+        public List<Reading> Readings { get; set; } = [];
+    }
+
+    [Fact]
+    public void FloatsThatAreNotFinite_AreKept_AndWrittenAsNullInOutput()
+    {
+        var sensors = new List<Sensor>
+        {
+            new() { Id = 1, Readings = [new() { Value = double.NaN, Label = "NaN" }, new() { Value = double.PositiveInfinity }, new() { Value = double.NegativeInfinity }] },
+            new() { Id = 2, Readings = [new() { Value = -0.0, Label = "Infinity" }] },
+        };
+        var path = Path.Combine(_dir, "sensors.jzm");
+        File.WriteAllBytes(path, JazminConvert.SerializeObject(sensors, Nested));
+        // Output follows spec 10.1 (null); a string field that reads "NaN" stays text.
+        Assert.Equal("""[{"Id":1,"Readings":[{"Value":null,"Label":"NaN"},{"Value":null,"Label":""},{"Value":null,"Label":""}]},{"Id":2,"Readings":[{"Value":-0,"Label":"Infinity"}]}]""",
+            JazminConvert.ToJson(File.ReadAllBytes(path)));
+        // Untyped rows keep them (as text), so rewriting the file keeps them too.
+        JazminFile.Append(path, new JazminAppend { Delete = JazminFilter.Eq("Id", 99L) });
+        JazminFile.Compact(path);
+        var back = JazminConvert.DeserializeObject<List<Sensor>>(File.ReadAllBytes(path))!;
+        Assert.Equal([double.NaN, double.PositiveInfinity, double.NegativeInfinity], back[0].Readings.Select(r => r.Value));
+        Assert.True(double.IsNegative(back[1].Readings[0].Value));
+    }
+
     [Fact]
     public void AnAccessControlledFile_ReadsItsRows_WithTheSameObjects()
     {

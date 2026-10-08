@@ -65,6 +65,7 @@ internal static class Nested
                 (JazminType.Bool, JsonValueKind.False) => false,
                 (JazminType.Int, JsonValueKind.Number) => long.Parse(Number(), NumberStyles.Integer, CultureInfo.InvariantCulture),
                 (JazminType.Float, JsonValueKind.Number) => double.Parse(Number(), NumberStyles.Float, CultureInfo.InvariantCulture),
+                (JazminType.Float, JsonValueKind.String) when Text() is var t && t is "NaN" or "Infinity" or "-Infinity" => double.Parse(t, CultureInfo.InvariantCulture), // as rows show them
                 (JazminType.Decimal, JsonValueKind.Number) => Number(),
                 (JazminType.Decimal or JazminType.String or JazminType.DateTime, JsonValueKind.String) => Text(),
                 (JazminType.DateTime, JsonValueKind.Number) => long.Parse(Number(), NumberStyles.Integer, CultureInfo.InvariantCulture),
@@ -75,6 +76,56 @@ internal static class Nested
         catch (Exception e) when (e is FormatException or OverflowException)
         {
             throw new JazminValidationException($"Column '{path}': '{value.ToJsonString()}' is not a valid {TypeNames.ToName(type)}", e);
+        }
+    }
+
+    /// <summary>
+    /// A nested value as JSON, CSV and XML output write it (spec 10.1): a float that is not finite is null. Untyped rows
+    /// show such floats as text ("NaN", "Infinity", "-Infinity"), so rewriting a file keeps them; a value is copied only
+    /// when it holds one.
+    /// </summary>
+    public static object? ForOutput(JazminColumn column, object? value) =>
+        value is JsonNode node && TypeNames.IsNested(column.Type) && HasFloat(column) && NonFinite(column, node) ? Finite(column, node) : value;
+
+    private static bool HasFloat(JazminColumn c) => c.Type switch
+    {
+        JazminType.Float => true,
+        JazminType.List => HasFloat(c.Item!),
+        JazminType.Object => c.Fields!.Any(HasFloat),
+        _ => false,
+    };
+
+    private static bool IsText(JsonNode? node) => node is JsonValue v && v.GetValueKind() == JsonValueKind.String;
+
+    private static bool NonFinite(JazminColumn c, JsonNode? node)
+    {
+        switch (c.Type)
+        {
+            case JazminType.Float: return IsText(node);
+            case JazminType.List when node is JsonArray items:
+                foreach (var item in items) if (NonFinite(c.Item!, item)) return true;
+                return false;
+            case JazminType.Object when node is JsonObject obj:
+                foreach (var field in c.Fields!) if (NonFinite(field, obj[field.Name])) return true;
+                return false;
+            default: return false;
+        }
+    }
+
+    private static JsonNode? Finite(JazminColumn c, JsonNode? node)
+    {
+        switch (c.Type)
+        {
+            case JazminType.Float when IsText(node): return null;
+            case JazminType.List when node is JsonArray items:
+                var list = new JsonArray();
+                foreach (var item in items) list.Add(Finite(c.Item!, item));
+                return list;
+            case JazminType.Object when node is JsonObject obj:
+                var copy = new JsonObject();
+                foreach (var (name, v) in obj) copy[name] = c.Fields!.FirstOrDefault(f => f.Name == name) is { } field ? Finite(field, v) : v?.DeepClone();
+                return copy;
+            default: return node?.DeepClone();
         }
     }
 

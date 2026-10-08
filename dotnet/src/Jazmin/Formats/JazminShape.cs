@@ -751,7 +751,7 @@ public sealed class JazminShape
             {
                 case Col c:
                     ctx.Values.TryGetValue(c.Column.Name, out var value);
-                    sink.Value(c.Column.Type, value);
+                    sink.Value(c.Column.Type, Format.Nested.ForOutput(c.Column, value));
                     break;
                 case Lit l: sink.Literal(l.Value); break;
                 case Meta m: sink.Literal(_metadata.TryGetPropertyValue(m.Key, out var meta) ? meta : null); break;

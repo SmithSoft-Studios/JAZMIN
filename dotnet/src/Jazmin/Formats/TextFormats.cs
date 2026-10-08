@@ -5,6 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using System.Xml;
+using Jazmin.Format;
 using Jazmin.Query;
 using Jazmin.Serialization;
 using Formatting = Jazmin.Serialization.Formatting;
@@ -149,7 +150,7 @@ public static class JsonFormat
             row.TryGetValue(c.Name, out var value);
             if (value is null && nulls == NullValueHandling.Ignore) continue;
             w.WritePropertyName(c.Name);
-            WriteValue(w, c.Type, value);
+            WriteValue(w, c.Type, Nested.ForOutput(c, value));
         }
         w.WriteEndObject();
     }
@@ -163,7 +164,7 @@ public static class JsonFormat
             var value = positions[i] >= 0 ? row.ValueAt(positions[i]) : null;
             if (value is null && nulls == NullValueHandling.Ignore) continue;
             w.WritePropertyName(columns[i].Name);
-            WriteValue(w, columns[i].Type, value);
+            WriteValue(w, columns[i].Type, Nested.ForOutput(columns[i], value));
         }
         w.WriteEndObject();
     }
@@ -335,7 +336,7 @@ public static class CsvFormat
             {
                 if (i > 0) output.Write(delimiter);
                 row.TryGetValue(columns[i].Name, out var value);
-                if (value is not null) output.Write(Quote(TextValues.ToText(columns[i].Type, value), delimiter));
+                if (value is not null) output.Write(Quote(TextValues.ToText(columns[i].Type, Nested.ForOutput(columns[i], value)!), delimiter));
             }
             output.Write("\r\n");
         }
@@ -479,7 +480,7 @@ public static class XmlFormat
                     w.WriteStartElement("field");
                     w.WriteAttributeString("name", c.Name);
                 }
-                w.WriteString(TextValues.ToText(c.Type, value));
+                w.WriteString(TextValues.ToText(c.Type, Nested.ForOutput(c, value)!));
                 w.WriteEndElement();
             }
             w.WriteEndElement();
