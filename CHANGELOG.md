@@ -36,6 +36,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   no longer holds whole chunks of `JsonNode` trees. Errors are as before: JSON that is not valid is a
   `JazminFormatException` (now when the value is read), and valid JSON that does not fit the member is a
   `JazminValidationException`.
+- **.NET LINQ: sub-queries of other tables inside a lambda are read once,** instead of once per outer row.
+  - When the condition pairs a member with a value of the outer row (`orders.Where(o => o.CustomerId == c.Id)`),
+    the table is read once and kept by that member (a hash join). Other sub-queries run as LINQ to Objects over
+    their rows, read once.
+  - The first outer rows still run their own queries (with indexes), so a query for one customer reads no whole
+    table. Tables over 1,000,000 rows (100,000 with priority `Memory`, 10,000,000 with `Speed`) keep a query per row.
+  - Results are those of LINQ to Objects. 5,000 customers and 50,000 orders: the latest 5 orders of each customer
+    with product and payment, 64 s / 9.9 GB -> 0.43 s / 56 MB; the same code over in-memory lists takes 2.1 s.
 - **.NET LINQ reads only the columns a whole query uses.** `AsQueryable<T>()` now finds the members a query reads
   wherever it reads them: `Where`, `Select`, `SelectMany`, `GroupBy`, `Join` (also with another table), nested
   queries, anonymous objects and groups. Before, only queries ending in `Select` or an aggregate read fewer columns.

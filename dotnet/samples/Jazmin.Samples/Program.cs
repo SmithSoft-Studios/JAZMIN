@@ -243,6 +243,10 @@ using (var linesReader = clientsReader.OpenTable("transactions"))
     var ids = clientRows.Where(c => c.Name.StartsWith("B")).Select(c => c.ClientId).ToList();
     var theirs = transactionRows.Where(t => ids.Contains(t.ClientId)).ToList();                  // an `in` filter
     Console.WriteLine($"    {name}: {string.Join(" + ", amounts)}; clients starting with B have {theirs.Count} transaction(s)");
+
+    // A sub-query per client: read once, as a lookup by ClientId (not a query per client).
+    var totals = clientRows.Select(c => new { c.Name, Total = transactionRows.Where(t => t.ClientId == c.ClientId).Sum(t => t.Amount) }).ToList();
+    Console.WriteLine($"    {string.Join(", ", totals.Select(t => $"{t.Name} {t.Total}"))}");
 }
 
 // --- 16. LINQ over nested collections: SelectMany, GroupBy, anonymous objects (USER-GUIDE 8.3) ----------

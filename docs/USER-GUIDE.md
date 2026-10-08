@@ -723,6 +723,22 @@ decimal total = orders.Where(o => o.Region == "NA").Sum(o => o.Amount);     // r
   On 200,000 orders of 10 members, grouping by region and summing amounts
   takes 0.25 s and 57 MB instead of 1.1 s and 261 MB. A collection member
   (`List<Department>`) is one JSON column, read whole when the query uses it.
+- **Sub-queries of other tables inside a lambda are read once.** For
+  example, `customers.Select(c => orders.Where(o => o.CustomerId == c.Id)...)`
+  would otherwise run a query for every customer:
+  - when the condition pairs a member with a value of the outer row
+    (`o.CustomerId == c.Id`), the table is read once and kept by that member,
+    so each customer's orders are a lookup;
+  - other sub-queries run as LINQ to Objects over their rows, read once.
+
+  The first few outer rows still run their own queries, which use indexes. A
+  table is read once only when that costs less, so a query for one customer
+  reads no whole table. Tables of more than 1,000,000 rows (100,000 with
+  priority `Memory`, 10,000,000 with `Speed`) keep a query per row. Results
+  are those of LINQ to Objects. On 5,000 customers and 50,000 orders, the
+  latest 5 orders of each customer, with their product and payment, take
+  0.43 s instead of 64 s. The same code over in-memory lists takes 2.1 s,
+  because each customer scans every order.
 - **Typed rows read only the columns their type maps,** here and in
   `Query<T>` / `Rows<T>`: a class of 9 properties over a 300-column file
   decodes 9 columns.
@@ -3016,7 +3032,9 @@ var theirs = transactionRows.Where(t => ids.Contains(t.ClientId)).ToList();     
 ```
 
 A LINQ `Join` or `GroupBy` across tables runs in memory, as LINQ to
-Objects, and reads only the columns the query uses of each table. For nested
+Objects, and reads only the columns the query uses of each table. A
+sub-query per row (`clients.Select(c => transactions.Where(t => t.ClientId
+== c.ClientId)...)`) is read once (section 8.3). For nested
 output (each client with their transactions), use an export shape with
 `$from` (section 21.6): it reads each table once when they are sorted by the
 link.
