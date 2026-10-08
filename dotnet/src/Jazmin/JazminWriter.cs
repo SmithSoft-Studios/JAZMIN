@@ -445,6 +445,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             if (sortedBy.Count == 0) throw new JazminValidationException("SortedBy must name at least one column");
             sortCols = sortedBy.Select(n => Array.FindIndex(columns, c => c.Name == n) is var i and >= 0
                 ? i : throw new JazminValidationException($"SortedBy: unknown column '{n}'")).ToArray();
+            foreach (var i in sortCols)
+                if (TypeNames.IsNested(columns[i].Type)) throw new JazminValidationException($"SortedBy: a {TypeNames.ToName(columns[i].Type)} column cannot be sorted");
         }
         if (_options.Access is null)
         {

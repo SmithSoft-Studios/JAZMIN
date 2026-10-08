@@ -355,6 +355,8 @@ public sealed class NestedColumnTests : IDisposable
         using (var ok = new JazminWriter(new MemoryStream(), [JazminColumn.ListOf("x", Deep(FormatConstants.MaxNestingDepth - 1))])) ok.WriteValues([null]);
         var error = Assert.Throws<JazminValidationException>(() => new JazminWriter(new MemoryStream(), [JazminColumn.ListOf("x", Deep(FormatConstants.MaxNestingDepth))]));
         Assert.Contains("nested more than 64 levels deep", error.Message);
+        var sorted = Assert.Throws<JazminValidationException>(() => new JazminWriter(new MemoryStream(), [JazminColumn.ListOf("x", Deep(0))], new JazminWriteOptions { SortedBy = ["x"] }));
+        Assert.Contains("SortedBy: a list column cannot be sorted", sorted.Message);
         // A file is never read so deep that reading it could exhaust the stack.
         var definitions = Catalog.EncodeColumnDefinitions([ColumnDef.Of(JazminColumn.ListOf("x", Deep(200)), 0)]);
         Assert.Throws<JazminFormatException>(() => Catalog.DecodeColumnDefinitions(definitions));
