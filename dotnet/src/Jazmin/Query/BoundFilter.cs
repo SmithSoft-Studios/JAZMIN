@@ -143,6 +143,99 @@ internal abstract record BoundFilter
 }
 
 /// <summary>
+/// The fields of nested columns a filter reads, so only those are decoded to check it: the others are marked
+/// <see cref="JazminColumn.Unread"/>, as LINQ marks the fields a query does not read (their streams are passed over).
+/// </summary>
+internal static class NestedReads
+{
+    /// <summary>Nested column <paramref name="column"/> (at <paramref name="col"/>) with only the fields <paramref name="filter"/> checks read.</summary>
+    public static JazminColumn Checked(JazminColumn column, int col, BoundFilter filter) => Needs(column, Inners([filter], col));
+
+    /// <summary>One definition read two ways (each a copy with fields marked unread, or the definition): a field is read when either reads it.</summary>
+    public static JazminColumn Merge(JazminColumn a, JazminColumn b)
+    {
+        if (ReferenceEquals(a, b) || b.Unread) return a;
+        if (a.Unread) return b;
+        if (a is { Type: JazminType.List, Item: { } ai } && b.Item is { } bi)
+        {
+            var item = Merge(ai, bi);
+            return ReferenceEquals(item, ai) ? a : ReferenceEquals(item, bi) ? b : new JazminColumn(a.Name, a.Type) { Nullable = a.Nullable, Item = item };
+        }
+        if (a is { Type: JazminType.Object, Fields: { } af } && b.Fields is { } bf)
+        {
+            var fields = new JazminColumn[af.Count];
+            bool sameA = true, sameB = true;
+            for (var i = 0; i < fields.Length; i++)
+            {
+                fields[i] = Merge(af[i], bf[i]);
+                sameA &= ReferenceEquals(fields[i], af[i]);
+                sameB &= ReferenceEquals(fields[i], bf[i]);
+            }
+            return sameA ? a : sameB ? b : new JazminColumn(a.Name, a.Type) { Nullable = a.Nullable, Fields = fields };
+        }
+        return a;
+    }
+
+    /// <summary><paramref name="part"/> with only what <paramref name="inners"/> (filters of its fields, or of its item at position 0) read.</summary>
+    private static JazminColumn Needs(JazminColumn part, List<BoundFilter> inners)
+    {
+        if (part.Type == JazminType.List)
+        {
+            var item = part.Item!;
+            var read = item.Type == JazminType.Object ? Needs(item, inners) // filters of the items' fields
+                : TypeNames.IsNested(item.Type) ? Needs(item, Inners(inners, 0)) // items that are lists: their conditions' filters
+                : item;
+            return ReferenceEquals(read, item) ? part : new JazminColumn(part.Name, part.Type) { Nullable = part.Nullable, Item = read };
+        }
+        var fields = part.Fields!;
+        var trimmed = new JazminColumn[fields.Count];
+        var same = true;
+        for (var i = 0; i < fields.Count; i++)
+        {
+            var f = fields[i];
+            trimmed[i] = !Reads(inners, i) ? new JazminColumn(f.Name, f.Type) { Nullable = f.Nullable, Item = f.Item, Fields = f.Fields, Unread = true }
+                : TypeNames.IsNested(f.Type) ? Needs(f, Inners(inners, i))
+                : f;
+            same &= ReferenceEquals(trimmed[i], f);
+        }
+        return same ? part : new JazminColumn(part.Name, part.Type) { Nullable = part.Nullable, Fields = trimmed };
+    }
+
+    /// <summary>The filters of the any / all / match conditions on position <paramref name="col"/>, through and, or and not.</summary>
+    private static List<BoundFilter> Inners(List<BoundFilter> filters, int col)
+    {
+        var found = new List<BoundFilter>();
+        void Walk(BoundFilter f)
+        {
+            switch (f)
+            {
+                case BoundFilter.Nested n when n.Col == col: found.Add(n.Inner); break;
+                case BoundFilter.Not not: Walk(not.Item); break;
+                case BoundFilter.And and: foreach (var item in and.Items) Walk(item); break;
+                case BoundFilter.Or or: foreach (var item in or.Items) Walk(item); break;
+            }
+        }
+        foreach (var f in filters) Walk(f);
+        return found;
+    }
+
+    /// <summary>Whether any condition of <paramref name="filters"/> is on position <paramref name="col"/>.</summary>
+    private static bool Reads(List<BoundFilter> filters, int col)
+    {
+        static bool Walk(BoundFilter f, int col) => f switch
+        {
+            BoundFilter.Leaf l => l.Col == col,
+            BoundFilter.Nested n => n.Col == col,
+            BoundFilter.Not not => Walk(not.Item, col),
+            BoundFilter.And and => and.Items.Any(item => Walk(item, col)),
+            BoundFilter.Or or => or.Items.Any(item => Walk(item, col)),
+            _ => false,
+        };
+        return filters.Exists(f => Walk(f, col));
+    }
+}
+
+/// <summary>
 /// An `in` list's keys as a hash set (to check rows) and in order (to check chunk statistics), so a long list costs about
 /// as much as a short one. Null and NaN are left out: they equal nothing. Keys of one column type are equal exactly when
 /// <see cref="Values.Compare"/> says so (decimal keys are normalized, -0 is folded into 0).

@@ -93,10 +93,16 @@ public sealed class NestedQueryTests
     {
         var expected = JsonSerializer.Serialize(query(Companies.AsQueryable()));
         using var reader = JazminReader.Open(File);
-        (NotesSet, BiosSet, DescriptionsSet, StreetsSet) = (0, 0, 0, 0);
-        var actual = JsonSerializer.Serialize(query(reader.AsQueryable<Company>(Nested)));
-        Assert.Equal(expected, actual);
-        return (NotesSet > 0, BiosSet > 0, DescriptionsSet > 0, StreetsSet > 0);
+        (bool, bool, bool, bool)? reads = null;
+        foreach (var settings in new[] { Nested, null }) // reading needs no settings: the file says which columns are nested
+        {
+            (NotesSet, BiosSet, DescriptionsSet, StreetsSet) = (0, 0, 0, 0);
+            Assert.Equal(expected, JsonSerializer.Serialize(query(reader.AsQueryable<Company>(settings))));
+            var these = (NotesSet > 0, BiosSet > 0, DescriptionsSet > 0, StreetsSet > 0);
+            Assert.Equal(reads ?? these, these);
+            reads = these;
+        }
+        return reads!.Value;
     }
 
     [Fact]

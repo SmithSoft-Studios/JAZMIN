@@ -36,6 +36,22 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     their classes, or take grown definitions in `JazminAppend.Columns` / `JazminUpdate.Columns`; JavaScript's
     `append` takes them in `columns`. Removing, renaming or retyping fields needs the file written again. A .NET
     member the definition lacks is never left out silently.
+  - **Filters on nested columns:** `any` and `all` on a list's items, `match` on an object's fields, to any depth
+    (spec 9.2, USER-GUIDE 8.1), in both libraries and the browser reader. The conditions of one `any` apply to the
+    same item; a null list or object matches nothing; an empty list fails `any` and passes `all`. .NET builds them
+    with `JazminFilter.Any`, `All`, `Match` and `Itself`; a nested column the filter checks but the rows don't
+    return is decoded with only the fields the filter reads. Interop fixture `nested-filters.json`.
+  - **.NET LINQ conditions on nested columns become those filters** (USER-GUIDE 8.3): `Any` and `All` with a
+    lambda, `Contains` on a list of values, and member chains such as `o.Ship.City`. They're checked as chunks are
+    decoded, with only the fields they and the query read. 5,000 companies: the names of those with an employee of
+    a given id 25 -> 13 ms, 23 -> 6 MB allocated; the same companies returned whole 167 -> 91 ms, 143 -> 99 MB.
+    Queries need no settings for this or for reading only the fields they use: the file says which columns are
+    nested.
+
+### Fixed
+- **Filters:** `{ "column": null }` (and `{ "ne": null }`) works for json and binary columns too, as spec 9.1 says;
+  both libraries refused it. .NET reads whole numbers in JSON filters as integers, so ids beyond 2^53 compare
+  exactly, and compares numbers with `decimal` columns.
 
 ### Changed
 - **.NET LINQ compiles a query's in-memory part once per shape,** and reuses it with each call's values (the rows

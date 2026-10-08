@@ -86,6 +86,8 @@ public sealed class NestedFilterTests
             var want = Orders.Where(expected).Select(o => o.Id).ToList();
             Assert.True(want.Count > 0 && want.Count < Orders.Count, $"{filter}: {want.Count} rows (the case should select some)");
             Assert.Equal(want, reader.Find(JazminFilter.Parse(filter)).Select(r => (int)(long)r["Id"]!).ToList());
+            // Columns the filter checks but the rows do not return are decoded with only the fields it reads.
+            Assert.Equal(want, reader.Find(JazminFilter.Parse(filter), new JazminQueryOptions { Select = ["Id"] }).Select(r => (int)(long)r["Id"]!).ToList());
             Assert.Equal(want.Count, reader.Count(JazminFilter.Parse(filter)));
         }
     }
@@ -138,6 +140,69 @@ public sealed class NestedFilterTests
         Assert.Equal([9007199254740992L], Ids("""{ "amount": 12.5 }"""));
         Assert.Equal([9007199254740992L], Ids("""{ "extra": null }"""));
         Assert.Equal([9007199254740993L], Ids("""{ "extra": { "ne": null } }"""));
+    }
+
+    private static string Describe(JazminFilter f) => f switch
+    {
+        JazminFilter.Condition { Value: JazminFilter inner } c => $"{(c.Column == "" ? "$" : c.Column)} {c.Op} ({Describe(inner)})",
+        JazminFilter.Condition c => $"{(c.Column == "" ? "$" : c.Column)} {c.Op} {c.Value}",
+        JazminFilter.Group g => $"{g.Kind}[{string.Join(", ", g.Items.Select(Describe))}]",
+        JazminFilter.Negation n => $"not({Describe(n.Item)})",
+        _ => "?",
+    };
+
+    [Fact]
+    public void LinqConditionsOnNestedColumns_BecomeTheirFilters_AndGiveWhatLinqToObjectsGives()
+    {
+        using var reader = JazminReader.Open(File);
+        var city = "Durban";
+        // The C# condition; the filter the reader checks while decoding (null: not shown); whether it is all of the condition.
+        (System.Linq.Expressions.Expression<Func<Order, bool>> Query, string? Pushed, bool Exact)[] cases =
+        [
+            (o => o.Lines != null && o.Lines.Any(l => l != null && l.Sku == "S1" && l.Qty > 2), "and[Lines isNull False, Lines any (and[Sku eq S1, Qty gt 2])]", true),
+            (o => o.Lines != null && o.Lines.All(l => l != null && l.Qty >= 2), "and[Lines isNull False, Lines all (Qty gte 2)]", true),
+            (o => o.Ship != null && o.Ship.City == city, "and[Ship isNull False, Ship match (City eq Durban)]", true),
+            (o => o.Ship != null && o.Ship.Geo != null && o.Ship.Geo.Lat < -28, "and[and[Ship isNull False, Ship match (Geo isNull False)], Ship match (Geo match (Lat lt -28))]", true),
+            (o => o.Labels != null && o.Labels.Contains("alpha") && o.Tier == "Gold", "and[and[Labels isNull False, Labels any ($ eq alpha)], Tier eq Gold]", true),
+            (o => o.Labels != null && o.Labels.Any(x => x == null), "and[Labels isNull False, Labels any ($ isNull True)]", true),
+            (o => o.Labels != null && o.Labels.Any(x => x != null && x.StartsWith("x", StringComparison.Ordinal)), null, true),
+            (o => o.Grid != null && o.Grid.Any(r => r != null && r.Any(v => v > 5)), "and[Grid isNull False, Grid any (and[$ isNull False, $ any ($ gt 5)])]", true),
+            (o => o.Lines != null && o.Lines.Any(l => l != null && l.Tags != null && l.Tags.Contains("red")), null, true),
+            (o => o.Lines != null && !o.Lines.Any(l => l != null && l.Sku == "S1"), "and[Lines isNull False, not(Lines any (Sku eq S1))]", true),
+            (o => o.Ship != null && o.Ship.City == "Gqeberha" || o.Tier == "Gold", null, true),
+            // Decimals compare in memory: the rest still narrows the rows, and every row read is checked.
+            (o => o.Lines != null && o.Lines.Any(l => l != null && l.Sku == "S1" && l.Price > 10), "and[Lines isNull False, Lines any (Sku eq S1)]", false),
+            (o => o.Lines != null && o.Lines.Any(l => l != null && l.Price >= 50), "Lines isNull False", false),
+            (o => o.Lines != null && o.Lines.All(l => l == null || l.Qty > 1), "Lines isNull False", false),
+        ];
+        // Reading needs no settings: the file says which columns are nested. With them, the same.
+        foreach (var settings in new[] { null, Nested })
+        {
+            var q = reader.AsQueryable<Order>(settings);
+            foreach (var (query, pushed, exact) in cases)
+            {
+                var want = Orders.Where(query.Compile()).Select(o => o.Id).ToList();
+                Assert.True(want.Count > 0 && want.Count < Orders.Count, $"{query}: {want.Count} rows (the case should select some)");
+                var translation = reader.Translate(query, TypeMap.For(typeof(Order), settings));
+                Assert.True(exact == translation.Exact, $"{query}: exact should be {exact}");
+                if (pushed is not null) Assert.Equal(pushed, Describe(translation.Filter!));
+                Assert.Equal(want, q.Where(query).Select(o => o.Id).ToList());
+                Assert.Equal(want, reader.Query(query, settings).Select(o => o.Id).ToList());
+                Assert.Equal(want.Count, q.Count(query));
+            }
+        }
+    }
+
+    [Fact]
+    public void ANestedColumnTheFilterChecks_IsDecodedWithTheFieldsTheFilterReads_AndThoseTheQueryReads()
+    {
+        // The query reads only Qty from Lines; the filter checks Sku as the chunk is decoded, so Sku is decoded too.
+        using var reader = JazminReader.Open(File);
+        var want = Orders.Where(o => o.Lines != null && o.Lines.Any(l => l != null && l.Sku == "S2"))
+            .Select(o => new { o.Id, Qtys = o.Lines!.Select(l => l == null ? null : l.Qty).ToList() }).ToList();
+        var got = reader.AsQueryable<Order>().Where(o => o.Lines != null && o.Lines.Any(l => l != null && l.Sku == "S2"))
+            .Select(o => new { o.Id, Qtys = o.Lines!.Select(l => l == null ? null : l.Qty).ToList() }).ToList();
+        Assert.Equal(System.Text.Json.JsonSerializer.Serialize(want), System.Text.Json.JsonSerializer.Serialize(got));
     }
 
     [Fact]

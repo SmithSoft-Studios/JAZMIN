@@ -303,6 +303,9 @@ using (var reader = JazminReader.Open(nestedBytes))
     var revenue = reader.AsQueryable<Company>().SelectMany(c => c.Departments).SelectMany(d => d.Employees).SelectMany(e => e.Projects).Sum(p => p.Revenue);
     var nestedBack = JazminConvert.DeserializeObject<List<Company>>(nestedBytes)!;
     Console.WriteLine($"    revenue {revenue}; {nestedBack.Count} companies read back, first: {nestedBack[0].Departments[0].Employees[0].Name}");
+    // Conditions on nested fields become filters (USER-GUIDE 8.3), checked as the file is decoded: only matches are built.
+    var employer = reader.AsQueryable<Company>().Where(c => c.Departments.Any(d => d.Employees.Any(e => e.Name == "Build 7-0"))).Select(c => c.Name).Single();
+    Console.WriteLine($"    {employer} employs Build 7-0");
 }
 
 Directory.Delete(dir, true);

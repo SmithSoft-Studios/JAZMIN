@@ -301,8 +301,8 @@ Good to know:
   ```
 
   Removing, renaming or retyping a field needs the file written again.
-- Nested columns can't be indexed or sorted by. `isNull` works on them;
-  filter on the other columns.
+- Nested columns can't be indexed or sorted by. Filters check them with
+  `any`, `all` and `match` (8.1).
 - The browser reader and writer (section 24) and the viewer read and write
   them too. Files with nested columns need JAZMIN 1.4 or later; earlier
   versions refuse them, never misread them.
@@ -537,8 +537,9 @@ Good to know:
 - **Very small files can be slightly larger,** because each field has a few
   bytes of its own. Sample 17 stores 500 companies in 13.5 KB instead of
   33.5 KB.
-- Nested columns and their fields can't be indexed or sorted by. Filter on
-  top-level columns; `isNull` works on nested columns.
+- Nested columns and their fields can't be indexed or sorted by. Filters
+  check them with `any`, `all` and `match` (8.1), and LINQ conditions on
+  them become those filters (8.3).
 - **A bad value refuses its row whole,** wherever it is (the error names it,
   as in `Column 'Departments[].Budget'`); the writer goes on with the next
   row, as with any other bad value.
@@ -751,7 +752,9 @@ operators, each with a filter of their own:
 They nest: `{ "departments": { "any": { "employees": { "any": { "role":
 "Lead" } } } } }`. A null list or object matches nothing. In .NET,
 `JazminFilter.Any`, `All` and `Match` build the same filters
-(`JazminFilter.Itself` names the item of a list of plain values).
+(`JazminFilter.Itself` names the item of a list of plain values), and a
+nested column the filter checks but the rows don't return is decoded with
+only the fields the filter reads.
 
 ### 8.2 GraphQL
 
@@ -821,10 +824,11 @@ row. Translation therefore affects only speed, never results.
 | Expression | Uses index / statistics |
 |---|---|
 | `==`, `!=`, `<`, `<=`, `>`, `>=` against constants or captured variables (bool, numbers, strings, enums, dates) | ✔ |
-| `&&`, `\|\|`, `!` (on comparisons) | ✔ |
+| `&&`, `\|\|`, `!` (on comparisons and the calls below) | ✔ |
 | `x.Name.Contains("a")`, `x.Name.StartsWith("a")` | ✔ |
 | `list.Contains(x.Country)` | ✔ |
 | `x.IsActive` (bool property) | ✔ |
+| Nested columns (6.2): `x.Lines.Any(l => ...)`, `x.Lines.All(l => ...)`, `x.Tags.Contains("vip")`, `x.Ship.City == "Durban"` | ✔ (as `any`, `all`, `match`: 8.1) |
 | `decimal` comparisons, method calls, arithmetic (`x.Id % 7 == 0`) | ✘ (scanned, still correct) |
 
 #### Whole queries: `AsQueryable<T>()`
@@ -873,6 +877,19 @@ decimal total = orders.Where(o => o.Region == "NA").Sum(o => o.Amount);     // r
   decoded, by the same rules: objects returned whole, passed to a method,
   compared or grouped by are read whole, and a computed property reads all
   of its object's fields.
+- **Conditions on nested columns are checked as chunks are decoded.**
+  `o.Lines.Any(l => l.Sku == "A" && l.Qty > 5)` becomes an `any` filter
+  (8.1), `o.Ship.City == "Durban"` a `match`, and `o.Tags.Contains("vip")`
+  an `any` on the item. Only matching rows' objects are built, and the
+  column is decoded with only the fields the condition and the query read.
+  On 5,000 companies, the names of those with an employee of a given id take
+  13 ms and 6 MB instead of 25 ms and 23 MB; returning such companies whole,
+  91 ms and 99 MB instead of 167 ms and 143 MB. Parts the filter can't hold
+  (a `decimal` comparison, a method call) are checked on each object, as
+  elsewhere. `l != null &&` before an item's conditions is fine: a null item
+  matches no item's filter. Where LINQ to Objects would throw on a null list
+  or object, the row simply doesn't match. No settings are needed: the file
+  says which columns are nested.
 - **Queries are compiled once per shape.** The parts of a query that run in
   memory (operators after the reader's part, and conditions it can't check)
   are compiled the first time a query of that shape runs, then reused with

@@ -229,6 +229,12 @@ export interface Condition {
   icontains?: string;
   startsWith?: string;
   isNull?: boolean;
+  /** List columns: at least one item matches. A filter of the items' fields, or for items that are not objects, a condition on the item itself (`{ tags: { any: 'vip' } }`). */
+  any?: Filter | Condition | string | number | bigint | boolean | Date | null;
+  /** List columns: every item matches (an empty list does). */
+  all?: Filter | Condition | string | number | bigint | boolean | Date | null;
+  /** Object columns: the object's fields match. A null list or object matches nothing. */
+  match?: Filter;
 }
 
 /** `{ column: value }` is shorthand for `{ column: { eq: value } }`; keys in one object are ANDed. */

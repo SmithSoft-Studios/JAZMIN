@@ -69,6 +69,7 @@ internal sealed class TypeMap
     private TypeMap(Type type, JazminSerializerSettings? settings, bool topLevel = true)
     {
         _type = type;
+        Settings = settings;
         var handling = settings?.DefaultValueHandling ?? DefaultValueHandling.Include;
         _ignoreDefaults = handling.HasFlag(DefaultValueHandling.Ignore);
         _populate = handling.HasFlag(DefaultValueHandling.Populate);
@@ -239,6 +240,9 @@ internal sealed class TypeMap
             : BySettings.GetValue(settings, _ => new()).GetOrAdd(type, t => Build(t, settings));
 
     public IReadOnlyList<JazminColumn> Columns { get; }
+
+    /// <summary>The settings the map was made with (nested objects' maps follow them: names, converters).</summary>
+    internal JazminSerializerSettings? Settings { get; }
 
     /// <summary>Whether writing needs a <see cref="ReferenceTracker"/> and reading a <see cref="ReferenceResolver"/>.</summary>
     public bool PreservesReferences => _preserveReferences;

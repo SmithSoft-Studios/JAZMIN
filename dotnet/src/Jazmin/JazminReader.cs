@@ -1923,6 +1923,29 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         return runs;
     }
 
+    /// <summary>
+    /// The definitions a query's columns are decoded with: nested columns its filter checks with the fields the filter
+    /// reads, and with those they are returned with when they are returned (every field, or those a LINQ query reads:
+    /// <paramref name="schema"/>). The other fields' streams are passed over. Null: every column whole.
+    /// </summary>
+    private JazminColumn[]? DecodeSchema(BoundFilter? plan, int[] selection, JazminColumn[]? schema)
+    {
+        if (plan is null) return schema;
+        var used = new HashSet<int>();
+        CollectColumns(plan, used);
+        var result = schema;
+        foreach (var c in used)
+        {
+            if (!TypeNames.IsNested(_allColumns[c].Type)) continue;
+            var read = NestedReads.Checked(_allColumns[c], c, plan);
+            if (Array.IndexOf(selection, c) >= 0) read = NestedReads.Merge(schema?[c] ?? _allColumns[c], read);
+            if (ReferenceEquals(read, (result ?? _allColumns)[c])) continue;
+            if (ReferenceEquals(result, schema)) result = [.. schema ?? _allColumns];
+            result![c] = read;
+        }
+        return result;
+    }
+
     /// <summary>By column position: the columns a query decodes - those its filter reads and those it returns.</summary>
     private bool[] WantedColumns(BoundFilter? plan, int[] selection)
     {
@@ -1938,6 +1961,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private IEnumerable<JazminRow> ScanColumns(BoundFilter? plan, RowShape shape, long offset, long limit, long[]? rowIds = null, JazminColumn[]? schema = null)
     {
         var wanted = WantedColumns(plan, shape.Selection);
+        schema = DecodeSchema(plan, shape.Selection, schema);
         var all = !wanted.Contains(false);
         long skipped = 0, yielded = 0;
         var deleted = 0;
@@ -2060,7 +2084,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         }
         var deleted = 0;
         var next = 0; // the run of the chunk being counted (chunks come in run order)
-        foreach (var (ordinal, columns) in DecodeAhead(runs.Select(run => run.Ordinal), _types, wanted))
+        foreach (var (ordinal, columns) in DecodeAhead(runs.Select(run => run.Ordinal), _types, wanted, schema: DecodeSchema(plan, [], null)))
         {
             while (runs[next].Ordinal != ordinal) next++;
             var (_, from, to) = runs[next];
@@ -2153,7 +2177,8 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     /// <summary>A LINQ predicate of a mapped type as an index-aware filter.</summary>
     internal Translation Translate(LambdaExpression predicate, TypeMap map) =>
-        ExpressionTranslator.Translate(predicate, member => FileColumn(map.ColumnFor(member)));
+        ExpressionTranslator.Translate(predicate, member => FileColumn(map.ColumnFor(member)),
+            (type, member) => Format.Nested.MapOf(type, map.Settings)?.ColumnFor(member)?.Name); // fields of nested objects, stored as C# sees them
 
     /// <summary>The file's visible column a mapped member is stored in, when its values are the member's (see FileColumn).</summary>
     internal JazminColumn? FileColumn(TypeMap map, System.Reflection.MemberInfo member) => FileColumn(map.ColumnFor(member));
@@ -2207,7 +2232,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         if (mapped is null) return null;
         var column = _visibleColumns.FirstOrDefault(c => c.Name == mapped.Name)
             ?? _visibleColumns.FirstOrDefault(c => string.Equals(c.Name, mapped.Name, StringComparison.OrdinalIgnoreCase));
-        return column?.Type == mapped.Type ? column : null;
+        // A list or class the settings would store as JSON is read from the file's list or object column all the same
+        // (reading needs no settings: the file says how each column is stored).
+        return column is not null && (column.Type == mapped.Type || mapped.Type == JazminType.Json && TypeNames.IsNested(column.Type)) ? column : null;
     }
 
     /// <summary>Internal: (rowId, row) for visible, non-deleted rows matching a filter (used by Append).</summary>

@@ -207,6 +207,8 @@ write(companiesFile, [
 const companies = open(companiesFile);
 console.log('15.', [...companies.find({ id: 1 })][0].departments); // [{ name: 'Sales', budget: '1200.50', staff: ['Ann', 'Ben'] }, ...]
 console.log('   ', toJSON(companies, { filter: { departments: { isNull: true } } })); // [{"id":2,"name":"Bolt","departments":null}]
+// any / all on a list's items, match on an object's fields (USER-GUIDE 8.1): a department with Ben on its staff.
+console.log('   ', [...companies.find({ departments: { any: { staff: { any: 'Ben' } } } })].map((r) => r.name)); // ['Acme']
 companies.close();
 
 fs.rmSync(dir, { recursive: true, force: true });
