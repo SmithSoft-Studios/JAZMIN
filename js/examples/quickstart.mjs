@@ -183,4 +183,30 @@ const part = createFileHandler(docs)('invoices/march.txt', { range: 'bytes=0-6' 
 console.log('14.', part.status, JSON.stringify(part.body.toString()), part.headers['content-range']);
 docs.close();
 
+// 15. Nested columns (USER-GUIDE 4.2): a list of objects stored as columns of their fields, not as JSON text.
+// Opt-in; such a file needs JAZMIN 1.4 or later to read.
+const companiesFile = path.join(dir, 'companies.jzm');
+write(companiesFile, [
+  { id: 1, name: 'Acme', departments: [{ name: 'Sales', budget: '1200.50', staff: ['Ann', 'Ben'] }, { name: 'Build', budget: '800', staff: [] }] },
+  { id: 2, name: 'Bolt', departments: null },
+], {
+  columns: [
+    { name: 'id', type: 'int', nullable: false },
+    { name: 'name', type: 'string' },
+    {
+      name: 'departments', type: 'list', item: {
+        type: 'object', fields: [
+          { name: 'name', type: 'string' },
+          { name: 'budget', type: 'decimal' },
+          { name: 'staff', type: 'list', item: { type: 'string', nullable: false } },
+        ],
+      },
+    },
+  ],
+});
+const companies = open(companiesFile);
+console.log('15.', [...companies.find({ id: 1 })][0].departments); // [{ name: 'Sales', budget: '1200.50', staff: ['Ann', 'Ben'] }, ...]
+console.log('   ', toJSON(companies, { filter: { departments: { isNull: true } } })); // [{"id":2,"name":"Bolt","departments":null}]
+companies.close();
+
 fs.rmSync(dir, { recursive: true, force: true });

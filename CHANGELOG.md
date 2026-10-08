@@ -6,26 +6,33 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Added
-- **Nested columns (.NET, opt-in): lists and classes stored as columns of their fields** instead of JSON text
-  (`JazminSerializerSettings.NestedColumns`, `[JazminNested]`; `JazminColumn.ListOf` / `ObjectOf` for schemas
-  written by hand). Each field is stored as a column is, and objects are read back straight from the stored values
-  (USER-GUIDE 6.2, sample 17). 5,000 companies with departments, employees and projects, compared with JSON
-  columns:
-  - file 4.03 -> 2.48 MB; writing 685 -> 330 ms, 413 -> 91 MB allocated;
-  - reading every company 1,615 -> 435 ms, 345 -> 145 MB; a LINQ report over 6 nested fields 960 -> 466 ms,
-    390 -> 195 MB;
-  - one company by id: 0.58 -> 0.65 ms, 238 -> 207 KB (the lookup decodes only that row's part of each stream).
+- **Nested columns (opt-in): lists and objects stored as columns of their fields** instead of JSON text, in both
+  libraries, the browser reader and writer, and the viewer. Each field is stored as a column is, and values are
+  read back straight from the stored values.
+  - **.NET:** `JazminSerializerSettings.NestedColumns`, or `[JazminNested]` per property, for lists, arrays and
+    classes; `JazminColumn.ListOf` / `ObjectOf` for schemas written by hand (USER-GUIDE 6.2, sample 17).
+  - **JavaScript:** `list` columns with an `item` and `object` columns with `fields` (USER-GUIDE 4.2, quickstart
+    15). Values come back in the forms of their types (`Date`, `Buffer`, decimal text, `bigint`), with every field.
+  - 5,000 companies with departments, employees and projects, compared with JSON columns:
+    - .NET: file 4.03 -> 2.48 MB; writing 685 -> 330 ms, 413 -> 91 MB allocated; reading every company 1,615 ->
+      435 ms, 345 -> 145 MB; a LINQ report over 6 nested fields 960 -> 466 ms, 390 -> 195 MB; one company by id
+      0.58 -> 0.65 ms, 238 -> 207 KB.
+    - Node.js: file 4.32 -> 2.64 MB; writing 1,327 -> 604 ms; reading every company 385 -> 227 ms (peak 584 ->
+      504 MB); a report over 6 nested fields 495 -> 345 ms; one company by id 0.84 -> 0.97 ms (peak 88 -> 76 MB).
+    - A lookup decodes only its row's part of each stream.
   - **File format:** a new reader feature, `nested-columns` (spec 5.4): `list` and `object` column types, stored
     with a new column encoding (5). Only files that use nested columns need it, and they need this release or
     later to read: versions 1.0 to 1.3 refuse them with an "unknown type" error (tested with the published 1.2.0
-    packages). Files without nested columns are unchanged. Reading them in JavaScript is planned before this
-    release.
-  - Untyped rows and JSON, CSV and XML output show nested values as `json` columns show them, except that dates are
-    written as `datetime` columns write them (with milliseconds).
-  - **Fields can be added by appending** (spec 5.4, 11.2): `JazminFile.Append` and `JazminFile.Update` add the new
-    members of nested objects as fields at the end of their objects; rows written before read them as null. For JSON
-    rows, `JazminAppend.Columns` / `JazminUpdate.Columns` give the grown definitions. Other changes need the file
-    written again.
+    packages). Files without nested columns are unchanged. Interop fixtures: each library reads the other's.
+  - A row whose nested value is bad deep inside is refused whole, with the value's place in the message
+    (`Column 'lines[].qty': ...`); the rows before and after are written.
+  - Untyped rows and JSON, CSV and XML output show nested values as JSON. Dates are written as `datetime` columns
+    write them (with milliseconds), and floats that are not finite as `null` (rewriting a file keeps them).
+  - **Fields can be added by appending** (spec 5.4, 11.2): new fields go at the end of an object, and rows written
+    before read them as null. .NET's `JazminFile.Append` and `Update` add the new members of nested objects from
+    their classes, or take grown definitions in `JazminAppend.Columns` / `JazminUpdate.Columns`; JavaScript's
+    `append` takes them in `columns`. Removing, renaming or retyping fields needs the file written again. A .NET
+    member the definition lacks is never left out silently.
 
 ## 1.3.0 - 2026-10-08 (file format 1.0)
 

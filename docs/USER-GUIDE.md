@@ -129,8 +129,8 @@ can read a decrypted header.
 | `datetime` | `Date` | `DateTime` (UTC) | Millisecond precision |
 | `binary` | `Buffer` | `byte[]` | |
 | `json` | any JSON value | `JsonNode` | For nested objects and arrays |
-| `list` | not yet (planned for 1.4) | `List<T>`, `T[]` | Items of one type, stored as columns (6.2, nested columns). Needs JAZMIN 1.4 to read |
-| `object` | not yet (planned for 1.4) | your classes | Named fields, each stored as a column (6.2). Needs JAZMIN 1.4 to read |
+| `list` | array of its items | `List<T>`, `T[]` | Items of one type, stored as columns (nested columns: 4.2, 6.2). Needs JAZMIN 1.4 to read |
+| `object` | object with every field | your classes | Named fields, each stored as a column (4.2, 6.2). Needs JAZMIN 1.4 to read |
 
 Every column has a name, a type, `nullable` (default true), and an optional
 `description` and `attributes` (a free-form object, for example
@@ -243,6 +243,60 @@ Pass `null` instead of a path to get a `Buffer` back. Rows are validated:
 - a wrong type, a misspelt column name, or `null` in a non-nullable column
   throws a `JazminValidationError` that names the row and column;
 - when writing to a path, a failed `write()` deletes the half-written file.
+
+**Nested columns (opt-in).** A `list` column holds arrays of items of one
+type (its `item`); an `object` column holds objects with named `fields`. Each
+field is stored as a column is, instead of as JSON text: numbers as numbers,
+and repeated text once per chunk. Lists and objects can hold each other, up
+to 64 levels deep.
+
+```js
+write('companies.jzm', companies, {
+  columns: [
+    { name: 'id', type: 'int', nullable: false },
+    {
+      name: 'departments', type: 'list', item: {
+        type: 'object', fields: [
+          { name: 'name', type: 'string' },
+          { name: 'budget', type: 'decimal' },
+          { name: 'staff', type: 'list', item: { type: 'string', nullable: false } },
+        ],
+      },
+    },
+  ],
+});
+[...open('companies.jzm').find({ id: 1 })][0].departments;
+// [{ name: 'Sales', budget: '1200.50', staff: ['Ann', 'Ben'] }, ...]
+```
+
+Measured on 5,000 companies, each with departments, employees and projects
+(Node.js 24; peak memory of each step in its own process):
+
+| | JSON columns | Nested columns |
+|---|---|---|
+| File size | 4.32 MB | 2.64 MB |
+| Write | 1,327 ms | 604 ms |
+| Read every company | 385 ms, 584 MB peak | 227 ms, 504 MB peak |
+| A report over 6 nested fields | 495 ms | 345 ms |
+| Open the file and read one company | 0.84 ms, 88 MB peak | 0.97 ms, 76 MB peak |
+
+Good to know:
+
+- **Values read back in the forms of their types:** `Date` for datetimes,
+  `Buffer` for binary, text for decimals, `bigint` beyond ±2^53, and every
+  field present (`null` when it was missing). JSON, CSV and XML output write
+  them as JSON.
+- **JSON from elsewhere can be written as it is:** fields also take ISO date
+  text, decimals as numbers, binary as base64 text, and `"NaN"` /
+  `"Infinity"` for floats.
+- **A bad value refuses its row whole,** wherever it is, and the error names
+  where: `Column 'departments[].budget': ...`. The rows before and after
+  are written.
+- Nested columns can't be indexed or sorted by. `isNull` works on them;
+  filter on the other columns.
+- The browser reader and writer (section 24) and the viewer read and write
+  them too. Files with nested columns need JAZMIN 1.4 or later; earlier
+  versions refuse them, never misread them.
 
 ### 4.3 Reading and querying
 
@@ -459,8 +513,8 @@ Good to know:
 
 - **Files with nested columns need JAZMIN 1.4 or later to read.** Earlier
   versions refuse them with an "unknown type" error; they never misread
-  them. Reading them in JavaScript is not available yet (planned for 1.4).
-  Files without nested columns are unchanged.
+  them. JavaScript, the browser and the viewer read and write them too
+  (4.2). Files without nested columns are unchanged.
 - **What can be nested:** arrays, `List<T>` and the interfaces a `List<T>`
   fits (`IList<T>`, `IReadOnlyList<T>`, `IEnumerable<T>` and so on), and
   classes with public properties, up to 64 levels deep. **What stays JSON:**
@@ -474,8 +528,11 @@ Good to know:
 - **Very small files can be slightly larger,** because each field has a few
   bytes of its own. Sample 17 stores 500 companies in 13.5 KB instead of
   33.5 KB.
-- Nested columns and their fields can't be indexed. Filter on top-level
-  columns; `isNull` works on nested columns.
+- Nested columns and their fields can't be indexed or sorted by. Filter on
+  top-level columns; `isNull` works on nested columns.
+- **A bad value refuses its row whole,** wherever it is (the error names it,
+  as in `Column 'Departments[].Budget'`); the writer goes on with the next
+  row, as with any other bad value.
 - **Classes can gain members.** `JazminFile.Append` and `JazminFile.Update`
   add the new members of your nested objects as fields at the end; rows
   written before read them as `null` (or the member's default). For rows
