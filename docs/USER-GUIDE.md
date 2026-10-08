@@ -593,9 +593,9 @@ As in SQL, comparisons with a null cell are false, so `ne` does **not**
 match nulls. String operands are converted to the column's type, so
 `{"id": {"eq": "42"}}` works for an `int` column.
 
-An `in` list can be long: it is checked with a hash set, so 20,000 values
-against 100,000 rows take about 0.1 s (in .NET too, where LINQ's
-`ids.Contains(x.Id)` becomes `in`).
+An `in` list can be long: it is checked with a hash set, so counting the
+matches of 20,000 values among 100,000 rows takes 18 ms in JavaScript and
+36 ms in .NET (where LINQ's `ids.Contains(x.Id)` becomes `in` too).
 
 ### 8.2 GraphQL
 
