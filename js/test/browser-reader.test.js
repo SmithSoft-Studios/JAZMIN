@@ -14,8 +14,10 @@ const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../sp
 const keys = JSON.parse(fs.readFileSync(path.join(dir, 'keys.json'), 'utf8'));
 const fixture = (name) => fs.readFileSync(path.join(dir, name));
 
-/** Comparable form of a row value. */
-const plain = (v) => (v instanceof Date ? v.toISOString() : v instanceof Uint8Array ? Buffer.from(v).toString('base64') : typeof v === 'bigint' ? `${v}n` : v);
+/** Comparable form of a row value (inside lists and objects too: nested columns). */
+const plain = (v) => (v instanceof Date ? v.toISOString() : v instanceof Uint8Array ? Buffer.from(v).toString('base64') : typeof v === 'bigint' ? `${v}n`
+  : Array.isArray(v) ? v.map(plain)
+    : v !== null && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, plain(x)])) : v);
 const rowsOf = (rows) => rows.map((r) => Object.fromEntries(Object.entries(r).map(([k, v]) => [k, plain(v)])));
 
 async function browserRows(reader, filter) {

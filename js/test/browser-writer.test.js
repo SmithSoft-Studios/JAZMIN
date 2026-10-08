@@ -92,6 +92,53 @@ for (const [lockName, lock] of LOCKS) {
   }
 }
 
+// Nested columns (spec 5.4): lists and objects, with nulls and empty lists at every level; the same bytes, read alike.
+const nestedColumns = [
+  { name: 'id', type: 'int', nullable: false },
+  {
+    name: 'lines', type: 'list', item: {
+      type: 'object', fields: [
+        { name: 'sku', type: 'string' }, { name: 'qty', type: 'int' }, { name: 'price', type: 'decimal' }, { name: 'at', type: 'datetime' },
+        { name: 'ok', type: 'bool' }, { name: 'weight', type: 'float' }, { name: 'blob', type: 'binary' }, { name: 'extra', type: 'json' },
+        { name: 'tags', type: 'list', item: { type: 'string', nullable: false } },
+      ],
+    },
+  },
+  { name: 'head', type: 'object', fields: [{ name: 'city', type: 'string' }, { name: 'grid', type: 'list', item: { type: 'list', item: { type: 'int' } } }] },
+];
+const nestedRow = (i) => ({
+  id: i,
+  lines: i % 7 === 0 ? null : i % 5 === 0 ? [] : Array.from({ length: 1 + (i % 3) }, (_, n) => (n === 1 && i % 2 ? null : {
+    sku: n === 2 ? null : `S${i % 11}-${n}`, qty: i % 4 === 0 ? 2n ** 60n : i * 10 + n, price: `${i}.${n}5`, at: new Date(Date.UTC(2025, 0, 1) + i * 60_000),
+    ok: n === 0, weight: i % 9 === 0 ? NaN : i / 4, blob: n === 0 ? Uint8Array.from([i & 255, n]) : null, extra: n === 2 ? { i } : null, tags: i % 6 === 0 ? [] : ['a', `t${n}`],
+  })),
+  head: i % 4 === 0 ? null : { city: i % 3 === 0 ? null : `C${i % 5}`, grid: i % 8 === 0 ? null : [[], [i, null]] },
+});
+const nestedRows = Array.from({ length: 200 }, (_, i) => nestedRow(i));
+
+test('browser writer: nested columns, the same bytes as the library, and both readers read them', async () => {
+  for (const [lockName, lock] of LOCKS) {
+    for (const codec of ['none', 'deflate']) {
+      for (const shape of [{ chunkRows: 64 }, { chunkBytes: 2000 }]) {
+        const options = { columns: nestedColumns, metadata, now, codec, ...lock, ...shape };
+        const expected = await withRandom(7, () => write(null, nestedRows, { ...options, maxDegreeOfParallelism: 1 }));
+        const actual = await withRandom(7, async () => bytesOf(await JazminBrowser.write(nestedRows, options)));
+        assert.ok(actual.equals(expected), `${lockName}, codec ${codec}, ${JSON.stringify(shape)}: ${actual.length} bytes, the library wrote ${expected.length}`);
+      }
+    }
+  }
+  // Both readers read the browser's file as the rows written (binary as base64, dates as text, to compare).
+  const plain = (v) => (v instanceof Date ? v.toISOString() : v instanceof Uint8Array ? Buffer.from(v).toString('base64') : typeof v === 'bigint' ? `${v}n`
+    : Array.isArray(v) ? v.map(plain) : v !== null && typeof v === 'object' ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, plain(x)])) : v);
+  const bytes = await bytesOf(await JazminBrowser.write(nestedRows, { columns: nestedColumns, chunkRows: 64 }));
+  assert.deepEqual(plain([...open(bytes).rows()]), plain(nestedRows));
+  const browser = await JazminBrowser.open(new Blob([bytes]));
+  const browserRows = [];
+  for await (const row of browser.find()) browserRows.push(row);
+  assert.deepEqual(plain(browserRows), plain(nestedRows));
+  await assert.rejects(JazminBrowser.write([{ id: 1, lines: [{ sku: 5 }] }], { columns: nestedColumns }), /Column 'lines\[\]\.sku': expected a string/);
+});
+
 // Embedded files: several per file, identical content stored once, a file of several blocks, an empty one, groups,
 // and files added between rows. The library gets the bytes; the browser gets a Blob, a File, a string and an ArrayBuffer.
 const photo = Uint8Array.from({ length: 600_000 }, (_, i) => (i < 3 ? [0xff, 0xd8, 0xff][i] : (i * 31 + 7) & 255)); // three blocks

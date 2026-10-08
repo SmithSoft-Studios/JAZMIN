@@ -19,8 +19,11 @@
   const CODEC_BROTLI = 2;
   const MIN_KDF_ITERATIONS = 1000;
   const MAX_KDF_ITERATIONS = 10000000;
-  const TYPE_NAMES = ['', 'bool', 'int', 'float', 'decimal', 'string', 'datetime', 'binary', 'json'];
-  const ENCODING = { plain: 0, delta: 1, dictionary: 2, bitmap: 3, scaled: 4 };
+  const TYPE_NAMES = ['', 'bool', 'int', 'float', 'decimal', 'string', 'datetime', 'binary', 'json', 'list', 'object'];
+  const ENCODING = { plain: 0, delta: 1, dictionary: 2, bitmap: 3, scaled: 4, nested: 5 };
+  const NESTED_COLUMNS = 'nested-columns'; // reader feature (spec 5.4): list and object columns
+  const MAX_NESTING_DEPTH = 64;
+  const isNested = (type) => type === 'list' || type === 'object';
   const HAS_NULLS = 0x10;
   const POW10 = Array.from({ length: 23 }, (_, s) => 10 ** s);
   const SLOT_ID = 8;
@@ -447,7 +450,8 @@
     return ref;
   }
 
-  function readColumn(bytes) {
+  function readColumn(bytes, depth = 0) {
+    if (depth > MAX_NESTING_DEPTH) throw new JazminFormatError(`Columns are nested more than ${MAX_NESTING_DEPTH} levels deep`);
     const c = { position: 0, name: '', type: '', nullable: true };
     readMessage(bytes, (f, v) => {
       if (f === 1) c.position = num(v);
@@ -457,8 +461,16 @@
       else if (f === 5) c.description = text(v);
       else if (f === 6) c.attributes = parseJson(text(v), 'Column attributes', true);
       else if (f === 7 && num(v) !== 0) throw new JazminFormatError(`Column '${c.name}' uses an unknown time unit`);
+      else if (f === 8) (c.fields ??= []).push(readColumn(v, depth + 1)); // objects: their fields (spec 5.4)
+      else if (f === 9) c.item = readColumn(v, depth + 1); // lists: their items
     });
     if (!c.type) throw new JazminFormatError(`Column '${c.name}' has an unknown type`);
+    // A list has exactly its item, an object its fields (positions in order, names unique), nothing else.
+    const shaped = c.type === 'list' ? c.item !== undefined && c.fields === undefined
+      : c.type === 'object' ? c.item === undefined && c.fields?.length > 0 && c.fields.every((f, i) => f.position === i)
+        && new Set(c.fields.map((f) => f.name)).size === c.fields.length
+        : c.item === undefined && c.fields === undefined;
+    if (!shaped) throw new JazminFormatError(`Column '${c.name}' has an invalid structure`);
     return c;
   }
 
@@ -760,78 +772,152 @@
       const length = reader.varUint();
       const end = reader.pos + length;
       if (length < 1 || end > raw.length) throw new JazminFormatError(`Chunk ${ordinal}: invalid stream length`);
-      if (wanted && !wanted[j]) {
-        reader.pos = end;
-        continue;
-      }
-      const r = new Reader(raw.subarray(0, end), reader.pos);
-      const flags = r.byte();
-      const type = types[j];
-      if (flags & 0xe0) throw new JazminFormatError(`Chunk ${ordinal}: reserved stream flags are set`);
-      const nulls = flags & HAS_NULLS ? r.bytes((rowCount + 7) >> 3) : null;
-      const isNull = (i) => nulls !== null && (nulls[i >> 3] & (1 << (i & 7))) !== 0;
-      let count = rowCount;
-      if (nulls) for (let i = 0; i < rowCount; i++) if (isNull(i)) count--;
-      const values = new Array(count);
-      switch (flags & 0x0f) {
-        case ENCODING.plain:
-          if (datesAsMs && type === 'datetime') for (let i = 0; i < count; i++) values[i] = msFromFile(r.varInt());
-          else for (let i = 0; i < count; i++) values[i] = readPlain(r, type);
-          break;
-        case ENCODING.delta: {
-          // Numbers while the running sum stays exact; BigInt beyond ±2^53 (as the library's decoder).
-          let prev = 0;
-          for (let i = 0; i < count; i++) {
-            const d = r.varInt();
-            let v;
-            if (typeof prev === 'number' && typeof d === 'number' && Number.isSafeInteger(prev + d)) v = prev + d;
-            else {
-              const big = BigInt(prev) + BigInt(d);
-              v = big >= BigInt(Number.MIN_SAFE_INTEGER) && big <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(big) : big;
-            }
-            prev = v;
-            values[i] = type !== 'datetime' ? v : datesAsMs ? msFromFile(v) : dateFromMs(v);
-          }
-          break;
-        }
-        case ENCODING.dictionary: {
-          const k = r.varUint();
-          if (k < 1 || k > end - r.pos) throw new JazminFormatError(`Chunk ${ordinal}: invalid dictionary size`);
-          const entries = Array.from({ length: k }, () => (type === 'decimal' ? readDecimal(r) : r.string()));
-          for (let i = 0; i < count; i++) {
-            const id = r.varUint();
-            if (id >= entries.length) throw new JazminFormatError(`Chunk ${ordinal}: dictionary index out of range`);
-            values[i] = entries[id];
-          }
-          break;
-        }
-        case ENCODING.bitmap: {
-          const bits = r.bytes((count + 7) >> 3);
-          for (let i = 0; i < count; i++) values[i] = (bits[i >> 3] & (1 << (i & 7))) !== 0;
-          break;
-        }
-        case ENCODING.scaled:
-          for (let i = 0; i < count; i++) {
-            const s = r.byte();
-            if (s === 255) values[i] = r.float64();
-            else if (s <= 22) values[i] = Number(r.varInt()) / POW10[s];
-            else throw new JazminFormatError(`Chunk ${ordinal}: invalid scale ${s}`);
-          }
-          break;
-        default:
-          throw new JazminFormatError(`Chunk ${ordinal}: unknown encoding ${flags & 0x0f}`);
-      }
-      if (r.pos !== end) throw new JazminFormatError(`Chunk ${ordinal}: stream length does not match its contents`);
+      if (!wanted || wanted[j]) columns[j] = decodeStream(raw, reader.pos, end, types[j], rowCount, ordinal, datesAsMs);
       reader.pos = end;
-      if (!nulls) columns[j] = values;
-      else {
-        const full = new Array(rowCount);
-        for (let i = 0, k = 0; i < rowCount; i++) full[i] = isNull(i) ? null : values[k++];
-        columns[j] = full;
-      }
     }
     if (!reader.eof) throw new JazminFormatError(`Chunk ${ordinal} has trailing bytes`);
     return columns;
+  }
+
+  /** What decodeColumnar needs for a column: its type, or a list's or object's definition. */
+  const streamType = (c) => (isNested(c.type) ? c : c.type);
+
+  /** One stream at raw[start, end) (after its length) over `rowCount` entries: one value per entry, null for null. */
+  function decodeStream(raw, start, end, type, rowCount, ordinal, datesAsMs) {
+    const r = new Reader(raw.subarray(0, end), start);
+    const flags = r.byte();
+    if (flags & 0xe0) throw new JazminFormatError(`Chunk ${ordinal}: reserved stream flags are set`);
+    const nulls = flags & HAS_NULLS ? r.bytes((rowCount + 7) >> 3) : null;
+    if (typeof type === 'object' || (flags & 0x0f) === ENCODING.nested) {
+      if (typeof type !== 'object' || (flags & 0x0f) !== ENCODING.nested) throw new JazminFormatError(`Chunk ${ordinal}: encoding ${flags & 0x0f} is not valid for a ${type.type ?? type} column`);
+      return decodeNested(r, end, type, rowCount, nulls, ordinal);
+    }
+    const isNull = (i) => nulls !== null && (nulls[i >> 3] & (1 << (i & 7))) !== 0;
+    let count = rowCount;
+    if (nulls) for (let i = 0; i < rowCount; i++) if (isNull(i)) count--;
+    const values = new Array(count);
+    switch (flags & 0x0f) {
+      case ENCODING.plain:
+        if (datesAsMs && type === 'datetime') for (let i = 0; i < count; i++) values[i] = msFromFile(r.varInt());
+        else for (let i = 0; i < count; i++) values[i] = readPlain(r, type);
+        break;
+      case ENCODING.delta: {
+        // Numbers while the running sum stays exact; BigInt beyond ±2^53 (as the library's decoder).
+        let prev = 0;
+        for (let i = 0; i < count; i++) {
+          const d = r.varInt();
+          let v;
+          if (typeof prev === 'number' && typeof d === 'number' && Number.isSafeInteger(prev + d)) v = prev + d;
+          else {
+            const big = BigInt(prev) + BigInt(d);
+            v = big >= BigInt(Number.MIN_SAFE_INTEGER) && big <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(big) : big;
+          }
+          prev = v;
+          values[i] = type !== 'datetime' ? v : datesAsMs ? msFromFile(v) : dateFromMs(v);
+        }
+        break;
+      }
+      case ENCODING.dictionary: {
+        const k = r.varUint();
+        if (k < 1 || k > end - r.pos) throw new JazminFormatError(`Chunk ${ordinal}: invalid dictionary size`);
+        const entries = Array.from({ length: k }, () => (type === 'decimal' ? readDecimal(r) : r.string()));
+        for (let i = 0; i < count; i++) {
+          const id = r.varUint();
+          if (id >= entries.length) throw new JazminFormatError(`Chunk ${ordinal}: dictionary index out of range`);
+          values[i] = entries[id];
+        }
+        break;
+      }
+      case ENCODING.bitmap: {
+        const bits = r.bytes((count + 7) >> 3);
+        for (let i = 0; i < count; i++) values[i] = (bits[i >> 3] & (1 << (i & 7))) !== 0;
+        break;
+      }
+      case ENCODING.scaled:
+        for (let i = 0; i < count; i++) {
+          const s = r.byte();
+          if (s === 255) values[i] = r.float64();
+          else if (s <= 22) values[i] = Number(r.varInt()) / POW10[s];
+          else throw new JazminFormatError(`Chunk ${ordinal}: invalid scale ${s}`);
+        }
+        break;
+      default:
+        throw new JazminFormatError(`Chunk ${ordinal}: unknown encoding ${flags & 0x0f}`);
+    }
+    if (r.pos !== end) throw new JazminFormatError(`Chunk ${ordinal}: stream length does not match its contents`);
+    if (!nulls) return values;
+    const full = new Array(rowCount);
+    for (let i = 0, k = 0; i < rowCount; i++) full[i] = isNull(i) ? null : values[k++];
+    return full;
+  }
+
+  /** Where the part stream that starts at `r.pos` (its length first) ends; `r` is moved to its start. */
+  function partEnd(r, end, ordinal) {
+    const length = r.varUint();
+    if (typeof length !== 'number' || length < 1 || r.pos + length > end) throw new JazminFormatError(`Chunk ${ordinal}: invalid stream length`);
+    return r.pos + length;
+  }
+
+  /**
+   * A list or object column's values (spec 5.4), from its body at `r.pos`: after its own nulls, a list holds a lengths
+   * stream (ints without nulls, one per list that is not null) and an items stream; an object one stream per field.
+   */
+  function decodeNested(r, end, column, entries, nulls, ordinal) {
+    const raw = r.buf;
+    const isNull = (e) => nulls !== null && (nulls[e >> 3] & (1 << (e & 7))) !== 0;
+    let present = entries;
+    if (nulls) for (let e = 0; e < entries; e++) if (isNull(e)) present--;
+    const part = (child, count) => {
+      const at = partEnd(r, end, ordinal);
+      if (count > (at - r.pos) * 8 + 8) throw new JazminFormatError(`Chunk ${ordinal}: entry count does not match its size`);
+      const values = decodeStream(raw, r.pos, at, streamType(child), count, ordinal, false);
+      r.pos = at;
+      return values;
+    };
+    const out = new Array(entries);
+    if (column.type === 'list') {
+      const at = partEnd(r, end, ordinal);
+      const lr = new Reader(raw.subarray(0, at), r.pos);
+      const flags = lr.byte();
+      if ((flags & 0xf0) !== 0 || ((flags & 0x0f) !== ENCODING.plain && (flags & 0x0f) !== ENCODING.delta) || present > at - lr.pos) {
+        throw new JazminFormatError(`Chunk ${ordinal}: list lengths are not valid`);
+      }
+      const lengths = new Array(present);
+      let total = 0;
+      for (let k = 0, previous = 0; k < present; k++) {
+        let v = lr.varInt();
+        if (typeof v !== 'number') throw new JazminFormatError(`Chunk ${ordinal}: list lengths are not valid`);
+        if ((flags & 0x0f) === ENCODING.delta && k > 0) v += previous;
+        if (!Number.isSafeInteger(v) || v < 0) throw new JazminFormatError(`Chunk ${ordinal}: list lengths are not valid`);
+        lengths[k] = previous = v;
+        total += v;
+      }
+      if (lr.pos !== at) throw new JazminFormatError(`Chunk ${ordinal}: stream length does not match its contents`);
+      if (total > 2 ** 31 - 1) throw new JazminFormatError(`Chunk ${ordinal}: too many list items`);
+      r.pos = at;
+      const items = part(column.item, total);
+      for (let e = 0, k = 0, i = 0; e < entries; e++) {
+        if (isNull(e)) out[e] = null;
+        else {
+          out[e] = items.slice(i, i + lengths[k]);
+          i += lengths[k++];
+        }
+      }
+    } else {
+      const parts = column.fields.map((f) => part(f, present));
+      for (let e = 0, k = 0; e < entries; e++) {
+        if (isNull(e)) {
+          out[e] = null;
+          continue;
+        }
+        const object = {};
+        column.fields.forEach((f, i) => setField(object, f.name, parts[i][k]));
+        out[e] = object;
+        k++;
+      }
+    }
+    if (r.pos !== end) throw new JazminFormatError(`Chunk ${ordinal}: stream length does not match its contents`);
+    return out;
   }
 
   // ---- filters (spec 9) ----------------------------------------------------------------------------
@@ -1851,7 +1937,7 @@
     if (access?.expires !== undefined && Date.now() + 5 * 60000 < (header.modified || header.created)) {
       throw new JazminKeyError('The clock reads earlier than when this file was written - access refused'); // spec 7.7, check 2
     }
-    const unsupported = header.readerFeatures.filter((feature) => feature !== 'index-deltas');
+    const unsupported = header.readerFeatures.filter((feature) => feature !== 'index-deltas' && feature !== NESTED_COLUMNS);
     if (unsupported.length) throw new JazminFormatError(`This file needs features this reader does not support: ${unsupported.join(', ')}`);
     if (!header.tables.length) throw new JazminFormatError('Catalog: the file lists no tables');
 
@@ -2064,7 +2150,7 @@
           ? await hkdf(concat(chunk.partitionSecret, group.secret), file.salt, `JAZMIN/1/${sectionId}`)
           : await file.key(sectionId, null);
         const raw = await file.section(chunk.parts[g], sectionId, key, { requireDigest });
-        const cols = decodeColumnar(raw, group.cols.map((c) => columns[c].type), chunk.rowCount, chunk.ordinal, groupWanted, datesAsMs);
+        const cols = decodeColumnar(raw, group.cols.map((c) => streamType(columns[c])), chunk.rowCount, chunk.ordinal, groupWanted, datesAsMs);
         group.cols.forEach((c, j) => {
           if (groupWanted && !groupWanted[j]) return;
           values[c] = cols[j];
@@ -2831,10 +2917,56 @@
     }
   }
 
+  const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+  const NON_FINITE = new Map([['NaN', NaN], ['Infinity', Infinity], ['-Infinity', -Infinity]]);
+
+  /**
+   * A list or object value (spec 5.4) in stored form, checked part by part before the row is kept: a list as an array
+   * of its items, an object as an array of its fields' values (in field order). Leaves are stored as columns of their
+   * types are, and also taken in JSON forms: base64 text for binary, "NaN" / "Infinity" / "-Infinity" for floats.
+   */
+  function normalizeNested(column, value, path) {
+    if (value === null || value === undefined) return null;
+    if (column.type === 'list') {
+      if (!Array.isArray(value)) throw validation(path, `expected a list (an array), got ${typeof value}`);
+      return Array.from(value, (item) => normalizePart(column.item, item, `${path}[]`));
+    }
+    if (typeof value !== 'object' || Array.isArray(value) || value instanceof Date || ArrayBuffer.isView(value)) {
+      throw validation(path, `expected an object, got ${Array.isArray(value) ? 'an array' : typeof value}`);
+    }
+    const names = new Set(column.fields.map((f) => f.name));
+    for (const name of Object.keys(value)) if (!names.has(name)) throw validation(path, `'${name}' is not one of its fields`);
+    return column.fields.map((f) => normalizePart(f, Object.hasOwn(value, f.name) ? value[f.name] : undefined, `${path}.${f.name}`));
+  }
+
+  function normalizePart(column, value, path) {
+    if (value === null || value === undefined) {
+      if (!column.nullable) throw new JazminValidationError(`Column '${path}' is not nullable`);
+      return null;
+    }
+    if (isNested(column.type)) return normalizeNested(column, value, path);
+    if (column.type === 'binary' && typeof value === 'string') {
+      if (!BASE64.test(value)) throw validation(path, 'expected binary data or base64 text');
+      return base64ToBytes(value);
+    }
+    if (column.type === 'float' && typeof value === 'string' && NON_FINITE.has(value)) return NON_FINITE.get(value);
+    const v = normalizeWriteValue(column.type, value, path);
+    return column.type === 'json' ? JSON.stringify(v) : v;
+  }
+
+  /** Approximate stored size of a list's or object's stored form. */
+  function nestedSize(v) {
+    if (v === null) return 0;
+    if (Array.isArray(v)) return v.reduce((n, x) => n + nestedSize(x), 0); // leaves only, as the library counts
+    return typeof v === 'string' ? v.length + 1 : v instanceof Uint8Array ? v.length + 2 : 5;
+  }
+
   /** Approximate stored size of a value, to cap chunks at chunkBytes (as the library). */
   function estimateSize(type, v) {
     if (v === null) return 0;
     switch (type) {
+      case 'list':
+      case 'object': return nestedSize(v);
       case 'decimal':
       case 'string':
       case 'json': return v.length + 1;
@@ -2971,30 +3103,48 @@
     }
   }
 
-  /** One chunk's payload in the columnar layout: `columnValues[j]` holds column j's `rowCount` stored values. */
+  /**
+   * One chunk's payload in the columnar layout: `columnValues[j]` holds column j's `rowCount` stored values. `types[j]`
+   * is its type, or a list's or object's definition.
+   */
   function encodeColumnar(types, columnValues, rowCount) {
     const out = new ByteWriter(64 * 1024);
-    for (let j = 0; j < types.length; j++) {
-      const all = columnValues[j];
-      let nulls = null;
-      const values = [];
-      for (let r = 0; r < rowCount; r++) {
-        if (all[r] === null) {
-          nulls ??= new Uint8Array((rowCount + 7) >> 3);
-          nulls[r >> 3] |= 1 << (r & 7);
-        } else {
-          values.push(all[r]);
-        }
-      }
-      const body = new ByteWriter(1024);
-      const encoding = writeColumnBody(body, types[j], values);
-      const stream = body.result();
-      out.varUint(1 + (nulls ? nulls.length : 0) + stream.length);
-      out.byte(encoding | (nulls ? HAS_NULLS : 0));
-      if (nulls) out.bytes(nulls);
-      out.bytes(stream);
-    }
+    for (let j = 0; j < types.length; j++) writeStream(out, types[j], columnValues[j], rowCount);
     return out.result();
+  }
+
+  /**
+   * One stream (length, flags, nulls, body) of `count` entries. A list or object (spec 5.4) holds the streams of its
+   * parts: a list its lengths (one per list that is not null) and its items, an object one stream per field.
+   */
+  function writeStream(out, type, all, count) {
+    let nulls = null;
+    const values = [];
+    for (let r = 0; r < count; r++) {
+      if (all[r] === null) {
+        nulls ??= new Uint8Array((count + 7) >> 3);
+        nulls[r >> 3] |= 1 << (r & 7);
+      } else {
+        values.push(all[r]);
+      }
+    }
+    const body = new ByteWriter(1024);
+    let encoding;
+    if (typeof type === 'object') {
+      encoding = ENCODING.nested;
+      if (type.type === 'list') {
+        writeStream(body, 'int', values.map((v) => v.length), values.length);
+        const items = values.flat(1);
+        writeStream(body, streamType(type.item), items, items.length);
+      } else {
+        type.fields.forEach((f, i) => writeStream(body, streamType(f), values.map((v) => v[i]), values.length));
+      }
+    } else encoding = writeColumnBody(body, type, values);
+    const stream = body.result();
+    out.varUint(1 + (nulls ? nulls.length : 0) + stream.length);
+    out.byte(encoding | (nulls ? HAS_NULLS : 0));
+    if (nulls) out.bytes(nulls);
+    out.bytes(stream);
   }
 
   // -- statistics (the library's stats.js) --
@@ -3079,6 +3229,17 @@
     return (w) => {
       w.uint(1, c.position).string(2, c.name).uint(3, TYPE_IDS.get(c.type)).uint(4, c.required ? 1 : 0)
         .string(5, c.description).string(6, c.attributes);
+      for (const f of c.fields ?? []) w.message(8, writeColumnDefinition(f), true); // objects: their fields (spec 5.4)
+      if (c.item) w.message(9, writeColumnDefinition(c.item), true); // lists: their items
+    };
+  }
+
+  /** A column's catalog definition, with a list's item or an object's fields. */
+  function catalogColumn(c, position) {
+    return {
+      position, name: c.name, type: c.type, required: !c.nullable, description: c.description, attributes: c.attributes,
+      ...(c.item ? { item: catalogColumn(c.item, 0) } : {}),
+      ...(c.fields ? { fields: c.fields.map(catalogColumn) } : {}),
     };
   }
 
@@ -3107,6 +3268,7 @@
 
   function encodeFileHeader({ created, metadata, table, keyring, files }) {
     const w = new ProtoWriter();
+    if (table.columns.some((c) => isNested(c.type))) w.string(1, NESTED_COLUMNS); // reader features (spec 12)
     w.int64(3, created).string(6, metadata);
     w.message(7, (tw) => {
       tw.string(1, table.name).uint(2, table.columns.length);
@@ -3158,12 +3320,42 @@
       if (c.index !== undefined && [].concat(c.index).length) {
         throw new JazminValidationError(`Column '${c.name}': indexes are not written in browsers (the owner's service adds them when it compacts)`);
       }
-      return {
-        name: c.name, type: c.type, nullable: c.nullable !== false,
-        description: c.description === undefined ? undefined : String(c.description),
-        attributes: c.attributes === undefined ? undefined : JSON.stringify(c.attributes),
-      };
+      return writerColumn(c, c.name, 0);
     });
+  }
+
+  /** A column (or a list's item, or an object's field) checked, with its parts (spec 5.4: at most 64 levels deep). */
+  function writerColumn(c, path, depth) {
+    if (depth > MAX_NESTING_DEPTH) throw validation(path, `nested more than ${MAX_NESTING_DEPTH} levels deep`);
+    if (!WRITE_TYPES.includes(c.type)) throw new JazminValidationError(`Column '${path}' has unknown type '${c.type}'`);
+    const column = {
+      name: c.name, type: c.type, nullable: c.nullable !== false,
+      description: c.description === undefined ? undefined : String(c.description),
+      attributes: c.attributes === undefined ? undefined : JSON.stringify(c.attributes),
+    };
+    const part = (d, name, at) => {
+      if (d === null || typeof d !== 'object') throw validation(at, 'needs a definition (an object with a type)');
+      if (d.index !== undefined && [].concat(d.index).length) throw validation(at, 'items and fields cannot be indexed');
+      return writerColumn({ ...d, name: d.name ?? name }, at, depth + 1);
+    };
+    if (c.type === 'list') {
+      if (c.item === undefined || c.item === null) throw validation(path, 'a list needs an item');
+      if (c.fields !== undefined) throw validation(path, 'a list has an item, not fields');
+      column.item = part(c.item, 'item', `${path}[]`);
+    } else if (c.type === 'object') {
+      if (!Array.isArray(c.fields) || c.fields.length === 0) throw validation(path, 'an object needs at least one field');
+      if (c.item !== undefined) throw validation(path, 'an object has fields, not an item');
+      const names = new Set();
+      column.fields = c.fields.map((f) => {
+        if (!f || typeof f.name !== 'string' || f.name === '') throw validation(path, 'every field needs a non-empty name');
+        if (names.has(f.name)) throw validation(path, `duplicate field '${f.name}'`);
+        names.add(f.name);
+        return part(f, f.name, `${path}.${f.name}`);
+      });
+    } else if (c.item !== undefined || c.fields !== undefined) {
+      throw validation(path, 'only lists have an item and only objects have fields');
+    }
+    return column;
   }
 
   /**
@@ -3265,6 +3457,7 @@
     emit(preamble);
 
     const types = columns.map((c) => c.type);
+    const streamTypes = columns.map(streamType);
     const names = new Set(columns.map((c) => c.name));
     const chunks = []; // { ordinal, rowStart, rowCount, offset, length, stats }
     let values = types.map(() => []);
@@ -3304,7 +3497,7 @@
       if (inChunk === 0) return;
       const ordinal = chunks.length;
       const sectionId = `0/chunk/${ordinal}/*`;
-      const s = await section(encodeColumnar(types, values, inChunk), sectionId, await sectionKey(sectionId));
+      const s = await section(encodeColumnar(streamTypes, values, inChunk), sectionId, await sectionKey(sectionId));
       chunks.push({ ordinal, rowStart: rowCount - inChunk, rowCount: inChunk, offset: position, length: s.length, stats });
       emit(s);
       values = types.map(() => []);
@@ -3317,7 +3510,7 @@
       if (row === null || typeof row !== 'object') throw new JazminValidationError('Each row must be an object');
       for (const name in row) if (!names.has(name)) throw new JazminValidationError(`Row ${rowCount}: unknown column '${name}'`);
       const normalized = columns.map((c) => {
-        const v = normalizeWriteValue(c.type, row[c.name], c.name);
+        const v = isNested(c.type) ? normalizeNested(c, row[c.name], c.name) : normalizeWriteValue(c.type, row[c.name], c.name);
         if (v === null && !c.nullable) throw new JazminValidationError(`Row ${rowCount}: column '${c.name}' is not nullable`);
         return v;
       });
@@ -3378,7 +3571,7 @@
         }
         const table = {
           name: '', rowCount, chunkCount: chunks.length, partitions,
-          columns: columns.map((c, position) => ({ position, name: c.name, type: c.type, required: !c.nullable, description: c.description, attributes: c.attributes })),
+          columns: columns.map(catalogColumn),
         };
         let files = null;
         if (fileEntries.size) {

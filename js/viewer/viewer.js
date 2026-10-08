@@ -118,8 +118,17 @@
     if (value === null || value === undefined) return null;
     if (value instanceof Date) return value.toISOString();
     if (value instanceof Uint8Array) return `${value.length} bytes`;
-    if (typeof value === 'object') return JSON.stringify(value);
+    // json values, and lists and objects (nested columns), whose parts may be large integers or binary data
+    if (typeof value === 'object') return JSON.stringify(value, (k, v) => (typeof v === 'bigint' ? String(v) : v instanceof Uint8Array ? `${v.length} bytes` : v));
     return String(value);
+  };
+
+  /** A column's type, with a list's item or an object's fields: list<object{sku: string?, qty: int}>. */
+  const typeName = (c) => {
+    const part = (p) => `${typeName(p)}${p.nullable ? '?' : ''}`;
+    if (c.type === 'list' && c.item) return `list<${part(c.item)}>`;
+    if (c.type === 'object' && c.fields) return `object{${c.fields.map((f) => `${f.name}: ${part(f)}`).join(', ')}}`;
+    return c.type;
   };
 
   async function showRows() {
@@ -130,7 +139,7 @@
     for (const c of reader.columns) {
       const th = document.createElement('th');
       th.textContent = c.name;
-      th.title = [c.type, c.description].filter(Boolean).join(' - ');
+      th.title = [typeName(c), c.description].filter(Boolean).join(' - ');
       head.append(th);
     }
     $('jz-rows').tHead.replaceChildren(head);

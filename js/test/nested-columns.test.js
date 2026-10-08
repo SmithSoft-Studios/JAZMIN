@@ -222,3 +222,16 @@ test('damaged nested streams fail with a JAZMIN error', () => {
   }
   assert.ok(decoded > 100 && failed > 100, `${decoded} decoded, ${failed} failed`);
 });
+
+test("the viewer shows nested values as JSON, large integers and binary data included", async () => {
+  const { default: vm } = await import('node:vm');
+  const { fileURLToPath } = await import('node:url');
+  const source = fs.readFileSync(fileURLToPath(new URL('../viewer/viewer.js', import.meta.url)), 'utf8').replace(/\r\n/g, '\n');
+  const start = source.indexOf('  const cell = (value) => {');
+  const end = source.indexOf('\n  };\n', start);
+  const typeStart = source.indexOf('  const typeName = (c) => {');
+  const typeEnd = source.indexOf('\n  };\n', typeStart);
+  const { cell, typeName } = vm.runInNewContext(`${source.slice(start, end + 5)}\n${source.slice(typeStart, typeEnd + 5)}\n({ cell, typeName })`, { Uint8Array, Date, JSON, String });
+  assert.equal(cell([{ n: 2n ** 60n, b: new Uint8Array(3), at: new Date(0), x: null }]), `[{"n":"${2n ** 60n}","b":"3 bytes","at":"1970-01-01T00:00:00.000Z","x":null}]`);
+  assert.equal(typeName(open(file).columns.find((c) => c.name === 'head')), 'object{street: string, city: string?}');
+});
