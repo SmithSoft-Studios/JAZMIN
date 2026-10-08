@@ -31,7 +31,10 @@ export const INDEX_DELTAS = 'index-deltas';
 export const INDEX_DELTAS_ENCODING = 1;
 
 /** Reader features this implementation supports (spec 12). */
-export const SUPPORTED_READER_FEATURES = new Set([INDEX_DELTAS]);
+/** Reader feature 'nested-columns' (spec 5.4): list and object columns, stored as streams of their parts. */
+export const NESTED_COLUMNS = 'nested-columns';
+
+export const SUPPORTED_READER_FEATURES = new Set([INDEX_DELTAS, NESTED_COLUMNS]);
 export const SUPPORTED_WRITER_FEATURES = new Set();
 
 export const DEFAULTS = Object.freeze({

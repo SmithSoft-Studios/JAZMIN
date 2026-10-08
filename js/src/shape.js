@@ -5,7 +5,7 @@ import { normalizeBigInt } from './binary.js';
 import { JazminValidationError } from './errors.js';
 import { compileFilter, normalizeFilter } from './filter.js';
 import { READ_PRIORITY } from './reader.js';
-import { valueToText } from './formats/text.js';
+import { nestedJson, valueToText } from './formats/text.js';
 import { compareKeys, keyId, toKey } from './types.js';
 
 const ORDERED = new Set(['bool', 'int', 'float', 'string', 'datetime', 'decimal']);
@@ -388,8 +388,8 @@ const JSON_TEXT = {
   bool: (v) => (v ? 'true' : 'false'),
   binary: (v) => `"${Buffer.from(v).toString('base64')}"`,
 };
-const jsonText = (type) => {
-  const text = JSON_TEXT[type] ?? ((v) => JSON.stringify(v) ?? 'null');
+const jsonText = (type, column) => {
+  const text = type === 'list' || type === 'object' ? (v) => nestedJson(column, v) : JSON_TEXT[type] ?? ((v) => JSON.stringify(v) ?? 'null');
   return (v) => (v === null || v === undefined ? 'null' : text(v));
 };
 
@@ -400,7 +400,7 @@ const jsonText = (type) => {
 function compileJson(node, depth, pretty, metadata, one) {
   switch (node.kind) {
     case 'col': {
-      const text = jsonText(node.column.type);
+      const text = jsonText(node.column.type, node.column);
       const { name } = node.column;
       return (values) => text(values[name]);
     }
@@ -440,9 +440,9 @@ function compileJson(node, depth, pretty, metadata, one) {
 }
 
 /** An XML element for a value; nulls and non-finite floats are omitted. */
-function xmlElement(type, v, indent, tag) {
+function xmlElement(type, v, indent, tag, column) {
   if (v === null || v === undefined || (type === 'float' && !Number.isFinite(v))) return '';
-  const text = type === 'json' ? (typeof v === 'string' ? v : JSON.stringify(v)) : valueToText(type, v);
+  const text = type === 'json' ? (typeof v === 'string' ? v : JSON.stringify(v)) : valueToText(type, v, column);
   return `${indent}${tag.open}${xmlEscape(text)}${tag.close}\n`;
 }
 
@@ -452,7 +452,7 @@ function compileXml(node, depth, tag, metadata, one) {
   switch (node.kind) {
     case 'col': {
       const { name, type } = node.column;
-      return (values) => xmlElement(type, values[name], indent, tag);
+      return (values) => xmlElement(type, values[name], indent, tag, node.column);
     }
     case 'lit': {
       const text = xmlElement('json', node.value, indent, tag);
@@ -1198,6 +1198,21 @@ const JSON_TYPES = {
   json: {},
 };
 
+/** JSON Schema of a column's values: lists and objects with their items and fields (spec 5.4). */
+function columnSchema(column) {
+  const part = (c) => (c.nullable || c.type === 'float' ? nullable(columnSchema(c)) : columnSchema(c)); // a float that is not finite is null
+  if (column.type === 'list') return { type: 'array', items: part(column.item) };
+  if (column.type === 'object') {
+    return {
+      type: 'object',
+      properties: Object.fromEntries(column.fields.map((f) => [f.name, part(f)])),
+      required: column.fields.map((f) => f.name),
+      additionalProperties: false,
+    };
+  }
+  return { ...JSON_TYPES[column.type] };
+}
+
 function nullable(schema) {
   if (!schema.type) return schema; // any JSON value already allows null
   return { ...schema, type: [schema.type, 'null'] };
@@ -1221,8 +1236,8 @@ export function shapeSchema(reader, shape) {
   function schema(node, mayBeEmpty) {
     switch (node.kind) {
       case 'col': {
-        const s = JSON_TYPES[node.column.type];
-        return node.column.nullable || mayBeEmpty || node.column.type === 'float' ? nullable(s) : { ...s };
+        const s = columnSchema(node.column);
+        return node.column.nullable || mayBeEmpty || node.column.type === 'float' ? nullable(s) : s;
       }
       case 'lit': return { const: node.value };
       case 'meta': return {};

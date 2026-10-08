@@ -19,7 +19,7 @@ export function* csvPieces(columns, rows, { delimiter = ',', newline = '\r\n' } 
     yield columns
       .map((c) => {
         const value = row[c.name] ?? null;
-        return value === null ? '' : quote(valueToText(c.type, value), delimiter);
+        return value === null ? '' : quote(valueToText(c.type, value, c), delimiter);
       })
       .join(delimiter) + newline;
   }

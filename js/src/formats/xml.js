@@ -28,7 +28,7 @@ export function* xmlPieces(columns, rows, { root = 'jazmin', row: rowName = 'row
     let out = `  <${rowName}>`;
     columns.forEach((c, i) => {
       const value = row[c.name] ?? null;
-      if (value !== null) out += elements[i].open + escape(valueToText(c.type, value)) + elements[i].close;
+      if (value !== null) out += elements[i].open + escape(valueToText(c.type, value, c)) + elements[i].close;
     });
     yield `${out}</${rowName}>\n`;
   }

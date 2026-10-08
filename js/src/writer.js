@@ -11,10 +11,11 @@ import {
   encodeChunkDirectory, encodeChunkMap, encodeColumnDefinitions, encodeDelta, encodeHeader, encodeIndexDirectory, encodeOwnerCatalog, joinChunkMaps,
   encodePartitionTable, encodeStatistics,
 } from './catalog.js';
-import { columnBuffer, encodeColumnBuffers } from './columnar.js';
+import { columnBuffer, encodeColumnBuffers, nestedStage } from './columnar.js';
+import { isNested } from './nested.js';
 import { EVERYONE, FILE_BLOCK_SIZE, FILE_SOURCE, fileSource, normalizePackage } from './files.js';
 import {
-  DEFAULTS, DEFAULT_COLUMN_GROUP, FILE_ID_SIZE, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, INDEX_DELTAS, INLINE_PARTITIONS,
+  DEFAULTS, DEFAULT_COLUMN_GROUP, FILE_ID_SIZE, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, INDEX_DELTAS, INLINE_PARTITIONS, NESTED_COLUMNS,
   KEYRING_GROUPS, MAGIC, MAX_KDF_ITERATIONS, MIN_KDF_ITERATIONS, PREAMBLE_SIZE, SALT_SIZE, TRAILER_SIZE, WHOLE_TABLE,
 } from './constants.js';
 import { JazminValidationError } from './errors.js';
@@ -153,6 +154,16 @@ function compareSortKeys(a, b) {
   return 0;
 }
 
+/** A column's catalog definition (spec 6.2), with a list's item or an object's fields (spec 5.4). */
+function catalogColumn(c, position) {
+  return {
+    position, name: c.name, type: c.type, required: !c.nullable,
+    description: c.description, attributes: c.attributes ? JSON.stringify(c.attributes) : undefined,
+    ...(c.item ? { item: catalogColumn(c.item, 0) } : {}),
+    ...(c.fields ? { fields: c.fields.map(catalogColumn) } : {}),
+  };
+}
+
 /** Approximate encoded size of a value, used to cap chunks at `chunkBytes`. */
 function estimateSize(type, v) {
   if (v === null) return 0;
@@ -189,6 +200,7 @@ function tableDefinition(t, { named, access, chunkRows, chunkBytes }) {
     sortCols = t.sortedBy.map((name) => {
       const i = columns.findIndex((c) => c.name === name);
       if (i < 0) throw new JazminValidationError(`sortedBy: unknown column '${name}'`);
+      if (isNested(columns[i].type)) throw new JazminValidationError(`sortedBy: a ${columns[i].type} column cannot be sorted`);
       return i;
     });
   }
@@ -258,6 +270,8 @@ export class JazminWriter {
   #parallelism; // threads encoding chunk sections (1 = this thread only)
   #indexDeltas = false; // sorted index pages with keys and first row ids as differences (reader feature 'index-deltas')
   #usesIndexDeltas = false; // a page was written that way: the header names the feature
+  #usesNested = false; // a table has list or object columns: the header names the feature (spec 5.4)
+  #stagers = null; // by column: list and object values are checked into a stage before any buffer takes them
   #pool = null; // SectionPool, started from the third chunk so small files never pay for workers
   #pending = []; // chunk parts being encoded by the pool, in file order: { entry, group }
 
@@ -411,6 +425,10 @@ export class JazminWriter {
     this.#tableIndex = index;
     this.#columns = def.columns;
     this.#names = new Set(def.columns.map((c) => c.name));
+    this.#stagers = def.columns.some((c) => isNested(c.type))
+      ? def.columns.map((c) => (isNested(c.type) ? { buffer: columnBuffer(c.type, def.chunkRows, c), stage: nestedStage() } : null))
+      : null;
+    this.#usesNested ||= this.#stagers !== null;
     this.#values = new Array(def.columns.length);
     this.#sortCols = def.sortCols;
     this.#lastSortKey = null;
@@ -527,7 +545,7 @@ export class JazminWriter {
   #resetChunk() {
     for (const group of this.#groups) {
       group.bytes = 0;
-      group.buffers ??= group.cols.map((i) => columnBuffer(this.#columns[i].type, this.#current.chunkRows));
+      group.buffers ??= group.cols.map((i) => columnBuffer(this.#columns[i].type, this.#current.chunkRows, this.#columns[i]));
       for (const b of group.buffers) if (b.rows > 0) b.reset(); // normally already empty (encoding resets them)
     }
     this.#chunkRows = 0;
@@ -568,8 +586,15 @@ export class JazminWriter {
     const values = this.#values;
     for (let i = 0; i < columns.length; i++) {
       const c = columns[i];
-      const value = normalizeValue(c.type, row[c.name], c.name);
+      let value = normalizeValue(c.type, row[c.name], c.name);
       if (value === null && !c.nullable) throw new JazminValidationError(`Row ${rowNumber}: column '${c.name}' is not nullable`);
+      const stager = this.#stagers?.[i];
+      if (stager && value !== null) {
+        const { stage } = stager;
+        stage.values.length = stage.lengths.length = stage.vi = stage.li = stage.bytes = 0;
+        stager.buffer.stage(value, stage);
+        value = stage;
+      }
       values[i] = value;
     }
     if (this.#sortCols) this.#checkOrder(values, rowNumber);
@@ -590,7 +615,7 @@ export class JazminWriter {
         if (v !== null && columns[col].type === 'json') v = JSON.stringify(v);
         if (v === null) group.buffers[j].addNull();
         else group.buffers[j].add(v);
-        group.bytes += estimateSize(columns[col].type, v);
+        group.bytes += this.#stagers?.[col] && v !== null ? v.bytes : estimateSize(columns[col].type, v);
       }
       bytes += group.bytes;
     }
@@ -726,6 +751,7 @@ export class JazminWriter {
     // Features are named when, and only when, the file uses them (spec 12); an append keeps the file's.
     const readerFeatures = new Set(cont ? cont.header.readerFeatures : []);
     if (this.#usesIndexDeltas) readerFeatures.add(INDEX_DELTAS);
+    if (this.#usesNested) readerFeatures.add(NESTED_COLUMNS);
     const header = {
       readerFeatures: [...readerFeatures],
       writerFeatures: cont ? cont.header.writerFeatures : [],
@@ -806,13 +832,7 @@ export class JazminWriter {
 
   /** Column groups for the header: definitions inline, or (restricted groups) in their own locked section (spec 7.6.5). */
   #columnGroups() {
-    const definition = (i) => {
-      const c = this.#columns[i];
-      return {
-        position: i, name: c.name, type: c.type, required: !c.nullable,
-        description: c.description, attributes: c.attributes ? JSON.stringify(c.attributes) : undefined,
-      };
-    };
+    const definition = (i) => catalogColumn(this.#columns[i], i);
     const previous = new Map((this.#continue?.table.columnGroups ?? []).map((g) => [g.name, g]));
     return this.#groups.map((g) => {
       if (!this.#access || g.name === DEFAULT_COLUMN_GROUP) return { name: g.name, columns: g.cols.map(definition) };

@@ -1,6 +1,7 @@
 // Type definitions for the JAZMIN JavaScript library.
 
-export type JazminType = 'bool' | 'int' | 'float' | 'decimal' | 'string' | 'datetime' | 'binary' | 'json';
+/** `list` and `object` columns (nested columns, spec 5.4) store their items or fields as columns of their own. */
+export type JazminType = 'bool' | 'int' | 'float' | 'decimal' | 'string' | 'datetime' | 'binary' | 'json' | 'list' | 'object';
 export type JazminIndexKind = 'sorted' | 'trigram';
 export type JazminCodec = 'none' | 'deflate' | 'brotli';
 /**
@@ -9,8 +10,8 @@ export type JazminCodec = 'none' | 'deflate' | 'brotli';
  */
 export type JazminPriority = 'memory' | 'balanced' | 'speed';
 
-/** Values as returned by readers. */
-export type JazminValue = boolean | number | bigint | string | Date | Buffer | JsonValue | null;
+/** Values as returned by readers. A list is an array of its items' values; an object has every field. */
+export type JazminValue = boolean | number | bigint | string | Date | Buffer | JsonValue | JazminValue[] | { [field: string]: JazminValue } | null;
 export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 export type JazminRow = Record<string, JazminValue>;
 
@@ -23,6 +24,23 @@ export interface JazminColumnInput {
   /** Free-form details (units, format hints, max length...). */
   attributes?: Record<string, JsonValue>;
   index?: JazminIndexKind | JazminIndexKind[];
+  /** A list column's items: their type and, for lists and objects within lists, their own parts. */
+  item?: JazminPartInput;
+  /** An object column's fields, in order (at least one, unique names). */
+  fields?: (JazminPartInput & { name: string })[];
+}
+
+/** A list's item or an object's field (nested columns, spec 5.4): never indexed; at most 64 levels deep. */
+export interface JazminPartInput {
+  /** Fields need one; an item is named 'item'. */
+  name?: string;
+  type: JazminType;
+  /** Default true. */
+  nullable?: boolean;
+  description?: string;
+  attributes?: Record<string, JsonValue>;
+  item?: JazminPartInput;
+  fields?: (JazminPartInput & { name: string })[];
 }
 
 export interface JazminColumn {
@@ -31,6 +49,10 @@ export interface JazminColumn {
   nullable: boolean;
   description?: string;
   attributes?: Record<string, JsonValue>;
+  /** List columns: their items. */
+  item?: JazminColumn;
+  /** Object columns: their fields, in order. */
+  fields?: JazminColumn[];
 }
 
 export type KeyInput = JazminKey | JazminAccessKey | string | Uint8Array;

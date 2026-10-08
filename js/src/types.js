@@ -2,7 +2,7 @@ import { dateFromMs, normalizeBigInt, parseJsonText } from './binary.js';
 import { DecimalKey, canonicalDecimal, compareDecimalKeys, decimalKey, readDecimal, writeDecimal } from './decimal.js';
 import { JazminValidationError } from './errors.js';
 
-export const TYPES = Object.freeze(['bool', 'int', 'float', 'decimal', 'string', 'datetime', 'binary', 'json']);
+export const TYPES = Object.freeze(['bool', 'int', 'float', 'decimal', 'string', 'datetime', 'binary', 'json', 'list', 'object']);
 
 /** Types that support ordering (range filters, sorted indexes, chunk min/max statistics). */
 export const ORDERED_TYPES = new Set(['bool', 'int', 'float', 'decimal', 'string', 'datetime']);
@@ -73,6 +73,9 @@ export function normalizeValue(type, value, column) {
     case 'json':
       if (JSON.stringify(value) === undefined) throw fail(column, 'value is not JSON-serialisable');
       return value;
+    case 'list':
+    case 'object':
+      return value; // checked part by part by its column buffer (spec 5.4)
     default:
       throw fail(column, `unknown type '${type}'`);
   }

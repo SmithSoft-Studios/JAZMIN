@@ -14,7 +14,7 @@ export function* jsonPieces(columns, rows, { omitNulls = false, pretty = false }
     columns.forEach((c, i) => {
       const value = row[c.name] ?? null;
       if (value === null && omitNulls) return;
-      fields.push(`${names[i]}${sep}${valueToJson(c.type, value)}`);
+      fields.push(`${names[i]}${sep}${valueToJson(c.type, value, c)}`);
     });
     yield `${first ? '' : ','}${nl}${indent}{${fields.join(pretty ? ', ' : ',')}}`;
     first = false;

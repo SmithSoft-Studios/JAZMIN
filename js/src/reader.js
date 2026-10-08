@@ -376,7 +376,7 @@ function columnsToObject(columns, select) {
   }
 }
 
-/** Public form of a catalog column definition. */
+/** Public form of a catalog column definition (with a list's item or an object's fields, spec 5.4). */
 function publicColumn(c) {
   return {
     name: c.name,
@@ -384,6 +384,8 @@ function publicColumn(c) {
     nullable: !c.required,
     ...(c.description ? { description: c.description } : {}),
     ...(c.attributes ? { attributes: parseJsonText(c.attributes, `Column '${c.name}' attributes`, true) } : {}),
+    ...(c.item ? { item: publicColumn(c.item) } : {}),
+    ...(c.fields ? { fields: c.fields.map(publicColumn) } : {}),
   };
 }
 
@@ -435,6 +437,7 @@ export class JazminReader {
   #access = null; // access mode: { isOwner, secrets, partitions: Map id->secret, partitionNames, columns: Map group->secret, ... }
   #columns; // by position; hidden columns are placeholders { name: null, type: null }
   #types;
+  #streamTypes;
   #visibleCols; // positions this reader may return
   #groups; // column groups: [{ name, cols, visible }]
   #groupOf; // position -> column group index
@@ -747,6 +750,8 @@ export class JazminReader {
       return { name: g.name, cols: visible ? defs.map((c) => c.position).sort((a, b) => a - b) : [], visible };
     });
     this.#types = this.#columns.map((c) => c.type);
+    // What the chunk decoder needs per column: the type, or a list's or object's definition.
+    this.#streamTypes = this.#columns.map((c) => (c.type === 'list' || c.type === 'object' ? c : c.type));
     this.#visibleCols = this.#columns.map((c, i) => (c.hidden ? -1 : i)).filter((i) => i >= 0);
   }
 
@@ -1526,7 +1531,7 @@ export class JazminReader {
    * `datesAsMs` gives datetimes as milliseconds instead of Date objects.
    */
   #decodeChunk(ordinal, wanted, datesAsMs = false) {
-    const columns = decodeColumnar(this.#readChunk(ordinal), this.#types, this.#rowCount[ordinal], ordinal, wanted, datesAsMs);
+    const columns = decodeColumnar(this.#readChunk(ordinal), this.#streamTypes, this.#rowCount[ordinal], ordinal, wanted, datesAsMs);
     if (this.#cost) {
       this.#cost.chunksRead++;
       this.#cost.columnsDecoded += wanted ? wanted.filter(Boolean).length : this.#types.length;
@@ -1555,7 +1560,7 @@ export class JazminReader {
         ? partKey(partitionSecret, this.#columnSecret(group.name), this.#salt, sectionId)
         : this.#keys?.sectionKey(KEYRING_GROUPS.data, sectionId);
       const raw = this.#read(this.#part(ordinal, g), sectionId, key);
-      const decoded = decodeColumnar(raw, group.cols.map((c) => this.#types[c]), rowCount, ordinal, groupWanted ?? undefined);
+      const decoded = decodeColumnar(raw, group.cols.map((c) => this.#streamTypes[c]), rowCount, ordinal, groupWanted ?? undefined);
       if (this.#cost) this.#cost.columnsDecoded += groupWanted ? groupWanted.filter(Boolean).length : group.cols.length;
       group.cols.forEach((col, j) => {
         if (!groupWanted || groupWanted[j]) columns[col] = decoded[j];
@@ -2041,7 +2046,7 @@ export class JazminReader {
       else {
         const raw = this.#readChunk(ordinal);
         const rowCount = this.#rowCount[ordinal];
-        columns = decodeColumnar(raw, this.#types, rowCount, ordinal, filterCols, sink !== undefined);
+        columns = decodeColumnar(raw, this.#streamTypes, rowCount, ordinal, filterCols, sink !== undefined);
         matches = new Uint8Array(rowCount);
         let any = false;
         for (let k = 0; k < count; k++) {
@@ -2050,7 +2055,7 @@ export class JazminReader {
           if (evaluate(plan, row)) any = matches[r] = 1;
         }
         if (any && restCount) {
-          const more = decodeColumnar(raw, this.#types, rowCount, ordinal, rest, sink !== undefined, matches);
+          const more = decodeColumnar(raw, this.#streamTypes, rowCount, ordinal, rest, sink !== undefined, matches);
           for (let c = 0; c < more.length; c++) if (rest[c]) columns[c] = more[c];
         }
         if (this.#cost) {

@@ -1,4 +1,5 @@
 import { JazminValidationError } from './errors.js';
+import { nestedParts } from './nested.js';
 import { INDEX_KINDS, TYPES } from './types.js';
 
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2}(\.\d{1,9})?)?(Z|[+-]\d{2}:?\d{2})?)?$/;
@@ -16,6 +17,15 @@ export function setField(target, name, value) {
   else target[name] = value;
 }
 
+/** A column's (or a list item's or object field's) own settings, checked: { name, type, nullable, description?, attributes? }. */
+function columnSettings(c, path) {
+  if (!TYPES.includes(c.type)) throw new JazminValidationError(`Column '${path}' has unknown type '${c.type}'`);
+  const column = { name: c.name, type: c.type, nullable: c.nullable !== false };
+  if (c.description !== undefined) column.description = String(c.description);
+  if (c.attributes !== undefined) column.attributes = c.attributes;
+  return column;
+}
+
 export function normalizeColumns(columns) {
   if (!Array.isArray(columns) || columns.length === 0) throw new JazminValidationError('At least one column is required');
   const seen = new Set();
@@ -23,16 +33,14 @@ export function normalizeColumns(columns) {
     if (!c || typeof c.name !== 'string' || c.name.length === 0) throw new JazminValidationError('Every column needs a non-empty name');
     if (seen.has(c.name)) throw new JazminValidationError(`Duplicate column '${c.name}'`);
     seen.add(c.name);
-    if (!TYPES.includes(c.type)) throw new JazminValidationError(`Column '${c.name}' has unknown type '${c.type}'`);
+    const settings = columnSettings(c, c.name);
     const index = c.index === undefined ? [] : [].concat(c.index);
     for (const kind of index) {
       if (!INDEX_KINDS[kind]) throw new JazminValidationError(`Column '${c.name}': unknown index kind '${kind}'`);
       if (!INDEX_KINDS[kind].has(c.type)) throw new JazminValidationError(`Column '${c.name}': a ${kind} index is not supported on ${c.type}`);
     }
-    const column = { name: c.name, type: c.type, nullable: c.nullable !== false, index: [...new Set(index)] };
-    if (c.description !== undefined) column.description = String(c.description);
-    if (c.attributes !== undefined) column.attributes = c.attributes;
-    return column;
+    // Lists and objects (spec 5.4): their item or fields.
+    return { ...settings, index: [...new Set(index)], ...nestedParts(c, c.name, columnSettings) };
   });
 }
 

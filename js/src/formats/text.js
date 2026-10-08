@@ -1,27 +1,52 @@
 // Shared conversions between typed values and their text form (used by CSV and XML).
 import { setField } from '../schema.js';
 
-/** Text form of a non-null value. */
-export function valueToText(type, value) {
+/** Text form of a non-null value (lists and objects, given their `column` definition, as JSON). */
+export function valueToText(type, value, column) {
   switch (type) {
     case 'datetime': return value.toISOString();
     case 'binary': return Buffer.from(value).toString('base64');
     case 'json': return JSON.stringify(value);
+    case 'list':
+    case 'object': return nestedJson(column, value);
     default: return String(value);
   }
 }
 
-/** JSON literal for a value (exact for int and decimal, which may exceed double precision). */
-export function valueToJson(type, value) {
-  if (value === null) return 'null';
+/**
+ * JSON literal for a value (exact for int and decimal, which may exceed double precision). A list or object needs its
+ * `column` definition: its items and fields are written in the forms of their types (spec 10.1).
+ */
+export function valueToJson(type, value, column) {
+  if (value === null || value === undefined) return 'null';
   switch (type) {
     case 'int':
     case 'decimal': return String(value);
     case 'float': return Number.isFinite(value) ? JSON.stringify(value) : 'null';
     case 'datetime': return JSON.stringify(value.toISOString());
     case 'binary': return JSON.stringify(Buffer.from(value).toString('base64'));
+    case 'list':
+    case 'object': return nestedJson(column, value);
     default: return JSON.stringify(value);
   }
+}
+
+/** A list or object value as JSON: every field in position order, nulls written. */
+export function nestedJson(column, value) {
+  if (value === null || value === undefined) return 'null';
+  if (column.type === 'list') {
+    let out = '[';
+    for (let i = 0; i < value.length; i++) out += (i ? ',' : '') + valueToJson(column.item.type, value[i], column.item);
+    return `${out}]`;
+  }
+  if (column.type === 'object') {
+    let out = '{';
+    column.fields.forEach((f, i) => {
+      out += `${i ? ',' : ''}${JSON.stringify(f.name)}:${valueToJson(f.type, Object.hasOwn(value, f.name) ? value[f.name] : null, f)}`;
+    });
+    return `${out}}`;
+  }
+  return valueToJson(column.type, value, column);
 }
 
 const INT = /^-?\d+$/;

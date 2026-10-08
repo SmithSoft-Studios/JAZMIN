@@ -132,7 +132,7 @@ const commands = {
         deletedRows: reader.deletedRowCount,
         chunks: reader.chunkCount,
         sortedBy: reader.sortedBy ?? [],
-        columns: reader.columns.map(({ name, type, nullable }) => ({ name, type, nullable })),
+        columns: reader.columns.map(({ name, type, nullable, item, fields }) => ({ name, type, nullable, ...(item ? { item } : {}), ...(fields ? { fields } : {}) })),
         indexes: reader.indexes,
         access: reader.access,
         files: reader.files.length,

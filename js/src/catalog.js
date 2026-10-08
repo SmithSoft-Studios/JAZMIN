@@ -4,9 +4,10 @@
 //   table     { name, columnCount, columnGroups, sortedBy, partitionBy, rowCount, deletedCount, chunkCount,
 //               partitions, partitionTable, indexes, deletes }
 import { JazminFormatError } from './errors.js';
+import { MAX_NESTING_DEPTH } from './nested.js';
 import { ProtoWriter, bytesOf, readMessage, readPacked, text, toInt64 } from './proto.js';
 
-const TYPE_NAMES = ['', 'bool', 'int', 'float', 'decimal', 'string', 'datetime', 'binary', 'json'];
+const TYPE_NAMES = ['', 'bool', 'int', 'float', 'decimal', 'string', 'datetime', 'binary', 'json', 'list', 'object'];
 const TYPE_IDS = new Map(TYPE_NAMES.map((name, i) => [name, i]));
 const DIGEST_SIZE = 32;
 
@@ -59,10 +60,13 @@ function writeColumn(c) {
   return (w) => {
     w.uint(1, c.position).string(2, c.name).uint(3, TYPE_IDS.get(c.type)).uint(4, c.required ? 1 : 0)
       .string(5, c.description).string(6, c.attributes).uint(7, c.unit ?? 0);
+    for (const f of c.fields ?? []) w.message(8, writeColumn(f), true); // objects: their fields (spec 5.4)
+    if (c.item) w.message(9, writeColumn(c.item), true); // lists: their items
   };
 }
 
-function readColumn(buf) {
+function readColumn(buf, depth = 0) {
+  if (depth > MAX_NESTING_DEPTH) throw bad(`columns are nested more than ${MAX_NESTING_DEPTH} levels deep`);
   const c = { position: 0, name: '', type: '', required: false, unit: 0 };
   readMessage(buf, (f, v) => {
     switch (f) {
@@ -73,11 +77,19 @@ function readColumn(buf) {
       case 5: c.description = text(v); break;
       case 6: c.attributes = text(v); break;
       case 7: c.unit = num(v); break;
+      case 8: (c.fields ??= []).push(readColumn(v, depth + 1)); break;
+      case 9: c.item = readColumn(v, depth + 1); break;
       default: break;
     }
   });
   if (!c.type) throw bad(`column '${c.name}' has an unknown type`);
   if (c.unit !== 0) throw bad(`column '${c.name}' uses an unknown time unit`);
+  // Spec 5.4: a list has exactly its item, an object its fields (positions in order, names unique), nothing else.
+  const shaped = c.type === 'list' ? c.item !== undefined && c.fields === undefined
+    : c.type === 'object' ? c.item === undefined && c.fields?.length > 0 && c.fields.every((f, i) => f.position === i)
+      && new Set(c.fields.map((f) => f.name)).size === c.fields.length
+      : c.item === undefined && c.fields === undefined;
+  if (!shaped) throw bad(`column '${c.name}' has an invalid structure`);
   return c;
 }
 
