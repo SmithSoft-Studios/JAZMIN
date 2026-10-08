@@ -30,6 +30,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   - .NET checks the filter on the threads that decode ahead, and compares integers and dates as stored (no object
     per value), in `Count` too.
   - `explain` with `analyze`: `columnsDecoded` counts only the filter's columns for a chunk without matching rows.
+- **.NET: json columns are read straight into typed members,** from their stored UTF-8, with no text or `JsonNode`
+  in between. An untyped row still gives a `JsonNode`, made when the value is first read. A LINQ report over
+  200,000 orders whose customer and items are `json` columns: 6.8 s -> 3.1 s, 1,629 -> 965 MB allocated. Read-ahead
+  no longer holds whole chunks of `JsonNode` trees. Errors are as before: JSON that is not valid is a
+  `JazminFormatException` (now when the value is read), and valid JSON that does not fit the member is a
+  `JazminValidationException`.
 - **.NET LINQ reads only the columns a whole query uses.** `AsQueryable<T>()` now finds the members a query reads
   wherever it reads them: `Where`, `Select`, `SelectMany`, `GroupBy`, `Join` (also with another table), nested
   queries, anonymous objects and groups. Before, only queries ending in `Select` or an aggregate read fewer columns.

@@ -96,6 +96,19 @@ internal static class Values
     /// json columns are not checked: the check reads the whole text at once, and json values would be about 1.5 times slower
     /// to read.
     /// </remarks>
+    /// <summary>Parses json stored as UTF-8 (no text in between).</summary>
+    public static JsonNode? ParseJson(byte[] utf8, string what)
+    {
+        try
+        {
+            return JsonNode.Parse(utf8);
+        }
+        catch (JsonException e)
+        {
+            throw new JazminFormatException($"{what} is not valid JSON", e);
+        }
+    }
+
     public static JsonNode? ParseJson(string text, string what, bool uniqueNames = false)
     {
         try

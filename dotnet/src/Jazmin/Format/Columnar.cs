@@ -353,7 +353,8 @@ internal abstract class DecodedColumn(byte[]? nulls)
         JazminType.Bool => new BoolValues(rows, nulls),
         JazminType.String => new StringValues(rows, nulls, decimals: false),
         JazminType.Decimal => new StringValues(rows, nulls, decimals: true),
-        _ => new ObjectValues(rows, nulls, json: type == JazminType.Json),
+        JazminType.Json => new JsonValues(rows, nulls),
+        _ => new BlobValues(rows, nulls),
     };
 }
 
@@ -392,12 +393,29 @@ internal sealed class StringValues(int rows, byte[]? nulls, bool decimals) : Dec
     }
 }
 
-internal sealed class ObjectValues(int rows, byte[]? nulls, bool json) : DecodedColumn(nulls)
+/// <summary>
+/// Json values as stored (UTF-8). Typed reads deserialize them straight into objects, with no text or JsonNode in
+/// between; a JsonNode is made only when one is asked for, then kept (a row's value is the same node each time). A
+/// value is checked when it is read.
+/// </summary>
+internal sealed class JsonValues(int rows, byte[]? nulls) : DecodedColumn(nulls)
+{
+    public byte[][] Raw { get; } = new byte[rows][];
+    private System.Text.Json.Nodes.JsonNode?[]? _nodes;
+
+    protected override object Box(int row) =>
+        (_nodes ??= new System.Text.Json.Nodes.JsonNode?[Raw.Length])[row] ??= Format.Values.ParseJson(Raw[row], "A json value") ?? throw new JazminFormatException("json value is null");
+
+    public override void ReadPlain(int row, ByteReader reader, StringPool? strings) => Raw[row] = reader.Bytes(reader.Length()).ToArray();
+
+    public override void SkipPlain(int row, ByteReader reader) => reader.Skip(reader.Length());
+}
+
+internal sealed class BlobValues(int rows, byte[]? nulls) : DecodedColumn(nulls)
 {
     public object[] Values { get; } = new object[rows];
     protected override object Box(int row) => Values[row];
-    public override void ReadPlain(int row, ByteReader reader, StringPool? strings) =>
-        Values[row] = json ? Format.Values.ParseJson(reader.String(), "A json value") ?? throw new JazminFormatException("json value is null") : reader.Blob();
+    public override void ReadPlain(int row, ByteReader reader, StringPool? strings) => Values[row] = reader.Blob();
 
-    public override void SkipPlain(int row, ByteReader reader) => reader.Skip(reader.Length()); // json text and blobs: a length, then bytes
+    public override void SkipPlain(int row, ByteReader reader) => reader.Skip(reader.Length()); // a length, then bytes
 }

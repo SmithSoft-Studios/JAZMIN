@@ -416,6 +416,13 @@ How .NET property types map to columns:
 | `byte[]` | `binary` |
 | anything else (lists, nested classes) | `json` |
 
+A `json` column is read straight from its stored UTF-8 into your property's
+type, with no text or `JsonNode` in between. An untyped row gives a
+`JsonNode`, made when you first read the value. On 200,000 orders whose
+customer and items are `json` columns, a LINQ report takes 3.1 s and
+allocates 965 MB (6.8 s and 1.6 GB in 1.2). Reading the same data from one
+JSON file with System.Text.Json takes 4.4 s, or 2.8 s streamed.
+
 `[JsonPropertyName]` from System.Text.Json is honoured too. Column names are
 matched case-insensitively when reading, as Newtonsoft does.
 

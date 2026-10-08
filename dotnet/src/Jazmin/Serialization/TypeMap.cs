@@ -442,15 +442,22 @@ internal sealed class TypeMap
                 JazminType.Float => typeof(DoubleValues),
                 JazminType.Bool => typeof(BoolValues),
                 JazminType.String or JazminType.Decimal => typeof(StringValues),
-                _ => typeof(ObjectValues),
+                JazminType.Json => typeof(JsonValues),
+                _ => typeof(BlobValues),
             };
             var column = Expression.Convert(Expression.ArrayIndex(cols, Expression.Constant(j)), holder);
-            Expression read = Expression.ArrayIndex(Expression.Property(column, "Values"), row);
+            var rawJson = type == JazminType.Json && m.Converter is null && target != typeof(JsonNode) && target != typeof(object)
+                && target != typeof(JsonObject) && target != typeof(JsonArray) && target != typeof(JsonValue);
+            Expression read = rawJson
+                ? Expression.Call(DeserializeRawMethod, Expression.ArrayIndex(Expression.Property(column, "Raw"), row), Expression.Constant(target), settings)
+                : type == JazminType.Json ? Expression.Call(column, typeof(DecodedColumn).GetMethod(nameof(DecodedColumn.Get))!, row)
+                : Expression.ArrayIndex(Expression.Property(column, "Values"), row);
             if (type == JazminType.DateTime) read = Expression.Call(FromEpochMsMethod, read);
             else if (type == JazminType.Binary) read = Expression.Convert(read, typeof(byte[]));
-            else if (type == JazminType.Json) read = Expression.Convert(read, typeof(JsonNode));
+            else if (type == JazminType.Json && !rawJson) read = Expression.Convert(read, typeof(JsonNode));
             var isNull = Expression.Call(column, nameof(DecodedColumn.IsNull), null, row);
-            var converted = m.Converter is not null
+            var converted = rawJson ? Expression.Convert(read, target)
+                : m.Converter is not null
                 ? Expression.Convert(Expression.Call(FromStoredMethod, Expression.Constant(m.Converter), Expression.Convert(read, typeof(object)), Expression.Constant(target)), target)
                 : TypedConvert(read, type, target, settings);
             var assign = Expression.Assign(property, converted);
@@ -467,6 +474,42 @@ internal sealed class TypeMap
     }
 
     private static readonly MethodInfo FromEpochMsMethod = typeof(Values).GetMethod(nameof(Values.FromEpochMs))!;
+
+    private static readonly MethodInfo DeserializeRawMethod = typeof(TypeMap).GetMethod(nameof(DeserializeRaw), BindingFlags.NonPublic | BindingFlags.Static)!;
+
+    /// <summary>
+    /// A json value as stored (UTF-8), straight into the property's type: no text, no JsonNode in between. Errors as
+    /// before: JSON that is not valid is a damaged file, valid JSON that does not fit the type a conversion error.
+    /// </summary>
+    internal static object? DeserializeRaw(byte[] utf8, Type target, JazminSerializerSettings? settings)
+    {
+        if (utf8 is [(byte)'n', (byte)'u', (byte)'l', (byte)'l']) throw new JazminFormatException("json value is null"); // nulls are stored as nulls
+        try
+        {
+            return JsonSerializer.Deserialize(utf8, target, settings?.EffectiveJsonOptions);
+        }
+        catch (JsonException e)
+        {
+            if (!IsJson(utf8)) throw new JazminFormatException("A json value is not valid JSON", e);
+            throw new JazminValidationException($"Cannot convert a json value to {target.Name}", e);
+        }
+    }
+
+    private static bool IsJson(byte[] utf8)
+    {
+        try
+        {
+            var reader = new Utf8JsonReader(utf8);
+            while (reader.Read())
+            {
+            }
+            return true;
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
+    }
     /// <summary>Converts a typed value expression to the property type.</summary>
     private static Expression TypedConvert(Expression read, JazminType columnType, Type target, ParameterExpression settings)
     {
