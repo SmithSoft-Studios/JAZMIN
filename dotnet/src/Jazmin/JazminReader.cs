@@ -1313,7 +1313,8 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             }
             return read;
         }
-        if (ahead <= 1)
+        // One chunk (a lookup, or the first chunk of a scan): decoded here, without a task to hand it to.
+        if (ahead <= 1 || ordinals.TryGetNonEnumeratedCount(out var count) && count <= 1)
         {
             foreach (var ordinal in ordinals)
             {

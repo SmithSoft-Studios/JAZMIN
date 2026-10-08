@@ -62,6 +62,8 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   one field (`q.Where(c => c.Id == id).Select(c => c.Name)`) took 1.05 ms, now 0.34 ms, the time of a lookup that
   returns whole rows. Conditions checked in memory, and `reader.Query<T>(predicate)`, compile once too. A shape that
   can't be taken apart runs as before.
+- **.NET: a query that reads one chunk decodes it at once,** without handing it to a background task: lookups, and
+  the first chunk of a scan. Opening a file and reading one row by id: 0.70 -> 0.60 ms.
 
 ## 1.3.0 - 2026-10-08 (file format 1.0)
 
