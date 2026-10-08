@@ -245,6 +245,34 @@ using (var linesReader = clientsReader.OpenTable("transactions"))
     Console.WriteLine($"    {name}: {string.Join(" + ", amounts)}; clients starting with B have {theirs.Count} transaction(s)");
 }
 
+// --- 16. LINQ over nested collections: SelectMany, GroupBy, anonymous objects (USER-GUIDE 8.3) ----------
+// The reader reads only the columns the query uses (here Departments, a JSON column); Name and Founded are not read.
+var companies = new[] { "Acme", "Bolt" }.Select((name, c) => new Company
+{
+    Name = name,
+    Founded = 1990 + c,
+    Departments = [.. new[] { "Sales", "Build" }.Select((d, i) => new Department
+    {
+        Name = d,
+        Employees = [new() { Name = $"{name} lead {d}", Projects = [new() { Name = $"{d} {c}", Category = i == 0 ? "Product" : "Service", Revenue = 12_000 * (c + i + 1) }] }],
+    })],
+}).ToList();
+var companiesPath = Path.Combine(dir, "companies.jzm");
+File.WriteAllBytes(companiesPath, JazminConvert.SerializeObject(companies));
+using (var reader = JazminReader.Open(companiesPath))
+{
+    var report = reader.AsQueryable<Company>()
+        .SelectMany(c => c.Departments)
+        .SelectMany(d => d.Employees, (d, e) => new { Department = d.Name, Employee = e })
+        .SelectMany(x => x.Employee.Projects, (x, p) => new { x.Department, Employee = x.Employee.Name, Project = p.Name, p.Category, p.Revenue })
+        .Where(x => x.Revenue > 10_000)
+        .GroupBy(x => new { x.Department, x.Category })
+        .Select(g => new { g.Key.Department, g.Key.Category, Revenue = g.Sum(x => x.Revenue), TopProject = g.OrderByDescending(x => x.Revenue).First().Project })
+        .OrderByDescending(x => x.Revenue)
+        .ToList();
+    Console.WriteLine($"16. {string.Join("; ", report.Select(r => $"{r.Department}/{r.Category}: {r.Revenue} (top {r.TopProject})"))}");
+}
+
 Directory.Delete(dir, true);
 
 public readonly record struct Money(long Cents, string Currency);
@@ -259,6 +287,32 @@ public sealed class MoneyConverter : JazminConverter<Money>
         var parts = ((string)stored).Split(' ');
         return new Money(long.Parse(parts[0]), parts[1]);
     }
+}
+
+public class Company
+{
+    public string Name { get; set; } = "";
+    public int Founded { get; set; }
+    public List<Department> Departments { get; set; } = [];
+}
+
+public class Department
+{
+    public string Name { get; set; } = "";
+    public List<Employee> Employees { get; set; } = [];
+}
+
+public class Employee
+{
+    public string Name { get; set; } = "";
+    public List<Project> Projects { get; set; } = [];
+}
+
+public class Project
+{
+    public string Name { get; set; } = "";
+    public string Category { get; set; } = "";
+    public decimal Revenue { get; set; }
 }
 
 public class Client

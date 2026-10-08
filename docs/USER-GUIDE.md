@@ -700,8 +700,22 @@ decimal total = orders.Where(o => o.Region == "NA").Sum(o => o.Amount);     // r
 | `Count`, `LongCount`, `Any` | Answered without building objects, from indexes or chunk statistics where the filter allows |
 | `OrderBy` / `ThenBy` along the file's `sortedBy` columns | Nothing to do: rows are stored in that order. Needs ascending keys of non-nullable columns; numbers, dates and bools as they are, strings with `StringComparer.Ordinal` |
 | `Select`; `Sum`, `Average`, `Min`, `Max` with a selector | Only the columns they use are read |
-| Everything from the first operator it can't do (`OrderByDescending`, `GroupBy`, `Join`, a `Where` after `Take`...) | Runs in memory on the rows read, as LINQ to Objects |
+| Everything from the first operator it can't do (`OrderByDescending`, `GroupBy`, `Join`, a `Where` after `Take`...) | Runs in memory on the rows read, as LINQ to Objects. The rows are read with only the columns the whole query uses (below) |
 
+- **Only the columns a query uses are read,** wherever it uses them: in
+  `Where`, `Select`, `SelectMany`, `GroupBy`, `Join`, nested queries, and
+  through anonymous objects and groups. A `Join` with another table, or
+  with the same one, reads only the columns used of each. Every column is
+  read when the rows themselves may be used in ways the query doesn't show:
+  - you receive them, or `ToList()` them before the rest of the query;
+  - they're passed to a method, or formatted;
+  - they're compared or sorted whole (`Distinct()`, a `GroupBy` key of
+    whole rows), or cast;
+  - a computed property is used.
+
+  On 200,000 orders of 10 members, grouping by region and summing amounts
+  takes 0.25 s and 57 MB instead of 1.1 s and 261 MB. A collection member
+  (`List<Department>`) is one JSON column, read whole when the query uses it.
 - **Typed rows read only the columns their type maps,** here and in
   `Query<T>` / `Rows<T>`: a class of 9 properties over a 300-column file
   decodes 9 columns.
@@ -2995,9 +3009,10 @@ var theirs = transactionRows.Where(t => ids.Contains(t.ClientId)).ToList();     
 ```
 
 A LINQ `Join` or `GroupBy` across tables runs in memory, as LINQ to
-Objects. For nested output (each client with their transactions), use an
-export shape with `$from` (section 21.6): it reads each table once when they
-are sorted by the link.
+Objects, and reads only the columns the query uses of each table. For nested
+output (each client with their transactions), use an export shape with
+`$from` (section 21.6): it reads each table once when they are sorted by the
+link.
 
 ### 23.3 Access control across tables
 

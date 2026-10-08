@@ -30,6 +30,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   - .NET checks the filter on the threads that decode ahead, and compares integers and dates as stored (no object
     per value), in `Count` too.
   - `explain` with `analyze`: `columnsDecoded` counts only the filter's columns for a chunk without matching rows.
+- **.NET LINQ reads only the columns a whole query uses.** `AsQueryable<T>()` now finds the members a query reads
+  wherever it reads them: `Where`, `Select`, `SelectMany`, `GroupBy`, `Join` (also with another table), nested
+  queries, anonymous objects and groups. Before, only queries ending in `Select` or an aggregate read fewer columns.
+  Every column is still read when the rows may be used in ways the query doesn't show (returned, passed to a method,
+  compared or sorted whole, cast, a computed property). 200,000 orders of 10 members, grouped by region with
+  amounts summed: 1.1 s -> 0.25 s, 261 -> 57 MB allocated.
 - **.NET: filters with `and` / `or` make no objects per row checked.** Each row used to create a lambda and its
   closure.
 - **JS: export shapes are written 2-2.6 times faster, with less memory.** Each template is compiled once into a
