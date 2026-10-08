@@ -216,6 +216,8 @@ const nextTurn = () => new Promise((resolve) => setImmediate(resolve)); // lets 
 
 /** Internal: openTable() passes this as the source, with the reader it shares the open file with. */
 const SHARED = Symbol('jazmin.shared');
+/** Internal: the priority a reader was opened with ('memory', 'balanced' or 'speed'), for exports that batch. */
+export const READ_PRIORITY = Symbol('jazmin.readPriority');
 
 /** Releases a byte source shared by the readers of several tables (openTable): the last one closes it. */
 function release(source) {
@@ -1201,6 +1203,10 @@ export class JazminReader {
   /** Name of the table this reader reads. */
   get table() {
     return this.#table.name;
+  }
+
+  get [READ_PRIORITY]() {
+    return this.#readOptions.priority ?? 'balanced';
   }
 
   /** Index descriptors usable by this reader: [{ column, kind }]. */

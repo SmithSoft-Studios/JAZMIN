@@ -127,6 +127,9 @@ public class ShapeTests
         Assert.Equal(whole, nested.ToJson(unsorted));
         nested.BatchRows = 1;
         Assert.Equal(whole, nested.ToJson(unsorted));
+        nested.BatchRows = null; // by the reader's priority
+        using var speed = JazminReader.Open(Write(rows, new JazminWriteOptions { ChunkRows = 100 }), new JazminReadOptions { Priority = JazminPriority.Speed });
+        Assert.Equal(whole, nested.ToJson(speed));
         Assert.Equal(whole, JazminShape.Parse($$"""{ "$rows": {{nestedBody}}, "$groupBy": "k" }""").ToJson(sorted));
     }
 

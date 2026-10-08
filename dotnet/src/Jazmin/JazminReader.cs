@@ -174,6 +174,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private readonly int _readAhead;
     private readonly int _columnsInFlight; // decoded columns a scan keeps in flight at most (memory budget)
     private readonly JazminPriority _priority;
+
+    /// <summary>The priority this reader was opened with (exports that batch use it).</summary>
+    internal JazminPriority Priority => _priority;
     private readonly SharedStream _io;
     private readonly HeaderDef _header;
     private readonly TableDef _table;

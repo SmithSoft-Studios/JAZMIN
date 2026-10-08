@@ -141,6 +141,7 @@ test('groups: sorted files stream group by group, with the same result as unsort
   const whole = toJSON(unsortedFile, { shape: nested });
   assert.equal(toJSON(unsortedFile, { shape: nested, [SHAPE_BATCH_ROWS]: 50 }), whole);
   assert.equal(toJSON(unsortedFile, { shape: nested, [SHAPE_BATCH_ROWS]: 1 }), whole);
+  assert.equal(toJSON(open(write(null, many, { columns: cols, chunkRows: 100 }), { priority: 'speed' }), { shape: nested }), whole);
   assert.equal(toJSON(sorted, { shape: { ...nested, $sort: undefined } }), whole);
   assert.equal(JSON.parse(whole)[5].all.length, many.filter((r) => r.k === JSON.parse(whole)[5].k && r.v > 100).length);
   // $limit on groups, also when streaming a sorted file.

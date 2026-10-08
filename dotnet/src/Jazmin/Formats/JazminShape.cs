@@ -45,7 +45,7 @@ public sealed class JazminShape
     {
         var root = Compile(reader);
         using var sink = new JsonSink(output, indented);
-        new Engine(reader, sink, BatchRows).Run(root, filter);
+        new Engine(reader, sink, BatchRowsFor(reader)).Run(root, filter);
     }
 
     /// <summary>The shape's output for these rows as XML text.</summary>
@@ -62,7 +62,7 @@ public sealed class JazminShape
         if (!XmlName.IsMatch(root)) throw new JazminValidationException($"'{root}' is not a valid XML element name");
         var compiled = Compile(reader);
         using var sink = new XmlSink(output, root);
-        new Engine(reader, sink, BatchRows).Run(compiled, filter);
+        new Engine(reader, sink, BatchRowsFor(reader)).Run(compiled, filter);
     }
 
     /// <summary>A JSON Schema (draft 2020-12) describing the shape's JSON output for this reader.</summary>
@@ -368,8 +368,14 @@ public sealed class JazminShape
 
     // ---- evaluation ----------------------------------------------------------------------------------
 
-    /// <summary>Rows held at a time when grouping an unsorted file with nested lists (tests use smaller batches).</summary>
-    internal int BatchRows { get; set; } = 100_000;
+    /// <summary>
+    /// Rows held at a time when grouping an unsorted file with nested lists: each batch is one pass over the file. Null
+    /// chooses by the reader's priority: <see cref="JazminPriority.Speed"/> takes larger batches (fewer passes, more
+    /// memory); smaller ones than the default saved little memory for several times the time. Tests set it.
+    /// </summary>
+    internal int? BatchRows { get; set; }
+
+    private int BatchRowsFor(JazminReader reader) => BatchRows ?? (reader.Priority == JazminPriority.Speed ? 1_000_000 : 100_000);
 
     private static bool HasList(Node node) => node switch
     {
@@ -581,8 +587,28 @@ public sealed class JazminShape
             source is MemorySource { } memory && memory.Layout is { } held ? held
                 : new Layout(reader.Columns.Where(c => deep.Contains(c.Name)).ToArray());
 
-        private static string KeyOfRow(ListNode list, IReadOnlyDictionary<string, object?> row) =>
-            KeyOf(list.GroupBy!.Select(c => row.TryGetValue(c.Name, out var v) ? v : null));
+        /// <summary>
+        /// A row's group key: for one grouping column its value, made canonical (no string per row: 1M rows grouped
+        /// in ten passes built ten million); for several, their joined text. Equal keys are one group either way.
+        /// </summary>
+        private static object KeyOfRow(ListNode list, IReadOnlyDictionary<string, object?> row)
+        {
+            if (list.GroupBy!.Length == 1) return KeyValue(row.TryGetValue(list.GroupBy[0].Name, out var v) ? v : null);
+            return KeyOf(list.GroupBy.Select(c => row.TryGetValue(c.Name, out var x) ? x : null));
+        }
+
+        private static readonly object NullKey = new();
+        private static readonly object ZeroKey = 0.0;
+        private static readonly object NaNKey = double.NaN;
+
+        /// <summary>As KeyOf for one value: null alone, -0 with 0, every NaN together; others by their own equality.</summary>
+        private static object KeyValue(object? v) => v switch
+        {
+            null => NullKey,
+            double d when d == 0 => ZeroKey,
+            double d when double.IsNaN(d) => NaNKey,
+            _ => v,
+        };
 
         private sealed class Group(IReadOnlyDictionary<string, object?> first, List<(Agg Agg, Accumulator Acc)> accumulators)
         {
@@ -609,17 +635,17 @@ public sealed class JazminShape
                     .Concat(aggs.Where(a => a.Column is not null).Select(a => a.Column!.Name)).ToHashSet(StringComparer.Ordinal);
                 Group Start(IReadOnlyDictionary<string, object?> row) => new(row, aggs.Select(a => (a, new Accumulator(a))).ToList());
                 void Write(Group g) => Emit(list.Item, new Context(null, null, g.First, g.Accumulators.ToDictionary(x => x.Agg, x => x.Acc.Result())));
-                var groups = new Dictionary<string, Group>(StringComparer.Ordinal);
+                var groups = new Dictionary<object, Group>();
                 var order = new List<Group>();
                 Group? current = null;
-                string? currentKey = null;
+                object? currentKey = null;
                 foreach (var row in source.Find(filter, names))
                 {
                     var key = KeyOfRow(list, row);
                     Group group;
                     if (contiguous)
                     {
-                        if (key != currentKey)
+                        if (!Equals(key, currentKey))
                         {
                             if (current is not null)
                             {
@@ -657,11 +683,11 @@ public sealed class JazminShape
             {
                 // Sorted file: one pass, holding one group's rows at a time.
                 var rows = new List<CompactRow>();
-                string? currentKey = null;
+                object? currentKey = null;
                 foreach (var row in source.Find(filter, deep))
                 {
                     var key = KeyOfRow(list, row);
-                    if (key != currentKey && rows.Count > 0)
+                    if (!Equals(key, currentKey) && rows.Count > 0)
                     {
                         EmitGroup(list, rows, layout);
                         if (++written >= list.Limit) return;
@@ -676,7 +702,7 @@ public sealed class JazminShape
             if (source.InMemory)
             {
                 // Already in memory (a group of an outer list): bucket the rows by key.
-                var buckets = new Dictionary<string, List<CompactRow>>(StringComparer.Ordinal);
+                var buckets = new Dictionary<object, List<CompactRow>>();
                 var inOrder = new List<List<CompactRow>>();
                 foreach (CompactRow row in source.Find(filter, deep))
                 {
@@ -695,8 +721,8 @@ public sealed class JazminShape
             // Unsorted file: find the groups (order, sizes), then collect their rows in batches of at most batchRows rows,
             // one pass per batch, so memory stays bounded however large the file is.
             var keyNames = list.GroupBy.Select(c => c.Name).Concat(list.Sort.Select(s => s.Column.Name)).ToHashSet(StringComparer.Ordinal);
-            var found = new Dictionary<string, Group>(StringComparer.Ordinal);
-            var foundOrder = new List<(string Key, Group Group)>();
+            var found = new Dictionary<object, Group>();
+            var foundOrder = new List<(object Key, Group Group)>();
             foreach (var row in source.Find(filter, keyNames))
             {
                 var key = KeyOfRow(list, row);
@@ -707,7 +733,7 @@ public sealed class JazminShape
                 }
                 group.Count++;
             }
-            IEnumerable<(string Key, Group Group)> ordered = foundOrder;
+            IEnumerable<(object Key, Group Group)> ordered = foundOrder;
             if (list.Sort.Count > 0)
             {
                 var comparer = new SortComparer(list.Sort);
@@ -716,7 +742,7 @@ public sealed class JazminShape
             var selected = ordered.Take((int)Math.Min(list.Limit, int.MaxValue)).ToList();
             for (var start = 0; start < selected.Count;)
             {
-                var batch = new Dictionary<string, Group>(StringComparer.Ordinal);
+                var batch = new Dictionary<object, Group>();
                 var batchOrder = new List<Group>();
                 long held = 0;
                 for (; start < selected.Count && (batch.Count == 0 || held + selected[start].Group.Count <= batchRows); start++)
