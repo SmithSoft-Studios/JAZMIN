@@ -139,6 +139,85 @@ evaluates in a set and produces an array:
 - **Sorting.** `$sort` holds its list's items (or groups) before writing. Prefer file order
   (`sortedBy`) for very large lists.
 
+## 7. Links between tables
+
+In a file with several tables, a list can take its rows from **another table**, linked to the
+row (or set) it is written for, so one shape nests a customer, their orders, each order's lines
+and each line's product.
+
+```json
+{ "$rows": {
+    "id": "id", "name": "name",
+    "orders": { "$from": "orders", "$on": { "customer_id": "id" }, "$sort": ["placed"],
+      "$rows": { "id": "id", "placed": "placed", "total": "total",
+        "lines": { "$from": "order_lines", "$on": { "order_id": "id" },
+          "$rows": { "line": "line", "amount": "amount",
+            "product": { "$from": "products", "$on": { "sku": "sku" }, "$one": { "name": "name", "price": "price" } } } },
+        "lineCount": { "$from": "order_lines", "$on": { "order_id": "id" }, "$one": { "$count": true } } } } } }
+```
+
+- **`$from`** names a table of the file. Inside the list, column names are that table's.
+- **`$on`** pairs the linked table's columns with the columns of the row the list is written
+  for: `{ "customer_id": "id" }` takes the orders whose `customer_id` equals the customer's
+  `id`. Several pairs must all be equal. Paired columns have the same type (bool, int, float,
+  string, datetime or decimal). Values are equal as in filters: decimals by value, NaN and null
+  equal to nothing, so a null on either side links no rows.
+- **`$rows`** (with the list options `$filter`, `$groupBy`, `$sort`, `$limit`, `$xmlItem`) is a
+  list of the linked rows, in the linked table's file order unless sorted. `$filter` uses the
+  linked table's columns. Unlike other lists, a linked list is allowed in a one-row item: it is
+  how a row's details nest.
+- **`$one`** (with `$filter`) is the linked rows as one set: its template is evaluated in that
+  set, so a column gives the first linked row's value, and aggregates and lists cover all of
+  them. It is `null` (in XML, omitted) when no row is linked. Typical uses: the one product of a
+  line, or an order's count and total of lines.
+- The **parent's context** carries on: a link in the root uses the root set's first values, so
+  `toJSON(customers, { shape, filter: { id: 42 } })` with links in the root object exports one
+  customer with their orders. The export's `filter` applies to the reader's own table only.
+- **Shared files:** each linked table is read with the same key, so partitions and column groups
+  apply in every table; a hidden column is an error when the shape is checked, as elsewhere.
+- **Validation** names the place of a mistake: an unknown table, an unknown or hidden column of
+  the linked table or of the parent, types that differ, an empty `$on`, or both `$rows` and `$one`.
+
+**How it runs (informative).** Each link takes one of three paths, chosen once per list:
+
+- **Small linked tables** (up to 10,000 rows with priority `memory`, 100,000 by default,
+  1,000,000 with `speed`) are read once and kept by key: a product looked up for every order
+  line costs a map lookup.
+- **In step with the parents (a merge).** When every link of a list's items follows the sort
+  order, each linked table is read once, front to back, alongside its parents, holding only the
+  current parent's rows. "Follows the sort order" means:
+  - the linked table's `sortedBy` starts with the linked columns (in any order of `$on`);
+  - the parents arrive sorted by the columns they pair with: the reader's table in file order
+    (no `$sort`), or the rows of a link that is itself read in step (no `$sort` or `$groupBy`);
+  - the linked columns are not floats (NaN has no place in the order).
+
+  Nested links must follow it too (a held table's rows come in their parents' order, so links
+  under it must be held as well), otherwise the list uses batches. A parent whose key comes
+  before the last one asked for (repeated parents with links under them) gets its rows with a
+  query of its own, so the result never depends on the path. When a pass skips more than 2,048
+  rows to reach the next parent (a filtered export), it starts again at that parent's key, and
+  chunk statistics skip the rows between.
+- **In batches of parents** otherwise: 2,500 parents with priority `memory`, 10,000 by default,
+  20,000 with `speed`. For each batch, each link is fetched once for all the batch's parents
+  (and recursively for their linked rows): one query with an `in` condition on the linked
+  columns, plus the link's `$filter`. When the linked rows lie scattered, each batch reads about
+  the whole linked table, so larger batches mean fewer passes and more rows held.
+- A link written for a group, or for the root, is fetched for that one parent.
+
+Measured on 100,000 customers, 1,000,000 orders and 2,498,976 lines (customers, their orders,
+lines and each line's product; 360 MB of JSON). The tables exported one by one with the same
+columns take 2.6 s / 70 MB in .NET and 4.8 s / 200 MB in Node.
+
+| Layout | .NET | Node |
+|---|---|---|
+| Sorted by the links: orders by `customer_id, id`, lines by `customer_id, order_id, line`, linked on both columns | 4.5 s / 84 MB | 7.2 s / 220 MB |
+| The same, one customer / 1,000 customers | 0.17 s / 0.44 s | 0.08 s / 0.13 s |
+| Orders and lines in time order (batches), by default | 19 s / 238 MB | 27 s / 578 MB |
+| The same with priority `memory` | 37 s / 100 MB | 64 s / 364 MB |
+
+So when a file is written for nested exports, sort each linked table by its link to the parent
+table, with the parent's own sort columns first.
+
 ## 6. API
 
 | | JavaScript | .NET |

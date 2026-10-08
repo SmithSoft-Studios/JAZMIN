@@ -224,6 +224,27 @@ using (var json = new JazminJsonStream(reader, JazminFilter.Eq("Country", "ZA"))
 using (var text = new StreamReader(json))
     Console.WriteLine($"14. {text.ReadToEnd()[..60]}...");
 
+// --- 15. Across tables: a shape that nests each client's transactions, and LINQ (USER-GUIDE 21.6, 23.2) --
+using (var clientsReader = JazminReader.Open(tablesPath))
+using (var linesReader = clientsReader.OpenTable("transactions"))
+{
+    var linked = JazminShape.Parse("""
+        { "$rows": { "id": "clientId", "name": "name",
+            "transactions": { "$from": "transactions", "$on": { "clientId": "clientId" }, "$rows": "amount" },
+            "total": { "$from": "transactions", "$on": { "clientId": "clientId" }, "$one": { "$sum": "amount" } } } }
+        """);
+    Console.WriteLine("15. " + linked.ToJson(clientsReader)); // both tables sorted by clientId: each read once
+
+    var camel = new JazminSerializerSettings { NamingStrategy = JazminNamingStrategy.CamelCase }; // ClientId -> clientId
+    var clientRows = clientsReader.AsQueryable<Client>(camel);
+    var transactionRows = linesReader.AsQueryable<Transaction>(camel);
+    string name = clientRows.Where(c => c.ClientId == "C1").Select(c => c.Name).Single();       // lambda syntax
+    var amounts = (from t in transactionRows where t.ClientId == "C1" select t.Amount).ToList(); // query syntax
+    var ids = clientRows.Where(c => c.Name.StartsWith("B")).Select(c => c.ClientId).ToList();
+    var theirs = transactionRows.Where(t => ids.Contains(t.ClientId)).ToList();                  // an `in` filter
+    Console.WriteLine($"    {name}: {string.Join(" + ", amounts)}; clients starting with B have {theirs.Count} transaction(s)");
+}
+
 Directory.Delete(dir, true);
 
 public readonly record struct Money(long Cents, string Currency);
@@ -238,6 +259,18 @@ public sealed class MoneyConverter : JazminConverter<Money>
         var parts = ((string)stored).Split(' ');
         return new Money(long.Parse(parts[0]), parts[1]);
     }
+}
+
+public class Client
+{
+    public string ClientId { get; set; } = "";
+    public string Name { get; set; } = "";
+}
+
+public class Transaction
+{
+    public string ClientId { get; set; } = "";
+    public double Amount { get; set; }
 }
 
 public class Order

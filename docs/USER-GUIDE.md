@@ -2347,6 +2347,7 @@ var settings = new JazminSerializerSettings { Priority = JazminPriority.Memory }
 | Node writes | this thread only | up to 2 worker threads | as balanced: 4 threads were no faster than 2 |
 | Node reads | this thread | this thread | the next chunks decompressed on worker threads while rows are built: up to 4, or 2 when a scan decodes more than a quarter of the columns |
 | Export shapes over unsorted files (21.5) | batches of 100,000 rows | batches of 100,000 rows | batches of 1,000,000 rows: fewer passes over the file |
+| Export shapes across tables (21.6) | linked tables of up to 10,000 rows held; otherwise batches of 2,500 parents | up to 100,000 rows held; batches of 10,000 | up to 1,000,000 rows held; batches of 20,000 |
 
 Measured on 200,000 rows × 300 columns (20 cores; medians of 3 to 5 runs,
 each in its own process, the modes taking turns; peak memory of the
@@ -2612,6 +2613,8 @@ XML output: members become elements, and list items use `$xmlItem`.
 | `{ "$count": true }` | Number of rows | in a set |
 | `{ "$sum": "c" }`, `{ "$min": "c" }`, `{ "$max": "c" }` | Total, smallest, largest (null if there are no values) | in a set |
 | `{ "$rows": ... }` | A list | in a set |
+| `{ "$from": "table", "$on": { ... }, "$rows": ... }` | A list of rows from another table, linked to this row (21.6) | anywhere |
+| `{ "$from": "table", "$on": { ... }, "$one": ... }` | The linked rows as one set: their first values and totals (21.6) | anywhere |
 
 A **set** is the whole file (or the export's `filter`), or a group of a
 `$groupBy` list. Inside a list without `$groupBy`, each item is **one row**,
@@ -2702,6 +2705,92 @@ File.WriteAllText("statement.schema.json", shape.ToJsonSchema(reader).ToJsonStri
   rely on the file's own order instead.
 - **Stream to disk** with `exportFile` (JS) or `WriteJson` / `WriteXml`
   (.NET) instead of building a string.
+
+### 21.6 Nest rows from other tables
+
+In a file with several tables (section 23), a list can take its rows from
+**another table**, linked to the row it is written for. One shape then
+nests each customer's orders, each order's lines, and each line's product:
+
+```json
+{ "$rows": {
+    "id": "id", "name": "name",
+    "orders": { "$from": "orders", "$on": { "customer_id": "id" },
+      "$rows": { "id": "id", "placed": "placed", "total": "total",
+        "lines": { "$from": "order_lines", "$on": { "customer_id": "customer_id", "order_id": "id" },
+          "$rows": { "line": "line", "quantity": "quantity", "amount": "amount",
+            "product": { "$from": "products", "$on": { "sku": "sku" }, "$one": { "name": "name", "price": "price" } } } },
+        "lineCount": { "$from": "order_lines", "$on": { "customer_id": "customer_id", "order_id": "id" }, "$one": { "$count": true } } } } } }
+```
+
+```js
+const customers = open('shop.jzm');                       // the first table: customers
+toJSON(customers, { shape, filter: { id: 4242 } });        // one customer, with all their details
+exportFile(customers, 'json', 'shop.json', { shape });     // every customer, streamed to disk
+```
+
+```csharp
+var shape = JazminShape.Parse(File.ReadAllText("customer-shape.json"));   // the same JSON as above
+using var customers = JazminReader.Open("shop.jzm");
+Console.WriteLine(shape.ToJson(customers, JazminFilter.Eq("id", 4242L))); // one customer
+using (var output = File.Create("shop.json")) shape.WriteJson(customers, output);
+```
+
+| In the shape | Meaning |
+|---|---|
+| `$from` | The table the rows come from. Inside the list, column names are that table's |
+| `$on` | Pairs `{ linked column: column of the row it is written for }`. Rows are linked when every pair is equal, as in filters: decimals by value, and a null links nothing. Paired columns have the same type |
+| `$rows` | A list of the linked rows, in the linked table's order unless `$sort` says otherwise. `$filter` (the linked table's columns), `$groupBy`, `$sort`, `$limit` and `$xmlItem` work as on other lists. Unlike other lists, it is allowed in a one-row item: that is how a row's details nest |
+| `$one` | The linked rows as one set: a column gives the first linked row's value, and totals cover all of them. `null` when nothing is linked (in XML, omitted) |
+
+- **The export's `filter`** applies to the reader's own table, so the
+  filter above picks the customer, and the links follow.
+- **Only the columns the shape uses** are read from each table.
+- **Shared files:** each linked table is read with the same key, so a key
+  sees only its partitions and column groups in every table.
+- **Checked up front,** as any shape: an unknown table, an unknown or hidden
+  column, or paired columns of different types are named before any data is
+  read.
+
+**Keep linked exports fast and small: sort each linked table by its link.**
+When a linked table is sorted by the columns of its link, and its parents
+come in that order, the libraries read it once, front to back, in step with
+its parents, and hold only the current parent's rows. The parents come in
+that order when the parent table is sorted by the columns they pair with,
+and their list has no `$sort`. For the shape above:
+
+```js
+tables: [
+  { name: 'customers', columns: customerColumns, sortedBy: ['id'] },
+  { name: 'products', columns: productColumns, sortedBy: ['sku'] },
+  { name: 'orders', columns: orderColumns, sortedBy: ['customer_id', 'id'] },
+  { name: 'order_lines', columns: lineColumns, sortedBy: ['customer_id', 'order_id', 'line'] },
+]
+```
+
+The lines are linked on both `customer_id` and `order_id`. Orders arrive
+sorted by `customer_id, id`, so lines sorted by `customer_id, order_id`
+follow them.
+
+- **Small linked tables,** such as products, are read once and kept by key:
+  up to 10,000 rows with priority `memory`, 100,000 by default, and
+  1,000,000 with `speed` (section 20.4).
+- **Otherwise,** parents are written in batches (2,500 with `memory`, 10,000
+  by default, 20,000 with `speed`). Each batch fetches its linked rows with
+  one query per link. When those rows lie scattered, each batch reads about
+  the whole linked table, so larger batches are faster and hold more rows.
+
+Measured on 100,000 customers, 1,000,000 orders and 2,498,976 lines, with
+the shape above (360 MB of JSON). Exporting the three tables one by one,
+with the same columns, takes 2.6 s (70 MB) in .NET and 4.8 s (200 MB) in
+Node.
+
+| File | .NET | Node |
+|---|---|---|
+| Sorted by the links, as above | 4.5 s, 84 MB | 7.2 s, 220 MB |
+| The same, one customer / 1,000 customers | 0.17 s / 0.44 s | 0.08 s / 0.13 s |
+| Orders and lines in time order (batches), by default | 19 s, 238 MB | 27 s, 578 MB |
+| The same with priority `memory` | 37 s, 100 MB | 64 s, 364 MB |
 
 ---
 
@@ -2876,6 +2965,30 @@ using var transactions = clients.OpenTable("transactions");     // or Table = "t
 var client = clients.Find(JazminFilter.Eq("clientId", "C00042")).Single();
 var lines = transactions.Find(JazminFilter.Eq("clientId", "C00042")).ToList();
 ```
+
+**With LINQ (.NET).** Each table has its own `AsQueryable<T>()` (section
+8.3). Lambda (method) syntax and query syntax both work, and the reader runs
+the filter, the columns and the order it can:
+
+```csharp
+var camel = new JazminSerializerSettings { NamingStrategy = JazminNamingStrategy.CamelCase }; // ClientId -> clientId
+var clientRows = clients.AsQueryable<Client>(camel);
+var transactionRows = transactions.AsQueryable<Transaction>(camel);
+
+string name = clientRows.Where(c => c.ClientId == "C00042").Select(c => c.Name).Single();   // reads 2 columns
+var amounts = (from t in transactionRows
+               where t.ClientId == "C00042"
+               select t.Amount).ToList();                                                    // the same in query syntax
+
+// Two tables: filter each in its reader, then join the results in memory.
+var ids = clientRows.Where(c => c.Name.StartsWith("A")).Select(c => c.ClientId).ToList();
+var theirs = transactionRows.Where(t => ids.Contains(t.ClientId)).ToList();                 // an `in` filter
+```
+
+A LINQ `Join` or `GroupBy` across tables runs in memory, as LINQ to
+Objects. For nested output (each client with their transactions), use an
+export shape with `$from` (section 21.6): it reads each table once when they
+are sorted by the link.
 
 ### 23.3 Access control across tables
 

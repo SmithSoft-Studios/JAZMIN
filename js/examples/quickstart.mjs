@@ -144,6 +144,14 @@ write(tablesFile, {
 const clientsReader = open(tablesFile);
 const linesReader = clientsReader.openTable('transactions'); // same open file, no second open
 console.log('11.', clientsReader.tables, [...clientsReader.find({ clientId: 'C1' })][0].name, [...linesReader.find({ clientId: 'C1' })].length, 'lines');
+// Each client with their transactions, nested by an export shape that links the tables (USER-GUIDE 21.6).
+// Both tables are sorted by clientId, so each is read once.
+const linked = { $rows: {
+  id: 'clientId', name: 'name',
+  transactions: { $from: 'transactions', $on: { clientId: 'clientId' }, $rows: 'amount' },
+  total: { $from: 'transactions', $on: { clientId: 'clientId' }, $one: { $sum: 'amount' } },
+} };
+console.log('   ', toJSON(clientsReader, { shape: linked })); // [{"id":"C1","name":"Acme","transactions":[10,5],"total":15},...]
 linesReader.close();
 clientsReader.close();
 

@@ -5,7 +5,25 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased
 
+### Added
+- **Export shapes across tables: `$from`, `$on` and `$one`.** In a file with several tables, a list in a shape can
+  take its rows from another table, linked to the row it is written for. One export then nests customers, their
+  orders, each order's lines and each line's product (USER-GUIDE 21.6; design note section 7).
+  - Only the columns the shape uses are read from each table. The export's filter picks the parents, and the links
+    follow. A key sees only its partitions and columns, in every table.
+  - **Fast when each linked table is sorted by its link:** it is read once, in step with its parents, holding one
+    parent's rows. 100,000 customers, 1M orders and 2.5M lines (360 MB of JSON): .NET 4.5 s / 84 MB, Node 7.2 s /
+    220 MB; one customer 0.17 s / 0.08 s.
+  - **Otherwise,** small linked tables are kept by key (up to 10,000, 100,000 or 1,000,000 rows by priority), and
+    larger ones are read per batch of parents (2,500, 10,000 or 20,000). The same export with orders and lines in
+    time order takes 19 s / 238 MB in .NET and 27 s / 578 MB in Node.
+  - No file format change.
+- **Examples of LINQ across tables (.NET):** lambda and query syntax over each table's `AsQueryable<T>()`
+  (USER-GUIDE 23.2, sample 15).
+
 ### Changed
+- **.NET: filters with `and` / `or` make no objects per row checked.** Each row used to create a lambda and its
+  closure.
 - **JS: export shapes are written 2-2.6 times faster, with less memory.** Each template is compiled once into a
   function per place in the output, so a list's rows cost one call each instead of work per value. The output is the
   same, byte for byte (a new test compares 30 exports recorded with 1.2.0).
