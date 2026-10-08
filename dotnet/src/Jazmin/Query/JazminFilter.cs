@@ -22,6 +22,22 @@ public abstract class JazminFilter
     public static JazminFilter IContains(string column, string text) => new Condition(column, "icontains", text);
     public static JazminFilter StartsWith(string column, string text) => new Condition(column, "startsWith", text);
     public static JazminFilter IsNull(string column, bool isNull = true) => new Condition(column, "isNull", isNull);
+
+    /// <summary>
+    /// A list column (spec 5.4) with at least one item that matches <paramref name="items"/>: a filter of the items'
+    /// fields, or for items that are not objects a condition on the item itself (<see cref="Itself"/>). Conditions in one
+    /// filter apply to the same item. A null list matches nothing; an empty one has no item that matches.
+    /// </summary>
+    public static JazminFilter Any(string column, JazminFilter items) => new Condition(column, "any", items);
+
+    /// <summary>A list column whose items all match <paramref name="items"/> (see <see cref="Any"/>): an empty list does; a null one does not.</summary>
+    public static JazminFilter All(string column, JazminFilter items) => new Condition(column, "all", items);
+
+    /// <summary>An object column (spec 5.4) whose fields match <paramref name="fields"/>: a null object matches nothing.</summary>
+    public static JazminFilter Match(string column, JazminFilter fields) => new Condition(column, "match", fields);
+
+    /// <summary>In a condition on list items that are not objects: the item itself, as in <c>Any("tags", Eq(JazminFilter.Itself, "vip"))</c>.</summary>
+    public const string Itself = "";
     public static JazminFilter And(params JazminFilter[] items) => new Group("and", items);
     public static JazminFilter Or(params JazminFilter[] items) => new Group("or", items);
     public static JazminFilter Not(JazminFilter item) => new Negation(item);
@@ -72,9 +88,17 @@ public abstract class JazminFilter
         foreach (var op in value.EnumerateObject())
         {
             any = true;
-            yield return new Condition(column, op.Name, Operand(op.Value));
+            // any / all / match hold a filter of a list's items or an object's fields: read once the column's definition is known.
+            yield return new Condition(column, op.Name, op.Name is "any" or "all" or "match" ? op.Value.Clone() : Operand(op.Value));
         }
         if (!any) throw Invalid($"empty condition for '{column}'");
+    }
+
+    /// <summary>The condition (JSON) on a list item that is not an object: the item itself is <see cref="Itself"/>.</summary>
+    internal static JazminFilter ItemConditions(JsonElement value)
+    {
+        var items = Conditions(Itself, value).ToArray();
+        return items.Length == 1 ? items[0] : new Group("and", items);
     }
 
     private static object? Operand(JsonElement e) => e.ValueKind switch
@@ -83,7 +107,7 @@ public abstract class JazminFilter
         JsonValueKind.True => true,
         JsonValueKind.False => false,
         JsonValueKind.String => e.GetString(),
-        JsonValueKind.Number => e.TryGetInt64(out var l) ? l : e.GetDouble(),
+        JsonValueKind.Number => e.TryGetInt64(out var l) ? l : (object)e.GetDouble(), // whole numbers stay exact (not a double)
         JsonValueKind.Array => e.EnumerateArray().Select(Operand).ToArray(),
         _ => throw Invalid("unsupported operand"),
     };

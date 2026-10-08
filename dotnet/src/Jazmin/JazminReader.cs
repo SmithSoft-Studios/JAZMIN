@@ -1634,6 +1634,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         switch (node)
         {
             case BoundFilter.Leaf leaf: into.Add(leaf.Col); break;
+            case BoundFilter.Nested nested: into.Add(nested.Col); break;
             case BoundFilter.Not not: CollectColumns(not.Item, into); break;
             case BoundFilter.And and: foreach (var item in and.Items) CollectColumns(item, into); break;
             case BoundFilter.Or or: foreach (var item in or.Items) CollectColumns(item, into); break;

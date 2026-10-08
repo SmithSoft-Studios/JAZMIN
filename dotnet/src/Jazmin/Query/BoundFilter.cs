@@ -12,6 +12,13 @@ internal abstract record BoundFilter
 
     public sealed record Not(BoundFilter Item) : BoundFilter;
 
+    /// <summary>
+    /// A condition on a nested column's lists (any, all: <see cref="Inner"/> on each item) or object (match: on its fields).
+    /// <see cref="Part"/> is what <see cref="Inner"/> is bound to: the object (its fields by position), or an item that is
+    /// not an object (the item itself at position 0).
+    /// </summary>
+    public sealed record Nested(int Col, string Name, string Op, BoundFilter Inner, JazminColumn Part) : BoundFilter;
+
     public sealed record Leaf(int Col, string Name, JazminType Type, string Op, object? Value) : BoundFilter
     {
         /// <summary>For `in`: the listed keys as a hash set and in order (null for other operators).</summary>
@@ -20,7 +27,7 @@ internal abstract record BoundFilter
 
     private static readonly HashSet<string> RangeOps = new() { "gt", "gte", "lt", "lte" };
     private static readonly HashSet<string> StringOps = new() { "contains", "icontains", "startsWith" };
-    private static readonly HashSet<string> AllOps = new(RangeOps.Concat(StringOps)) { "eq", "ne", "in", "isNull" };
+    private static readonly HashSet<string> AllOps = new(RangeOps.Concat(StringOps)) { "eq", "ne", "in", "isNull", "any", "all", "match" };
 
     public static BoundFilter? Bind(JazminFilter? filter, IReadOnlyList<JazminColumn> columns)
     {
@@ -47,8 +54,28 @@ internal abstract record BoundFilter
         var column = columns[col];
         Leaf Make(string op, object? value) => new(col, column.Name, column.Type, op, value);
 
+        if (c.Op is "any" or "all" or "match")
+        {
+            var isMatch = c.Op == "match";
+            if (column.Type != (isMatch ? JazminType.Object : JazminType.List))
+                throw JazminFilter.Invalid($"'{c.Op}' only applies to {(isMatch ? "object" : "list")} columns, and '{column.Name}' is a {TypeNames.ToName(column.Type)}");
+            var part = isMatch ? column : column.Item!; // what the inner filter is about
+            var inner = c.Value switch
+            {
+                JazminFilter f => f,
+                System.Text.Json.JsonElement e when part.Type == JazminType.Object => JazminFilter.FromJson(e),
+                System.Text.Json.JsonElement e => JazminFilter.ItemConditions(e),
+                _ => throw JazminFilter.Invalid($"'{c.Op}' needs a filter"),
+            };
+            var bound = part.Type == JazminType.Object
+                ? Bind(inner, part.Fields!, part.Fields!.Select((f, i) => (f.Name, i)).ToDictionary(x => x.Name, x => x.i, StringComparer.Ordinal))
+                : Bind(inner, [part], new Dictionary<string, int>(StringComparer.Ordinal) { [JazminFilter.Itself] = 0 });
+            return new Nested(col, column.Name, c.Op, bound, part);
+        }
+
         if (c.Op == "isNull")
             return c.Value is bool b ? Make("isNull", b) : throw JazminFilter.Invalid("'isNull' needs true or false");
+        if (c.Op is "eq" or "ne" && c.Value is null) return Make("isNull", c.Op == "eq"); // { "col": null }, for any type (spec 9.1)
         if (StringOps.Contains(c.Op))
         {
             if (column.Type != JazminType.String) throw JazminFilter.Invalid($"'{c.Op}' only applies to string columns");
@@ -96,6 +123,12 @@ internal abstract record BoundFilter
                     _ => value,
                 },
                 JazminType.Bool => value is string s ? bool.Parse(s) : value,
+                JazminType.Decimal => value switch // JSON numbers: as text, which decimals are read from
+                {
+                    long l => l.ToString(CultureInfo.InvariantCulture),
+                    double d => d.ToString("R", CultureInfo.InvariantCulture),
+                    _ => value,
+                },
                 JazminType.String => value is string ? value : Convert.ToString(value, CultureInfo.InvariantCulture),
                 _ => value,
             };
@@ -160,6 +193,7 @@ internal static class FilterEngine
         switch (node)
         {
             case BoundFilter.Leaf l: return EvaluateLeaf(l, row[l.Col]);
+            case BoundFilter.Nested n: return EvaluateNested(n, row[n.Col]);
             case BoundFilter.And a:
                 foreach (var item in a.Items)
                     if (!Evaluate(item, row)) return false;
@@ -186,6 +220,8 @@ internal static class FilterEngine
                 if (l.Op == "isNull") return column.IsNull(r) == (bool)l.Value!;
                 if (column is LongValues longs && !longs.IsNull(r) && LongLeaf(l, longs.Values[r]) is { } match) return match;
                 return EvaluateLeaf(l, column.Get(r));
+            case BoundFilter.Nested n:
+                return columns[n.Col] is NestedValues nested ? EvaluateNested(n, nested.Root, r) : EvaluateNested(n, columns[n.Col]!.Get(r));
             case BoundFilter.And a:
                 foreach (var item in a.Items)
                     if (!Evaluate(item, columns, r)) return false;
@@ -198,6 +234,93 @@ internal static class FilterEngine
             default: return false;
         }
     }
+
+    // ---- nested columns (spec 5.4, 9.2): any and all on a list's items, match on an object's fields ----
+
+    private static readonly object Present = new(); // a nested value that is there (for isNull)
+
+    /// <summary>A nested column's condition on a value as an untyped row holds it (JSON).</summary>
+    private static bool EvaluateNested(BoundFilter.Nested n, object? value)
+    {
+        if (value is not System.Text.Json.Nodes.JsonNode node) return false; // a null list or object matches nothing
+        if (n.Op == "match") return node is System.Text.Json.Nodes.JsonObject fields && Evaluate(n.Inner, FieldValues(n.Part, fields));
+        if (node is not System.Text.Json.Nodes.JsonArray items) return false;
+        foreach (var item in items)
+        {
+            var matched = n.Part.Type == JazminType.Object
+                ? item is System.Text.Json.Nodes.JsonObject fields && Evaluate(n.Inner, FieldValues(n.Part, fields)) // a null object has no field that matches
+                : Evaluate(n.Inner, [Stored(n.Part, item)]);
+            if (matched == (n.Op == "any")) return matched;
+        }
+        return n.Op == "all";
+    }
+
+    private static object?[] FieldValues(JazminColumn part, System.Text.Json.Nodes.JsonObject fields) =>
+        [.. part.Fields!.Select(f => Stored(f, fields[f.Name]))];
+
+    /// <summary>A field's or item's JSON in the form conditions compare (lists and objects stay JSON).</summary>
+    private static object? Stored(JazminColumn c, System.Text.Json.Nodes.JsonNode? node) =>
+        node is null ? null : TypeNames.IsNested(c.Type) || c.Type == JazminType.Json ? node : Format.Nested.Normalize(c, node, c.Name, null);
+
+    /// <summary>A nested column's condition on a decoded part (<paramref name="node"/>, entry <paramref name="entry"/>), from its typed values.</summary>
+    private static bool EvaluateNested(BoundFilter.Nested n, NestedNode node, int entry)
+    {
+        if (node.IsNull(entry)) return false;
+        var k = node.Rank(entry);
+        if (n.Op == "match") return EvaluateFields(n.Inner, node, k);
+        var items = node.Items!;
+        for (var i = node.ItemsFrom(k); i < node.ItemsTo(k); i++)
+        {
+            var matched = n.Part.Type == JazminType.Object
+                ? !items.IsNull(i) && EvaluateFields(n.Inner, items, items.Rank(i))
+                : EvaluateItem(n.Inner, items, i);
+            if (matched == (n.Op == "any")) return matched;
+        }
+        return n.Op == "all";
+    }
+
+    /// <summary>A filter of an object's fields: <paramref name="obj"/>'s fields at its <paramref name="k"/>-th object that is not null.</summary>
+    private static bool EvaluateFields(BoundFilter f, NestedNode obj, int k)
+    {
+        switch (f)
+        {
+            case BoundFilter.Leaf l: return EvaluateLeaf(l, obj.Fields![l.Col] is { } field ? ValueAt(field, k) : null);
+            case BoundFilter.Nested n: return obj.Fields![n.Col] is { } part && EvaluateNested(n, part, k);
+            case BoundFilter.And a:
+                foreach (var item in a.Items)
+                    if (!EvaluateFields(item, obj, k)) return false;
+                return true;
+            case BoundFilter.Or o:
+                foreach (var item in o.Items)
+                    if (EvaluateFields(item, obj, k)) return true;
+                return false;
+            case BoundFilter.Not not: return !EvaluateFields(not.Item, obj, k);
+            default: return false;
+        }
+    }
+
+    /// <summary>A condition on a list item that is not an object: the item itself is position 0.</summary>
+    private static bool EvaluateItem(BoundFilter f, NestedNode items, int i)
+    {
+        switch (f)
+        {
+            case BoundFilter.Leaf l: return EvaluateLeaf(l, ValueAt(items, i));
+            case BoundFilter.Nested n: return EvaluateNested(n, items, i);
+            case BoundFilter.And a:
+                foreach (var item in a.Items)
+                    if (!EvaluateItem(item, items, i)) return false;
+                return true;
+            case BoundFilter.Or o:
+                foreach (var item in o.Items)
+                    if (EvaluateItem(item, items, i)) return true;
+                return false;
+            case BoundFilter.Not not: return !EvaluateItem(not.Item, items, i);
+            default: return false;
+        }
+    }
+
+    private static object? ValueAt(NestedNode part, int entry) =>
+        part.Leaf is { } leaf ? leaf.Get(entry - part.Base) : part.IsNull(entry) ? null : Present;
 
     /// <summary>An integer or date (as stored) against the leaf's operand; null when the leaf compares otherwise.</summary>
     private static bool? LongLeaf(BoundFilter.Leaf leaf, long value) => leaf.Op switch
