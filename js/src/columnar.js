@@ -827,9 +827,9 @@ function missingField(field, count, ordinal) {
   return new Array(count).fill(null);
 }
 
-/** Builds an object of a definition's fields from their decoded parts: compiled once per list of field names. */
-function objectMaker(column) {
-  const names = column.fields.map((f) => f.name);
+/** Builds an object of these fields from their decoded parts: compiled once per list of field names. */
+function objectMaker(fields) {
+  const names = fields.map((f) => f.name);
   const key = JSON.stringify(names);
   let make = objectMakers.get(key);
   if (make) return make;
@@ -927,16 +927,24 @@ function decodeNested(stream, end, column, entries, nulls, ordinal, rows, lo = 0
       k++;
     }
   } else {
-    const parts = column.fields.map((field) => {
-      if (stream.pos === end) return missingField(field, sliced ? kHi - kLo : present, ordinal); // added since (spec 5.4)
+    // Fields marked unread (a filter that reads only some) are passed over, and left out of the objects.
+    const read = column.fields.filter((field) => !field.unread);
+    const parts = [];
+    for (const field of column.fields) {
+      if (stream.pos === end) { // added since (spec 5.4)
+        const missing = missingField(field, field.unread ? 0 : sliced ? kHi - kLo : present, ordinal);
+        if (!field.unread) parts.push(missing);
+        continue;
+      }
       const partEndAt = partEnd(stream, end, ordinal);
-      const values = sliced
-        ? decodePart(raw, stream.pos, partEndAt, field, present, ordinal, null, kLo, kHi)
-        : decodePart(raw, stream.pos, partEndAt, field, present, ordinal, partRows);
+      if (!field.unread) {
+        parts.push(sliced
+          ? decodePart(raw, stream.pos, partEndAt, field, present, ordinal, null, kLo, kHi)
+          : decodePart(raw, stream.pos, partEndAt, field, present, ordinal, partRows));
+      }
       stream.pos = partEndAt;
-      return values;
-    });
-    const make = objectMaker(column);
+    }
+    const make = objectMaker(read);
     const partBase = sliced ? kLo : 0;
     for (let e = lo, k = kLo; e < hi; e++) {
       if (isNull(e)) {

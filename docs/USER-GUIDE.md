@@ -752,9 +752,12 @@ operators, each with a filter of their own:
 They nest: `{ "departments": { "any": { "employees": { "any": { "role":
 "Lead" } } } } }`. A null list or object matches nothing. In .NET,
 `JazminFilter.Any`, `All` and `Match` build the same filters
-(`JazminFilter.Itself` names the item of a list of plain values), and a
-nested column the filter checks but the rows don't return is decoded with
-only the fields the filter reads.
+(`JazminFilter.Itself` names the item of a list of plain values).
+
+A nested column the filter checks but the rows don't return (a `select`
+without it, or `count`) is decoded with only the fields the filter reads.
+On 5,000 companies in Node.js, the names of those with an employee of a
+given id take 35-40 ms and 80 MB instead of 186 ms and 197 MB.
 
 ### 8.2 GraphQL
 

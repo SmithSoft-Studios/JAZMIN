@@ -241,6 +241,7 @@ for (const writer of ['js', 'dotnet']) {
       for (const { filter, ids } of nestedFilters) {
         assert.ok(ids.length > 0 && ids.length < nested.rows.length, JSON.stringify(filter));
         assert.deepEqual([...reader.find(filter)].map((r) => r.id), ids, JSON.stringify(filter));
+        assert.deepEqual([...reader.find(filter, { select: ['id'] })].map((r) => r.id), ids); // the filter's fields only
         assert.equal(reader.count(filter), ids.length);
       }
     } finally {

@@ -39,8 +39,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   - **Filters on nested columns:** `any` and `all` on a list's items, `match` on an object's fields, to any depth
     (spec 9.2, USER-GUIDE 8.1), in both libraries and the browser reader. The conditions of one `any` apply to the
     same item; a null list or object matches nothing; an empty list fails `any` and passes `all`. .NET builds them
-    with `JazminFilter.Any`, `All`, `Match` and `Itself`; a nested column the filter checks but the rows don't
-    return is decoded with only the fields the filter reads. Interop fixture `nested-filters.json`.
+    with `JazminFilter.Any`, `All`, `Match` and `Itself`. Interop fixture `nested-filters.json`.
+  - **A nested column a filter checks but the rows don't return is decoded with only the fields the filter reads,**
+    in both libraries (`find` with a `select` without it, `count`). Node.js, 5,000 companies: the names of those
+    with an employee of a given id 186 -> 35-40 ms, peak 197 -> 80 MB; counting those with employees hired after
+    2020 162-176 -> 43-57 ms, peak 197 -> 88 MB. Checking an item no longer makes an array of its fields.
   - **.NET LINQ conditions on nested columns become those filters** (USER-GUIDE 8.3): `Any` and `All` with a
     lambda, `Contains` on a list of values, and member chains such as `o.Ship.City`. They're checked as chunks are
     decoded, with only the fields they and the query read. 5,000 companies: the names of those with an employee of

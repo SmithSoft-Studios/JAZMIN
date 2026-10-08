@@ -19,7 +19,7 @@ import {
 import { JazminFormatError, JazminKeyError, JazminValidationError } from './errors.js';
 import { enforceExpiry, toMs } from './expiry.js';
 import { EVERYONE } from './files.js';
-import { answeredExactly, evaluate, indexPlan, mayMatch, mustMatch, normalizeFilter } from './filter.js';
+import { answeredExactly, evaluate, filterReads, indexPlan, mayMatch, mustMatch, normalizeFilter } from './filter.js';
 import { CompositeIndex, LazyTrigramIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
 import { JazminAccessKey, JazminKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
 import { checkPriority, readThreads } from './priority.js';
@@ -467,7 +467,8 @@ export class JazminReader {
   #readAheads = []; // ranges read ahead (#readAhead) while they are held
   #map; // the owner's chunk map (#chunkMap): undefined until looked up, null when there is none
   #grantKeys = new Map(); // grant key text -> parsed access key (owner)
-  #cachedChunk = { ordinal: -1, wanted: null, chunk: null }; // the last chunk decoded, and the columns decoded (null: all)
+  // The last chunk decoded, the columns decoded (null: all) and the definitions they were decoded with.
+  #cachedChunk = { ordinal: -1, wanted: null, types: null, chunk: null };
   #sortStatsComplete; // computed on first sorted scan
   #flags = 0;
   #deleted = []; // sorted row ids removed by appends
@@ -1544,9 +1545,10 @@ export class JazminReader {
    * deleted. `wanted` (by column position) limits the columns decoded, and a column group none of whose columns is
    * wanted is not read at all. Rows are built from the columns only for the rows a query looks at (chunkRow).
    */
-  #chunk(ordinal, wanted = null) {
+  #chunk(ordinal, wanted = null, types = this.#streamTypes) {
     const cached = this.#cachedChunk;
-    if (cached.ordinal === ordinal && decodedAll(cached.wanted, wanted)) return cached.chunk;
+    // A chunk decoded whole serves any query; one decoded with some nested fields left out serves only its own.
+    if (cached.ordinal === ordinal && decodedAll(cached.wanted, wanted) && (cached.types === this.#streamTypes || cached.types === types)) return cached.chunk;
     const rowCount = this.#rowCount[ordinal];
     const columns = new Array(this.#columns.length).fill(null);
     const partitionSecret = this.#access ? this.#partitionSecret(this.#chunkPartition[ordinal]) : null;
@@ -1560,7 +1562,7 @@ export class JazminReader {
         ? partKey(partitionSecret, this.#columnSecret(group.name), this.#salt, sectionId)
         : this.#keys?.sectionKey(KEYRING_GROUPS.data, sectionId);
       const raw = this.#read(this.#part(ordinal, g), sectionId, key);
-      const decoded = decodeColumnar(raw, group.cols.map((c) => this.#streamTypes[c]), rowCount, ordinal, groupWanted ?? undefined);
+      const decoded = decodeColumnar(raw, group.cols.map((c) => types[c]), rowCount, ordinal, groupWanted ?? undefined);
       if (this.#cost) this.#cost.columnsDecoded += groupWanted ? groupWanted.filter(Boolean).length : group.cols.length;
       group.cols.forEach((col, j) => {
         if (!groupWanted || groupWanted[j]) columns[col] = decoded[j];
@@ -1576,7 +1578,7 @@ export class JazminReader {
     const decodedCols = [];
     for (let c = 0; c < columns.length; c++) if (columns[c] !== null) decodedCols.push(c);
     const chunk = { columns, decoded: decodedCols, deleted, rowCount };
-    this.#cachedChunk = { ordinal, wanted, chunk };
+    this.#cachedChunk = { ordinal, wanted, types, chunk };
     if (this.#cost) this.#cost.chunksRead++;
     return chunk;
   }
@@ -2005,6 +2007,23 @@ export class JazminReader {
     for (const item of this.#iterate(plan, offset, limit, ticks, wanted, rowIds, sink)) yield item === NEXT_CHUNK ? item : make(item[1]);
   }
 
+  /**
+   * The definitions a query's filter columns are decoded with: a nested column the filter checks and the rows don't
+   * return, with only the fields the filter reads (the others' streams are passed over). The file's otherwise.
+   */
+  #filterTypes(plan, selection) {
+    let types = this.#streamTypes;
+    for (const c of planColumns(plan)) {
+      const column = this.#columns[c];
+      if (selection.includes(c) || (column.type !== 'list' && column.type !== 'object')) continue;
+      const read = filterReads(column, c, plan);
+      if (read === column) continue;
+      if (types === this.#streamTypes) types = [...types];
+      types[c] = read;
+    }
+    return types;
+  }
+
   /** By column position: the columns a query decodes - those its filter reads and those it returns. */
   #wantedColumns(plan, selection) {
     const used = plan ? planColumns(plan) : new Set();
@@ -2027,6 +2046,7 @@ export class JazminReader {
     const filterAt = filterCols ? filterCols.flatMap((w, c) => (w ? [c] : [])) : [];
     const rest = filterCols ? wanted.map((w, c) => w && !filterCols[c]) : null;
     const restCount = rest ? rest.filter(Boolean).length : 0;
+    const filterTypes = plan ? this.#filterTypes(plan, selection) : null;
     const whole = this.#wholeChunkTest(plan);
     let skipped = 0;
     let yielded = 0;
@@ -2046,7 +2066,7 @@ export class JazminReader {
       else {
         const raw = this.#readChunk(ordinal);
         const rowCount = this.#rowCount[ordinal];
-        columns = decodeColumnar(raw, this.#streamTypes, rowCount, ordinal, filterCols, sink !== undefined);
+        columns = decodeColumnar(raw, filterTypes, rowCount, ordinal, filterCols, sink !== undefined);
         matches = new Uint8Array(rowCount);
         let any = false;
         for (let k = 0; k < count; k++) {
@@ -2278,6 +2298,7 @@ export class JazminReader {
     if (rowIds !== null && answeredExactly(plan)) return rowIds.length - this.#deletedAmong(rowIds);
     const whole = this.#wholeChunkTest(plan);
     const wanted = this.#wantedColumns(plan, []);
+    const types = this.#filterTypes(plan, []);
     const row = new Array(this.#columns.length).fill(null);
     let n = 0;
     for (const { ordinal, from, to } of this.#chunkRuns(plan, rowIds)) {
@@ -2285,7 +2306,7 @@ export class JazminReader {
         n += this.#liveRows(ordinal);
         continue;
       }
-      const chunk = this.#chunk(ordinal, wanted);
+      const chunk = this.#chunk(ordinal, wanted, types);
       const start = this.#rowStart[ordinal];
       const count = rowIds === null ? chunk.rowCount : to - from;
       for (let k = 0; k < count; k++) {
@@ -2472,7 +2493,7 @@ export class JazminReader {
     this.#ahead?.pool?.close();
     this.#ahead = null;
     release(this.#source);
-    this.#cachedChunk = { ordinal: -1, wanted: null, chunk: null };
+    this.#cachedChunk = { ordinal: -1, wanted: null, types: null, chunk: null };
     this.#indexes.clear();
   }
 

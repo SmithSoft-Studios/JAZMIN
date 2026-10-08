@@ -1,5 +1,6 @@
 import { JazminValidationError } from './errors.js';
 import { intersect, unionAll } from './rowset.js';
+import { isNested } from './nested.js';
 import { EQUATABLE_TYPES, ORDERED_TYPES, compareKeys, keyId, normalizeValue, toKey } from './types.js';
 
 // Filter language (spec section 9). GraphQL-style "where" objects:
@@ -101,7 +102,11 @@ export function normalizeFilter(filter, columns) {
         ? normalizeFilter(value, part.fields)
         : normalizeFilter({ [ITSELF]: value }, [{ ...part, name: ITSELF }]);
       if (inner === null) throw invalid(`'${op}' needs a filter`);
-      return { kind: 'nested', col: column.col, name: column.name, op, inner, part };
+      // The fields the inner filter reads, and the row it is checked on: filled again for each object or item.
+      const reads = part.type === 'object' ? part.fields.flatMap((f, i) => (readsPosition([inner], i) ? [i] : [])) : [];
+      const names = reads.map((i) => part.fields[i].name);
+      const scratch = new Array(part.type === 'object' ? part.fields.length : 1).fill(null);
+      return { kind: 'nested', col: column.col, name: column.name, op, inner, part, reads, names, scratch };
     }
     const base = { kind: 'leaf', col: column.col, name: column.name, type: column.type, op };
     if (op === 'isNull') {
@@ -175,7 +180,15 @@ export function evaluate(node, row) {
   }
 }
 
-const fieldsOf = (part, object) => part.fields.map((f) => (Object.hasOwn(object, f.name) ? object[f.name] ?? null : null));
+/** The node's row with the fields its filter reads of `object` (no new array per object: filled again each time). */
+function fieldsOf(node, object) {
+  const row = node.scratch;
+  for (let j = 0; j < node.reads.length; j++) {
+    const name = node.names[j];
+    row[node.reads[j]] = Object.hasOwn(object, name) ? object[name] ?? null : null;
+  }
+  return row;
+}
 
 /**
  * A nested column's condition (spec 9.2): `match` on an object's fields; `any` / `all` on a list's items (the same item
@@ -183,14 +196,65 @@ const fieldsOf = (part, object) => part.fields.map((f) => (Object.hasOwn(object,
  */
 function evaluateNested(node, value) {
   if (value === null || value === undefined) return false;
-  if (node.op === 'match') return evaluate(node.inner, fieldsOf(node.part, value));
+  if (node.op === 'match') return evaluate(node.inner, fieldsOf(node, value));
   if (!Array.isArray(value)) return false;
   const objects = node.part.type === 'object';
+  const row = node.scratch;
   for (const item of value) {
-    const matched = objects ? item !== null && item !== undefined && evaluate(node.inner, fieldsOf(node.part, item)) : evaluate(node.inner, [item ?? null]);
+    let matched;
+    if (objects) matched = item !== null && item !== undefined && evaluate(node.inner, fieldsOf(node, item));
+    else {
+      row[0] = item ?? null;
+      matched = evaluate(node.inner, row);
+    }
     if (matched === (node.op === 'any')) return matched;
   }
   return node.op === 'all';
+}
+
+/**
+ * Nested column `column` (at position `col`) with only the fields a normalized filter checks: the others are copies
+ * marked `unread`, whose streams the decoder passes over. The same definition when the filter reads every field.
+ */
+export function filterReads(column, col, plan) {
+  return fieldsRead(column, innerFilters([plan], col));
+}
+
+/** `part` with only what `nodes` (filters of its fields, or of its item at position 0) read. */
+function fieldsRead(part, nodes) {
+  if (part.type === 'list') {
+    const item = part.item;
+    const read = item.type === 'object' ? fieldsRead(item, nodes) // filters of the items' fields
+      : isNested(item.type) ? fieldsRead(item, innerFilters(nodes, 0)) // items that are lists: their conditions' filters
+        : item;
+    return read === item ? part : { ...part, item: read };
+  }
+  let same = true;
+  const fields = part.fields.map((f, i) => {
+    const read = !readsPosition(nodes, i) ? { ...f, unread: true } : isNested(f.type) ? fieldsRead(f, innerFilters(nodes, i)) : f;
+    if (read !== f) same = false;
+    return read;
+  });
+  return same ? part : { ...part, fields };
+}
+
+/** The filters of the any / all / match conditions on position `col`, through and, or and not. */
+function innerFilters(nodes, col) {
+  const found = [];
+  const walk = (n) => {
+    if (n.kind === 'nested') {
+      if (n.col === col) found.push(n.inner);
+    } else if (n.kind === 'not') walk(n.item);
+    else n.items?.forEach(walk);
+  };
+  nodes.forEach(walk);
+  return found;
+}
+
+/** Whether any condition of `nodes` is on position `col`. */
+function readsPosition(nodes, col) {
+  const walk = (n) => (n.kind === 'leaf' || n.kind === 'nested' ? n.col === col : n.kind === 'not' ? walk(n.item) : (n.items?.some(walk) ?? false));
+  return nodes.some(walk);
 }
 
 /** The index lookup a condition can use - [index kind, lookup] (see indexes.js) - or null. */

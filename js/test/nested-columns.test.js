@@ -9,6 +9,7 @@ import { test } from 'node:test';
 import { JazminKey, JazminWriter, append, compact, open, toCSV, toJSON, toXML, update, write } from '../src/index.js';
 import { decodeColumnDefinitions, encodeColumnDefinitions } from '../src/catalog.js';
 import { decodeColumnar } from '../src/columnar.js';
+import { filterReads, normalizeFilter } from '../src/filter.js';
 import { JazminError, JazminFormatError, JazminValidationError } from '../src/errors.js';
 import { sections } from './fuzz-helpers.js';
 
@@ -284,6 +285,39 @@ test('a locked column group gains fields by appending, and update gives fields t
   write(plain, [{ id: 1, head: { city: 'Durban' } }], { columns: v1 });
   update(plain, { insert: [{ id: 2, head: { city: 'Polokwane', zip: '0700' } }], columns: [head2] });
   assert.deepEqual([...open(plain).find()].map((x) => x.head), [{ city: 'Durban', zip: null }, { city: 'Polokwane', zip: '0700' }]);
+});
+
+test('filters on nested columns decode only the fields they read, with the same results', () => {
+  // Which fields a filter reads: the others are marked unread, so their streams are passed over.
+  const read = filterReads(columns[2], 2, normalizeFilter({ staff: { any: { projects: { any: { hours: 8 } } } } }, columns));
+  assert.deepEqual(read.item.fields.filter((f) => !f.unread).map((f) => f.name), ['projects']);
+  assert.deepEqual(read.item.fields[8].item.fields.map((f) => [f.name, !f.unread]), [['code', false], ['hours', true]]);
+  const everyField = normalizeFilter({ head: { match: { street: 'x', city: 'y' } } }, columns);
+  assert.equal(filterReads(columns[3], 3, everyField), columns[3]); // nothing left out: the definition itself
+
+  const cases = [
+    [{ staff: { any: { projects: { any: { hours: 0 } } } } }, (r) => r.staff?.some((s) => s?.projects?.some((p) => p.hours === 0))],
+    [{ staff: { any: { name: { startsWith: 'E1' }, active: true } } }, (r) => r.staff?.some((s) => s?.name.startsWith('E1') && s.active)],
+    [{ staff: { all: { tags: { any: 'a' } } } }, (r) => r.staff !== null && r.staff.every((s) => s?.tags.includes('a'))],
+    [{ head: { match: { city: 'Durban' } }, tier: 'Silver' }, (r) => r.head?.city === 'Durban' && r.tier === 'Silver'],
+    [{ grid: { any: { any: { gte: 100 } } } }, (r) => r.grid?.some((g) => g?.some((v) => v !== null && v >= 100))],
+  ];
+  const r = open(file);
+  for (const [filter, expected] of cases) {
+    const ids = rows.filter(expected).map((x) => x.id);
+    assert.ok(ids.length > 0 && ids.length < rows.length, JSON.stringify(filter));
+    assert.deepEqual([...r.find(filter, { select: ['id'] })].map((x) => x.id), ids, JSON.stringify(filter)); // the filter's fields only
+    assert.deepEqual([...r.find(filter)].map((x) => x.id), ids); // returned whole
+    assert.equal(r.count(filter), ids.length);
+  }
+  // Whole rows come back with every field after a filter decoded only some.
+  assert.deepEqual([...r.find(cases[0][0])].map((x) => x.staff), rows.filter(cases[0][1]).map((x) => x.staff));
+  r.close();
+
+  // A chunk decoded with some fields left out is not kept for a query that reads others (one chunk: the same one twice).
+  const one = open(write(null, rows.slice(0, 20), { columns }));
+  for (const [filter, expected] of cases.slice(0, 3)) assert.equal(one.count(filter), rows.slice(0, 20).filter(expected).length, JSON.stringify(filter));
+  one.close();
 });
 
 test('filters on nested columns: misuse is refused with a message that says why', () => {
