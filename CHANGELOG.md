@@ -3,6 +3,26 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## Unreleased
+
+### Added
+- **Nested columns (.NET, opt-in): lists and classes stored as columns of their fields** instead of JSON text
+  (`JazminSerializerSettings.NestedColumns`, `[JazminNested]`; `JazminColumn.ListOf` / `ObjectOf` for schemas
+  written by hand). Each field is stored as a column is, and objects are read back straight from the stored values
+  (USER-GUIDE 6.2, sample 17). 5,000 companies with departments, employees and projects, compared with JSON
+  columns:
+  - file 4.03 -> 2.48 MB; writing 685 -> 330 ms, 413 -> 91 MB allocated;
+  - reading every company 1,615 -> 435 ms, 345 -> 145 MB; a LINQ report over 6 nested fields 960 -> 466 ms,
+    390 -> 195 MB;
+  - one company by id: 0.58 -> 0.65 ms, 238 -> 207 KB (the lookup decodes only that row's part of each stream).
+  - **File format:** a new reader feature, `nested-columns` (spec 5.4): `list` and `object` column types, stored
+    with a new column encoding (5). Only files that use nested columns need it, and they need this release or
+    later to read: versions 1.0 to 1.3 refuse them with an "unknown type" error (tested with the published 1.2.0
+    packages). Files without nested columns are unchanged. Reading them in JavaScript is planned before this
+    release.
+  - Untyped rows and JSON, CSV and XML output show nested values as `json` columns show them, except that dates are
+    written as `datetime` columns write them (with milliseconds).
+
 ## 1.3.0 - 2026-10-08 (file format 1.0)
 
 Export shapes now nest rows from several tables of a file, and queries do far

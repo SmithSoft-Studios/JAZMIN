@@ -129,6 +129,8 @@ can read a decrypted header.
 | `datetime` | `Date` | `DateTime` (UTC) | Millisecond precision |
 | `binary` | `Buffer` | `byte[]` | |
 | `json` | any JSON value | `JsonNode` | For nested objects and arrays |
+| `list` | not yet (planned for 1.4) | `List<T>`, `T[]` | Items of one type, stored as columns (6.2, nested columns). Needs JAZMIN 1.4 to read |
+| `object` | not yet (planned for 1.4) | your classes | Named fields, each stored as a column (6.2). Needs JAZMIN 1.4 to read |
 
 Every column has a name, a type, `nullable` (default true), and an optional
 `description` and `attributes` (a free-form object, for example
@@ -414,7 +416,7 @@ How .NET property types map to columns:
 | `string`, `char`, `Guid`, `TimeSpan`, `TimeOnly`, enums | `string` |
 | `DateTime`, `DateTimeOffset`, `DateOnly` | `datetime` |
 | `byte[]` | `binary` |
-| anything else (lists, nested classes) | `json` |
+| anything else (lists, nested classes) | `json`, or `list` / `object` with nested columns (below) |
 
 A `json` column is read straight from its stored UTF-8 into your property's
 type, with no text or `JsonNode` in between. An untyped row gives a
@@ -425,6 +427,57 @@ JSON file with System.Text.Json takes 4.4 s, or 2.8 s streamed.
 
 `[JsonPropertyName]` from System.Text.Json is honoured too. Column names are
 matched case-insensitively when reading, as Newtonsoft does.
+
+**Nested columns (opt-in).** With `NestedColumns = true`, lists, arrays and
+classes are stored as columns of their own fields (`list` and `object`
+columns) instead of JSON text. Each field is then stored as a column is:
+numbers as numbers, and repeated text once per chunk. Reading builds your
+objects straight from the stored values, with no JSON in between.
+`[JazminNested]` turns this on for one property, and `[JazminNested(false)]`
+keeps a property as JSON when the setting is on.
+
+```csharp
+var settings = new JazminSerializerSettings { NestedColumns = true };
+File.WriteAllBytes("companies.jzm", JazminConvert.SerializeObject(companies, settings));
+
+// Reading needs no settings: the file says how each column is stored.
+var back = JazminConvert.DeserializeObject<List<Company>>(File.ReadAllBytes("companies.jzm"));
+```
+
+Measured on 5,000 companies, each with departments, employees and projects
+(.NET 10, medians of three runs):
+
+| | JSON columns | Nested columns |
+|---|---|---|
+| File size | 4.03 MB | 2.48 MB |
+| Write | 685 ms, 413 MB allocated | 330 ms, 91 MB |
+| Read every company | 1,615 ms, 345 MB | 435 ms, 145 MB |
+| LINQ report over 6 nested fields | 960 ms, 390 MB | 466 ms, 195 MB |
+| Open the file and read one company | 0.58 ms, 238 KB | 0.65 ms, 207 KB |
+
+Good to know:
+
+- **Files with nested columns need JAZMIN 1.4 or later to read.** Earlier
+  versions refuse them with an "unknown type" error; they never misread
+  them. Reading them in JavaScript is not available yet (planned for 1.4).
+  Files without nested columns are unchanged.
+- **What can be nested:** arrays, `List<T>` and the interfaces a `List<T>`
+  fits (`IList<T>`, `IReadOnlyList<T>`, `IEnumerable<T>` and so on), and
+  classes with public properties, up to 64 levels deep. **What stays JSON:**
+  other collections such as `HashSet<T>`, dictionaries, `object`, `JsonNode`
+  and `JsonElement`, polymorphic types (`[JsonDerivedType]`), and a class
+  inside itself, such as an `Employee` property of `Employee`.
+  `[JazminNested]` on such a property is an error.
+- **Dates inside nested columns are stored as `datetime` columns are:** UTC,
+  to the millisecond. JSON output writes them as it writes `datetime`
+  columns (`2026-01-02T00:00:00.000Z`).
+- **Very small files can be slightly larger,** because each field has a few
+  bytes of its own. Sample 17 stores 500 companies in 13.5 KB instead of
+  33.5 KB.
+- Nested columns and their fields can't be indexed. Filter on top-level
+  columns; `isNull` works on nested columns.
+- Today a query reads the whole nested column it uses. Reading only the
+  fields a query uses is planned.
 
 ### 6.3 Settings
 
@@ -442,6 +495,7 @@ var settings = new JazminSerializerSettings
     Converters = [new MoneyConverter()],                 // your own types (below)
     DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate, // defaults stored as null, filled in again on reading
     PreserveReferencesHandling = PreserveReferencesHandling.Objects, // a repeated object is stored once ($id / $ref)
+    NestedColumns = true,                                // lists and classes as columns of their fields (6.2)
 };
 new JazminSerializer(settings).Serialize("customers.jzm", customers);
 ```
@@ -1235,7 +1289,8 @@ Conversion rules worth knowing:
 
 - **JSON:** large integers and decimals are written exactly, even beyond
   JavaScript's 2^53 limit. Dates use ISO-8601 UTC format, and binary data
-  is base64.
+  is base64. Nested columns (`list`, `object`) are written as JSON arrays
+  and objects, as `json` columns are.
 - **CSV:** an empty field means *null*, while `""` means an *empty string*,
   so round trips keep the difference. Types are inferred unless you set
   `inferTypes: false`; turn inference off for codes with leading zeros
@@ -1343,6 +1398,7 @@ while (json.Read())
 | Section (chunk/index/header) size | 4 GiB each |
 | Integers | 64-bit signed |
 | Dates | Millisecond precision. .NET supports years 1–9999 |
+| Nested columns | 64 levels of lists and objects within one another |
 | Rows per file | 2^53 in JavaScript, 2^63 in .NET |
 | Updates | By rewrite with atomic replace (section 16), or by append for frequent changes (section 17) |
 | Concurrency | Readers and writers are single-threaded objects. Open one per thread |

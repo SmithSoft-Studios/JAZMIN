@@ -267,6 +267,8 @@ knows its identifier without extra fields:
 | `datetime` | instant since 1970-01-01T00:00Z, in the column's unit (milliseconds in 1.0) | zigzag varint                    |
 | `binary`   | bytes                                           | varint length + bytes                                        |
 | `json`     | any JSON value (nested objects, arrays)         | varint length + UTF-8 JSON text [RFC8259]                    |
+| `list`     | items of one type (5.4)                         | in streams of their own (5.4)                                |
+| `object`   | named fields, each of its own type (5.4)        | in streams of their own (5.4)                                |
 
 Notes:
 
@@ -278,6 +280,9 @@ Notes:
 - **Datetimes** are UTC. Implementations MUST convert local times to UTC
   before encoding.
 - **`json`** values MUST NOT be the JSON literal `null`, which is a null cell.
+- **Lists and objects** need the reader feature `nested-columns` (12). Their
+  items and fields have any type, lists and objects included, at most 64
+  levels below the column.
 
 ### 5.2. Key Form and Ordering
 
@@ -300,7 +305,7 @@ Ordering per type:
 - `string`: ordinal order of UTF-16 code units (JavaScript `<`, .NET
   `string.CompareOrdinal`).
 
-`binary` and `json` are not ordered and have no key form.
+`binary`, `json`, `list` and `object` are not ordered and have no key form.
 
 ### 5.3. Chunk Encoding
 
@@ -334,11 +339,14 @@ stream = flags      : 1 byte
 | 2 | dictionary | `string`, `decimal` | `k` (varint, at least 1), then `k` distinct entries encoded as in 5.1, then one varint index (< `k`) per value |
 | 3 | bitmap | `bool` | `ceil(n / 8)` bytes, where `n` is the number of values; bit `i` (LSB first) is value `i` |
 | 4 | scaled float | `float` | per value: one byte `s`. If `s` ≤ 22, a zigzag varint `m` with \|m\| ≤ 2^53 follows, and the value is `m / 10^s` computed as one IEEE 754 binary64 division. If `s` = 255, the 8-byte binary64 value follows. Other values of `s` are invalid |
+| 5 | nested | `list`, `object` | the streams of the values' parts (5.4) |
 
 Rules:
 
 - Writers choose each stream's encoding. Readers MUST support every encoding
-  in the table. New encodings are added only through reader features (12).
+  in the table (nested, with the reader feature `nested-columns`). New
+  encodings are added only through reader features (12).
+- `list` and `object` columns use encoding 5, and no other column does.
 - Writers MUST use delta only when every difference fits in a signed 64-bit
   integer, and scaled float with `s` ≤ 22 only when `m / 10^s` reproduces the
   value's bits exactly. −0, NaN and infinities use `s` = 255.
@@ -350,6 +358,68 @@ Rules:
 Informative: the reference writers use delta for `int` and `datetime` when it
 is smaller than plain, dictionary when at most half the values are distinct,
 bitmap for `bool`, and scaled float when most values are short decimals.
+
+### 5.4. Nested Columns
+
+A `list` or `object` column stores the parts of its values in streams of
+their own, so a reader decodes only the fields a query uses, and repeated
+text is stored once per chunk. Its definition (6.2) gives the type of a
+list's items (`item`) or an object's fields (`fields`: at least one, in
+position order, with unique names). A file with such a column MUST list the
+reader feature `nested-columns` (12).
+
+The column's stream uses encoding 5. After its flags and null bitmap (5.3),
+its body holds *child streams*. Each is in the stream format of 5.3
+(`stream_length`, flags, null bitmap, body), but counts *entries* instead of
+rows:
+
+```
+object body = for each field, in position order:
+                stream_length : varint
+                stream        : one entry per non-null object
+list body   = stream_length : varint
+              lengths       : an int stream, one entry per non-null list
+              stream_length : varint
+              items         : one entry per item: sum(lengths) entries
+```
+
+- The column's entries are the chunk's rows. A field's entries are its
+  object's non-null entries, in order. A list's items are the items of its
+  non-null lists, in order: the first list's items, then the next list's.
+- The lengths stream uses plain or delta encoding, with HAS_NULLS clear.
+  Each length is a list's number of items (0 or more).
+- A child stream for a list or object uses encoding 5 again. Any other child
+  stream uses the encodings of its type (5.3).
+- An item or field that is not `required` may be null; its stream's null
+  bitmap says which.
+
+Example: a column `staff`, a list of objects {`name`: string, `tags`: list of
+string}, with three rows: `[{"name":"A","tags":["x"]},{"name":null,"tags":[]}]`,
+null, and `[]`:
+
+```
+staff  : flags 0x15 (encoding 5, HAS_NULLS), nulls 0b010
+  lengths : flags 0x00, 2, 0            (rows 0 and 2)
+  items   : flags 0x05                  (2 objects, none null)
+    name  : flags 0x10, nulls 0b10, "A"
+    tags  : flags 0x05                  (2 lists, none null)
+      lengths : flags 0x00, 1, 0
+      items   : flags 0x00, "x"
+```
+
+As bytes, with each stream's length first (a chunk part holding only this
+column): `17 15 02 03 00 04 00 10 05 04 10 02 01 41 09 05 03 00 02 00 03 00 01
+78`.
+
+In addition to 5.3, readers MUST reject: a lengths stream with HAS_NULLS set
+or a negative length; lengths whose sum exceeds 2^31 − 1; a definition nested
+more than 64 levels below its column (6.2); a list without an item, an object
+without fields, or either on another type.
+
+Informative: the reference libraries store list and object members this way
+only when asked to (a setting, or a per-member attribute); otherwise such
+members are `json` columns. A lookup of one row decodes only that row's
+slice of each stream.
 
 ## 6. Catalog
 
@@ -388,6 +458,10 @@ partitions (6.3), its indexes (8) and its deleted rows (11.2).
   `required` (nulls not allowed), an optional `description` and optional
   `attributes` (a JSON object as text, for units, display formats and so on),
   and for `datetime` a `unit`.
+- **Lists and objects** (5.4) also have their `item` or their `fields`, which
+  are `Column` messages too. A field's `position` is its index among its
+  object's fields; `required` says whether an item or field may never be
+  null. Items and fields have no indexes.
 - **Column groups** list every column exactly once. The default group `*`
   comes first. Files that are not access-controlled have only `*`, listing
   every column. In access-controlled files, restricted groups list only
@@ -1063,6 +1137,11 @@ column order.
 | `datetime` | string `YYYY-MM-DDTHH:mm:ss.sssZ`                   |
 | `binary`   | base64 string                                       |
 | `json`     | the nested value                                    |
+| `list`     | array of its items                                  |
+| `object`   | object with every field, in position order          |
+
+The items and fields of lists and objects use the forms of their types, and
+a null item or field is `null`.
 
 Null cells are written as `null`, or omitted when the caller asks. When
 importing JSON without a schema: integers become `int` and other numbers
@@ -1211,8 +1290,8 @@ fresh secrets. The result has `append_count` 0 and the APPENDED flag clear.
   refuse to modify a file with a writer feature it does not support.
   Reader features are also writer features.
 - Feature names are lowercase ASCII letters, digits and `-`. Format 1.0
-  defined none. Defined since: the reader feature `index-deltas` (8.1). A
-  file that uses none has empty lists.
+  defined none. Defined since: the reader features `index-deltas` (8.1) and
+  `nested-columns` (5.4). A file that uses none has empty lists.
 - The magic `JZM1` changes only if the container itself changes
   incompatibly.
 
@@ -1240,7 +1319,7 @@ encoding), `roaring` (Roaring bitmap postings and deletes), `bloom-filter`
   manager, never next to the file. PBKDF2 slows guessing but cannot protect a
   weak password.
 - **Resource exhaustion.** Readers MUST bound memory by `raw_length` and
-  MUST NOT trust declared lengths or counts.
+  MUST NOT trust declared lengths or counts, list lengths (5.4) included.
 - **Access control hides values and restricted column names, not shape.**
   Every key holder can see: the default column group's columns; the names and
   column counts of restricted groups; user metadata (do not store secrets
@@ -1362,6 +1441,11 @@ indexes, embedded files) written by both reference implementations.
   index pages (encoding 1) whose keys and first row ids are differences from
   the previous entry's. Readers that do not know it refuse such files,
   naming it, as 12 requires.
+- **Since format 1.0, a reader feature:** `nested-columns` (5.4), the
+  `list` and `object` column types, stored as streams of their parts
+  (encoding 5) and defined by the new `Column` fields `fields` and `item`.
+  Readers that do not know it refuse such files (those of releases 1.0 to
+  1.3 report the unknown column type).
 - **Since format 1.0, a rule writers already kept:** no name twice in one
   object of the JSON texts readers use themselves (2). Readers reject such a
   file; before, one library kept the last value and the other failed.

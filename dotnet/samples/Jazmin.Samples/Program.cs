@@ -277,6 +277,34 @@ using (var reader = JazminReader.Open(companiesPath))
     Console.WriteLine($"16. {string.Join("; ", report.Select(r => $"{r.Department}/{r.Category}: {r.Revenue} (top {r.TopProject})"))}");
 }
 
+// --- 17. Nested columns: lists and classes stored as columns of their fields (USER-GUIDE 6.2) -------------
+// Opt-in. Smaller files and faster reads at volume; such a file needs JAZMIN 1.4 or later to read.
+var many = Enumerable.Range(0, 500).Select(c => new Company
+{
+    Name = $"Company {c}",
+    Founded = 1950 + c % 70,
+    Departments = [.. new[] { "Sales", "Build", "Support" }.Select((d, i) => new Department
+    {
+        Name = d,
+        Employees = [.. Enumerable.Range(0, 3).Select(e => new Employee
+        {
+            Name = $"{d} {c}-{e}",
+            Projects = [new() { Name = $"{d} project {c % 40}", Category = (c + i) % 2 == 0 ? "Product" : "Service", Revenue = 1_000 * ((c + e) % 50) }],
+        })],
+    })],
+}).ToList();
+var asJsonBytes = JazminConvert.SerializeObject(many);
+var nestedBytes = JazminConvert.SerializeObject(many, new JazminSerializerSettings { NestedColumns = true });
+using (var reader = JazminReader.Open(nestedBytes))
+{
+    Console.WriteLine($"17. {reader.Columns.Single(c => c.Name == "Departments")}");
+    Console.WriteLine($"    {nestedBytes.Length} bytes (as json columns: {asJsonBytes.Length})");
+    // Reads Departments only; settings are not needed to read (the file says how its columns are stored).
+    var revenue = reader.AsQueryable<Company>().SelectMany(c => c.Departments).SelectMany(d => d.Employees).SelectMany(e => e.Projects).Sum(p => p.Revenue);
+    var nestedBack = JazminConvert.DeserializeObject<List<Company>>(nestedBytes)!;
+    Console.WriteLine($"    revenue {revenue}; {nestedBack.Count} companies read back, first: {nestedBack[0].Departments[0].Employees[0].Name}");
+}
+
 Directory.Delete(dir, true);
 
 public readonly record struct Money(long Cents, string Currency);
