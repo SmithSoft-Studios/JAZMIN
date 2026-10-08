@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { JazminKey, JazminWriter, append, compact, open, toCSV, toJSON, toXML, write } from '../src/index.js';
+import { JazminKey, JazminWriter, append, compact, open, toCSV, toJSON, toXML, update, write } from '../src/index.js';
 import { decodeColumnDefinitions, encodeColumnDefinitions } from '../src/catalog.js';
 import { decodeColumnar } from '../src/columnar.js';
 import { JazminError, JazminFormatError, JazminValidationError } from '../src/errors.js';
@@ -234,4 +234,54 @@ test("the viewer shows nested values as JSON, large integers and binary data inc
   const { cell, typeName } = vm.runInNewContext(`${source.slice(start, end + 5)}\n${source.slice(typeStart, typeEnd + 5)}\n({ cell, typeName })`, { Uint8Array, Date, JSON, String });
   assert.equal(cell([{ n: 2n ** 60n, b: new Uint8Array(3), at: new Date(0), x: null }]), `[{"n":"${2n ** 60n}","b":"3 bytes","at":"1970-01-01T00:00:00.000Z","x":null}]`);
   assert.equal(typeName(open(file).columns.find((c) => c.name === 'head')), 'object{street: string, city: string?}');
+});
+
+test('appending can give objects new fields at their end: rows written before read them as null', () => {
+  const v1 = [{ name: 'id', type: 'int', nullable: false }, { name: 'tier', type: 'string' },
+    { name: 'tasks', type: 'list', item: { type: 'object', fields: [{ name: 'title', type: 'string' }] } }];
+  const v2 = [v1[0], v1[1], { name: 'tasks', type: 'list', item: { type: 'object', fields: [{ name: 'title', type: 'string' }, { name: 'hours', type: 'int' }, { name: 'tags', type: 'list', item: { type: 'string' } }] } }];
+  const target = path.join(scratch, 'grown.jzm');
+  const before = Array.from({ length: 20 }, (_, i) => ({ id: i, tier: i % 2 ? 'Silver' : 'Gold', tasks: Array.from({ length: i % 3 }, (__, k) => ({ title: `T${i}-${k}` })) }));
+  const after = Array.from({ length: 20 }, (_, n) => ({ id: 20 + n, tier: 'Gold', tasks: Array.from({ length: n % 3 }, (__, k) => ({ title: `T${20 + n}-${k}`, hours: k === 1 ? null : k * 4, tags: k ? ['x'] : [] })) }));
+  fs.writeFileSync(target, write(null, before, { columns: v1, chunkRows: 8 }));
+  assert.throws(() => append(target, { insert: after }), /'hours' is not one of its fields/);
+  append(target, { insert: after, columns: [v2[2]] });
+  const expected = [...before.map((r) => ({ ...r, tasks: r.tasks.map((t) => ({ ...t, hours: null, tags: null })) })), ...after];
+  const check = () => {
+    const r = open(target);
+    assert.deepEqual([...r.find()], expected);
+    for (const id of [0, 5, 19, 20, 33]) assert.deepEqual([...r.find({ id })], [expected[id]]); // lookups before and after
+    assert.deepEqual(JSON.parse(toJSON(r, { filter: { id: 1 } }))[0].tasks, [{ title: 'T1-0', hours: null, tags: null }]);
+    r.close();
+  };
+  check();
+  compact(target); // every chunk written again, with every field
+  check();
+  const refused = (definition, pattern) => assert.throws(() => append(target, { columns: [definition] }), pattern);
+  const tasks = (...fields) => ({ name: 'tasks', type: 'list', item: { type: 'object', fields } });
+  refused(tasks({ name: 'title', type: 'string' }), /fields cannot be removed/);
+  refused(tasks({ name: 'hours', type: 'int' }, { name: 'title', type: 'string' }, { name: 'tags', type: 'list', item: { type: 'string' } }), /fields cannot be renamed or reordered/);
+  refused(tasks({ name: 'title', type: 'int' }, { name: 'hours', type: 'int' }, { name: 'tags', type: 'list', item: { type: 'string' } }), /a string cannot become a int/);
+  refused(tasks({ name: 'title', type: 'string' }, { name: 'hours', type: 'int' }, { name: 'tags', type: 'list', item: { type: 'string' } }, { name: 'due', type: 'datetime', nullable: false }), /a field added later must allow null/);
+  refused({ name: 'tier', type: 'string' }, /only those can be given fields/);
+});
+
+test('a locked column group gains fields by appending, and update gives fields too', () => {
+  const owner = JazminKey.generate();
+  const gold = owner.createAccessKey();
+  const v1 = [{ name: 'id', type: 'int', nullable: false }, { name: 'tier', type: 'string' }, { name: 'head', type: 'object', fields: [{ name: 'city', type: 'string' }] }];
+  const head2 = { name: 'head', type: 'object', fields: [{ name: 'city', type: 'string' }, { name: 'zip', type: 'string' }] };
+  const target = path.join(scratch, 'grown-access.jzm');
+  write(target, [{ id: 1, tier: 'Gold', head: { city: 'Durban' } }], {
+    columns: v1, key: owner, access: { partitionBy: 'tier', columnGroups: { places: ['head'] }, grants: [{ key: gold, rows: ['Gold'], columns: '*' }] },
+  });
+  append(target, { key: owner, insert: [{ id: 2, tier: 'Gold', head: { city: 'Gqeberha', zip: '6001' } }], columns: [head2] });
+  const r = open(target, { key: gold, accessState: false });
+  assert.deepEqual([...r.find()].map((x) => x.head), [{ city: 'Durban', zip: null }, { city: 'Gqeberha', zip: '6001' }]);
+  r.close();
+
+  const plain = path.join(scratch, 'grown-update.jzm');
+  write(plain, [{ id: 1, head: { city: 'Durban' } }], { columns: v1 });
+  update(plain, { insert: [{ id: 2, head: { city: 'Polokwane', zip: '0700' } }], columns: [head2] });
+  assert.deepEqual([...open(plain).find()].map((x) => x.head), [{ city: 'Durban', zip: null }, { city: 'Polokwane', zip: '0700' }]);
 });

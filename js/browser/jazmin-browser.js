@@ -868,6 +868,10 @@
     let present = entries;
     if (nulls) for (let e = 0; e < entries; e++) if (isNull(e)) present--;
     const part = (child, count) => {
+      if (r.pos === end) { // a field added after this chunk was written (spec 5.4): null for each entry
+        if (!child.nullable) throw new JazminFormatError(`Chunk ${ordinal}: field '${child.name}' may not be null but has no stream`);
+        return new Array(count).fill(null);
+      }
       const at = partEnd(r, end, ordinal);
       if (count > (at - r.pos) * 8 + 8) throw new JazminFormatError(`Chunk ${ordinal}: entry count does not match its size`);
       const values = decodeStream(raw, r.pos, at, streamType(child), count, ordinal, false);

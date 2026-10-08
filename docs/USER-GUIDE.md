@@ -292,6 +292,15 @@ Good to know:
 - **A bad value refuses its row whole,** wherever it is, and the error names
   where: `Column 'departments[].budget': ...`. The rows before and after
   are written.
+- **Objects can gain fields.** `append()` and `update()` take the grown
+  definitions in `columns`, with new fields at the end of their objects
+  (fields that may be null); rows written before read them as `null`:
+
+  ```js
+  append('companies.jzm', { insert: newRows, columns: [departmentsWithHeadcount] });
+  ```
+
+  Removing, renaming or retyping a field needs the file written again.
 - Nested columns can't be indexed or sorted by. `isNull` works on them;
   filter on the other columns.
 - The browser reader and writer (section 24) and the viewer read and write

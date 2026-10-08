@@ -9,7 +9,7 @@ import { JazminAccessKey, issueUnlockToken, open, toJSON } from '../src/index.js
 import { APPEND_STATE } from '../src/reader.js';
 import {
   ACCESS_VIEWS, COUNTRY_COLUMNS, COUNTRY_VIEWS, FILES_VIEWS, FIXTURE_EXPIRY, FIXTURE_PACKAGE, PARTITIONS_SPLIT, PARTITION_VIEWS, appendedLive,
-  NESTED_COLUMNS, countryRows, fixtureFiles, toCanonical,
+  NESTED_COLUMNS, NESTED_GROWN_SPLIT, countryRows, fixtureFiles, nestedRowBefore, toCanonical,
 } from './fixture-helpers.js';
 
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../spec/fixtures');
@@ -26,7 +26,7 @@ function optionsFor(file) {
   return {};
 }
 
-const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jzm') && !f.endsWith('-access.jzm') && !f.endsWith('-nested.jzm'));
+const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jzm') && !f.endsWith('-access.jzm') && !f.includes('-nested'));
 const accessFiles = fs.readdirSync(dir).filter((f) => f.endsWith('-access.jzm'));
 /** Dataset rows a fixture should contain: appended fixtures have rows with id < 10 deleted. */
 const liveRows = (file) => {
@@ -208,6 +208,22 @@ for (const writer of ['js', 'dotnet']) {
       assert.deepEqual(JSON.parse(toJSON(reader)), nested.rows);
       assert.equal(reader.columns.find((c) => c.name === 'staff').item.fields.length, 9);
       for (const id of [0, 37, 149]) assert.deepEqual(JSON.parse(toJSON(reader, { filter: { id } })), [nested.rows[id]]);
+    } finally {
+      reader.close();
+    }
+  });
+}
+
+// Fields added by appending (spec 5.4): the rows written before read the later fields as null, from either writer.
+for (const writer of ['js', 'dotnet']) {
+  test(`interop: ${writer}-nested-grown.jzm reads its earlier rows' later fields as null`, (t) => {
+    const full = path.join(dir, `${writer}-nested-grown.jzm`);
+    if (!fs.existsSync(full)) return t.skip(`run the ${writer === 'js' ? 'fixture script' : '.NET tests'} to generate ${writer}-nested-grown.jzm`);
+    const expected = nested.rows.map((row) => (row.id < NESTED_GROWN_SPLIT ? nestedRowBefore(row, true) : row));
+    const reader = open(full);
+    try {
+      assert.deepEqual(JSON.parse(toJSON(reader)), expected);
+      for (const id of [0, 99, 100, 149]) assert.deepEqual(JSON.parse(toJSON(reader, { filter: { id } })), [expected[id]]);
     } finally {
       reader.close();
     }

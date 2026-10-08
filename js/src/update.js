@@ -1,6 +1,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { JazminError, JazminKeyError, JazminValidationError } from './errors.js';
+import { growColumns } from './nested.js';
+import { normalizeColumns } from './schema.js';
 import { compileFilter } from './filter.js';
 import { grantExpiry, toMs } from './expiry.js';
 import { JazminAccessKey, parseAnyKey } from './keys.js';
@@ -105,7 +107,7 @@ export function updateUnlocked(path, options = {}) {
   const {
     key, password, insert = [], upsert = [], keyColumns, delete: deleteWhere, metadata,
     grant = [], revoke = [], codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, compactIndexes, now, layout,
-    addFiles = [], removeFiles = [], package: packageSettings, table, regroup = false,
+    addFiles = [], removeFiles = [], package: packageSettings, table, regroup = false, columns: given,
   } = options;
   if (upsert.length && (!Array.isArray(keyColumns) || keyColumns.length === 0)) {
     throw new JazminValidationError('upsert needs keyColumns, e.g. { keyColumns: ["id"] }');
@@ -132,7 +134,8 @@ export function updateUnlocked(path, options = {}) {
         + `it needs no sortedBy, or one that starts with the partition column '${owner.partitionBy}' (then rows are already grouped)`);
     }
 
-    const columns = columnsWithIndexes(reader);
+    // Nested columns may gain fields at the end of their objects (spec 5.4): their new definitions are given.
+    const { columns } = growColumns(columnsWithIndexes(reader), given, normalizeColumns);
     const byName = new Map(columns.map((c) => [c.name, c]));
     for (const name of keyColumns ?? []) if (!byName.has(name)) throw new JazminValidationError(`keyColumns: unknown column '${name}'`);
 
@@ -158,7 +161,7 @@ export function updateUnlocked(path, options = {}) {
     const several = readers.length > 1;
     writer = new JazminWriter(temp, {
       ...(several
-        ? { tables: readers.map((r) => ({ name: r.table, columns: columnsWithIndexes(r), sortedBy: r.sortedBy, ...(owner ? tableLayout(r[OWNER_GRANTS]) : {}) })) }
+        ? { tables: readers.map((r) => ({ name: r.table, columns: r === reader ? columns : columnsWithIndexes(r), sortedBy: r.sortedBy, ...(owner ? tableLayout(r[OWNER_GRANTS]) : {}) })) }
         : { columns, sortedBy }),
       metadata: { ...reader.metadata, ...(metadata ?? {}) },
       codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, layout,

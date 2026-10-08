@@ -821,6 +821,12 @@ function decodeLengths(raw, start, end, count, ordinal) {
 // names, so a builder is compiled once, and emptied when files bring very many different ones.
 const objectMakers = new Map();
 
+/** A field this chunk has no stream for (added after it was written, spec 5.4): null for each entry. */
+function missingField(field, count, ordinal) {
+  if (!field.nullable) throw new JazminFormatError(`Chunk ${ordinal}: field '${field.name}' may not be null but has no stream`);
+  return new Array(count).fill(null);
+}
+
 /** Builds an object of a definition's fields from their decoded parts: compiled once per list of field names. */
 function objectMaker(column) {
   const names = column.fields.map((f) => f.name);
@@ -922,6 +928,7 @@ function decodeNested(stream, end, column, entries, nulls, ordinal, rows, lo = 0
     }
   } else {
     const parts = column.fields.map((field) => {
+      if (stream.pos === end) return missingField(field, sliced ? kHi - kLo : present, ordinal); // added since (spec 5.4)
       const partEndAt = partEnd(stream, end, ordinal);
       const values = sliced
         ? decodePart(raw, stream.pos, partEndAt, field, present, ordinal, null, kLo, kHi)

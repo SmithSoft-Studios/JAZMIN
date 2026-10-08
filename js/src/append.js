@@ -1,5 +1,7 @@
 import fs from 'node:fs';
 import { JazminKeyError, JazminValidationError } from './errors.js';
+import { growColumns } from './nested.js';
+import { normalizeColumns } from './schema.js';
 import { withLock } from './lock.js';
 import { APPEND_STATE, JazminReader, OWNER_GRANTS, ROWS_WITH_IDS } from './reader.js';
 import { compareKeys, normalizeValue, toKey } from './types.js';
@@ -45,7 +47,7 @@ function appendUnlocked(path, options) {
   const {
     key, password, insert = [], upsert = [], keyColumns, delete: deleteWhere, metadata, grant = [], revoke = [],
     codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, autoCompact, now,
-    addFiles = [], removeFiles = [], package: packageSettings, table,
+    addFiles = [], removeFiles = [], package: packageSettings, table, columns: given,
   } = options;
   if (upsert.length && (!Array.isArray(keyColumns) || keyColumns.length === 0)) {
     throw new JazminValidationError('upsert needs keyColumns, e.g. { keyColumns: ["id"] }');
@@ -61,7 +63,8 @@ function appendUnlocked(path, options) {
     if (!owner && grant.length) throw new JazminValidationError('grant applies only to access-controlled files');
     if (owner) checkAppendGrants(owner.grants, grant, now);
 
-    const columns = columnsWithIndexes(reader);
+    // Nested columns may gain fields at the end of their objects (spec 5.4): their new definitions are given.
+    const { columns, grown } = growColumns(columnsWithIndexes(reader), given, normalizeColumns);
     const byName = new Map(columns.map((c) => [c.name, c]));
     for (const name of keyColumns ?? []) if (!byName.has(name)) throw new JazminValidationError(`keyColumns: unknown column '${name}'`);
     const tuple = (row, names) => names.map((name) => {
@@ -125,7 +128,7 @@ function appendUnlocked(path, options) {
       now, // expired grants lose their key slots (full lock-out of old secrets needs compact/update)
       files: addFiles,
       ...(packageSettings !== undefined ? { package: packageSettings } : {}),
-      [CONTINUE]: { ...state, deleted: [...allDeleted] },
+      [CONTINUE]: { ...state, deleted: [...allDeleted], grown },
     });
     try {
       writer.writeRows(incoming);

@@ -587,4 +587,66 @@ public class InteropTests
                 writer.WriteValues(columns.Select(c => c.Type == JazminType.Int ? (object?)(long)row![c.Name]! : row![c.Name]?.DeepClone()).ToArray());
         AssertNested(File.ReadAllBytes(path));
     }
+
+    // ---- nested columns given fields by appending (spec 5.4): *-nested-grown.jzm ----
+
+    private const int NestedGrownSplit = 100; // rows before it were written without the fields added later
+
+    /// <summary>The nested columns without their last fields (staff items' projects, head's at), as first written.</summary>
+    private static JazminColumn[] NestedColumnsBefore() => NestedFixture["columns"]!.AsArray().Select(c =>
+    {
+        var column = NestedDefinition(c!, "");
+        if (column.Name == "staff")
+        {
+            var item = column.Item!;
+            return JazminColumn.ListOf("staff", new JazminColumn("item", item.Type) { Nullable = item.Nullable, Fields = item.Fields!.Take(item.Fields!.Count - 1).ToArray() });
+        }
+        return column.Name == "head" ? new JazminColumn("head", column.Type) { Nullable = column.Nullable, Fields = column.Fields!.Take(column.Fields!.Count - 1).ToArray() } : column;
+    }).ToArray();
+
+    /// <summary>A nested.json row without the fields added later, or (as read back) with them null.</summary>
+    private static JsonObject NestedRowBefore(JsonNode row, bool asRead)
+    {
+        var copy = row.DeepClone().AsObject();
+        void Strip(JsonObject? o, string name)
+        {
+            if (o is null) return;
+            o.Remove(name);
+            if (asRead) o[name] = null;
+        }
+        if (copy["staff"] is JsonArray staff) foreach (var item in staff) Strip(item as JsonObject, "projects");
+        Strip(copy["head"] as JsonObject, "at");
+        return copy;
+    }
+
+    private static void AssertNestedGrown(byte[] bytes)
+    {
+        var expected = new JsonArray(NestedFixture["rows"]!.AsArray().Select(r => (JsonNode?)((long)r!["id"]! < NestedGrownSplit ? NestedRowBefore(r, true) : r.DeepClone())).ToArray());
+        Assert.True(JsonNode.DeepEquals(expected, JsonNode.Parse(JazminConvert.ToJson(bytes))), "JSON output differs");
+        foreach (var id in new[] { 0, 99, 100, 149 })
+            Assert.True(JsonNode.DeepEquals(new JsonArray(expected[id]!.DeepClone()), JsonNode.Parse(JazminConvert.ToJson(bytes, null, JazminFilter.Eq("id", (long)id)))), $"row {id}");
+    }
+
+    [Fact]
+    public void ReadsNestedColumnsGrownByJavaScript() => AssertNestedGrown(File.ReadAllBytes(Path.Combine(Dir, "js-nested-grown.jzm")));
+
+    [Fact]
+    public void WritesNestedColumnsGrownForJavaScript()
+    {
+        var before = NestedColumnsBefore();
+        var full = NestedFixture["columns"]!.AsArray().Select(c => NestedDefinition(c!, "")).ToArray();
+        var rows = NestedFixture["rows"]!.AsArray();
+        var path = Path.Combine(OutDir, "dotnet-nested-grown.jzm");
+        object? Value(JazminColumn c, JsonNode row) => c.Type == JazminType.Int ? (object?)(long)row[c.Name]! : row[c.Name]?.DeepClone();
+        using (var writer = JazminWriter.Create(path, before, new JazminWriteOptions { ChunkRows = 64 }))
+            foreach (var row in rows.Take(NestedGrownSplit))
+                writer.WriteValues(before.Select(c => Value(c, NestedRowBefore(row!, false))).ToArray());
+        JazminFile.Append(path, new JazminAppend
+        {
+            Insert = [.. rows.Skip(NestedGrownSplit).Select(row => (IReadOnlyDictionary<string, object?>)full.ToDictionary(c => c.Name, c => Value(c, row!)))],
+            Columns = [.. full.Where(c => c.Name is "staff" or "head")],
+            ChunkRows = 64,
+        });
+        AssertNestedGrown(File.ReadAllBytes(path));
+    }
 }

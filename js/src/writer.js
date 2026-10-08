@@ -837,7 +837,7 @@ export class JazminWriter {
     return this.#groups.map((g) => {
       if (!this.#access || g.name === DEFAULT_COLUMN_GROUP) return { name: g.name, columns: g.cols.map(definition) };
       let definitions = previous.get(g.name)?.definitions;
-      if (!definitions) {
+      if (!definitions || g.cols.some((c) => this.#continue?.grown?.has(this.#columns[c].name))) { // new, or nested columns grew
         const sectionId = `${this.#tableIndex}/columns/${g.name}`;
         definitions = this.#writeSection(encodeColumnDefinitions(g.cols.map(definition)), sectionId, this.#key(sectionId, this.#secrets.columnSecret(g.name)));
       }

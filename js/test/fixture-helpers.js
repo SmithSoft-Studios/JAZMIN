@@ -198,3 +198,28 @@ export function nestedFixtureRows() {
     grid: i % 4 === 0 ? null : [[], [1, null, i], [null]],
   }));
 }
+
+/**
+ * *-nested-grown.jzm (spec 5.4, fields added by appending): rows [0, NESTED_GROWN_SPLIT) of nested.json written before
+ * the last fields existed (staff items without `projects`, `head` without `at`), the rest appended with every field.
+ */
+export const NESTED_GROWN_SPLIT = 100;
+
+/** The nested columns without the fields added later. */
+export function nestedColumnsBefore(columns) {
+  const copy = JSON.parse(JSON.stringify(columns));
+  copy.find((c) => c.name === 'staff').item.fields.pop();
+  copy.find((c) => c.name === 'head').fields.pop();
+  return copy;
+}
+
+/** A nested.json row without the fields added later (to write before they existed), or with them null (as read back). */
+export function nestedRowBefore(row, asRead) {
+  const strip = (o, name) => {
+    if (!o) return o;
+    const { [name]: dropped, ...rest } = o;
+    void dropped;
+    return asRead ? { ...rest, [name]: null } : rest;
+  };
+  return { ...row, staff: row.staff && row.staff.map((s) => strip(s, 'projects')), head: strip(row.head, 'at') };
+}
