@@ -22,6 +22,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   (USER-GUIDE 23.2, sample 15).
 
 ### Changed
+- **Filtered queries decode less: the columns they return are decoded only for rows that match** (JS and .NET). A
+  scan decodes the filter's columns first. It decodes the other columns only for chunks with matching rows, and makes
+  their text, decimal, json and binary values only for those rows. 2.5M order lines, every column returned:
+  - `order_id in` 2,000 ids: JS 774 -> 347 ms; .NET 344 -> 261 ms, 375 -> 132 MB allocated.
+  - One product's lines (`sku` equal): JS 1.1 s -> 344 ms; .NET 369 -> 231 ms, 318 -> 130 MB allocated.
+  - .NET checks the filter on the threads that decode ahead, and compares integers and dates as stored (no object
+    per value), in `Count` too.
+  - `explain` with `analyze`: `columnsDecoded` counts only the filter's columns for a chunk without matching rows.
 - **.NET: filters with `and` / `or` make no objects per row checked.** Each row used to create a lambda and its
   closure.
 - **JS: export shapes are written 2-2.6 times faster, with less memory.** Each template is compiled once into a

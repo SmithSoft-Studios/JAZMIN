@@ -107,7 +107,10 @@ Data    ─── chunks of rows : stored column by column, typed, binary and co
 The data is split into **chunks**, 4,096 rows each by default. Each chunk is
 compressed, and optionally encrypted, separately. To read row 765,432 the
 library opens only the chunk that contains it. Inside a chunk each column is
-stored on its own, so a query decodes only the columns it uses.
+stored on its own, so a query decodes only the columns it uses. With a
+filter, it decodes the filter's columns first. It decodes the columns it
+returns only for chunks with matching rows, and makes their text, decimal,
+json and binary values only for the matching rows.
 
 The catalog is physically stored at the *end* of the file, so writers can
 stream millions of rows without holding them in memory. It uses the Protocol
@@ -864,7 +867,7 @@ With `analyze`, it also **runs the query** and reports what it actually read:
 | `bytesRead` | Bytes read from the file: chunks, index pages, statistics and directories |
 | `chunksRead` | Chunks read and decoded |
 | `indexPagesRead` | Index sections read: directories, pages and trigram indexes |
-| `columnsDecoded` | Column streams decoded (one per column per chunk) |
+| `columnsDecoded` | Column streams decoded (one per column per chunk; a chunk without matching rows decodes only the filter's columns) |
 | `ms` (.NET: `Elapsed`) | Time taken |
 
 ```js
@@ -2300,6 +2303,12 @@ Each column is stored separately inside a chunk. A
 query decodes only the columns it filters on and the ones it selects. On a
 300-column file, summing 3 columns is about 10× faster than reading
 whole rows.
+
+A selective filter is cheap even when it returns whole rows. The other
+columns are decoded only for chunks with matching rows, and their text,
+decimal, json and binary values only for the matching rows. On 2.5M order
+lines, returning every column of 2,474 lines for one product takes 344 ms
+in Node and 231 ms in .NET.
 
 ### 20.3 Stream large results; don't collect them
 
