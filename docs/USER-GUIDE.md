@@ -549,8 +549,10 @@ Good to know:
   Removing, renaming or retyping a field needs the file written again. A
   member the file has no field for is never left out silently: writing it
   any other way is an error that names it.
-- Today a query reads the whole nested column it uses. Reading only the
-  fields a query uses is planned.
+- **LINQ reads only the nested fields a query uses,** at any depth (8.3):
+  the report above reads 6 of 23 fields, and the others are passed over
+  (384 -> 312 ms, 195 -> 130 MB allocated). Objects the query returns
+  whole, passes to a method, compares or groups by are read whole.
 
 ### 6.3 Settings
 
@@ -849,7 +851,11 @@ decimal total = orders.Where(o => o.Region == "NA").Sum(o => o.Amount);     // r
 
   On 200,000 orders of 10 members, grouping by region and summing amounts
   takes 0.25 s and 57 MB instead of 1.1 s and 261 MB. A collection member
-  (`List<Department>`) is one JSON column, read whole when the query uses it.
+  (`List<Department>`) is one JSON column, read whole when the query uses it;
+  as a nested column (6.2), only the fields the query reads of it are
+  decoded, by the same rules: objects returned whole, passed to a method,
+  compared or grouped by are read whole, and a computed property reads all
+  of its object's fields.
 - **Sub-queries of other tables inside a lambda are read once.** For
   example, `customers.Select(c => orders.Where(o => o.CustomerId == c.Id)...)`
   would otherwise run a query for every customer:

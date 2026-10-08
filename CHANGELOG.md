@@ -24,6 +24,9 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     with a new column encoding (5). Only files that use nested columns need it, and they need this release or
     later to read: versions 1.0 to 1.3 refuse them with an "unknown type" error (tested with the published 1.2.0
     packages). Files without nested columns are unchanged. Interop fixtures: each library reads the other's.
+  - **.NET LINQ reads only the nested fields a query uses,** at any depth; the other fields' streams are passed over.
+    The report above: 384 -> 312 ms, 195 -> 130 MB allocated. Objects returned whole, passed to a method, compared
+    or grouped by are read whole.
   - A row whose nested value is bad deep inside is refused whole, with the value's place in the message
     (`Column 'lines[].qty': ...`); the rows before and after are written.
   - Untyped rows and JSON, CSV and XML output show nested values as JSON. Dates are written as `datetime` columns
