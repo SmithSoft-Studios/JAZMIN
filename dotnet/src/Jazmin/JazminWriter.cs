@@ -187,6 +187,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     private readonly List<WrittenChunk> _chunks = new();
     private readonly List<(int Col, string Column, string Kind, IIndexBuilder Builder)> _indexBuilders = new();
     private object?[] _normalized = []; // reused per row
+    private (NestedColumn Stager, NestedStage Stage)[]? _stagers; // nested columns: values are checked before any buffer takes them
     private int[]? _sortCols;
     private object?[]? _lastSortKey;
     private object?[]? _sortKeyScratch;
@@ -470,6 +471,9 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         _ordinals = new Dictionary<string, int>(StringComparer.Ordinal);
         for (var i = 0; i < _columns.Length; i++) _ordinals[_columns[i].Name] = i;
         _normalized = new object?[_columns.Length];
+        _stagers = _columns.Any(c => TypeNames.IsNested(c.Type))
+            ? [.. _columns.Select(c => TypeNames.IsNested(c.Type) ? ((NestedColumn)Nested.Buffer(c, _options.Serializer), new NestedStage()) : default)]
+            : null;
         _sortCols = table.SortCols;
         _lastSortKey = null;
         _sortKeyScratch = null;
@@ -669,6 +673,12 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                 }
                 normalized[i] = Values.Normalize(_columns[i].Type, values[i], _columns[i].Name, _options.JsonOptions);
                 if (normalized[i] is null && !_columns[i].Nullable) Fault($"Row {RowCount}: column '{_columns[i].Name}' is not nullable");
+                if (normalized[i] is { } nested && _stagers?[i].Stage is { } stage)
+                {
+                    stage.Clear();
+                    _stagers[i].Stager.Stage(nested, stage);
+                    normalized[i] = stage;
+                }
             }
             if (_sortCols is not null) CheckOrder(normalized);
         }

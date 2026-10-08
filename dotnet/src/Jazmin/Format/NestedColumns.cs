@@ -208,9 +208,32 @@ internal sealed class PerSettings<TKey, TValue> where TKey : notnull
         settings is null || !settings.ShapesContract ? _plain : _shaped.GetValue(settings, static _ => new());
 }
 
+/// <summary>
+/// A nested value checked and converted before any buffer takes it (<see cref="NestedColumn.Stage"/>): its leaf values,
+/// and a marker for each list or object, in the order they are added. A value that fails leaves every buffer as it
+/// was, so the row is refused as a row with any other bad value is. Reused row after row.
+/// </summary>
+internal sealed class NestedStage
+{
+    internal readonly List<object?> Values = [];
+    internal readonly List<int> Lengths = [];
+    internal int ValueAt;
+    internal int LengthAt;
+
+    public void Clear()
+    {
+        Values.Clear();
+        Lengths.Clear();
+        ValueAt = LengthAt = 0;
+    }
+}
+
 /// <summary>A list or object column (or field, or list of items) being written: values are split as they are added.</summary>
 internal sealed class NestedColumn : ColumnBuffer
 {
+    private static readonly object Present = new(); // a staged list or object that is not null
+    private NestedStage? _own; // for values added without a stage
+
     private readonly JazminColumn _column;
     private readonly string _path; // for messages: "lines", "lines[]", "lines[].sku"
     private readonly string? _itemPath;
@@ -253,40 +276,48 @@ internal sealed class NestedColumn : ColumnBuffer
         return bytes;
     }
 
-    private void Add(ColumnBuffer buffer, JazminColumn column, object? raw, string path)
+    /// <summary>
+    /// Checks and converts a value of this column (not null) into <paramref name="stage"/>, adding nothing: a value that
+    /// fails throws before any buffer changes. <see cref="ColumnBuffer.Add"/> with the stage then adds it.
+    /// </summary>
+    public void Stage(object value, NestedStage stage)
+    {
+        if (_lengths is not null) StageList(value, stage);
+        else StageObject(value, stage);
+    }
+
+    private void StageChild(ColumnBuffer buffer, JazminColumn column, object? raw, string path, NestedStage stage)
     {
         var value = Nested.Normalize(column, raw, path, _settings);
-        if (value is null && !column.Nullable) throw new JazminValidationException($"Column '{path}' is not nullable");
-        buffer.Add(value);
-        _bytes += buffer is NestedColumn nested ? nested.TakeBytes() : value switch
+        if (value is null)
         {
-            null => 0,
-            string s => s.Length + 1,
-            byte[] b => b.Length + 2,
-            _ => 5,
-        };
+            if (!column.Nullable) throw new JazminValidationException($"Column '{path}' is not nullable");
+            stage.Values.Add(null);
+        }
+        else if (buffer is NestedColumn nested)
+        {
+            stage.Values.Add(Present);
+            nested.Stage(value, stage);
+        }
+        else stage.Values.Add(value);
     }
 
-    protected override void AddValue(object value)
-    {
-        if (_lengths is not null) AddList(value);
-        else AddObject(value);
-    }
-
-    private void AddList(object value)
+    private void StageList(object value, NestedStage stage)
     {
         if (value is string or JsonObject or IDictionary || value is JsonValue || value is not IEnumerable items)
             throw new JazminValidationException($"Column '{_path}': expected a list, got {value.GetType().Name}");
-        long n = 0;
+        var at = stage.Lengths.Count;
+        stage.Lengths.Add(0); // the length comes before the items' own lengths, as Commit reads them
+        var n = 0;
         foreach (var item in items)
         {
-            Add(_items!, _column.Item!, item, _itemPath!);
+            StageChild(_items!, _column.Item!, item, _itemPath!, stage);
             n++;
         }
-        _lengths!.AddLong(n);
+        stage.Lengths[at] = n;
     }
 
-    private void AddObject(object value)
+    private void StageObject(object value, NestedStage stage)
     {
         var fields = _fieldColumns!;
         switch (value)
@@ -294,20 +325,66 @@ internal sealed class NestedColumn : ColumnBuffer
             case JsonObject json:
                 foreach (var (name, _) in json)
                     if (!_fieldIndex!.ContainsKey(name)) throw new JazminValidationException($"Column '{_path}': '{name}' is not one of its fields");
-                for (var i = 0; i < fields.Length; i++) Add(_fields![i], fields[i], json[fields[i].Name], _fieldPaths![i]);
+                for (var i = 0; i < fields.Length; i++) StageChild(_fields![i], fields[i], json[fields[i].Name], _fieldPaths![i], stage);
                 return;
             case JsonNode:
                 throw new JazminValidationException($"Column '{_path}': expected an object, got JSON {((JsonNode)value).GetValueKind().ToString().ToLowerInvariant()}");
             case IDictionary<string, object?> map:
                 foreach (var name in map.Keys)
                     if (!_fieldIndex!.ContainsKey(name)) throw new JazminValidationException($"Column '{_path}': '{name}' is not one of its fields");
-                for (var i = 0; i < fields.Length; i++) Add(_fields![i], fields[i], map.TryGetValue(fields[i].Name, out var v) ? v : null, _fieldPaths![i]);
+                for (var i = 0; i < fields.Length; i++) StageChild(_fields![i], fields[i], map.TryGetValue(fields[i].Name, out var v) ? v : null, _fieldPaths![i], stage);
                 return;
             default:
                 var getters = _getters.GetOrAdd(value.GetType(), Getters);
-                for (var i = 0; i < fields.Length; i++) Add(_fields![i], fields[i], getters[i](value), _fieldPaths![i]);
+                for (var i = 0; i < fields.Length; i++) StageChild(_fields![i], fields[i], getters[i](value), _fieldPaths![i], stage);
                 return;
         }
+    }
+
+    /// <summary>Adds a staged value (a <see cref="NestedStage"/>), or stages and then adds any other value.</summary>
+    protected override void AddValue(object value)
+    {
+        if (value is not NestedStage stage)
+        {
+            stage = _own ??= new NestedStage();
+            stage.Clear();
+            Stage(value, stage);
+        }
+        Commit(stage);
+    }
+
+    /// <summary>Adds this column's part of a staged value, in the order <see cref="Stage"/> put it (nothing here can fail).</summary>
+    private void Commit(NestedStage stage)
+    {
+        if (_lengths is not null)
+        {
+            var n = stage.Lengths[stage.LengthAt++];
+            for (var i = 0; i < n; i++) CommitChild(_items!, stage);
+            _lengths.AddLong(n);
+        }
+        else
+        {
+            foreach (var field in _fields!) CommitChild(field, stage);
+        }
+    }
+
+    private void CommitChild(ColumnBuffer buffer, NestedStage stage)
+    {
+        var value = stage.Values[stage.ValueAt++];
+        if (buffer is NestedColumn nested && value is not null)
+        {
+            nested.Add(stage); // Present: its own part follows in the stage
+            _bytes += nested.TakeBytes();
+            return;
+        }
+        buffer.Add(value);
+        _bytes += value switch
+        {
+            null => 0,
+            string s => s.Length + 1,
+            byte[] b => b.Length + 2,
+            _ => 5,
+        };
     }
 
     /// <summary>For a .NET type, the stored value of each field: its member of that name, as the serializer maps it.</summary>

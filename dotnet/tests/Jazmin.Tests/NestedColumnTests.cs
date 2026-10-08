@@ -295,12 +295,20 @@ public sealed class NestedColumnTests : IDisposable
             for (var i = 0; i < lines.Length; i++) writer.WriteValues([(long)i, lines[i] is null ? null : JsonNode.Parse(lines[i]!)]);
         using var reader = JazminReader.Open(stream.ToArray());
         Assert.Equal(lines, reader.Rows().Select(r => (r["lines"] as JsonNode)?.ToJsonString()));
-        var bad = Assert.Throws<JazminValidationException>(() =>
+        // A row whose nested value is bad deep inside is refused whole, as other bad rows are: the rows before and
+        // after it are written, and nothing of it.
+        using var again = new MemoryStream();
+        using (var w = new JazminWriter(again, columns, new JazminWriteOptions(), leaveOpen: true))
         {
-            using var w = new JazminWriter(new MemoryStream(), columns);
-            w.WriteValues([1L, JsonNode.Parse("""[{"sku":5}]""")]);
-        });
-        Assert.Contains("lines", bad.Message);
+            w.WriteValues([1L, JsonNode.Parse("""[{"sku":"a","qty":1}]""")]);
+            var bad = Assert.Throws<JazminValidationException>(() => w.WriteValues([2L, JsonNode.Parse("""[{"sku":"b","qty":1},{"sku":"c","qty":"many"}]""")]));
+            Assert.Contains("Column 'lines[].qty'", bad.Message);
+            Assert.Throws<JazminValidationException>(() => w.WriteValues([3L, JsonNode.Parse("""[{"sku":"d","colour":"red"}]""")]));
+            w.WriteValues([4L, JsonNode.Parse("""[{"sku":"e","qty":5}]""")]);
+            w.Finish();
+        }
+        using var kept = JazminReader.Open(again.ToArray());
+        Assert.Equal(["""[{"sku":"a","qty":1}]""", """[{"sku":"e","qty":5}]"""], kept.Rows().Select(r => ((JsonNode)r["lines"]!).ToJsonString()));
     }
 
     [Fact]
