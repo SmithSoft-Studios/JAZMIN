@@ -13,6 +13,31 @@ internal sealed class ColumnDef
     public bool Required { get; init; }
     public string? Description { get; init; }
     public string? Attributes { get; init; } // JSON object as text
+    public ColumnDef? Item { get; init; } // lists (spec 5.4)
+    public List<ColumnDef>? Fields { get; init; } // objects (spec 5.4)
+
+    /// <summary>The definition of a column (and of its item or fields, at any depth).</summary>
+    public static ColumnDef Of(JazminColumn c, int position) => new()
+    {
+        Position = position,
+        Name = c.Name,
+        Type = c.Type,
+        Required = !c.Nullable,
+        Description = c.Description,
+        Attributes = c.Attributes?.ToJsonString(),
+        Item = c.Item is null ? null : Of(c.Item, 0),
+        Fields = c.Fields?.Select((f, i) => Of(f, i)).ToList(),
+    };
+
+    /// <summary>The column this defines (and its item or fields, at any depth).</summary>
+    public JazminColumn ToColumn() => new(Name, Type)
+    {
+        Nullable = !Required,
+        Description = Description,
+        Attributes = Attributes is null ? null : Values.ParseJson(Attributes, "Column attributes", uniqueNames: true) as System.Text.Json.Nodes.JsonObject,
+        Item = Item?.ToColumn(),
+        Fields = Fields?.Select(f => f.ToColumn()).ToArray(),
+    };
 }
 
 internal sealed class ColumnGroupDef
@@ -130,6 +155,8 @@ internal static class Catalog
         JazminType.DateTime => 6,
         JazminType.Binary => 7,
         JazminType.Json => 8,
+        JazminType.List => 9,
+        JazminType.Object => 10,
         _ => throw new JazminValidationException($"Unknown type {type}"),
     };
 
@@ -143,6 +170,8 @@ internal static class Catalog
         6 => JazminType.DateTime,
         7 => JazminType.Binary,
         8 => JazminType.Json,
+        9 => JazminType.List,
+        10 => JazminType.Object,
         _ => throw Bad($"column '{column}' has an unknown type"),
     };
 
@@ -205,16 +234,23 @@ internal static class Catalog
     // ---- Columns ------------------------------------------------------------------------------------
 
     private static Action<ProtoWriter> WriteColumn(ColumnDef c) => w =>
+    {
         w.UInt(1, (ulong)c.Position).String(2, c.Name).UInt(3, (ulong)TypeId(c.Type)).Bool(4, c.Required)
             .String(5, c.Description).String(6, c.Attributes);
+        foreach (var f in c.Fields ?? []) w.Message(8, WriteColumn(f), true);
+        if (c.Item is not null) w.Message(9, WriteColumn(c.Item), true);
+    };
 
-    private static ColumnDef ReadColumn(ArraySegment<byte> message)
+    private static ColumnDef ReadColumn(ArraySegment<byte> message, int depth = 0)
     {
+        if (depth > FormatConstants.MaxNestingDepth) throw Bad($"columns are nested more than {FormatConstants.MaxNestingDepth} levels deep");
         int position = 0;
         string name = "";
         ulong type = 0, unit = 0;
         bool required = false;
         string? description = null, attributes = null;
+        ColumnDef? item = null;
+        List<ColumnDef>? fields = null;
         var r = new ProtoReader(message);
         while (r.Next(out var f))
         {
@@ -227,11 +263,23 @@ internal static class Catalog
                 case 5: description = r.String(); break;
                 case 6: attributes = r.String(); break;
                 case 7: unit = r.UInt64(); break;
+                case 8: (fields ??= []).Add(ReadColumn(r.Bytes(), depth + 1)); break;
+                case 9: item = ReadColumn(r.Bytes(), depth + 1); break;
                 default: r.Skip(); break;
             }
         }
         if (unit != 0) throw Bad($"column '{name}' uses an unknown time unit");
-        return new ColumnDef { Position = position, Name = name, Type = TypeOf(type, name), Required = required, Description = description, Attributes = attributes };
+        var kind = TypeOf(type, name);
+        // Spec 5.4: a list has exactly its item, an object its fields (positions in order, names unique), nothing else.
+        var shaped = kind switch
+        {
+            JazminType.List => item is not null && fields is null,
+            JazminType.Object => item is null && fields is { Count: > 0 } && fields.Select((x, i) => x.Position == i).All(ok => ok)
+                && fields.Select(x => x.Name).Distinct(StringComparer.Ordinal).Count() == fields.Count,
+            _ => item is null && fields is null,
+        };
+        if (!shaped) throw Bad($"column '{name}' has an invalid structure");
+        return new ColumnDef { Position = position, Name = name, Type = kind, Required = required, Description = description, Attributes = attributes, Item = item, Fields = fields };
     }
 
     public static byte[] EncodeColumnDefinitions(IEnumerable<ColumnDef> columns)

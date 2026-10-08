@@ -9,6 +9,9 @@ namespace Jazmin;
 
 public sealed class JazminWriteOptions
 {
+    /// <summary>The serializer's settings, when it writes: how .NET objects in nested columns map to their fields.</summary>
+    internal Serialization.JazminSerializerSettings? Serializer { get; init; }
+
     public JazminCodec Codec { get; set; } = JazminCodec.Deflate;
 
     /// <summary>Deflate: 0-9, Brotli: 0-11. Null uses a balanced default.</summary>
@@ -584,7 +587,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         {
             part.Bytes = 0;
             // The previous buffers now belong to the worker encoding them: take recycled ones, or new ones.
-            part.Columns = part.Free.TryDequeue(out var recycled) ? recycled : part.Cols.Select(i => ColumnBuffer.For(_columns[i].Type)).ToArray();
+            part.Columns = part.Free.TryDequeue(out var recycled) ? recycled : part.Cols.Select(i => Nested.Buffer(_columns[i], _options.Serializer)).ToArray();
         }
         _chunkRows = 0;
     }
@@ -694,7 +697,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                 var value = normalized[cols[j]];
                 if (ReferenceEquals(value, DateMarker)) ((LongColumn)buffers[j]).AddLong(_dateMs[cols[j]]);
                 else buffers[j].Add(value);
-                part.Bytes += EstimateSize(value);
+                part.Bytes += buffers[j] is NestedColumn nested ? (int)nested.TakeBytes() : EstimateSize(value);
             }
             bytes += part.Bytes;
         }
@@ -851,6 +854,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         // Features are named when, and only when, the file uses them (spec 12); an append keeps the file's.
         var readerFeatures = new List<string>(cont?.Header.ReaderFeatures ?? []);
         if (_usesIndexDeltas && !readerFeatures.Contains(FormatConstants.IndexDeltas)) readerFeatures.Add(FormatConstants.IndexDeltas);
+        if (!readerFeatures.Contains(FormatConstants.NestedColumns) && _tables.Any(t => t.Columns.Any(c => TypeNames.IsNested(c.Type))))
+            readerFeatures.Add(FormatConstants.NestedColumns);
         var header = new HeaderDef
         {
             ReaderFeatures = readerFeatures,
@@ -935,11 +940,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     /// <summary>Column groups for the header: definitions inline, or (restricted groups) in their own locked section (spec 7.6.5).</summary>
     private List<ColumnGroupDef> ColumnGroupDefs()
     {
-        ColumnDef Definition(int i) => new()
-        {
-            Position = i, Name = _columns[i].Name, Type = _columns[i].Type, Required = !_columns[i].Nullable,
-            Description = _columns[i].Description, Attributes = _columns[i].Attributes?.ToJsonString(),
-        };
+        ColumnDef Definition(int i) => ColumnDef.Of(_columns[i], i);
         var previous = (_continue?.Table.ColumnGroups ?? []).ToDictionary(g => g.Name, StringComparer.Ordinal);
         return _parts.Select(part =>
         {

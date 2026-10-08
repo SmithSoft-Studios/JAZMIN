@@ -51,6 +51,14 @@ public sealed class JazminSerializerSettings
     /// <summary>Whether default values are stored, and whether missing values are filled in when reading.</summary>
     public DefaultValueHandling DefaultValueHandling { get; set; } = DefaultValueHandling.Include;
 
+    /// <summary>
+    /// Stores list and object properties as columns of their own fields (spec 5.4) instead of JSON text, where their
+    /// shape allows (lists, arrays and classes; not dictionaries, object or polymorphic types): a query then reads only the
+    /// fields it uses, and files are smaller. Off by default. Files with nested columns need JAZMIN 1.4 or later to read;
+    /// [JazminNested] chooses per property.
+    /// </summary>
+    public bool NestedColumns { get; set; }
+
     /// <summary>Whether an object that appears more than once is stored once and referred to ($id / $ref).</summary>
     public PreserveReferencesHandling PreserveReferencesHandling { get; set; } = PreserveReferencesHandling.None;
 
@@ -60,7 +68,7 @@ public sealed class JazminSerializerSettings
     /// </summary>
     internal bool ShapesContract =>
         (NamingStrategy is not null && !ReferenceEquals(NamingStrategy, JazminNamingStrategy.Default)) || Converters.Count > 0
-        || DefaultValueHandling != DefaultValueHandling.Include || PreserveReferencesHandling != PreserveReferencesHandling.None;
+        || DefaultValueHandling != DefaultValueHandling.Include || PreserveReferencesHandling != PreserveReferencesHandling.None || NestedColumns;
 
     private JsonSerializerOptions? _effectiveJsonOptions;
 
@@ -76,6 +84,7 @@ public sealed class JazminSerializerSettings
 
     internal JazminWriteOptions ToWriteOptions() => new()
     {
+        Serializer = this,
         Key = Key,
         Password = Password,
         Codec = Codec,
@@ -96,13 +105,7 @@ public sealed class JazminSerializerSettings
         foreach (var name in Indexes.Keys)
             if (columns.All(c => c.Name != name)) throw new JazminValidationException($"Cannot index unknown column '{name}'");
         return columns.Select(c => Indexes.TryGetValue(c.Name, out var kinds)
-            ? new JazminColumn(c.Name, c.Type)
-            {
-                Nullable = c.Nullable,
-                Description = c.Description,
-                Attributes = c.Attributes,
-                Indexes = c.Indexes.Concat(kinds).Distinct().ToArray(),
-            }
+            ? c.With(c.Indexes.Concat(kinds).Distinct().ToArray())
             : c).ToList();
     }
 }

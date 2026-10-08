@@ -87,12 +87,22 @@ internal sealed class TypeMap
             if (converter is not null && !converter.CanConvert(underlying))
                 throw new JazminValidationException($"{converter.GetType().Name} cannot convert {underlying.Name} (property {p.Name})");
             var (columnType, nullable) = Infer(p.PropertyType);
-            members.Add(new Member(p, new JazminColumn(name, attr?.TypeOverride ?? converter?.ColumnType ?? columnType)
+            var column = new JazminColumn(name, attr?.TypeOverride ?? converter?.ColumnType ?? columnType)
             {
                 Nullable = nullable || _ignoreDefaults, // with DefaultValueHandling.Ignore, defaults are stored as null
                 Description = attr?.Description ?? p.GetCustomAttribute<DescriptionAttribute>()?.Description,
                 Indexes = p.GetCustomAttribute<JazminIndexAttribute>()?.Kinds ?? Array.Empty<JazminIndexKind>(),
-            }, converter, DefaultOf(p)));
+            };
+            if (column.Type == JazminType.Json && converter is null && attr?.TypeOverride is null
+                && (p.GetCustomAttribute<JazminNestedAttribute>()?.Store ?? settings?.NestedColumns ?? false))
+            {
+                var nested = NestedSchema(p.PropertyType, name, settings);
+                if (nested is null && p.GetCustomAttribute<JazminNestedAttribute>()?.Store == true)
+                    throw new JazminValidationException($"{type.Name}.{p.Name}: {p.PropertyType.Name} cannot be stored as nested columns (lists, arrays and classes can; dictionaries, object, polymorphic types and types that contain themselves cannot)");
+                if (nested is not null)
+                    column = new JazminColumn(name, nested.Type) { Nullable = column.Nullable, Description = column.Description, Item = nested.Item, Fields = nested.Fields };
+            }
+            members.Add(new Member(p, column, converter, DefaultOf(p)));
         }
         if (members.Count == 0) throw new JazminValidationException($"Type {type.Name} has no public readable properties to serialize");
         _members = members.ToArray();
@@ -145,10 +155,88 @@ internal sealed class TypeMap
         }
     }
 
+    /// <summary>
+    /// A property type as nested columns (spec 5.4): a list or array of items, or a class with fields (its own map's
+    /// columns, nested in turn). Null when it cannot be: dictionaries, object, JSON types, polymorphic and abstract types,
+    /// and a type that contains itself. Items that cannot be nested are JSON items.
+    /// </summary>
+    private static JazminColumn? NestedSchema(Type type, string name, JazminSerializerSettings? settings)
+    {
+        var t = Nullable.GetUnderlyingType(type) ?? type;
+        var nullable = !type.IsValueType || Nullable.GetUnderlyingType(type) is not null;
+        if (t == typeof(string) || t == typeof(object) || typeof(JsonNode).IsAssignableFrom(t) || t == typeof(JsonElement)) return null;
+        if (typeof(System.Collections.IDictionary).IsAssignableFrom(t) || t.GetInterfaces().Concat([t]).Any(i => i.IsGenericType
+            && (i.GetGenericTypeDefinition() == typeof(IDictionary<,>) || i.GetGenericTypeDefinition() == typeof(IReadOnlyDictionary<,>)))) return null;
+        if (ListElement(t) is { } element)
+        {
+            var (itemType, itemNullable) = Infer(element);
+            var item = itemType != JazminType.Json ? new JazminColumn("item", itemType) { Nullable = itemNullable }
+                : NestedSchema(element, "item", settings) ?? new JazminColumn("item", JazminType.Json) { Nullable = itemNullable };
+            return new JazminColumn(name, JazminType.List) { Item = item, Nullable = nullable };
+        }
+        if (t.IsAbstract || t.IsInterface || t.IsPrimitive || t.IsEnum || _building?.Contains(t) == true) return null;
+        if (t.GetCustomAttributes<JsonDerivedTypeAttribute>(inherit: false).Any()) return null;
+        TypeMap map;
+        try
+        {
+            map = For(t, settings);
+        }
+        catch (JazminValidationException)
+        {
+            return null; // no properties to store
+        }
+        if (map._derived is not null || map._preserveReferences) return null;
+        return new JazminColumn(name, JazminType.Object) { Fields = [.. map.Columns], Nullable = nullable };
+    }
+
+    /// <summary>The item type of a list type a List&lt;T&gt; or T[] can be read into (arrays, List&lt;T&gt;, their interfaces), or null.</summary>
+    private static Type? ListElement(Type t)
+    {
+        if (t.IsArray) return t.GetArrayRank() == 1 ? t.GetElementType() : null;
+        if (!t.IsGenericType) return null;
+        var element = t.GetGenericArguments()[0];
+        return t.GetGenericArguments().Length == 1 && t.IsAssignableFrom(typeof(List<>).MakeGenericType(element)) ? element : null;
+    }
+
+    /// <summary>Nested columns: the stored value of the member for a column (by name, then ignoring case), or null.</summary>
+    internal Func<object, object?>? StoredGetter(string column, JazminSerializerSettings? settings)
+    {
+        var m = Array.Find(_members, x => x.Column.Name == column) ?? Array.Find(_members, x => string.Equals(x.Column.Name, column, StringComparison.OrdinalIgnoreCase));
+        return m is null ? null : item => Stored(m, m.Get(item), settings);
+    }
+
+    /// <summary>Nested columns: the property of the member for a column (by name, then ignoring case), or null.</summary>
+    internal PropertyInfo? MemberProperty(string column) =>
+        (Array.Find(_members, x => x.Column.Name == column) ?? Array.Find(_members, x => string.Equals(x.Column.Name, column, StringComparison.OrdinalIgnoreCase)))?.Property;
+
+    /// <summary>Nested columns: whether every member is set straight from its stored value (no converters, defaults or references).</summary>
+    internal bool PlainMembers => !_populate && !_ignoreDefaults && !_preserveReferences && _derived is null && _members.All(m => m.Converter is null);
+
+    /// <summary>Nested columns: the type of the member for a column (by name, then ignoring case), or null.</summary>
+    internal Type? MemberType(string column) =>
+        (Array.Find(_members, x => x.Column.Name == column) ?? Array.Find(_members, x => string.Equals(x.Column.Name, column, StringComparison.OrdinalIgnoreCase)))?.Property.PropertyType;
+
+    [ThreadStatic]
+    private static HashSet<Type>? _building; // types whose maps are being built: a type that contains itself stays JSON
+
+    private static TypeMap Build(Type type, JazminSerializerSettings? settings)
+    {
+        _building ??= [];
+        _building.Add(type);
+        try
+        {
+            return new TypeMap(type, settings);
+        }
+        finally
+        {
+            _building.Remove(type);
+        }
+    }
+
     public static TypeMap For(Type type, JazminSerializerSettings? settings = null) =>
         settings is null || !settings.ShapesContract
-            ? Plain.GetOrAdd(type, t => new TypeMap(t, null))
-            : BySettings.GetValue(settings, _ => new()).GetOrAdd(type, t => new TypeMap(t, settings));
+            ? Plain.GetOrAdd(type, t => Build(t, null))
+            : BySettings.GetValue(settings, _ => new()).GetOrAdd(type, t => Build(t, settings));
 
     public IReadOnlyList<JazminColumn> Columns { get; }
 
@@ -340,7 +428,11 @@ internal sealed class TypeMap
 
     /// <summary>A non-null stored value as the member's value.</summary>
     private static object? Read(Member m, object value, Type target, JazminSerializerSettings? settings) =>
-        m.Converter is { } converter ? FromStored(converter, value, target) : Convert(value, target, settings);
+        m.Converter is { } converter ? FromStored(converter, value, target)
+        : TypeNames.IsNested(m.Column.Type) && value is JsonNode node ? Nested.FromJson(node, target, settings)
+        : Convert(value, target, settings);
+
+    private static readonly MethodInfo NestedFromJsonMethod = typeof(Nested).GetMethod(nameof(Nested.FromJson))!;
 
     private static object? FromStored(JazminConverter converter, object stored, Type target)
     {
@@ -443,20 +535,24 @@ internal sealed class TypeMap
                 JazminType.Bool => typeof(BoolValues),
                 JazminType.String or JazminType.Decimal => typeof(StringValues),
                 JazminType.Json => typeof(JsonValues),
+                JazminType.List or JazminType.Object => typeof(NestedValues),
                 _ => typeof(BlobValues),
             };
             var column = Expression.Convert(Expression.ArrayIndex(cols, Expression.Constant(j)), holder);
             var rawJson = type == JazminType.Json && m.Converter is null && target != typeof(JsonNode) && target != typeof(object)
                 && target != typeof(JsonObject) && target != typeof(JsonArray) && target != typeof(JsonValue);
-            Expression read = rawJson
+            var nestedRead = TypeNames.IsNested(type) && m.Converter is null;
+            Expression read = nestedRead
+                ? Expression.Call(column, typeof(NestedValues).GetMethod(nameof(NestedValues.Read))!, row, Expression.Constant(target, typeof(Type)), settings)
+                : rawJson
                 ? Expression.Call(DeserializeRawMethod, Expression.ArrayIndex(Expression.Property(column, "Raw"), row), Expression.Constant(target), settings)
-                : type == JazminType.Json ? Expression.Call(column, typeof(DecodedColumn).GetMethod(nameof(DecodedColumn.Get))!, row)
+                : type is JazminType.Json or JazminType.List or JazminType.Object ? Expression.Call(column, typeof(DecodedColumn).GetMethod(nameof(DecodedColumn.Get))!, row)
                 : Expression.ArrayIndex(Expression.Property(column, "Values"), row);
             if (type == JazminType.DateTime) read = Expression.Call(FromEpochMsMethod, read);
             else if (type == JazminType.Binary) read = Expression.Convert(read, typeof(byte[]));
-            else if (type == JazminType.Json && !rawJson) read = Expression.Convert(read, typeof(JsonNode));
+            else if (type is JazminType.Json or JazminType.List or JazminType.Object && !rawJson && !nestedRead) read = Expression.Convert(read, typeof(JsonNode));
             var isNull = Expression.Call(column, nameof(DecodedColumn.IsNull), null, row);
-            var converted = rawJson ? Expression.Convert(read, target)
+            var converted = rawJson || nestedRead ? Expression.Convert(read, target)
                 : m.Converter is not null
                 ? Expression.Convert(Expression.Call(FromStoredMethod, Expression.Constant(m.Converter), Expression.Convert(read, typeof(object)), Expression.Constant(target)), target)
                 : TypedConvert(read, type, target, settings);
@@ -511,7 +607,7 @@ internal sealed class TypeMap
         }
     }
     /// <summary>Converts a typed value expression to the property type.</summary>
-    private static Expression TypedConvert(Expression read, JazminType columnType, Type target, ParameterExpression settings)
+    internal static Expression TypedConvert(Expression read, JazminType columnType, Type target, ParameterExpression settings)
     {
         var t = Nullable.GetUnderlyingType(target) ?? target;
         Expression typed;
@@ -543,6 +639,8 @@ internal sealed class TypeMap
             _ => typeof(JsonNode),
         };
         Expression typed;
+        if (TypeNames.IsNested(columnType) && t != typeof(object) && !typeof(JsonNode).IsAssignableFrom(t))
+            return Expression.Convert(Expression.Call(NestedFromJsonMethod, Expression.Convert(value, typeof(JsonNode)), Expression.Constant(target, typeof(Type)), settings), target);
         if (t == typeof(object)) typed = value;
         else if (t == natural) typed = Expression.Convert(value, t);
         else if (columnType == JazminType.Int && t == typeof(int)) typed = Expression.ConvertChecked(Expression.Convert(value, typeof(long)), typeof(int));

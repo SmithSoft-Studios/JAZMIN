@@ -14,6 +14,17 @@ public sealed class JazminPropertyAttribute(string? name = null) : Attribute
     internal JazminType? TypeOverride => (int)Type >= 0 ? Type : null;
 }
 
+/// <summary>
+/// Stores a list or object property as columns of its own fields (spec 5.4) instead of JSON text, so a query reads only
+/// the fields it uses: <c>[JazminNested]</c>. <c>[JazminNested(false)]</c> keeps a property as JSON when
+/// <see cref="JazminSerializerSettings.NestedColumns"/> is on. Files with nested columns need JAZMIN 1.4 or later to read.
+/// </summary>
+[AttributeUsage(AttributeTargets.Property)]
+public sealed class JazminNestedAttribute(bool store = true) : Attribute
+{
+    public bool Store { get; } = store;
+}
+
 /// <summary>Excludes a property from serialization. Counterpart of [JsonIgnore].</summary>
 [AttributeUsage(AttributeTargets.Property)]
 public sealed class JazminIgnoreAttribute : Attribute;

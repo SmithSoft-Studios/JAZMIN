@@ -659,12 +659,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             foreach (var c in visible ? defs : new List<ColumnDef>())
             {
                 if (c.Position < 0 || c.Position >= count || columns[c.Position] is not null) throw new JazminFormatException("Column positions are inconsistent");
-                columns[c.Position] = new JazminColumn(c.Name, c.Type)
-                {
-                    Nullable = !c.Required,
-                    Description = c.Description,
-                    Attributes = c.Attributes is null ? null : Values.ParseJson(c.Attributes, "Column attributes", uniqueNames: true) as JsonObject,
-                };
+                columns[c.Position] = c.ToColumn();
                 groupOf[c.Position] = gi;
             }
             groups[gi] = new GroupInfo(g.Name, visible ? defs.Select(c => c.Position).Order().ToArray() : [], visible);
@@ -1280,8 +1275,8 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 {
                     var pool = strings ?? (_workerStrings ??= new StringPool());
                     return filter is null
-                        ? new DecodedChunk(ordinal, Columnar.DecodeTyped(raw, rawLength, types, _rowCount[ordinal], ordinal, wanted, pool), null, decodedColumns)
-                        : filter.Decode(raw, rawLength, types, _rowCount[ordinal], ordinal, pool);
+                        ? new DecodedChunk(ordinal, Columnar.DecodeTyped(raw, rawLength, types, _rowCount[ordinal], ordinal, wanted, pool, schema: _allColumns), null, decodedColumns)
+                        : filter.Decode(raw, rawLength, types, _rowCount[ordinal], ordinal, pool, _allColumns);
                 }
                 finally
                 {
@@ -1398,9 +1393,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             (_rowIds, _runs, _rowStart) = (rowIds, runs, rowStart);
         }
 
-        public DecodedChunk Decode(byte[] raw, int rawLength, JazminType[] types, int rowCount, int ordinal, StringPool strings)
+        public DecodedChunk Decode(byte[] raw, int rawLength, JazminType[] types, int rowCount, int ordinal, StringPool strings, IReadOnlyList<JazminColumn> schema)
         {
-            var columns = Columnar.DecodeTyped(raw, rawLength, types, rowCount, ordinal, _filterColumns, strings);
+            var columns = Columnar.DecodeTyped(raw, rawLength, types, rowCount, ordinal, _filterColumns, strings, schema: schema);
             var matches = new bool[rowCount];
             var any = false;
             void Check(int r)
@@ -1416,7 +1411,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 for (var k = run.From; k < run.To; k++) Check((int)(_rowIds[k] - _rowStart[ordinal]));
             }
             if (!any || _rest is null) return new DecodedChunk(ordinal, columns, matches, _planColumns.Length);
-            var rest = Columnar.DecodeTyped(raw, rawLength, types, rowCount, ordinal, _rest, strings, matches);
+            var rest = Columnar.DecodeTyped(raw, rawLength, types, rowCount, ordinal, _rest, strings, matches, schema: schema);
             for (var c = 0; c < rest.Length; c++)
                 if (rest[c] is { } column) columns[c] = column;
             return new DecodedChunk(ordinal, columns, matches, _planColumns.Length + _restCount);
@@ -1461,7 +1456,8 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             var key = _access is not null
                 ? AccessCrypto.PartKey(partitionSecret!, ColumnSecret(group.Name)!, _salt, sectionId)
                 : _keys?.SectionKey(FormatConstants.KeyringData, sectionId);
-            var decoded = Columnar.Decode(ReadSection(Part(ordinal, g), sectionId, key), group.Cols.Select(c => _types[c]).ToArray(), rowCount, ordinal, groupWanted, _strings);
+            var decoded = Columnar.Decode(ReadSection(Part(ordinal, g), sectionId, key), group.Cols.Select(c => _types[c]).ToArray(), rowCount, ordinal, groupWanted, _strings,
+                group.Cols.Select(c => _allColumns[c]).ToArray());
             if (_cost is not null) _cost.ColumnsDecoded += groupWanted?.Count(w => w) ?? group.Cols.Length;
             rows ??= NewRows();
             for (var j = 0; j < group.Cols.Length; j++)

@@ -64,6 +64,8 @@ internal static class Values
                     ReadOnlyMemory<byte> rom => rom.ToArray(),
                     _ => throw Fail(column, $"expected byte[], got {value.GetType().Name}"),
                 };
+            case JazminType.List or JazminType.Object:
+                return value is JsonElement e ? e.ValueKind == JsonValueKind.Null ? null : JsonSerializer.SerializeToNode(e) : value; // split by the column's buffer
             case JazminType.Json:
                 return value switch
                 {

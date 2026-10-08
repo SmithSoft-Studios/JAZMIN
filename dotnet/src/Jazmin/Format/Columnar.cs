@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Text.Json.Nodes;
 
 namespace Jazmin.Format;
@@ -8,10 +9,12 @@ internal static class Columnar
     public const byte Plain = 0, Delta = 1, Dictionary = 2, Bitmap = 3, Scaled = 4;
     private const byte HasNulls = 0x10;
     private const int MaxWriteScale = 15;
-    private const long MaxMantissa = 9007199254740991; // 2^53 - 1
-    private static readonly double[] Pow10 = Enumerable.Range(0, 23).Select(s => Math.Pow(10, s)).ToArray(); // exact for s <= 22
+    internal const long MaxMantissa = 9007199254740991; // 2^53 - 1
+    internal static readonly double[] Pow10 = Enumerable.Range(0, 23).Select(s => Math.Pow(10, s)).ToArray(); // exact for s <= 22
 
-    private static bool Allowed(JazminType type, int encoding) => encoding == Plain || (type, encoding) switch
+    internal static bool IsAllowed(JazminType type, int encoding) => Allowed(type, encoding);
+
+    private static bool Allowed(JazminType type, int encoding) => TypeNames.IsNested(type) ? encoding == Nested.Encoding : encoding == Plain || (type, encoding) switch
     {
         (JazminType.Bool, Bitmap) => true,
         (JazminType.Int or JazminType.DateTime, Delta) => true,
@@ -196,9 +199,10 @@ internal static class Columnar
     /// Decodes a columnar payload into one array per column (public value forms, null for null).
     /// Columns with <paramref name="wanted"/>[j] false are skipped and left null.
     /// </summary>
-    public static object?[]?[] Decode(byte[] raw, IReadOnlyList<JazminType> types, int rowCount, int ordinal, bool[]? wanted = null, StringPool? strings = null)
+    public static object?[]?[] Decode(byte[] raw, IReadOnlyList<JazminType> types, int rowCount, int ordinal, bool[]? wanted = null, StringPool? strings = null,
+        IReadOnlyList<JazminColumn>? schema = null)
     {
-        var typed = DecodeTyped(raw, raw.Length, types, rowCount, ordinal, wanted, strings);
+        var typed = DecodeTyped(raw, raw.Length, types, rowCount, ordinal, wanted, strings, schema: schema);
         var columns = new object?[]?[types.Count];
         for (var j = 0; j < typed.Length; j++)
         {
@@ -214,14 +218,15 @@ internal static class Columnar
     /// Decodes a columnar payload into typed columns (no boxing): values are boxed only when read with
     /// <see cref="DecodedColumn.Get"/>. Columns with <paramref name="wanted"/>[j] false are skipped and left null. With
     /// <paramref name="rows"/>, plain text, decimal, json and binary values are made only for the rows it marks (the rows
-    /// a query returns); the others are passed over and left null.
+    /// a query returns); the others are passed over and left null. The payload starts at offset (a nested column's streams
+    /// are decoded in place), and schema gives the columns by position: the structure of list and object columns (5.4).
     /// </summary>
     public static DecodedColumn?[] DecodeTyped(byte[] raw, int rawLength, IReadOnlyList<JazminType> types, int rowCount, int ordinal, bool[]? wanted = null, StringPool? strings = null,
-        bool[]? rows = null)
+        bool[]? rows = null, int offset = 0, IReadOnlyList<JazminColumn>? schema = null)
     {
         // Every column takes at least a bit per row: a damaged row count fails here instead of sizing the arrays.
-        if (rowCount < 0 || (rowCount > 0 && rowCount > (long)rawLength * 8)) throw new JazminFormatException($"Chunk {ordinal}: row count does not match its size");
-        var reader = new ByteReader(raw, 0, rawLength);
+        if (rowCount < 0 || (rowCount > 0 && rowCount > (long)(rawLength - offset) * 8)) throw new JazminFormatException($"Chunk {ordinal}: row count does not match its size");
+        var reader = new ByteReader(raw, offset, rawLength);
         var columns = new DecodedColumn?[types.Count];
         for (var j = 0; j < types.Count; j++)
         {
@@ -238,9 +243,18 @@ internal static class Columnar
             var flags = reader.Byte();
             var encoding = flags & 0x0f;
             if ((flags & 0xe0) != 0) throw new JazminFormatException($"Chunk {ordinal}: reserved stream flags are set");
-            if (encoding > Scaled || !Allowed(type, encoding))
+            if (encoding > Nested.Encoding || !Allowed(type, encoding))
                 throw new JazminFormatException($"Chunk {ordinal}: encoding {encoding} is not valid for a {type} column");
             byte[]? nulls = (flags & HasNulls) != 0 ? reader.Bytes((rowCount + 7) >> 3).ToArray() : null;
+            if (encoding == Nested.Encoding)
+            {
+                // A list or object: its streams are decoded now (the chunk's bytes are reused afterwards).
+                if (schema is null || j >= schema.Count || schema[j].Type != type) throw new JazminFormatException($"Chunk {ordinal}: a nested column has no definition");
+                if (reader.Position > end) throw new JazminFormatException($"Chunk {ordinal}: stream length does not match its contents");
+                columns[j] = new NestedValues(schema[j], rowCount, nulls, raw, reader.Position, end, rows, ordinal);
+                reader.Skip(end - reader.Position);
+                continue;
+            }
             var column = DecodedColumn.For(type, rowCount, nulls);
             var row = -1;
             int NextRow()
@@ -331,10 +345,190 @@ internal static class Columnar
     }
 }
 
+internal static partial class ColumnarRange
+{
+    /// <summary>Passes over one plain value of a type, making nothing.</summary>
+    private static void Skip(ByteReader reader, JazminType type)
+    {
+        switch (type)
+        {
+            case JazminType.Bool: reader.Byte(); break;
+            case JazminType.Int or JazminType.DateTime: reader.VarInt(); break;
+            case JazminType.Float: reader.Float64(); break;
+            case JazminType.Decimal: Decimals.Skip(reader); break;
+            default: reader.Skip(reader.Length()); break; // string, json, binary
+        }
+    }
+
+    private static bool Bit(byte[] bits, int at, int i) => (bits[at + (i >> 3)] & (1 << (i & 7))) != 0;
+
+    /// <summary>
+    /// A list's lengths (one int stream without nulls, a length per list): where the items of lists [from, to) start
+    /// (to - from + 1 entries, the last where list to - 1's items end), and how many items all <paramref name="entries"/>
+    /// lists have. No array of every length is made.
+    /// </summary>
+    public static int[] Starts(byte[] raw, int at, int limit, int entries, int from, int to, int ordinal, out int total)
+    {
+        var reader = new ByteReader(raw, at, limit);
+        var length = reader.VarUInt();
+        if (length < 1 || length > (ulong)reader.Remaining) throw new JazminFormatException($"Chunk {ordinal}: invalid stream length");
+        var flags = reader.Byte();
+        var encoding = flags & 0x0f;
+        if ((flags & 0xf0) != 0 || encoding is not (Columnar.Plain or Columnar.Delta)) throw new JazminFormatException($"Chunk {ordinal}: list lengths are not valid");
+        var starts = new int[to - from + 1];
+        long sum = 0, previous = 0;
+        for (var r = 0; r < entries; r++)
+        {
+            var v = reader.VarInt();
+            if (encoding == Columnar.Delta) v = previous = r == 0 ? v : unchecked(previous + v);
+            if (v < 0) throw new JazminFormatException($"Chunk {ordinal}: invalid list length");
+            if (r == from) starts[0] = (int)sum;
+            sum += v;
+            if (sum > int.MaxValue) throw new JazminFormatException($"Chunk {ordinal}: too many list items");
+            if (r >= from && r < to) starts[r - from + 1] = (int)sum;
+        }
+        if (reader.Remaining != 0) throw new JazminFormatException($"Chunk {ordinal}: stream length does not match its contents");
+        if (from >= entries) starts[0] = (int)sum;
+        total = (int)sum;
+        return starts;
+    }
+
+    /// <summary>
+    /// Entries [from, to) of one stream (its length at <paramref name="at"/>), as a column of to - from entries: values
+    /// before are passed over and later ones are not read, so one row of a nested column costs little more than its own
+    /// values. The rest of the stream is not checked (a whole stream is decoded by <see cref="Columnar.DecodeTyped"/>).
+    /// </summary>
+    public static DecodedColumn Decode(byte[] raw, int at, int limit, JazminType type, int entries, int from, int to, int ordinal, StringPool? strings = null)
+    {
+        var reader = new ByteReader(raw, at, limit);
+        var length = reader.VarUInt();
+        if (length < 1 || length > (ulong)reader.Remaining) throw new JazminFormatException($"Chunk {ordinal}: invalid stream length");
+        var flags = reader.Byte();
+        var encoding = flags & 0x0f;
+        if ((flags & 0xe0) != 0) throw new JazminFormatException($"Chunk {ordinal}: reserved stream flags are set");
+        if (encoding > Columnar.Scaled || !Columnar.IsAllowed(type, encoding))
+            throw new JazminFormatException($"Chunk {ordinal}: encoding {encoding} is not valid for a {type} column");
+        var all = (flags & 0x10) != 0 ? reader.Position : -1; // the stream's null bitmap, read in place
+        if (all >= 0) reader.Skip((entries + 7) >> 3);
+        var n = to - from;
+        byte[]? nulls = null;
+        if (all >= 0)
+        {
+            nulls = new byte[(n + 7) >> 3];
+            for (var i = 0; i < n; i++) if (Bit(raw, all, from + i)) nulls[i >> 3] |= (byte)(1 << (i & 7));
+        }
+        var column = DecodedColumn.For(type, n, nulls);
+        bool IsNull(int r) => all >= 0 && Bit(raw, all, r);
+        switch (encoding)
+        {
+            case Columnar.Plain:
+                for (var r = 0; r < to; r++)
+                {
+                    if (IsNull(r)) continue;
+                    if (r >= from) column.ReadPlain(r - from, reader, strings);
+                    else Skip(reader, type);
+                }
+                break;
+            case Columnar.Delta:
+            {
+                var longs = ((LongValues)column).Values;
+                long previous = 0;
+                var first = true;
+                for (var r = 0; r < to; r++)
+                {
+                    if (IsNull(r)) continue;
+                    var d = reader.VarInt();
+                    previous = first ? d : unchecked(previous + d);
+                    first = false;
+                    if (r >= from) longs[r - from] = previous;
+                }
+                break;
+            }
+            case Columnar.Dictionary:
+            {
+                // Where each entry starts; only the entries these rows use become text (once each).
+                var k = reader.VarUInt();
+                if (k < 1 || k > (ulong)reader.Remaining) throw new JazminFormatException($"Chunk {ordinal}: invalid dictionary size");
+                var count = (int)k;
+                var offsets = ArrayPool<int>.Shared.Rent(count);
+                var made = ArrayPool<string?>.Shared.Rent(count);
+                try
+                {
+                    for (var i = 0; i < count; i++)
+                    {
+                        offsets[i] = reader.Position;
+                        if (type == JazminType.Decimal) Decimals.Skip(reader);
+                        else reader.Skip(reader.Length());
+                    }
+                    var texts = ((StringValues)column).Values;
+                    for (var r = 0; r < to; r++)
+                    {
+                        if (IsNull(r)) continue;
+                        var id = reader.VarUInt();
+                        if (id >= k) throw new JazminFormatException($"Chunk {ordinal}: dictionary index out of range");
+                        if (r < from) continue;
+                        if (made[id] is not { } text)
+                        {
+                            var entry = new ByteReader(raw, offsets[id], limit);
+                            made[id] = text = type == JazminType.Decimal ? Decimals.ReadText(entry) : strings?.Read(entry) ?? entry.String();
+                        }
+                        texts[r - from] = text;
+                    }
+                }
+                finally
+                {
+                    ArrayPool<int>.Shared.Return(offsets);
+                    ArrayPool<string?>.Shared.Return(made, clearArray: true);
+                }
+                break;
+            }
+            case Columnar.Bitmap:
+            {
+                var count = entries;
+                if (all >= 0) for (var r = 0; r < entries; r++) if (Bit(raw, all, r)) count--;
+                var bits = reader.Bytes((count + 7) >> 3);
+                var bools = ((BoolValues)column).Values;
+                var i = 0;
+                for (var r = 0; r < to; r++)
+                {
+                    if (IsNull(r)) continue;
+                    if (r >= from) bools[r - from] = (bits[i >> 3] & (1 << (i & 7))) != 0;
+                    i++;
+                }
+                break;
+            }
+            case Columnar.Scaled:
+            {
+                var doubles = ((DoubleValues)column).Values;
+                for (var r = 0; r < to; r++)
+                {
+                    if (IsNull(r)) continue;
+                    var s = reader.Byte();
+                    double v;
+                    if (s == 255) v = reader.Float64();
+                    else if (s <= 22)
+                    {
+                        var m = reader.VarInt();
+                        if (m > Columnar.MaxMantissa + 1 || m < -(Columnar.MaxMantissa + 1)) throw new JazminFormatException($"Chunk {ordinal}: scaled value out of range");
+                        v = m / Columnar.Pow10[s];
+                    }
+                    else throw new JazminFormatException($"Chunk {ordinal}: invalid scale {s}");
+                    if (r >= from) doubles[r - from] = v;
+                }
+                break;
+            }
+        }
+        return column;
+    }
+}
+
 /// <summary>A decoded column of one chunk: typed values by row, boxed only when read.</summary>
 internal abstract class DecodedColumn(byte[]? nulls)
 {
-    public bool IsNull(int row) => nulls is not null && (nulls[row >> 3] & (1 << (row & 7))) != 0;
+    /// <summary>The null bitmap (null: no nulls).</summary>
+    protected byte[]? NullBits { get; } = nulls;
+
+    public bool IsNull(int row) => NullBits is not null && (NullBits[row >> 3] & (1 << (row & 7))) != 0;
 
     public object? Get(int row) => IsNull(row) ? null : Box(row);
 

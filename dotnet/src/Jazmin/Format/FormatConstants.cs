@@ -30,7 +30,10 @@ internal static class FormatConstants
     public const string IndexDeltas = "index-deltas";
     public const byte IndexDeltasEncoding = 1;
 
-    public static readonly IReadOnlySet<string> SupportedReaderFeatures = new HashSet<string> { IndexDeltas };
+    /// <summary>Reader feature 'nested-columns' (spec 5.4): list and object columns, stored as columns (encoding 5).</summary>
+    public const string NestedColumns = "nested-columns";
+
+    public static readonly IReadOnlySet<string> SupportedReaderFeatures = new HashSet<string> { IndexDeltas, NestedColumns };
 
     public const string DefaultColumnGroup = "*";
     public const string WholeTable = "*"; // partition of a table without partitionBy
@@ -49,6 +52,7 @@ internal static class FormatConstants
     public const int DefaultChunkBytes = 1024 * 1024;
     public const int DefaultKdfIterations = 600_000;
     public const int MinKdfIterations = 1000;
+    public const int MaxNestingDepth = 64; // lists and objects within one another (spec 5.4): deeper definitions are refused
     public const int MaxKdfIterations = 10_000_000; // a file asking for more is refused: each open would take minutes
     public const int DefaultIndexPageBytes = 64 * 1024; // target raw size of a sorted-index page (spec 8.1)
 

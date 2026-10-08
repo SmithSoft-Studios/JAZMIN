@@ -766,13 +766,8 @@ public static class JazminFile
         using (lockFile) return action();
     }
 
-    private static List<JazminColumn> ColumnsWithIndexes(JazminReader reader) => reader.Columns.Select(c => new JazminColumn(c.Name, c.Type)
-    {
-        Nullable = c.Nullable,
-        Description = c.Description,
-        Attributes = c.Attributes,
-        Indexes = reader.Indexes.Where(i => i.Column == c.Name).Select(i => i.Kind).ToArray(),
-    }).ToList();
+    private static List<JazminColumn> ColumnsWithIndexes(JazminReader reader) =>
+        reader.Columns.Select(c => c.With(reader.Indexes.Where(i => i.Column == c.Name).Select(i => i.Kind).ToArray())).ToList();
 
     /// <summary>Column positions, value arrays and comparable keys for rows of one file.</summary>
     private sealed class RowShape(List<JazminColumn> columns)

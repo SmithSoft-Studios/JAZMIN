@@ -173,7 +173,22 @@ internal static class Fuzzing
         i % 8 == 0 ? null : JsonNode.Parse($"{{\"i\":{i},\"list\":[{i % 3},\"x\"]}}"),
     ];
 
-    private static byte[] Write(int rows, JazminCodec codec, int chunkRows = 16, bool files = false)
+    /// <summary>Nested columns (reader feature nested-columns): a list of objects with a list inside, and an object.</summary>
+    private static readonly JazminColumn[] NestedColumns =
+    [
+        JazminColumn.ListOf("staff", JazminColumn.ObjectOf("item",
+            new JazminColumn("name", JazminType.String), new JazminColumn("pay", JazminType.Decimal), new JazminColumn("since", JazminType.DateTime),
+            JazminColumn.ListOf("tags", new JazminColumn("item", JazminType.String)))),
+        JazminColumn.ObjectOf("head", new JazminColumn("city", JazminType.String), new JazminColumn("score", JazminType.Float), new JazminColumn("open", JazminType.Bool)),
+    ];
+
+    private static object?[] NestedRow(int i) =>
+    [
+        i % 6 == 0 ? null : JsonNode.Parse(i % 5 == 0 ? "[]" : $$"""[{"name":"N{{i % 7}}","pay":"{{i}}.5","since":"2020-01-0{{1 + i % 9}}T00:00:00Z","tags":["a","t{{i % 3}}"]},null,{"name":null,"tags":[]}]"""),
+        i % 4 == 0 ? null : JsonNode.Parse($$"""{"city":"C{{i % 3}}","score":{{i / 4.0}},"open":{{(i % 2 == 0 ? "true" : "false")}}}"""),
+    ];
+
+    private static byte[] Write(int rows, JazminCodec codec, int chunkRows = 16, bool files = false, bool nested = false)
     {
         var stream = new MemoryStream();
         var options = new JazminWriteOptions
@@ -186,8 +201,8 @@ internal static class Fuzzing
             options.Files = [new JazminFileInput("index.html", "<p>x</p>"u8.ToArray()), new JazminFileInput("a/b.bin", Enumerable.Repeat((byte)7, 300).ToArray())];
             options.Package = new JazminPackage { Entry = "index.html", Title = "Fuzz" };
         }
-        using (var writer = new JazminWriter(stream, Columns, options, leaveOpen: true))
-            for (var i = 0; i < rows; i++) writer.WriteValues(Row(i));
+        using (var writer = new JazminWriter(stream, nested ? [.. Columns, .. NestedColumns] : Columns, options, leaveOpen: true))
+            for (var i = 0; i < rows; i++) writer.WriteValues(nested ? [.. Row(i), .. NestedRow(i)] : Row(i));
         return stream.ToArray();
     }
 
@@ -197,7 +212,7 @@ internal static class Fuzzing
         var files = new List<byte[]>
         {
             Write(120, JazminCodec.None), Write(120, JazminCodec.Deflate), Write(40, JazminCodec.Brotli, chunkRows: 64),
-            Write(120, JazminCodec.None, files: true),
+            Write(120, JazminCodec.None, files: true), Write(60, JazminCodec.None, nested: true),
         };
         var path = Path.Combine(Path.GetTempPath(), $"jazmin-fuzz-{Guid.NewGuid():N}.jzm");
         try

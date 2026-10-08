@@ -122,12 +122,48 @@ public class GuideSnippetTests
             Converters = [new MoneyConverter()],
             DefaultValueHandling = DefaultValueHandling.IgnoreAndPopulate,
             PreserveReferencesHandling = PreserveReferencesHandling.Objects,
+            NestedColumns = true,
         };
         var orders = new List<GuideOrder> { new() { Id = 1, Total = new Money(1250, "ZAR") }, new() { Id = 0, Total = new Money(5, "USD") } };
         var bytes = JazminConvert.SerializeObject(orders, settings);
         var back = JazminConvert.DeserializeObject<List<GuideOrder>>(bytes, settings)!;
         Assert.Equal(orders.Select(o => (o.Id, o.Total)), back.Select(o => (o.Id, o.Total)));
         Assert.Contains("\"total\":\"1250 ZAR\"", JazminConvert.ToJson(bytes));
+    }
+
+    // 6.2: nested columns, as written in the guide.
+    public class GuideCompany
+    {
+        public string Name { get; set; } = "";
+        public List<GuideDepartment> Departments { get; set; } = [];
+    }
+
+    public class GuideDepartment
+    {
+        public string Name { get; set; } = "";
+        public List<string> Staff { get; set; } = [];
+    }
+
+    [Fact]
+    public void Section6_2_NestedColumns()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"guide-{Guid.NewGuid():N}.jzm");
+        var companies = new List<GuideCompany> { new() { Name = "Acme", Departments = [new() { Name = "Sales", Staff = ["Ann", "Ben"] }] } };
+        try
+        {
+            var settings = new JazminSerializerSettings { NestedColumns = true };
+            File.WriteAllBytes(path, JazminConvert.SerializeObject(companies, settings));
+
+            // Reading needs no settings: the file says how each column is stored.
+            var back = JazminConvert.DeserializeObject<List<GuideCompany>>(File.ReadAllBytes(path));
+            Assert.Equal(["Ann", "Ben"], back![0].Departments[0].Staff);
+            using var reader = JazminReader.Open(path);
+            Assert.Equal("Departments: list<object{Name: string?, Staff: list<string?>?}?>?", reader.Columns.Single(c => c.Name == "Departments").ToString());
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     [Fact]

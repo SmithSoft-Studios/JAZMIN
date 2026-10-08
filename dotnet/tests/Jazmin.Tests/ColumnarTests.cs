@@ -140,7 +140,7 @@ public class ColumnarTests
             JazminType.Json => "{\"i\":" + i + "}",
             _ => new[] { (byte)i, (byte)(i >> 8) },
         };
-        foreach (var type in Enum.GetValues<JazminType>())
+        foreach (var type in Enum.GetValues<JazminType>().Where(t => !TypeNames.IsNested(t))) // lists and objects: NestedColumnTests
         {
             foreach (var rows in new[] { 0, 1, 2, 17, 600 })
             {
