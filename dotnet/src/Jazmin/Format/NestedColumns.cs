@@ -534,7 +534,8 @@ internal sealed class NestedNode
 
     public NestedNode? Items { get; init; }
 
-    public NestedNode[]? Fields { get; init; }
+    /// <summary>Objects: their fields' parts; null for a field the query does not read (<see cref="JazminColumn.Unread"/>).</summary>
+    public NestedNode?[]? Fields { get; init; }
 
     public bool IsNull(int entry) => Nulls is not null && (Nulls[entry >> 3] & (1 << (entry & 7))) != 0;
 
@@ -633,9 +634,13 @@ internal sealed class NestedValues : DecodedColumn
             var items = Entry(c.Item!, total, starts[0], starts[^1], itemMask, ref at);
             return new NestedNode { Column = c, Nulls = bitmap, Lo = lo, Ranks = ranks, Starts = starts, ChildLo = childLo, Items = items };
         }
-        var fields = new NestedNode[c.Fields!.Count];
+        var fields = new NestedNode?[c.Fields!.Count];
         for (var i = 0; i < fields.Length; i++)
-            fields[i] = at == end ? Missing(c.Fields[i], present) : Entry(c.Fields[i], present, childLo, childHi, childMask, ref at); // none: added since (spec 5.4)
+        {
+            if (at == end) fields[i] = Missing(c.Fields[i], present); // added after this chunk was written (spec 5.4)
+            else if (c.Fields[i].Unread) at = Limit(at); // a field the query does not read: passed over
+            else fields[i] = Entry(c.Fields[i], present, childLo, childHi, childMask, ref at);
+        }
         return new NestedNode { Column = c, Nulls = bitmap, Lo = lo, Ranks = ranks, ChildLo = childLo, Fields = fields };
     }
 
@@ -699,7 +704,8 @@ internal sealed class NestedValues : DecodedColumn
             return array;
         }
         var obj = new JsonObject();
-        foreach (var field in node.Fields!) obj[field.Column.Name] = Json(field, k);
+        foreach (var field in node.Fields!)
+            if (field is not null) obj[field.Column.Name] = Json(field, k);
         return obj;
     }
 
@@ -824,7 +830,8 @@ internal static class NestedBuilder
             var value = TypeNames.IsNested(fields[i].Type)
                 ? Expression.Convert(Expression.Invoke(Expression.Constant(For(fields[i], property.PropertyType, settings)), field, k, s), property.PropertyType)
                 : LeafRead(field, k, fields[i].Type, property.PropertyType, s);
-            body.Add(Expression.Assign(Expression.Property(item, property), value));
+            // A field the query does not read was not decoded: its member keeps its default.
+            body.Add(Expression.IfThen(Expression.NotEqual(field, Expression.Constant(null, typeof(NestedNode))), Expression.Assign(Expression.Property(item, property), value)));
         }
         body.Add(Expression.Convert(item, typeof(object)));
         var block = Expression.Block(typeof(object), [item, k], body);

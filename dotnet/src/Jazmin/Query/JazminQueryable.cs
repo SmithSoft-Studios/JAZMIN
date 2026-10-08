@@ -122,7 +122,7 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
         return plan.Tail is null ? (IEnumerable<T>)plan.Rows : new EnumerableQuery<T>(plan.Tail);
     }
 
-    public QueryUsage NewUsage() => new(typeof(TRow), _map, _reader);
+    public QueryUsage NewUsage() => new(typeof(TRow), _map, _reader, _settings);
 
     public Expression RootExpression => _root;
 
@@ -275,8 +275,8 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
         };
         var operators = tail.Count == 0 ? null : tail.Aggregate((Expression)Expression.Parameter(typeof(IQueryable<TRow>), "rows"),
             (source, call) => Expression.Call(call.Method, [source, .. call.Arguments.Skip(1)]));
-        var columns = ColumnsUsed(checks, operators, hint);
-        var rows = _reader.TypedRows(_map, _settings, filter, check, offset, limit, columns?.ToList());
+        var (columns, trimmed) = ColumnsUsed(checks, operators, hint);
+        var rows = _reader.TypedRows(_map, _settings, filter, check, offset, limit, columns?.ToList(), trimmed);
         if (tail.Count == 0) return new QueryPlan(rows, null, null);
         Expression rest = Expression.Constant(rows.AsQueryable(), typeof(IQueryable<TRow>));
         var decorrelator = new Decorrelator(provider => SubQueryColumns(provider, operators!)); // sub-queries inside lambdas: read once
@@ -324,32 +324,37 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
     /// The columns the objects need, or null for all: the members of the rows that the remaining conditions and the
     /// operators after the pushed-down part (<paramref name="tail"/>, over a placeholder source) read, at any depth:
     /// through SelectMany, GroupBy, Join, nested queries, anonymous types and groups. Rows the caller receives, or that
-    /// may be read in ways the query does not show, need every column (see <see cref="QueryUsage"/>).
+    /// may be read in ways the query does not show, need every column (see <see cref="QueryUsage"/>). With them, the
+    /// nested columns of which the query reads only some fields, trimmed to those (null: none).
     /// </summary>
-    private HashSet<string>? ColumnsUsed(List<LambdaExpression> checks, Expression? tail, HashSet<string>? hint)
+    private (HashSet<string>? Columns, IReadOnlyDictionary<string, JazminColumn>? Trimmed) ColumnsUsed(List<LambdaExpression> checks, Expression? tail, HashSet<string>? hint)
     {
-        if (tail is null && hint is null) return null; // the caller receives the objects
+        if (tail is null && hint is null) return (null, null); // the caller receives the objects
         var finder = NewUsage();
         foreach (var check in checks) finder.Visit(check.Body); // conditions checked on each object
         if (tail is not null)
         {
-            if (finder.Carries(tail.Type))
+            if (finder.CarriesRows(tail.Type))
             {
-                if (hint is null) return null;
+                if (hint is null) return (null, null);
                 finder.Allow(tail); // the rows go to the query this one is a source of, which says what it reads of them
             }
             finder.Visit(tail);
         }
-        if (finder.Whole) return null;
-        if (hint is not null) finder.Used.UnionWith(hint);
-        return finder.Used;
+        if (finder.Whole) return (null, null);
+        if (hint is not null)
+        {
+            finder.Used.UnionWith(hint);
+            return (finder.Used, null); // the other query reads the rows' nested values: they are read whole
+        }
+        return (finder.Used, finder.Trimmed());
     }
 
     /// <summary>What a query reads of the rows of a sub-query of <paramref name="provider"/> it uses as a source (null: every column).</summary>
     private static HashSet<string>? SubQueryColumns(IJazminQueryProvider provider, Expression operators)
     {
         var finder = provider.NewUsage();
-        if (finder.Carries(operators.Type)) return null;
+        if (finder.CarriesRows(operators.Type)) return null;
         finder.Visit(operators);
         return finder.Whole ? null : finder.Used;
     }
@@ -372,29 +377,104 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
 /// and into new objects and arrays. Anywhere else (a method call, a cast, an equality or a sort on the rows
 /// themselves, a comparer, a computed property, the query's result) it is <see cref="Whole"/>: every column.
 /// </summary>
-internal sealed class QueryUsage(Type row, TypeMap map, JazminReader reader) : ExpressionVisitor
+internal sealed class QueryUsage : ExpressionVisitor
 {
     private static readonly HashSet<string> ByElementEquality =
         ["Distinct", "Union", "Intersect", "Except", "SequenceEqual", "Contains", "ToHashSet", "Order", "OrderDescending", "Cast", "OfType"];
 
+    private readonly Type _row;
+    private readonly TypeMap _map;
+    private readonly JazminReader _reader;
+    private readonly JazminSerializerSettings? _settings;
+
     // Places a parent allows rows to flow into, each for one visit: one parameter object stands for all its uses.
     private readonly Dictionary<Expression, int> _allowed = new(ReferenceEqualityComparer.Instance);
-    private readonly Dictionary<Type, bool> _carries = [];
+    private readonly Dictionary<Type, bool> _carriesRows = [];
+    private readonly Dictionary<Type, Type[]> _nestedIn = [];
+
+    // Nested columns (spec 5.4): their lists and objects, and the .NET types of the objects (a type may be at several).
+    private readonly Dictionary<string, NestedPart> _roots = new(StringComparer.Ordinal);
+    private readonly Dictionary<Type, List<NestedPart>> _byType = [];
+
+    public QueryUsage(Type row, TypeMap map, JazminReader reader, JazminSerializerSettings? settings = null)
+    {
+        (_row, _map, _reader, _settings) = (row, map, reader, settings);
+        foreach (var property in row.GetProperties())
+            if (reader.FileColumn(map, property) is { } column && TypeNames.IsNested(column.Type))
+                _roots[column.Name] = Register(property.PropertyType, column);
+    }
+
+    /// <summary>A list or object of a nested column: which of its fields a query reads, or all of them.</summary>
+    private sealed class NestedPart(JazminColumn column)
+    {
+        public JazminColumn Column { get; } = column;
+        public bool All { get; set; }
+        public HashSet<string> Read { get; } = new(StringComparer.Ordinal); // objects: fields read
+        public Dictionary<string, NestedPart> Parts { get; } = new(StringComparer.Ordinal); // fields that are lists or objects; a list's item ("")
+    }
+
+    /// <summary>A nested column's parts, for values of <paramref name="type"/>: objects by their .NET type.</summary>
+    private NestedPart Register(Type type, JazminColumn column)
+    {
+        var part = new NestedPart(column);
+        var t = Nullable.GetUnderlyingType(type) ?? type;
+        if (column.Type == JazminType.List)
+        {
+            if (ListElement(t) is { } element && TypeNames.IsNested(column.Item!.Type)) part.Parts[""] = Register(element, column.Item);
+            else if (TypeNames.IsNested(column.Item!.Type)) part.All = true; // items of a type not followed: read whole
+            return part;
+        }
+        if (Format.Nested.MapOf(t, _settings) is not { } map)
+        {
+            part.All = true;
+            return part;
+        }
+        (_byType.TryGetValue(t, out var parts) ? parts : _byType[t] = []).Add(part);
+        foreach (var field in column.Fields!)
+            if (TypeNames.IsNested(field.Type) && map.MemberProperty(field.Name) is { } property) part.Parts[field.Name] = Register(property.PropertyType, field);
+        return part;
+    }
+
+    private static Type? ListElement(Type t)
+    {
+        if (t.IsArray) return t.GetArrayRank() == 1 ? t.GetElementType() : null;
+        if (!t.IsGenericType || t.GetGenericArguments().Length != 1) return null;
+        var element = t.GetGenericArguments()[0];
+        return t.IsAssignableFrom(typeof(List<>).MakeGenericType(element)) ? element : null;
+    }
 
     public HashSet<string> Used { get; } = new(StringComparer.Ordinal);
 
     public bool Whole { get; private set; }
 
+    /// <summary>Whether values of this type can hold rows, or objects of nested columns: what must be followed.</summary>
+    public bool Carries(Type type) => CarriesRows(type) || NestedIn(type).Length > 0;
+
     /// <summary>Whether values of this type can hold rows: the row type, or a type built from it.</summary>
-    public bool Carries(Type type)
+    public bool CarriesRows(Type type)
     {
-        if (type == row) return true;
-        if (_carries.TryGetValue(type, out var known)) return known;
-        _carries[type] = false; // a type that refers to itself
-        var carries = type.HasElementType && Carries(type.GetElementType()!)
-            || type.IsGenericType && type.GetGenericArguments().Any(Carries)
-            || IsAnonymous(type) && type.GetProperties().Any(p => Carries(p.PropertyType));
-        return _carries[type] = carries;
+        if (type == _row) return true;
+        if (_carriesRows.TryGetValue(type, out var known)) return known;
+        _carriesRows[type] = false; // a type that refers to itself
+        var carries = type.HasElementType && CarriesRows(type.GetElementType()!)
+            || type.IsGenericType && type.GetGenericArguments().Any(CarriesRows)
+            || IsAnonymous(type) && type.GetProperties().Any(p => CarriesRows(p.PropertyType));
+        return _carriesRows[type] = carries;
+    }
+
+    /// <summary>The .NET types of nested columns' objects that values of this type can hold.</summary>
+    private Type[] NestedIn(Type type)
+    {
+        if (_byType.Count == 0) return [];
+        if (_nestedIn.TryGetValue(type, out var known)) return known;
+        _nestedIn[type] = []; // a type that refers to itself
+        var found = new HashSet<Type>();
+        var t = Nullable.GetUnderlyingType(type) ?? type;
+        if (_byType.ContainsKey(t)) found.Add(t);
+        if (type.HasElementType) found.UnionWith(NestedIn(type.GetElementType()!));
+        if (type.IsGenericType) foreach (var argument in type.GetGenericArguments()) found.UnionWith(NestedIn(argument));
+        if (IsAnonymous(type)) foreach (var p in type.GetProperties()) found.UnionWith(NestedIn(p.PropertyType));
+        return _nestedIn[type] = [.. found];
     }
 
     private static bool IsAnonymous(Type type) =>
@@ -405,10 +485,43 @@ internal sealed class QueryUsage(Type row, TypeMap map, JazminReader reader) : E
         if (node is null || Whole) return node;
         if (node is not LambdaExpression && node.NodeType != ExpressionType.Quote && Carries(node.Type) && !Consume(node))
         {
-            Whole = true; // rows reach a place where their reads do not show
-            return node;
+            if (CarriesRows(node.Type))
+            {
+                Whole = true; // rows reach a place where their reads do not show
+                return node;
+            }
+            foreach (var type in NestedIn(node.Type))
+                foreach (var part in _byType[type]) part.All = true; // so do nested objects: all their fields are read
         }
         return base.Visit(node);
+    }
+
+    /// <summary>
+    /// The nested columns the query reads, trimmed to the fields it reads (the others marked <see cref="JazminColumn.Unread"/>);
+    /// null when it reads every field of every one.
+    /// </summary>
+    public IReadOnlyDictionary<string, JazminColumn>? Trimmed()
+    {
+        Dictionary<string, JazminColumn>? trimmed = null;
+        foreach (var (name, part) in _roots)
+            if (Used.Contains(name) && Trim(part) is var column && !ReferenceEquals(column, part.Column)) (trimmed ??= new(StringComparer.Ordinal))[name] = column;
+        return trimmed;
+    }
+
+    /// <summary>A part's definition with the fields not read marked so (the same definition when all are read).</summary>
+    private static JazminColumn Trim(NestedPart part)
+    {
+        var c = part.Column;
+        if (part.All) return c;
+        if (c.Type == JazminType.List)
+        {
+            if (!part.Parts.TryGetValue("", out var item) || Trim(item) is var trimmedItem && ReferenceEquals(trimmedItem, c.Item)) return c;
+            return new JazminColumn(c.Name, c.Type) { Nullable = c.Nullable, Item = trimmedItem };
+        }
+        var fields = c.Fields!.Select(f => !part.Read.Contains(f.Name) ? new JazminColumn(f.Name, f.Type) { Nullable = f.Nullable, Item = f.Item, Fields = f.Fields, Unread = true }
+            : part.Parts.TryGetValue(f.Name, out var inner) ? Trim(inner) : f).ToArray();
+        return fields.Select((f, i) => ReferenceEquals(f, c.Fields![i])).All(same => same) ? c
+            : new JazminColumn(c.Name, c.Type) { Nullable = c.Nullable, Fields = fields };
     }
 
     public void Allow(Expression node) => _allowed[node] = _allowed.GetValueOrDefault(node) + 1;
@@ -432,10 +545,20 @@ internal sealed class QueryUsage(Type row, TypeMap map, JazminReader reader) : E
         if (node.Expression is { } target && Carries(target.Type))
         {
             Allow(target);
-            if (target.Type == row)
+            if (target.Type == _row)
             {
-                if (map.ColumnRead(node.Member) is not { } name) Whole = true; // a computed property may read anything
-                else if (reader.VisibleColumnName(name) is { } column) Used.Add(column); // not in the file: keeps its default
+                if (_map.ColumnRead(node.Member) is not { } name) Whole = true; // a computed property may read anything
+                else if (_reader.VisibleColumnName(name) is { } column) Used.Add(column); // not in the file: keeps its default
+            }
+            else if (_byType.TryGetValue(Nullable.GetUnderlyingType(target.Type) ?? target.Type, out var parts))
+            {
+                // A field of a nested column's object, wherever objects of this type are.
+                var field = Format.Nested.MapOf(Nullable.GetUnderlyingType(target.Type) ?? target.Type, _settings)?.ColumnRead(node.Member);
+                foreach (var part in parts)
+                {
+                    if (field is null) part.All = true; // a computed property may read any field
+                    else part.Read.Add(field);
+                }
             }
         }
         return base.VisitMember(node);
@@ -473,6 +596,19 @@ internal sealed class QueryUsage(Type row, TypeMap map, JazminReader reader) : E
         "Zip" => i == 2,
         _ => false,
     };
+
+    protected override Expression VisitBinary(BinaryExpression node)
+    {
+        // A nested object compared with null: only whether it is there is read, none of its fields.
+        if (node.NodeType is ExpressionType.Equal or ExpressionType.NotEqual)
+        {
+            if (IsNull(node.Right) && !CarriesRows(node.Left.Type) && NestedIn(node.Left.Type).Length > 0) Allow(node.Left);
+            else if (IsNull(node.Left) && !CarriesRows(node.Right.Type) && NestedIn(node.Right.Type).Length > 0) Allow(node.Right);
+        }
+        return base.VisitBinary(node);
+    }
+
+    private static bool IsNull(Expression e) => e is ConstantExpression { Value: null } || e is UnaryExpression { NodeType: ExpressionType.Convert, Operand: ConstantExpression { Value: null } };
 
     protected override Expression VisitNew(NewExpression node)
     {

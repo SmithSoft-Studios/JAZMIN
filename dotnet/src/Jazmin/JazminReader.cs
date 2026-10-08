@@ -70,6 +70,9 @@ public sealed class JazminQueryOptions
     public long Offset { get; set; }
 
     public long? Limit { get; set; }
+
+    /// <summary>LINQ: nested columns trimmed to the fields a query reads, by name (see QueryUsage).</summary>
+    internal IReadOnlyDictionary<string, JazminColumn>? Trimmed { get; init; }
 }
 
 /// <summary>How a filter executes: via indexes (candidate rows) or a chunk scan (chunks skipped by statistics).</summary>
@@ -1261,8 +1264,10 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <see cref="JazminReadOptions.MaxDegreeOfParallelism"/> ahead on worker threads: the file is read in order here,
     /// while decryption, decompression and decoding run in parallel.
     /// </summary>
-    private IEnumerable<DecodedChunk> DecodeAhead(IEnumerable<int> ordinals, JazminType[] types, bool[]? wanted, bool rampUp = false, ChunkFilter? filter = null)
+    private IEnumerable<DecodedChunk> DecodeAhead(IEnumerable<int> ordinals, JazminType[] types, bool[]? wanted, bool rampUp = false, ChunkFilter? filter = null,
+        JazminColumn[]? schema = null)
     {
+        var columns = schema ?? _allColumns; // nested columns may be trimmed to the fields a query reads
         var (fileId, keys, group) = (_fileId, _keys, _groups[0].Name);
         var decodedColumns = wanted is null ? types.Length : wanted.Count(w => w);
         DecodedChunk Decode(int ordinal, byte[] section, int length, StringPool? strings)
@@ -1275,8 +1280,8 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 {
                     var pool = strings ?? (_workerStrings ??= new StringPool());
                     return filter is null
-                        ? new DecodedChunk(ordinal, Columnar.DecodeTyped(raw, rawLength, types, _rowCount[ordinal], ordinal, wanted, pool, schema: _allColumns), null, decodedColumns)
-                        : filter.Decode(raw, rawLength, types, _rowCount[ordinal], ordinal, pool, _allColumns);
+                        ? new DecodedChunk(ordinal, Columnar.DecodeTyped(raw, rawLength, types, _rowCount[ordinal], ordinal, wanted, pool, schema: columns), null, decodedColumns)
+                        : filter.Decode(raw, rawLength, types, _rowCount[ordinal], ordinal, pool, columns);
                 }
                 finally
                 {
@@ -1837,17 +1842,21 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         // Validate eagerly so errors surface at the call, not on first enumeration.
         var plan = Plan(filter);
         var shape = options?.Select is { } select ? new RowShape(_allColumns, Selection(select)) : _visibleShape;
-        return FindIterator(plan, shape, options?.Offset ?? 0, options?.Limit ?? long.MaxValue);
+        // LINQ: nested columns trimmed to the fields the query reads (their other streams are passed over).
+        var schema = options?.Trimmed is { Count: > 0 } trimmed
+            ? _allColumns.Select(c => trimmed.TryGetValue(c.Name, out var t) ? t : c).ToArray()
+            : null;
+        return FindIterator(plan, shape, options?.Offset ?? 0, options?.Limit ?? long.MaxValue, schema);
     }
 
-    private IEnumerable<JazminRow> FindIterator(BoundFilter? plan, RowShape shape, long offset, long limit)
+    private IEnumerable<JazminRow> FindIterator(BoundFilter? plan, RowShape shape, long offset, long limit, JazminColumn[]? schema = null)
     {
         long skipped = 0, yielded = 0;
         var rowIds = Candidates(plan);
         if (_access is null)
         {
             // Decode only the filter's and the selected columns, of the chunks the index candidates (or the scan) name.
-            foreach (var row in ScanColumns(plan, shape, offset, limit, rowIds)) yield return row;
+            foreach (var row in ScanColumns(plan, shape, offset, limit, rowIds, schema)) yield return row;
             yield break;
         }
         var wanted = WantedColumns(plan, shape.Selection); // only the filter's and the selected columns are decoded
@@ -1925,7 +1934,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// A query on a file with one column group: only the columns the filter and the selection use are decoded, and with
     /// index candidates (<paramref name="rowIds"/>) only their chunks are read and only their rows checked.
     /// </summary>
-    private IEnumerable<JazminRow> ScanColumns(BoundFilter? plan, RowShape shape, long offset, long limit, long[]? rowIds = null)
+    private IEnumerable<JazminRow> ScanColumns(BoundFilter? plan, RowShape shape, long offset, long limit, long[]? rowIds = null, JazminColumn[]? schema = null)
     {
         var wanted = WantedColumns(plan, shape.Selection);
         var all = !wanted.Contains(false);
@@ -1975,13 +1984,13 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                     skipped += LiveRows(ordinal);
                     continue;
                 }
-                foreach (var chunk in DecodeAhead([ordinal], _types, all ? null : wanted, filter: filter)) yield return chunk;
+                foreach (var chunk in DecodeAhead([ordinal], _types, all ? null : wanted, filter: filter, schema: schema)) yield return chunk;
             }
             if (i >= ordinals.Length || yielded >= limit) yield break;
             var rest = ordinals[i..];
             var limited = limit != long.MaxValue;
             if (limited && plan is null) rest = rest[..NeededChunks(rest, limit - yielded + Math.Max(0, offset - skipped))];
-            foreach (var chunk in DecodeAhead(rest.TakeWhile(_ => yielded < limit), _types, all ? null : wanted, rampUp: limited, filter: filter)) yield return chunk;
+            foreach (var chunk in DecodeAhead(rest.TakeWhile(_ => yielded < limit), _types, all ? null : wanted, rampUp: limited, filter: filter, schema: schema)) yield return chunk;
         }
     }
 
@@ -2160,7 +2169,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// from the chunk's decoded columns, with no row array.
     /// </summary>
     internal IEnumerable<T> TypedRows<T>(TypeMap map, JazminSerializerSettings? settings, JazminFilter? filter, Func<T, bool>? check = null,
-        long offset = 0, long? limit = null, IReadOnlyList<string>? select = null)
+        long offset = 0, long? limit = null, IReadOnlyList<string>? select = null, IReadOnlyDictionary<string, JazminColumn>? trimmed = null)
     {
         bool[]? only = null;
         if (select is not null)
@@ -2170,7 +2179,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         }
         // The file's other columns would only be decoded to be ignored.
         select ??= map.Columns.Select(c => VisibleColumnName(c.Name)).OfType<string>().Distinct().ToList();
-        var rows = Find(filter, new JazminQueryOptions { Offset = offset, Limit = limit, Select = select });
+        var rows = Find(filter, new JazminQueryOptions { Offset = offset, Limit = limit, Select = select, Trimmed = trimmed });
         var direct = _access is null ? map.ColumnReader(_allColumns, only) : null;
         return Iterate();
 

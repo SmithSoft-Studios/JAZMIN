@@ -85,6 +85,9 @@ public sealed class JazminColumn
     /// <summary>An object's fields, in order.</summary>
     public IReadOnlyList<JazminColumn>? Fields { get; init; }
 
+    /// <summary>A field a query does not read (LINQ): its stream is passed over, and its member keeps its default.</summary>
+    internal bool Unread { get; init; }
+
     /// <summary>A list column of these items, stored as columns (spec 5.4).</summary>
     public static JazminColumn ListOf(string name, JazminColumn item) => new(name, JazminType.List) { Item = item };
 
