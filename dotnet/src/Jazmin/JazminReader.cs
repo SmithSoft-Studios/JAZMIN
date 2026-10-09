@@ -968,6 +968,30 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         return SectionCodec.Decode(section, key, _fileId, sectionId);
     }
 
+    /// <summary>
+    /// <see cref="ReadSection"/> into a buffer rented from the shared pool (its first Length bytes), for a large section
+    /// the reader keeps: the caller gives it back.
+    /// </summary>
+    private (byte[] Buffer, int Length) ReadSectionPooled(SectionRef at, string sectionId, byte[]? key)
+    {
+        var (section, length) = ReadRawPooled(at);
+        try
+        {
+            if (_cost is not null) _cost.BytesRead += at.Length;
+            if (at.Digest is null)
+            {
+                if (_access is not null) throw new JazminFormatException($"Section '{sectionId}' has no digest");
+            }
+            else if (!SHA256.HashData(section.AsSpan(0, length)).AsSpan().SequenceEqual(at.Digest))
+                throw new JazminFormatException($"Section '{sectionId}' does not match the owner's signature");
+            return SectionCodec.DecodePooled(section, length, key, _fileId, sectionId);
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(section);
+        }
+    }
+
     // ---- embedded files (spec 6.8) ---------------------------------------------------------------
 
     private (Dictionary<string, FileEntry> Entries, Dictionary<int, StoredContent> Contents)? _fileIndex;
@@ -1628,8 +1652,21 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             else
             {
                 // Read only when a lookup is made: until then the planner knows its size, and may prefer a scan.
-                index = new LazyTrigramIndex(infos.Sum(info => (long)info.Section.Length),
-                    () => infos.Select(info => TrigramIndex.Decode(Read(FormatConstants.IndexSectionId(_tableIndex, column, kind, info.Segment), info.Section))).ToList());
+                index = new LazyTrigramIndex(infos.Sum(info => (long)info.Section.Length), () => infos.Select(info =>
+                {
+                    var sectionId = FormatConstants.IndexSectionId(_tableIndex, column, kind, info.Segment);
+                    if (_cost is not null) _cost.IndexPagesRead++;
+                    var (raw, length) = ReadSectionPooled(info.Section, sectionId, CatalogKey(sectionId, _access?.Secrets?.Owner, FormatConstants.KeyringIndex));
+                    try
+                    {
+                        return TrigramIndex.Decode(raw, length, pooled: true); // given back when the reader is closed
+                    }
+                    catch
+                    {
+                        System.Buffers.ArrayPool<byte>.Shared.Return(raw);
+                        throw;
+                    }
+                }).ToList());
             }
         }
         _indexes[cacheKey] = index;
@@ -2385,6 +2422,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     public void Dispose()
     {
         _cachedRows = null;
+        foreach (var index in _indexes.Values) (index as LazyTrigramIndex)?.Release(); // their buffers go back to the pool
         _indexes.Clear();
         Release();
     }

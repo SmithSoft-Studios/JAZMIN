@@ -1445,7 +1445,8 @@ are another matter in Node (282 MB, for its row objects).
   needs, and scans when the word is in most rows (section 9.8).
   - Node: 35.0 -> 16.6 ms, beside Arrow's 15.8 ms.
   - .NET: 20.2 -> 17.6 ms; Arrow's scan of uncompressed columns takes
-    10.7 ms. Opening the index still costs about 3 ms per query in .NET.
+    10.7 ms. Loading the index costs .NET 1.5-3 ms per query (3.5-7 ms
+    before 1.4 reused its buffer).
 - **Writing:** MessagePack writes 3-5 times faster. It stores a document as it
   is, with no columns, compression or indexes to build.
 - **Memory:**

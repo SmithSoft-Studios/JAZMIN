@@ -133,6 +133,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   sorted indexes keep later row ids only for keys that repeat. The files are byte for byte the same. Writing the
   benchmark's 200,000 customers with its 3 indexes: peak memory 196-205 -> 101-102 MB, 503-528 -> 417-446 ms;
   USER-GUIDE 9.12, where each measure runs in a process of its own: 181-185 -> 124 MB.
+- **.NET: a text index is read into a pooled buffer,** given back when the reader is closed (TASKS P-25). Each
+  query that opened a file and searched it allocated the index afresh: 2.6 MB for 200,000 rows, on the large-object
+  heap, with a full collection every third query. A search for a rare word: 1.4-1.7 -> 1.0-1.2 ms, 3.1 -> 0.5 MB
+  allocated, and no full collections. A common word (the index is read, then the rows scanned): 3.5-7 -> 1.6-2.8 ms
+  more than a scan.
 - **Text search with a trigram index is faster and uses less memory** (TASKS P-25), in both libraries and the browser
   reader. No file changes.
   - Only the row lists of the pieces a search uses are decoded, rarest first; before, the whole index was decoded

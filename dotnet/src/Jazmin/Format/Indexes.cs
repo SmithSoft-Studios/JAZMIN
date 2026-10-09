@@ -543,6 +543,14 @@ internal sealed class LazyTrigramIndex(long bytes, Func<IReadOnlyList<TrigramInd
         // Segments hold different rows: each one's candidates are found apart, then united.
         return segments.Count == 1 ? segments[0].Rows(lookup) : RowSet.Union(segments.Select(s => s.Rows(lookup)).ToList());
     }
+
+    /// <summary>Gives the segments' buffers back to the pool (the reader is closed).</summary>
+    public void Release()
+    {
+        if (_segments is null) return;
+        foreach (var segment in _segments) segment.Release();
+        _segments = null;
+    }
 }
 
 internal sealed class SortedIndex
@@ -727,24 +735,41 @@ internal sealed class TrigramIndexBuilder : IIndexBuilder
 
 internal sealed class TrigramIndex
 {
-    private readonly byte[] _raw;
+    private byte[] _raw;
+    private readonly int _length; // the index's bytes are _raw[0.._length): a pooled buffer is longer
+    private readonly bool _pooled;
     private readonly long[] _grams; // each gram as c0 << 32 | c1 << 16 | c2, ascending (ordinal order)
     private readonly int[] _offsets; // where each gram's postings start in _raw
 
-    private TrigramIndex(byte[] raw, long[] grams, int[] offsets)
+    private TrigramIndex(byte[] raw, int length, bool pooled, long[] grams, int[] offsets)
     {
         _raw = raw;
+        _length = length;
+        _pooled = pooled;
         _grams = grams;
         _offsets = offsets;
+    }
+
+    /// <summary>Gives a pooled buffer back (the reader is closed): the index is not used again.</summary>
+    public void Release()
+    {
+        if (_pooled && _raw.Length > 0) System.Buffers.ArrayPool<byte>.Shared.Return(_raw);
+        _raw = [];
     }
 
     /// <summary>
     /// Reads where each gram's postings are, into two arrays: no strings are made, and no row ids until a lookup needs a
     /// gram's. Indexed text often repeats (names, categories), and then the postings are millions of row ids.
     /// </summary>
-    public static TrigramIndex Decode(byte[] raw)
+    public static TrigramIndex Decode(byte[] raw) => Decode(raw, raw.Length, pooled: false);
+
+    /// <summary>
+    /// An index in raw[0..length). With <paramref name="pooled"/>, raw was rented from the shared pool, and
+    /// <see cref="Release"/> gives it back: a fresh array of megabytes for each reader made full collections frequent.
+    /// </summary>
+    public static TrigramIndex Decode(byte[] raw, int length, bool pooled)
     {
-        var reader = new ByteReader(raw);
+        var reader = new ByteReader(raw, 0, length);
         RowSet.CheckEncoding(reader, "Trigram index");
         var count = reader.Length();
         if (count > reader.Remaining / 7) throw new JazminFormatException("Trigram index is truncated"); // 6 bytes of gram, then postings
@@ -758,29 +783,29 @@ internal sealed class TrigramIndex
             if (i > 0 && gram <= grams[i - 1]) ascending = false;
             grams[i] = gram;
             offsets[i] = reader.Position;
-            SkipPostings(reader, raw);
+            SkipPostings(reader, raw, length);
         }
         if (!reader.Eof) throw new JazminFormatException("Trigram index has trailing bytes");
         if (!ascending) Array.Sort(grams, offsets); // spec 8.2 orders the grams; an index that does not is still read
-        return new TrigramIndex(raw, grams, offsets);
+        return new TrigramIndex(raw, length, pooled, grams, offsets);
     }
 
     /// <summary>
     /// Steps over postings without making the row ids: eight bytes at a time, counting the bytes that end a varint (high
     /// bit clear). A window ends at most 8 varints, so while 8 or more are left it is stepped over whole.
     /// </summary>
-    private static void SkipPostings(ByteReader reader, byte[] raw)
+    private static void SkipPostings(ByteReader reader, byte[] raw, int length)
     {
         var count = reader.Length();
         if (count > reader.Remaining) throw new JazminFormatException("Postings are truncated"); // each takes at least one byte
         var start = reader.Position;
         var pos = start;
         var left = count;
-        for (; left >= 8 && pos <= raw.Length - 8; pos += 8)
+        for (; left >= 8 && pos <= length - 8; pos += 8)
             left -= System.Numerics.BitOperations.PopCount(~System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(raw.AsSpan(pos)) & 0x8080808080808080UL);
         for (; left > 0; pos++)
         {
-            if (pos >= raw.Length) throw new JazminFormatException("Postings are truncated");
+            if (pos >= length) throw new JazminFormatException("Postings are truncated");
             if ((raw[pos] & 0x80) == 0) left--;
         }
         reader.Skip(pos - start);
@@ -794,7 +819,7 @@ internal sealed class TrigramIndex
         {
             var i = Array.BinarySearch(_grams, (long)gram[0] << 32 | (long)gram[1] << 16 | gram[2]);
             if (i < 0) return null;
-            lists.Add((_offsets[i], new ByteReader(_raw, _offsets[i]).Length()));
+            lists.Add((_offsets[i], new ByteReader(_raw, _offsets[i], _length).Length()));
         }
         lists.Sort((x, y) => x.Count.CompareTo(y.Count));
         return lists;
@@ -807,7 +832,7 @@ internal sealed class TrigramIndex
     public long Span(IndexLookup lookup)
     {
         if (Lists(((IndexLookup.Contains)lookup).Text) is not { Count: > 0 } lists) return 0;
-        var reader = new ByteReader(_raw, lists[0].At);
+        var reader = new ByteReader(_raw, lists[0].At, _length);
         var count = reader.Length();
         long first = 0, last = 0;
         for (var i = 0; i < count; i++)
@@ -826,8 +851,8 @@ internal sealed class TrigramIndex
     {
         if (Lists(((IndexLookup.Contains)lookup).Text) is not { Count: > 0 } lists) return Array.Empty<long>();
         // From the rarest gram, so the ids kept shrink fastest; the other grams' postings are intersected as they are read.
-        var result = RowSet.ReadPostings(new ByteReader(_raw, lists[0].At));
-        for (var i = 1; i < lists.Count && result.Length > 0; i++) result = IntersectPostings(new ByteReader(_raw, lists[i].At), result);
+        var result = RowSet.ReadPostings(new ByteReader(_raw, lists[0].At, _length));
+        for (var i = 1; i < lists.Count && result.Length > 0; i++) result = IntersectPostings(new ByteReader(_raw, lists[i].At, _length), result);
         return result;
     }
 

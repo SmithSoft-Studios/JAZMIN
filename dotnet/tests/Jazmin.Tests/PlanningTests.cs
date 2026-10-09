@@ -152,6 +152,36 @@ public sealed class PlanningTests : IDisposable
         }
     }
 
+    [Fact]
+    public void Text_index_buffers_given_back_when_a_reader_closes_leave_other_readers_right()
+    {
+        // Text indexes are read into pooled buffers, given back when their reader is disposed: a reader opened later may
+        // get the same buffer, and readers still open must keep their own.
+        string Write(string name, int rows, bool append)
+        {
+            var path = Path.Combine(_dir, name);
+            using (var writer = JazminWriter.Create(path, TextColumns, new JazminWriteOptions { ChunkRows = 500 }))
+                for (var i = 0; i < rows; i++) writer.WriteRow(TextRow(i));
+            if (append) JazminFile.Append(path, new JazminAppend { Insert = Enumerable.Range(rows, 3000).Select(i => (IReadOnlyDictionary<string, object?>)TextRow(i)).ToList() });
+            return path;
+        }
+        var (a, b) = (Write("a.jzm", 12_000, append: false), Write("b.jzm", 9000, append: true)); // b: two index segments
+        long Expected(int rows, Func<long, bool> matches) => Enumerable.Range(0, rows).LongCount(i => matches(i));
+        using var kept = JazminReader.Open(a);
+        Assert.Equal(Expected(12_000, i => i % 5000 == 0), kept.Count(JazminFilter.Contains("text", "seldom")));
+        for (var round = 0; round < 3; round++)
+        {
+            using (var other = JazminReader.Open(b))
+            {
+                Assert.Equal(Expected(12_000, i => i < 6000), other.Count(JazminFilter.Contains("text", "early")));
+                Assert.Equal(Expected(12_000, i => i % 5000 == 0), other.Count(JazminFilter.Contains("text", "seldom")));
+            }
+            using (var again = JazminReader.Open(a)) Assert.Equal(Expected(12_000, i => i < 6000), again.Count(JazminFilter.Contains("text", "early")));
+            Assert.Equal(Expected(12_000, i => i % 5000 == 0), kept.Count(JazminFilter.Contains("text", "seldom")));
+            Assert.Equal(1, kept.Count(JazminFilter.Contains("text", "n11998 "))); // "n11998 often"
+        }
+    }
+
     /// <summary>A stand-in index: costs nothing, and answers with the given rows.</summary>
     private sealed class FixedIndex(Func<long?, long[]?> rows) : IIndex
     {
