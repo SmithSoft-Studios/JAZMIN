@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { compileFilter } from '../src/filter.js';
+import { compileFilter, indexPlan, normalizeFilter } from '../src/filter.js';
 import { open, write } from '../src/index.js';
 import { PAGING } from '../src/writer.js';
 
@@ -97,4 +97,58 @@ test('every plan returns the same rows as checking every row', () => {
   } finally {
     reader.close();
   }
+});
+
+// 20,000 rows in chunks of 500: 'often' in every other row, 'seldom' in every 5,000th, 'early' in the first 6,000.
+const textColumns = [{ name: 'id', type: 'int', nullable: false, index: 'sorted' }, { name: 'text', type: 'string', index: 'trigram' }];
+const textRow = (i) => ({ id: i, text: `n${i}${i % 2 ? '' : ' often'}${i % 5000 ? '' : ' seldom'}${i < 6000 ? ' early' : ''}` });
+const textRows = Array.from({ length: 20_000 }, (_, i) => textRow(i));
+const textFilters = [
+  { text: { contains: 'often' } },
+  { text: { contains: 'seldom' } },
+  { text: { contains: 'early' } },
+  { text: { contains: 'often' }, id: { in: [2, 4000, 12_001, 19_000] } },
+  { or: [{ text: { contains: 'often' } }, { text: { contains: 'seldom' } }] },
+  { text: { icontains: 'EARLY' }, id: { gte: 5000 } },
+];
+
+test('a text search scans for common text spread over the rows, and uses the index for rare or clustered text', () => {
+  const reader = open(write(null, textRows, { columns: textColumns, chunkRows: 500 }));
+  try {
+    const plan = (filter) => {
+      const { strategy, rows } = reader.explain(filter, { analyze: true });
+      assert.equal(rows, textRows.filter(compileFilter(filter, textColumns)).length, JSON.stringify(filter));
+      return strategy;
+    };
+    // Its candidates would fall in every chunk: checking each row of a scan is quicker.
+    assert.equal(plan(textFilters[0]), 'scan');
+    assert.equal(plan(textFilters[1]), 'index');
+    // As common, but in rows that are together: the index skips the chunks around them.
+    assert.equal(plan(textFilters[2]), 'index');
+    assert.ok(reader.explain(textFilters[2], { analyze: true }).chunksRead <= 12);
+    // Chunk statistics leave 4 chunks for the ids, and the common text adds nothing: they are scanned.
+    assert.deepEqual(reader.explain(textFilters[3]), { strategy: 'scan', chunks: 40, chunksSkipped: 36 });
+    // An OR with a common branch scans.
+    assert.equal(plan(textFilters[4]), 'scan');
+    for (const filter of textFilters) assert.equal(reader.count(filter), textRows.filter(compileFilter(filter, textColumns)).length, JSON.stringify(filter));
+  } finally {
+    reader.close();
+  }
+});
+
+test('a lookup that narrows nothing leaves the others of an AND, and makes an OR scan', () => {
+  // Stand-in indexes: the text index declines (null), as for common text; the id index returns its rows.
+  const indexes = {
+    get: (column) => ({
+      cost: () => 0,
+      rows: (lookup, scanRows) => (column === 'text' ? (scanRows === 1000 ? null : [1, 2, 3]) : [2, 3, 4]),
+    }),
+  };
+  const node = (filter) => normalizeFilter(filter, textColumns);
+  const text = { text: { contains: 'often' } };
+  assert.deepEqual(indexPlan(node({ ...text, id: { in: [2, 3, 4] } }), indexes, Infinity, 1000).rows(), [2, 3, 4]);
+  assert.equal(indexPlan(node(text), indexes, Infinity, 1000).rows(), null);
+  assert.equal(indexPlan(node({ or: [text, { id: 2 }] }), indexes, Infinity, 1000).rows(), null);
+  // Without the scan's row count (as when an owner looks for the partitions to load), the text index answers.
+  assert.deepEqual(indexPlan(node({ ...text, id: { in: [2, 3, 4] } }), indexes).rows(), [2, 3]);
 });

@@ -2,7 +2,7 @@
 import { ByteReader, ByteWriter, msFromFile, normalizeBigInt, utf8Slice } from './binary.js';
 import { INDEX_DELTAS_ENCODING, POSTINGS_ENCODING } from './constants.js';
 import { JazminFormatError } from './errors.js';
-import { unionAll, intersect } from './rowset.js';
+import { unionAll } from './rowset.js';
 import { decodeBound, encodeBound } from './stats.js';
 import { compareKeys, decodeValue, encodeValue, keyId, toKey } from './types.js';
 
@@ -669,23 +669,114 @@ export class TrigramIndexBuilder {
   }
 }
 
+/** Steps over postings (a count, then that many varints) without making the row ids; `view` is over reader.buf. */
+function skipPostings(reader, view) {
+  const count = reader.varUint();
+  // Each id takes at least one byte: a larger count is damage.
+  if (typeof count !== 'number' || count > reader.remaining) throw new JazminFormatError('Postings are truncated');
+  const buf = reader.buf;
+  let pos = reader.pos;
+  let left = count;
+  // Eight bytes at a time, counting the bytes that end a varint (high bit clear): a window ends at most 8 varints,
+  // so while 8 or more are left it is stepped over whole. Several times quicker than a byte at a time.
+  for (const end = buf.length - 8; left >= 8 && pos <= end; pos += 8) {
+    const low = (view.getUint32(pos, true) & 0x80808080) >>> 7;
+    const high = (view.getUint32(pos + 4, true) & 0x80808080) >>> 7;
+    left -= 8 - (Math.imul(low, 0x01010101) >>> 24) - (Math.imul(high, 0x01010101) >>> 24);
+  }
+  for (; left > 0; pos++) {
+    if (pos >= buf.length) throw new JazminFormatError('Postings are truncated');
+    if ((buf[pos] & 0x80) === 0) left--;
+  }
+  reader.pos = pos;
+}
+
+/** Postings intersected with the sorted row ids `ids` (kept in place in `ids`) as they are read: no list is made. */
+function intersectPostings(reader, ids) {
+  const count = reader.varUint();
+  if (typeof count !== 'number' || count > reader.remaining) throw new JazminFormatError('Postings are truncated');
+  let kept = 0;
+  let j = 0;
+  let previous = 0;
+  for (let i = 0; i < count && j < ids.length; i++) {
+    const delta = reader.varUint();
+    if (typeof delta !== 'number' || previous + delta > Number.MAX_SAFE_INTEGER) throw new JazminFormatError('A row id is out of range');
+    previous += delta;
+    while (j < ids.length && ids[j] < previous) j++;
+    if (ids[j] === previous) ids[kept++] = ids[j++];
+  }
+  ids.length = kept;
+  return ids;
+}
+
+const GRAM_HIGH = 4294967296; // a gram (c0, c1, c2) is held as c0·2³² + c1·2¹⁶ + c2: numeric order is code-unit order
+
 export class TrigramIndex {
-  constructor(grams) {
-    this.grams = grams;
+  #buf;
+  #grams; // each gram as a number (GRAM_HIGH), ascending
+  #offsets; // where each gram's postings start in #buf
+
+  constructor(buf, grams, offsets) {
+    this.#buf = buf;
+    this.#grams = grams;
+    this.#offsets = offsets;
   }
 
+  /**
+   * Reads where each gram's postings are, into two typed arrays: no strings are made, and no row ids until a lookup
+   * needs a gram's. Indexed text often repeats (names, categories), and then the postings are millions of row ids.
+   */
   static decode(buf) {
     const reader = new ByteReader(buf);
     checkEncoding(reader, 'Trigram index');
     const count = reader.varUint();
     if (typeof count !== 'number' || count > reader.remaining / 7) throw new JazminFormatError('Trigram index is truncated');
-    const grams = new Map();
+    let grams = new Float64Array(count);
+    let offsets = buf.length > 0xffffffff ? new Float64Array(count) : new Uint32Array(count);
+    let ascending = true;
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.length);
     for (let i = 0; i < count; i++) {
-      const gram = String.fromCharCode(reader.u16(), reader.u16(), reader.u16());
-      grams.set(gram, readPostings(reader));
+      const c0 = reader.u16();
+      const c1 = reader.u16();
+      const gram = c0 * GRAM_HIGH + c1 * 65536 + reader.u16();
+      if (i > 0 && gram <= grams[i - 1]) ascending = false;
+      grams[i] = gram;
+      offsets[i] = reader.pos;
+      skipPostings(reader, view);
     }
     if (!reader.eof) throw new JazminFormatError('Trigram index has trailing bytes');
-    return new TrigramIndex(grams);
+    if (!ascending) {
+      // Spec 8.2 orders the grams; an index that does not is still read.
+      const order = Array.from({ length: count }, (_, i) => i).sort((x, y) => grams[x] - grams[y]);
+      grams = Float64Array.from(order, (i) => grams[i]);
+      offsets = offsets.constructor.from(order, (i) => offsets[i]);
+    }
+    return new TrigramIndex(buf, grams, offsets);
+  }
+
+  /** Where a gram's postings start, or -1 when no row has it. */
+  #find(gram) {
+    const grams = this.#grams;
+    let lo = 0;
+    let hi = grams.length - 1;
+    while (lo <= hi) {
+      const mid = (lo + hi) >>> 1;
+      if (grams[mid] < gram) lo = mid + 1;
+      else if (grams[mid] > gram) hi = mid - 1;
+      else return this.#offsets[mid];
+    }
+    return -1;
+  }
+
+  /** The postings of each gram of `text`, rarest first, as { at, count }; or null when a gram is in no row. */
+  #lists(text) {
+    const lists = [];
+    for (const gram of trigrams(text)) {
+      const at = this.#find(gram.charCodeAt(0) * GRAM_HIGH + gram.charCodeAt(1) * 65536 + gram.charCodeAt(2));
+      if (at < 0) return null;
+      lists.push({ at, count: new ByteReader(this.#buf, at).varUint() });
+    }
+    return lists.sort((x, y) => x.count - y.count);
   }
 
   /** Whether a trigram index can narrow a search for `text`: not under 3 characters, nor case-insensitive non-ASCII. */
@@ -697,20 +788,38 @@ export class TrigramIndex {
     return lookup.op === 'contains' && TrigramIndex.answers(lookup.text, lookup.ci) ? 0 : null;
   }
 
-  rows(lookup) {
-    return this.#candidates(lookup.text);
+  /** At most how many rows rows() returns: those of the text's rarest gram. Read from the postings' counts alone. */
+  bound(lookup) {
+    const lists = this.#lists(lookup.text);
+    return lists === null ? 0 : lists.length ? lists[0].count : Infinity;
   }
 
-  /** Superset of rows that may contain `text` (one that TrigramIndex.answers). */
-  #candidates(text) {
-    const grams = trigrams(text);
-    let result = null;
-    for (const gram of grams) {
-      const ids = this.grams.get(gram);
-      if (!ids) return [];
-      result = result === null ? ids : intersect(result, ids);
-      if (result.length === 0) return result;
+  /** How far apart the rows of the text's rarest gram are: from its first row id to its last, inclusive. */
+  span(lookup) {
+    const lists = this.#lists(lookup.text);
+    if (lists === null) return 0;
+    if (!lists.length) return Infinity;
+    const reader = new ByteReader(this.#buf, lists[0].at);
+    const count = reader.varUint();
+    let first = 0;
+    let last = 0;
+    for (let i = 0; i < count; i++) {
+      const delta = reader.varUint();
+      if (typeof delta !== 'number' || last + delta > Number.MAX_SAFE_INTEGER) throw new JazminFormatError('A row id is out of range');
+      last += delta;
+      if (i === 0) first = last;
     }
+    return count ? last - first + 1 : 0;
+  }
+
+  /** Superset of rows that may contain the text (one that TrigramIndex.answers), or null when it has no gram. */
+  rows(lookup) {
+    const lists = this.#lists(lookup.text);
+    if (lists === null) return [];
+    if (!lists.length) return null;
+    // From the rarest gram, so the ids kept shrink fastest; the other grams' postings are intersected as they are read.
+    let result = readPostings(new ByteReader(this.#buf, lists[0].at));
+    for (let i = 1; i < lists.length && result.length; i++) result = intersectPostings(new ByteReader(this.#buf, lists[i].at), result);
     return result;
   }
 }
@@ -738,11 +847,23 @@ export class CompositeIndex {
     return unionAll(this.parts.map((p) => p.rows(lookup)));
   }
 
+  /** At most how many rows rows() returns (trigram segments). */
+  bound(lookup) {
+    return this.parts.reduce((n, p) => n + p.bound(lookup), 0);
+  }
+
+  /** How far apart those rows are, summed over the segments (trigram segments). */
+  span(lookup) {
+    return this.parts.reduce((n, p) => n + p.span(lookup), 0);
+  }
+
   /** Distinct keys, at most (a key found in several segments counts once per segment). */
   get keyCount() {
     return this.parts.reduce((n, p) => n + (p.keyCount ?? 0), 0);
   }
 }
+
+const COMMON_SHARE = 1 / 4; // see LazyTrigramIndex.rows
 
 /**
  * A trigram index read only when a lookup is made: until then a lookup costs the whole index's size, so a planner
@@ -763,9 +884,16 @@ export class LazyTrigramIndex {
     return this.#index ? 0 : this.#bytes;
   }
 
-  rows(lookup) {
-    this.#index ??= this.#load();
-    return this.#index.rows(lookup);
+  /**
+   * Row ids that may match; or null, given `scanRows` (the rows a scan would read), when the text is common: its
+   * rarest gram is in over a quarter of them, spread over more than three quarters. Its rows then fall in most
+   * chunks, and a scan checks each row more cheaply. Common text in rows that are together still uses the index,
+   * which skips the chunks around them.
+   */
+  rows(lookup, scanRows) {
+    const index = (this.#index ??= this.#load());
+    const common = scanRows !== undefined && index.bound(lookup) > scanRows * COMMON_SHARE && index.span(lookup) > scanRows * (1 - COMMON_SHARE);
+    return common ? null : index.rows(lookup);
   }
 }
 

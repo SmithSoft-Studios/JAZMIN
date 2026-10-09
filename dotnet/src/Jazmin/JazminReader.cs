@@ -1622,7 +1622,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             {
                 // Read only when a lookup is made: until then the planner knows its size, and may prefer a scan.
                 index = new LazyTrigramIndex(infos.Sum(info => (long)info.Section.Length),
-                    () => Combine(infos.Select(info => (IIndex)TrigramIndex.Decode(Read(FormatConstants.IndexSectionId(_tableIndex, column, kind, info.Segment), info.Section))).ToList()));
+                    () => infos.Select(info => TrigramIndex.Decode(Read(FormatConstants.IndexSectionId(_tableIndex, column, kind, info.Segment), info.Section))).ToList());
             }
         }
         _indexes[cacheKey] = index;
@@ -1653,24 +1653,27 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <summary>
     /// Row ids indexes narrow a filter to (sorted), or null to scan. Index lookups are planned against what a scan would
     /// read: small lookups (<see cref="SmallLookupBytes"/>) are always made, and costlier ones only while they read less
-    /// than the scan's chunks, less one chunk (an index answer still reads at least one). Rows are kept only in the
-    /// chunks a scan would read (a sort range, a pinned partition, chunk statistics): nowhere else can a row match.
+    /// than the scan's chunks, less one chunk (an index answer still reads at least one). A text search scans when its
+    /// text is common (<see cref="LazyTrigramIndex"/>). Rows are kept only in the chunks a scan would read (a sort
+    /// range, a pinned partition, chunk statistics): nowhere else can a row match.
     /// </summary>
     private long[]? Candidates(BoundFilter? plan)
     {
         if (plan is null) return null;
         var scan = ScanList(plan);
-        long scanBytes = 0, smallest = long.MaxValue;
+        long scanBytes = 0, scanRows = 0, smallest = long.MaxValue;
         foreach (var ordinal in scan)
         {
             var bytes = ChunkBytes(ordinal);
             scanBytes += bytes;
+            scanRows += _rowCount[ordinal];
             smallest = Math.Min(smallest, bytes);
         }
-        if (FilterEngine.IndexPlan(plan, this, Math.Max(scan.Length > 0 ? scanBytes - smallest : 0, SmallLookupBytes)) is not { } lookup) return null;
+        if (FilterEngine.IndexPlan(plan, this, Math.Max(scan.Length > 0 ? scanBytes - smallest : 0, SmallLookupBytes), scanRows) is not { } lookup
+            || lookup.Rows() is not { } rows) return null;
         var inScan = new bool[_rowCount.Length];
         foreach (var ordinal in scan) inScan[ordinal] = true;
-        return lookup.Rows().Where(rowId => ChunkOrdinalFor(rowId) is var o && o >= 0 && inScan[o]).ToArray();
+        return rows.Where(rowId => ChunkOrdinalFor(rowId) is var o && o >= 0 && inScan[o]).ToArray();
     }
 
     // ---- queries ---------------------------------------------------------------------------------
@@ -1734,7 +1737,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         {
             // An index lookup: the chunk map says which partitions hold its rows, so only those are loaded.
             var map = ChunkMapInfo();
-            if (map is not null && FilterEngine.IndexPlan(plan, this, OwnerLookupBudget(map.Partitions.Count)) is { } lookup && LoadPartitionsOf(lookup.Rows())) return plan;
+            if (map is not null && FilterEngine.IndexPlan(plan, this, OwnerLookupBudget(map.Partitions.Count)) is { } lookup && lookup.Rows() is { } rowIds && LoadPartitionsOf(rowIds)) return plan;
             EnsureAllChunks();
         }
         else EnsureAllChunks();

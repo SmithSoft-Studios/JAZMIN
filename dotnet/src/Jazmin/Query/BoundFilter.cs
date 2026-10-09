@@ -486,25 +486,27 @@ internal static class FilterEngine
     /// read (estimated from index directories: nothing is read yet) and Rows returns a sorted superset of the matching
     /// row ids; or null when indexes cannot narrow it. Within an AND, range conditions on one column become one bounded
     /// lookup, lookups are taken cheapest first, and those that would push the cost over <paramref name="budget"/>
-    /// bytes are left out (the filter is still checked on every row read).
+    /// bytes are left out (the filter is still checked on every row read). Given <paramref name="scanRows"/>, the rows a
+    /// scan would read, a text search for common text narrows nothing (<see cref="LazyTrigramIndex"/>), and Rows may
+    /// then return null: scan.
     /// </summary>
-    public static (long Cost, Func<long[]> Rows)? IndexPlan(BoundFilter node, IIndexProvider indexes, long budget = long.MaxValue)
+    public static (long Cost, Func<long[]?> Rows)? IndexPlan(BoundFilter node, IIndexProvider indexes, long budget = long.MaxValue, long? scanRows = null)
     {
         switch (node)
         {
             case BoundFilter.And a:
             {
-                var parts = new List<(long Cost, Func<long[]> Rows)>();
+                var parts = new List<(long Cost, Func<long[]?> Rows)>();
                 var ranges = new Dictionary<string, IndexLookup.Range>(StringComparer.Ordinal); // column -> merged range lookup
                 foreach (var item in a.Items)
                 {
                     if (item is BoundFilter.Leaf { Op: "gt" or "gte" or "lt" or "lte" } leaf && !Values.IsNaN(leaf.Value!))
                         ranges[leaf.Name] = MergeRange(ranges.GetValueOrDefault(leaf.Name), leaf);
-                    else if (IndexPlan(item, indexes, budget) is { } part) parts.Add(part);
+                    else if (IndexPlan(item, indexes, budget, scanRows) is { } part) parts.Add(part);
                 }
                 foreach (var (name, range) in ranges)
-                    if (LookupPlan(name, "sorted", range, indexes, budget) is { } part) parts.Add(part);
-                var chosen = new List<Func<long[]>>();
+                    if (LookupPlan(name, "sorted", range, indexes, budget, scanRows) is { } part) parts.Add(part);
+                var chosen = new List<Func<long[]?>>();
                 long cost = 0;
                 foreach (var part in parts.OrderBy(p => p.Cost))
                 {
@@ -515,25 +517,35 @@ internal static class FilterEngine
                 if (chosen.Count == 0) return null;
                 return (cost, () =>
                 {
-                    var result = chosen[0]();
-                    for (var i = 1; i < chosen.Count && result.Length > 0; i++) result = RowSet.Intersect(result, chosen[i]());
+                    long[]? result = null;
+                    for (var i = 0; i < chosen.Count && result is not { Length: 0 }; i++)
+                        if (chosen[i]() is { } rows) result = result is null ? rows : RowSet.Intersect(result, rows);
                     return result;
                 });
             }
             case BoundFilter.Or o:
             {
-                var parts = new List<Func<long[]>>();
+                var parts = new List<Func<long[]?>>();
                 long cost = 0;
                 foreach (var item in o.Items)
                 {
-                    if (IndexPlan(item, indexes, budget) is not { } part) return null; // a branch no index narrows: every row may match
+                    if (IndexPlan(item, indexes, budget, scanRows) is not { } part) return null; // a branch no index narrows: every row may match
                     parts.Add(part.Rows);
                     cost += part.Cost;
                 }
-                return cost > budget ? null : (cost, () => RowSet.Union(parts.Select(p => p()).ToList()));
+                return cost > budget ? null : (cost, () =>
+                {
+                    var lists = new List<long[]>(parts.Count);
+                    foreach (var part in parts)
+                    {
+                        if (part() is not { } rows) return null;
+                        lists.Add(rows);
+                    }
+                    return RowSet.Union(lists);
+                });
             }
             case BoundFilter.Leaf leaf:
-                return LeafLookup(leaf) is { } lookup ? LookupPlan(leaf.Name, lookup.Kind, lookup.Lookup, indexes, budget) : null;
+                return LeafLookup(leaf) is { } lookup ? LookupPlan(leaf.Name, lookup.Kind, lookup.Lookup, indexes, budget, scanRows) : null;
             default:
                 return null;
         }
@@ -552,10 +564,10 @@ internal static class FilterEngine
         _ => null,
     };
 
-    private static (long Cost, Func<long[]> Rows)? LookupPlan(string column, string kind, IndexLookup lookup, IIndexProvider indexes, long budget)
+    private static (long Cost, Func<long[]?> Rows)? LookupPlan(string column, string kind, IndexLookup lookup, IIndexProvider indexes, long budget, long? scanRows)
     {
         var index = indexes.Index(column, kind);
-        return index?.Cost(lookup) is { } cost && cost <= budget ? (cost, () => index.Rows(lookup)) : null;
+        return index?.Cost(lookup) is { } cost && cost <= budget ? (cost, () => index.Rows(lookup, scanRows)) : null;
     }
 
     /// <summary>Range conditions of an AND on one column, merged into one bounded lookup (the tightest bounds win).</summary>

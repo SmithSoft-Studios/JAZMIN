@@ -123,6 +123,36 @@ test('browser reader: plans queries as the library does, reading the same chunks
   }
 });
 
+test('browser reader: plans text searches as the library does, before and after an append (two index segments)', async () => {
+  // 'often' in every other row (spread: scanned), 'seldom' in every 5,000th, 'early' in the first 6,000 (together).
+  const row = (i) => ({ id: i, text: `n${i}${i % 2 ? '' : ' often'}${i % 5000 ? '' : ' seldom'}${i < 6000 ? ' early' : ''}` });
+  const columns = [{ name: 'id', type: 'int', nullable: false, index: 'sorted' }, { name: 'text', type: 'string', index: 'trigram' }];
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-text-')), 'text.jzm');
+  write(file, Array.from({ length: 12_000 }, (_, i) => row(i)), { columns, chunkRows: 500 });
+  const filters = [
+    { text: { contains: 'often' } },
+    { text: { contains: 'seldom' } },
+    { text: { contains: 'early' } },
+    { or: [{ text: { contains: 'often' } }, { text: { contains: 'seldom' } }] },
+    { text: { icontains: 'Often' }, id: { in: [2, 4000, 11_001] } },
+  ];
+  for (const appended of [false, true]) {
+    if (appended) append(file, { insert: Array.from({ length: 8000 }, (_, i) => row(12_000 + i)) });
+    const library = open(file);
+    const reader = await JazminBrowser.open(new Blob([fs.readFileSync(file)]));
+    try {
+      for (const filter of filters) {
+        const { ms: libraryMs, ...expected } = library.explain(filter, { analyze: true });
+        const { ms, ...actual } = await reader.explain(filter, { analyze: true });
+        assert.deepEqual(actual, expected, `${appended} ${JSON.stringify(filter)}`);
+      }
+      assert.deepEqual(filters.slice(0, 3).map((f) => library.explain(f).strategy), ['scan', 'index', 'index'], `${appended}`);
+    } finally {
+      library.close();
+    }
+  }
+});
+
 test('browser reader: query({ total: false }) reads only the page, and count() matches the library', async () => {
   const reader = await JazminBrowser.open(new Blob([fixture('js-paged-key.jzm')]), { key: keys.key });
   const library = open(path.join(dir, 'js-paged-key.jzm'), { key: keys.key });

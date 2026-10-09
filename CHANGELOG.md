@@ -113,6 +113,17 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   can't be taken apart runs as before.
 - **.NET: a query that reads one chunk decodes it at once,** without handing it to a background task: lookups, and
   the first chunk of a scan. Opening a file and reading one row by id: 0.70 -> 0.60 ms.
+- **Text search with a trigram index is faster and uses less memory** (TASKS P-25), in both libraries and the browser
+  reader. No file changes.
+  - Only the row lists of the pieces a search uses are decoded, rarest first; before, the whole index was decoded
+    on the first search.
+  - When even the rarest piece of the text is in over a quarter of the rows a scan reads, spread across them, the
+    reader scans instead (USER-GUIDE 9.8). Common text in rows that sit together still uses the index.
+  - USER-GUIDE 9.12, `name contains 'Ndlovu'` (1 row in 8): Node 35.0 -> 16.6 ms and 34 -> 12 MB; .NET 20.2 ->
+    17.6 ms and 49 -> 34 MB.
+  - Rare text gains most. On the same customers, a name in no row: Node 12.7 -> 1.3 ms, .NET 6.8 -> 2.3 ms. On
+    200,000 e-mail addresses in Node, a rare one 37 -> 5.3 ms (a scan: 26 ms), one in every row 94 -> 36 ms (a scan:
+    35 ms).
 
 ## 1.3.0 - 2026-10-08 (file format 1.0)
 

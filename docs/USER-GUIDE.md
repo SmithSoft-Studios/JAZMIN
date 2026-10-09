@@ -1171,6 +1171,16 @@ whether indexes can do better:
     instead of reading megabytes of the time index.
   - When a filter has several conditions, the cheapest lookups are used and
     the rest are checked row by row.
+- **Text search uses its index only when the text is rare enough to help.**
+  A trigram index lists, for each three-letter piece of text, the rows that
+  contain it.
+  - When even the rarest piece of the search text is in over a quarter of
+    the rows a scan reads, spread across them, the reader scans instead.
+    Those rows fall in almost every chunk, and checking each row is quicker.
+  - Common text in rows that sit together (say, the first months of a log)
+    still uses the index, which skips the chunks around them.
+  - Only the rows of the pieces a search uses are read from the index,
+    rarest piece first. Before 1.4 the whole index was decoded first.
 - **Index results only narrow the scan.** Only chunks the scan would read are
   read, and in them only the rows the index names are checked, with the same
   fast column decoding as a scan.
@@ -1324,7 +1334,8 @@ JAZMIN is strong, and what it can work towards.
   9 October 2026 while about a third of it was busy with other work. Each cell
   is the best of 2 or 3 runs, each run the best of 3 after a warm-up.
   Compare across a row; the figures in 9.1 and 9.2 were measured on a quiet
-  machine.
+  machine. The text search rows were measured again the same day, after the
+  text search changes of 1.4 (section 9.8), as the best of 2 runs.
 - **Memory:** each operation runs in a process of its own.
   - It runs first on a file of 1,000 rows, so the library's code is loaded and
     compiled.
@@ -1350,7 +1361,7 @@ JAZMIN is strong, and what it can work towards.
 | Sum one column | 30.6 ms | 32.3 ms | **15.4 ms** | 29.8 ms | 265.8 ms |
 | Find one row by id (open → row) | 4.3 ms | 105.0 ms | 14.2 ms | **1.1 ms** | 207.5 ms |
 | Filter: country = NA, age > 80 | 23.9 ms | 77.2 ms | **14.6 ms** | 27.0 ms | 243.0 ms |
-| Text search: name contains 'Ndlovu' | 35.0 ms | **23.4 ms** | 27.7 ms | 28.1 ms | 237.1 ms |
+| Text search: name contains 'Ndlovu' | 16.6 ms | 17.3 ms | **15.8 ms** | 18.5 ms | 168.1 ms |
 
 **.NET 10:**
 
@@ -1362,7 +1373,7 @@ JAZMIN is strong, and what it can work towards.
 | Sum one column | 31.4 ms | **5.9 ms** | 13.8 ms | 25.4 ms | 111.2 ms |
 | Find one row by id (open → row) | 1.7 ms | 193.3 ms | 11.0 ms | **0.9 ms** | 89.5 ms |
 | Filter: country = NA, age > 80 | 10.6 ms | 25.7 ms | **8.9 ms** | 22.6 ms | 95.7 ms |
-| Text search: name contains 'Ndlovu' | 20.2 ms | 23.7 ms | **17.1 ms** | 28.4 ms | 91.9 ms |
+| Text search: name contains 'Ndlovu' | 17.6 ms | 16.5 ms | **10.7 ms** | 21.1 ms | 50.5 ms |
 
 **Memory, Node.js 24** (peak memory added):
 
@@ -1373,7 +1384,7 @@ JAZMIN is strong, and what it can work towards.
 | Sum one column | 11.1 MB | 35.1 MB | 12.9 MB | **1.9 MB** | 154.3 MB |
 | Find one row by id (open → row) | 1.7 MB | 86.8 MB | 13.3 MB | **0.0 MB** | 153.7 MB |
 | Filter: country = NA, age > 80 | 11.3 MB | 48.3 MB | 14.0 MB | **1.7 MB** | 150.9 MB |
-| Text search: name contains 'Ndlovu' | 33.8 MB | 18.9 MB | 15.7 MB | **1.9 MB** | 152.4 MB |
+| Text search: name contains 'Ndlovu' | 12.1 MB | 19.5 MB | 15.4 MB | **2.0 MB** | 151.9 MB |
 
 **Memory, .NET 10** (peak memory added):
 
@@ -1384,7 +1395,7 @@ JAZMIN is strong, and what it can work towards.
 | Sum one column | 16.2 MB | 10.5 MB | 14.1 MB | **1.8 MB** | 56.1 MB |
 | Find one row by id (open → row) | 6.3 MB | 84.5 MB | 13.8 MB | **0.1 MB** | 55.7 MB |
 | Filter: country = NA, age > 80 | 26.1 MB | 27.4 MB | 15.4 MB | **1.8 MB** | 55.7 MB |
-| Text search: name contains 'Ndlovu' | 48.8 MB | 32.9 MB | 23.5 MB | **1.8 MB** | 55.7 MB |
+| Text search: name contains 'Ndlovu' | 33.7 MB | 33.7 MB | 23.6 MB | **1.8 MB** | 55.7 MB |
 
 SQLite needs almost no memory for a query: it reads its file a page at a time
 through a small cache, and returns a count or one row. Its reads of every row
@@ -1415,13 +1426,16 @@ are another matter in Node (282 MB, for its row objects).
   - JAZMIN decompresses deflate chunks to save space (memory first,
     section 20.4).
 - **Text search for a common word:** an eighth of the names contain
-  'Ndlovu', and there the trigram index is slower than a plain scan. In Node,
-  every other format's scan is faster; in .NET, Arrow's is.
+  'Ndlovu'. Since 1.4 a search reads only the parts of the trigram index it
+  needs, and scans when the word is in most rows (section 9.8).
+  - Node: 35.0 -> 16.6 ms, beside Arrow's 15.8 ms.
+  - .NET: 20.2 -> 17.6 ms; Arrow's scan of uncompressed columns takes
+    10.7 ms. Opening the index still costs about 3 ms per query in .NET.
 - **Writing:** MessagePack writes 4-5 times faster. It stores a document as it
   is, with no columns, compression or indexes to build.
 - **Memory:**
-  - The text search loads the whole trigram index: 34 MB in Node and 49 MB in
-    .NET, against 16-24 MB for Arrow's scan.
+  - The text search, since 1.4: 12 MB in Node (was 34 MB), less than
+    Arrow's 15 MB; 34 MB in .NET (was 49 MB), against Arrow's 24 MB.
   - Writing in Node adds 173 MB, against 25 MB for SQLite and 45 MB for
     MessagePack.
   - In .NET, filters and sums use more than Arrow's (26 and 16 MB, against

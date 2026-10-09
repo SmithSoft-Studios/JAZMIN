@@ -271,10 +271,10 @@ function leafLookup(leaf) {
   }
 }
 
-function lookupPlan(column, kind, lookup, indexes, budget) {
+function lookupPlan(column, kind, lookup, indexes, budget, scanRows) {
   const index = indexes.get(column, kind);
   const cost = index ? index.cost(lookup) : null;
-  return cost === null || cost > budget ? null : { cost, rows: () => index.rows(lookup) };
+  return cost === null || cost > budget ? null : { cost, rows: () => index.rows(lookup, scanRows) };
 }
 
 /** Range conditions of an AND on one column, merged into one bounded lookup (the tightest bounds win). */
@@ -297,18 +297,19 @@ const isRange = (node) => node.kind === 'leaf' && RANGE_OPS.has(node.op) && !(ty
  * to read (estimated from index directories: nothing is read yet) and rows() returns a sorted superset of the
  * matching row ids; or null when indexes cannot narrow it. Within an AND, range conditions on one column become one
  * bounded lookup, lookups are taken cheapest first, and those that would push the cost over `budget` bytes are left
- * out (the filter is still checked on every row read).
+ * out (the filter is still checked on every row read). Given `scanRows`, the rows a scan would read, a text search
+ * for common text narrows nothing (LazyTrigramIndex.rows), and rows() may then return null: scan.
  */
-export function indexPlan(node, indexes, budget = Infinity) {
+export function indexPlan(node, indexes, budget = Infinity, scanRows = undefined) {
   switch (node.kind) {
     case 'and': {
       const parts = [];
       const ranges = new Map(); // column name -> merged range lookup
       for (const item of node.items) {
         if (isRange(item)) ranges.set(item.name, mergeRange(ranges.get(item.name), item));
-        else parts.push(indexPlan(item, indexes, budget));
+        else parts.push(indexPlan(item, indexes, budget, scanRows));
       }
-      for (const [name, lookup] of ranges) parts.push(lookupPlan(name, 'sorted', lookup, indexes, budget));
+      for (const [name, lookup] of ranges) parts.push(lookupPlan(name, 'sorted', lookup, indexes, budget, scanRows));
       const usable = parts.filter(Boolean).sort((a, b) => a.cost - b.cost);
       const chosen = [];
       let cost = 0;
@@ -321,8 +322,11 @@ export function indexPlan(node, indexes, budget = Infinity) {
       return {
         cost,
         rows: () => {
-          let result = chosen[0].rows();
-          for (let i = 1; i < chosen.length && result.length; i++) result = intersect(result, chosen[i].rows());
+          let result = null;
+          for (let i = 0; i < chosen.length && result?.length !== 0; i++) {
+            const rows = chosen[i].rows();
+            if (rows !== null) result = result === null ? rows : intersect(result, rows);
+          }
           return result;
         },
       };
@@ -331,17 +335,26 @@ export function indexPlan(node, indexes, budget = Infinity) {
       const parts = [];
       let cost = 0;
       for (const item of node.items) {
-        const part = indexPlan(item, indexes, budget);
+        const part = indexPlan(item, indexes, budget, scanRows);
         if (part === null) return null; // a branch no index narrows: every row may match
         parts.push(part);
         cost += part.cost;
       }
-      return cost > budget ? null : { cost, rows: () => unionAll(parts.map((p) => p.rows())) };
+      const rows = () => {
+        const lists = [];
+        for (const part of parts) {
+          const list = part.rows();
+          if (list === null) return null;
+          lists.push(list);
+        }
+        return unionAll(lists);
+      };
+      return cost > budget ? null : { cost, rows };
     }
     case 'not': return null;
     default: {
       const lookup = leafLookup(node);
-      return lookup ? lookupPlan(node.name, lookup[0], lookup[1], indexes, budget) : null;
+      return lookup ? lookupPlan(node.name, lookup[0], lookup[1], indexes, budget, scanRows) : null;
     }
   }
 }

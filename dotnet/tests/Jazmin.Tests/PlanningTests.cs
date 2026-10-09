@@ -1,3 +1,4 @@
+using Jazmin.Format;
 using Jazmin.Query;
 using Xunit;
 
@@ -40,6 +41,19 @@ public sealed class PlanningTests : IDisposable
             writer.WriteRow(new Dictionary<string, object?> { ["account"] = account, ["at"] = at, ["amount"] = amount, ["description"] = description });
         return path;
     }
+
+    private static readonly JazminColumn[] TextColumns =
+    {
+        new("id", JazminType.Int) { Nullable = false, Indexes = [JazminIndexKind.Sorted] },
+        new("text", JazminType.String) { Indexes = [JazminIndexKind.Trigram] },
+    };
+
+    /// <summary>'often' in every other row, 'seldom' in every 5,000th, 'early' in the first 6,000.</summary>
+    private static Dictionary<string, object?> TextRow(long i) => new()
+    {
+        ["id"] = i,
+        ["text"] = $"n{i}{(i % 2 == 0 ? " often" : "")}{(i % 5000 == 0 ? " seldom" : "")}{(i < 6000 ? " early" : "")}",
+    };
 
     private static JazminPlan Analyze(string path, JazminFilter filter, long? limit = null)
     {
@@ -106,5 +120,63 @@ public sealed class PlanningTests : IDisposable
         Check(JazminFilter.And(JazminFilter.Not(JazminFilter.Eq("account", "ACC000")), JazminFilter.Gte("at", Day(364))), r => r.Account != "ACC000" && r.At >= Day(364));
         Check(JazminFilter.And(JazminFilter.Gt("at", Day(100)), JazminFilter.Lt("at", Day(100))), _ => false);
         Check(JazminFilter.And(JazminFilter.Gte("at", Day(100)), JazminFilter.Lte("at", Day(100)), JazminFilter.Gt("amount", -1)), r => r.At == Day(100));
+    }
+
+    [Fact]
+    public void A_text_search_scans_for_common_text_spread_over_the_rows_and_uses_the_index_for_rare_or_clustered_text()
+    {
+        var path = Path.Combine(_dir, "text.jzm");
+        using (var writer = JazminWriter.Create(path, TextColumns, new JazminWriteOptions { ChunkRows = 500 }))
+            for (var i = 0; i < 12_000; i++) writer.WriteRow(TextRow(i));
+        // Before and after an append: one index segment, then two.
+        foreach (var appended in new[] { false, true })
+        {
+            if (appended) JazminFile.Append(path, new JazminAppend { Insert = Enumerable.Range(12_000, 8000).Select(i => (IReadOnlyDictionary<string, object?>)TextRow(i)).ToList() });
+            var count = appended ? 20_000 : 12_000;
+            using var reader = JazminReader.Open(path);
+            string Plan(JazminFilter filter, Func<long, bool> matches)
+            {
+                var plan = reader.Explain(filter, analyze: true);
+                Assert.Equal(Enumerable.Range(0, count).LongCount(i => matches(i)), plan.Cost!.Rows);
+                return plan.Strategy;
+            }
+            // Its candidates would fall in every chunk: checking each row of a scan is quicker.
+            Assert.Equal("scan", Plan(JazminFilter.Contains("text", "often"), i => i % 2 == 0));
+            Assert.Equal("index", Plan(JazminFilter.Contains("text", "seldom"), i => i % 5000 == 0));
+            // As common, but in rows that are together: the index skips the chunks around them.
+            Assert.Equal("index", Plan(JazminFilter.Contains("text", "early"), i => i < 6000));
+            Assert.True(reader.Explain(JazminFilter.Contains("text", "early"), analyze: true).Cost!.ChunksRead <= 12);
+            // An OR with a common branch scans.
+            Assert.Equal("scan", Plan(JazminFilter.Or(JazminFilter.Contains("text", "often"), JazminFilter.Contains("text", "seldom")), i => i % 2 == 0 || i % 5000 == 0));
+            Assert.Equal(count / 2, reader.Count(JazminFilter.IContains("text", "OFTEN")));
+        }
+    }
+
+    /// <summary>A stand-in index: costs nothing, and answers with the given rows.</summary>
+    private sealed class FixedIndex(Func<long?, long[]?> rows) : IIndex
+    {
+        public long? Cost(IndexLookup lookup) => 0;
+
+        public long[]? Rows(IndexLookup lookup, long? scanRows = null) => rows(scanRows);
+    }
+
+    /// <summary>The text index declines (null) given 1,000 scan rows, as for common text; the id index returns its rows.</summary>
+    private sealed class FixedIndexes : IIndexProvider
+    {
+        public IIndex? Index(string column, string kind) =>
+            column == "text" ? new FixedIndex(scanRows => scanRows == 1000 ? null : [1, 2, 3]) : new FixedIndex(_ => [2, 3, 4]);
+    }
+
+    [Fact]
+    public void A_lookup_that_narrows_nothing_leaves_the_others_of_an_AND_and_makes_an_OR_scan()
+    {
+        static BoundFilter Bind(JazminFilter filter) => BoundFilter.Bind(filter, TextColumns)!;
+        var text = JazminFilter.Contains("text", "often");
+        var both = Bind(JazminFilter.And(text, JazminFilter.In("id", 2L, 3L, 4L)));
+        Assert.Equal([2L, 3L, 4L], FilterEngine.IndexPlan(both, new FixedIndexes(), long.MaxValue, 1000)!.Value.Rows()!);
+        Assert.Null(FilterEngine.IndexPlan(Bind(text), new FixedIndexes(), long.MaxValue, 1000)!.Value.Rows());
+        Assert.Null(FilterEngine.IndexPlan(Bind(JazminFilter.Or(text, JazminFilter.Eq("id", 2L))), new FixedIndexes(), long.MaxValue, 1000)!.Value.Rows());
+        // Without the scan's row count (as when an owner looks for the partitions to load), the text index answers.
+        Assert.Equal([2L, 3L], FilterEngine.IndexPlan(both, new FixedIndexes())!.Value.Rows()!);
     }
 }

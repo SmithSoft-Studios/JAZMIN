@@ -1947,24 +1947,28 @@ export class JazminReader {
   /**
    * Row ids indexes narrow a filter to (sorted), or null to scan. Index lookups are planned against what a scan would
    * read: small lookups (SMALL_LOOKUP_BYTES) are always made, and costlier ones only while they read less than the
-   * scan's chunks, less one chunk (an index answer still reads at least one). Rows are kept only in the chunks a
-   * scan would read (a sort range, a pinned partition, chunk statistics): nowhere else can a row match.
+   * scan's chunks, less one chunk (an index answer still reads at least one). A text search scans when its text is
+   * common (LazyTrigramIndex.rows). Rows are kept only in the chunks a scan would read (a sort range, a pinned partition,
+   * chunk statistics): nowhere else can a row match.
    */
   #candidates(plan) {
     if (!plan) return null;
     const scan = this.#scanList(plan);
     let scanBytes = 0;
+    let scanRows = 0;
     let smallest = Infinity;
     for (const ordinal of scan) {
       const { length } = this.#span(ordinal);
       scanBytes += length;
+      scanRows += this.#rowCount[ordinal];
       smallest = Math.min(smallest, length);
     }
-    const lookup = indexPlan(plan, this.#indexProvider, Math.max(scan.length ? scanBytes - smallest : 0, SMALL_LOOKUP_BYTES));
-    if (!lookup) return null;
+    const lookup = indexPlan(plan, this.#indexProvider, Math.max(scan.length ? scanBytes - smallest : 0, SMALL_LOOKUP_BYTES), scanRows);
+    const rows = lookup?.rows() ?? null;
+    if (rows === null) return null;
     const inScan = new Uint8Array(this.#rowCount.length);
     for (const ordinal of scan) inScan[ordinal] = 1;
-    return lookup.rows().filter((rowId) => {
+    return rows.filter((rowId) => {
       const ordinal = this.#chunkOrdinalFor(rowId);
       return ordinal >= 0 && inScan[ordinal] === 1;
     });

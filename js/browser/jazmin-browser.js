@@ -1657,43 +1657,162 @@
   }
   const trigramAnswers = (text, ci) => !(ci && /[^\x00-\x7f]/.test(text)) && trigramsOf(text).size > 0;
 
-  /** A trigram index (spec 8.2), read only when a lookup is made: until then a lookup costs its whole size. */
+  /** Steps over postings without making the row ids, eight bytes at a time (as the library's skipPostings). */
+  function skipPostings(r) {
+    const count = r.varUint();
+    if (count > r.remaining) throw new JazminFormatError('Postings are truncated');
+    const { buf, view } = r;
+    let pos = r.pos;
+    let left = count;
+    // A window of 8 bytes ends at most 8 varints (bytes with the high bit clear): while 8 are left, step over it whole.
+    for (const end = buf.length - 8; left >= 8 && pos <= end; pos += 8) {
+      const low = (view.getUint32(pos, true) & 0x80808080) >>> 7;
+      const high = (view.getUint32(pos + 4, true) & 0x80808080) >>> 7;
+      left -= 8 - (Math.imul(low, 0x01010101) >>> 24) - (Math.imul(high, 0x01010101) >>> 24);
+    }
+    for (; left > 0; pos++) {
+      if (pos >= buf.length) throw new JazminFormatError('Postings are truncated');
+      if ((buf[pos] & 0x80) === 0) left--;
+    }
+    r.pos = pos;
+  }
+
+  /** Postings intersected with the sorted row ids `ids` (kept in place in `ids`) as they are read: no list is made. */
+  function intersectPostings(r, ids) {
+    const count = r.varUint();
+    if (count > r.remaining) throw new JazminFormatError('Postings are truncated');
+    let kept = 0;
+    let j = 0;
+    let previous = 0;
+    for (let i = 0; i < count && j < ids.length; i++) {
+      previous += r.varUint();
+      if (previous > Number.MAX_SAFE_INTEGER) throw new JazminFormatError('A row id is out of range');
+      while (j < ids.length && ids[j] < previous) j++;
+      if (ids[j] === previous) ids[kept++] = ids[j++];
+    }
+    ids.length = kept;
+    return ids;
+  }
+
+  const GRAM_HIGH = 4294967296; // a gram (c0, c1, c2) is held as c0·2³² + c1·2¹⁶ + c2: numeric order is code-unit order
+
+  /**
+   * One segment of a trigram index (spec 8.2), as the library's TrigramIndex: where each gram's postings are, in two
+   * typed arrays. Row ids are made only for the grams a lookup uses.
+   */
+  class TrigramSegment {
+    constructor(bytes) {
+      const r = new Reader(bytes);
+      if (r.byte() !== 0) throw new JazminFormatError('Trigram index uses an encoding this reader does not support');
+      const count = r.varUint();
+      if (count > r.remaining / 7) throw new JazminFormatError('Trigram index is truncated');
+      let grams = new Float64Array(count);
+      let offsets = bytes.length > 0xffffffff ? new Float64Array(count) : new Uint32Array(count);
+      let ascending = true;
+      for (let i = 0; i < count; i++) {
+        const c0 = r.u16();
+        const c1 = r.u16();
+        const gram = c0 * GRAM_HIGH + c1 * 65536 + r.u16();
+        if (i > 0 && gram <= grams[i - 1]) ascending = false;
+        grams[i] = gram;
+        offsets[i] = r.pos;
+        skipPostings(r);
+      }
+      if (!r.eof) throw new JazminFormatError('Trigram index has trailing bytes');
+      if (!ascending) {
+        // Spec 8.2 orders the grams; an index that does not is still read.
+        const order = Array.from({ length: count }, (_, i) => i).sort((x, y) => grams[x] - grams[y]);
+        grams = Float64Array.from(order, (i) => grams[i]);
+        offsets = offsets.constructor.from(order, (i) => offsets[i]);
+      }
+      this.bytes = bytes;
+      this.grams = grams;
+      this.offsets = offsets;
+    }
+
+    /** Where a gram's postings start, or -1 when no row has it. */
+    find(gram) {
+      let lo = 0;
+      let hi = this.grams.length - 1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >>> 1;
+        if (this.grams[mid] < gram) lo = mid + 1;
+        else if (this.grams[mid] > gram) hi = mid - 1;
+        else return this.offsets[mid];
+      }
+      return -1;
+    }
+
+    /** The postings of each gram of `text`, rarest first, as { at, count }; or null when a gram is in no row. */
+    lists(text) {
+      const lists = [];
+      for (const gram of trigramsOf(text)) {
+        const at = this.find(gram.charCodeAt(0) * GRAM_HIGH + gram.charCodeAt(1) * 65536 + gram.charCodeAt(2));
+        if (at < 0) return null;
+        lists.push({ at, count: new Reader(this.bytes, at).varUint() });
+      }
+      return lists.sort((x, y) => x.count - y.count);
+    }
+
+    /** At most how many rows rows() returns: those of the text's rarest gram. */
+    bound(lookup) {
+      const lists = this.lists(lookup.text);
+      return lists === null ? 0 : lists.length ? lists[0].count : Infinity;
+    }
+
+    /** How far apart the rows of the text's rarest gram are: from its first row id to its last, inclusive. */
+    span(lookup) {
+      const lists = this.lists(lookup.text);
+      if (lists === null) return 0;
+      if (!lists.length) return Infinity;
+      const r = new Reader(this.bytes, lists[0].at);
+      const count = r.varUint();
+      let first = 0;
+      let last = 0;
+      for (let i = 0; i < count; i++) {
+        last += r.varUint();
+        if (last > Number.MAX_SAFE_INTEGER) throw new JazminFormatError('A row id is out of range');
+        if (i === 0) first = last;
+      }
+      return count ? last - first + 1 : 0;
+    }
+
+    /** Superset of the rows that may contain the text, from its rarest gram; the others intersected as read. */
+    rows(lookup) {
+      const lists = this.lists(lookup.text);
+      if (!lists?.length) return [];
+      let result = readPostings(new Reader(this.bytes, lists[0].at));
+      for (let i = 1; i < lists.length && result.length; i++) result = intersectPostings(new Reader(this.bytes, lists[i].at), result);
+      return result;
+    }
+  }
+
+  const COMMON_SHARE = 1 / 4; // see LazyTrigramIndex.rows
+
+  /** A trigram index, read only when a lookup is made: until then a lookup costs its whole size. */
   class LazyTrigramIndex {
     constructor(bytes, load) {
       this.bytes = bytes;
       this.load = load;
-      this.grams = null;
+      this.segments = null;
     }
 
     cost(lookup) {
       if (lookup.op !== 'contains' || !trigramAnswers(lookup.text, lookup.ci)) return null;
-      return this.grams ? 0 : this.bytes;
+      return this.segments ? 0 : this.bytes;
     }
 
-    async rows(lookup) {
-      if (!this.grams) {
-        this.grams = new Map();
-        for (const bytes of await this.load()) {
-          const r = new Reader(bytes);
-          if (r.byte() !== 0) throw new JazminFormatError('Trigram index uses an encoding this reader does not support');
-          const count = r.varUint();
-          if (count > r.remaining / 7) throw new JazminFormatError('Trigram index is truncated');
-          for (let i = 0; i < count; i++) {
-            const gram = String.fromCharCode(r.u16(), r.u16(), r.u16());
-            this.grams.set(gram, [...(this.grams.get(gram) ?? []), ...readPostings(r)]);
-          }
-          if (!r.eof) throw new JazminFormatError('Trigram index has trailing bytes');
-        }
-        for (const [gram, ids] of this.grams) this.grams.set(gram, unionAll([ids]));
-      }
-      let result = null;
-      for (const gram of trigramsOf(lookup.text)) {
-        const ids = this.grams.get(gram);
-        if (!ids) return [];
-        result = result === null ? ids : intersectSorted(result, ids);
-        if (!result.length) return result;
-      }
-      return result ?? [];
+    /**
+     * Row ids that may match; or null, given `scanRows` (the rows a scan would read), when the text is common (as the
+     * library's LazyTrigramIndex.rows): its rarest gram is in over a quarter of them, spread over three quarters.
+     */
+    async rows(lookup, scanRows) {
+      this.segments ??= (await this.load()).map((bytes) => new TrigramSegment(bytes));
+      const sum = (measure) => this.segments.reduce((n, segment) => n + segment[measure](lookup), 0);
+      if (scanRows !== undefined && sum('bound') > scanRows * COMMON_SHARE && sum('span') > scanRows * (1 - COMMON_SHARE)) return null;
+      // Segments hold different rows: each one's candidates are found apart, then united.
+      const lists = this.segments.map((segment) => segment.rows(lookup));
+      return lists.length === 1 ? lists[0] : unionAll(lists);
     }
   }
 
@@ -1736,13 +1855,14 @@
 
   /**
    * How indexes can narrow a filter: { cost, rows() } or null (as the library's indexPlan). Range conditions on one
-   * column (in an AND) become one bounded lookup; lookups are taken cheapest first within `budget` bytes.
+   * column (in an AND) become one bounded lookup; lookups are taken cheapest first within `budget` bytes. Given
+   * `scanRows`, a text search for common text narrows nothing, and rows() may then return null: scan.
    */
-  async function indexPlan(node, indexes, budget) {
+  async function indexPlan(node, indexes, budget, scanRows) {
     const lookupPlan = async (leaf, kind, lookup) => {
       const index = await indexes(leaf.column.name, kind);
       const cost = index ? index.cost(lookup) : null;
-      return cost === null || cost > budget ? null : { cost, rows: () => index.rows(lookup) };
+      return cost === null || cost > budget ? null : { cost, rows: () => index.rows(lookup, scanRows) };
     };
     switch (node.kind) {
       case 'and': {
@@ -1761,7 +1881,7 @@
             }
             ranges.set(item.column.position, [item, merged]);
           } else {
-            parts.push(await indexPlan(item, indexes, budget));
+            parts.push(await indexPlan(item, indexes, budget, scanRows));
           }
         }
         for (const [leaf, lookup] of ranges.values()) parts.push(await lookupPlan(leaf, 'sorted', lookup));
@@ -1777,8 +1897,11 @@
         return {
           cost,
           rows: async () => {
-            let result = await chosen[0].rows();
-            for (let i = 1; i < chosen.length && result.length; i++) result = intersectSorted(result, await chosen[i].rows());
+            let result = null;
+            for (let i = 0; i < chosen.length && result?.length !== 0; i++) {
+              const rows = await chosen[i].rows();
+              if (rows !== null) result = result === null ? rows : intersectSorted(result, rows);
+            }
             return result;
           },
         };
@@ -1787,12 +1910,16 @@
         const parts = [];
         let cost = 0;
         for (const item of node.items) {
-          const part = await indexPlan(item, indexes, budget);
+          const part = await indexPlan(item, indexes, budget, scanRows);
           if (part === null) return null;
           parts.push(part);
           cost += part.cost;
         }
-        return cost > budget ? null : { cost, rows: async () => unionAll(await Promise.all(parts.map((p) => p.rows()))) };
+        const rows = async () => {
+          const lists = await Promise.all(parts.map((p) => p.rows()));
+          return lists.includes(null) ? null : unionAll(lists);
+        };
+        return cost > budget ? null : { cost, rows };
       }
       case 'not': case 'nested': return null;
       default: {
@@ -2494,15 +2621,18 @@
       await ensureStats(cols);
       const scan = scanList(plan);
       let budget = 0;
+      let scanRows = 0;
       let smallest = Infinity;
       for (const chunk of scan) {
         budget += chunkBytes(chunk);
+        scanRows += chunk.rowCount;
         smallest = Math.min(smallest, chunkBytes(chunk));
       }
-      const lookup = await indexPlan(plan, indexOf, Math.max(scan.length ? budget - smallest : 0, SMALL_LOOKUP_BYTES));
-      if (!lookup) return { runs: scan.map((chunk) => ({ chunk })), rowIds: null };
+      const lookup = await indexPlan(plan, indexOf, Math.max(scan.length ? budget - smallest : 0, SMALL_LOOKUP_BYTES), scanRows);
+      const candidates = lookup ? await lookup.rows() : null;
+      if (candidates === null) return { runs: scan.map((chunk) => ({ chunk })), rowIds: null };
       const inScan = new Set(scan);
-      const rowIds = (await lookup.rows()).filter((id) => inScan.has(chunkFor(id)));
+      const rowIds = candidates.filter((id) => inScan.has(chunkFor(id)));
       const runs = [];
       for (let i = 0; i < rowIds.length;) {
         const chunk = chunkFor(rowIds[i]);

@@ -438,7 +438,7 @@ internal sealed class PagedSortedIndex : IIndex
         return pages.Sum(i => (long)_pages[i].At.Length);
     }
 
-    public long[] Rows(IndexLookup lookup)
+    public long[] Rows(IndexLookup lookup, long? scanRows = null)
     {
         switch (lookup)
         {
@@ -493,8 +493,11 @@ internal interface IIndex
     /// <summary>Bytes of index data the lookup still has to read (nothing is read to answer this), or null when this index cannot answer it.</summary>
     long? Cost(IndexLookup lookup);
 
-    /// <summary>The sorted row ids the lookup finds (a superset of the matching rows).</summary>
-    long[] Rows(IndexLookup lookup);
+    /// <summary>
+    /// The sorted row ids the lookup finds (a superset of the matching rows); or null, given the rows a scan would read
+    /// (<paramref name="scanRows"/>), when the lookup narrows nothing (common text: <see cref="LazyTrigramIndex"/>).
+    /// </summary>
+    long[]? Rows(IndexLookup lookup, long? scanRows = null);
 }
 
 /// <summary>Combines the original index with one segment per append (row ids never overlap).</summary>
@@ -511,18 +514,35 @@ internal sealed class CompositeIndex(IReadOnlyList<IIndex> parts) : IIndex
         return total;
     }
 
-    public long[] Rows(IndexLookup lookup) => RowSet.Union(parts.Select(p => p.Rows(lookup)).ToList());
+    public long[] Rows(IndexLookup lookup, long? scanRows = null) => RowSet.Union(parts.Select(p => p.Rows(lookup) ?? throw new InvalidOperationException("A sorted index answers every lookup it costs")).ToList());
 }
 
-/// <summary>A trigram index read only when a lookup is made: until then a lookup costs the whole index's size.</summary>
-internal sealed class LazyTrigramIndex(long bytes, Func<IIndex> load) : IIndex
+/// <summary>
+/// A trigram index read only when a lookup is made (one segment for the original rows, plus one per append): until then
+/// a lookup costs the whole index's size, so a planner can choose a scan without reading it.
+/// </summary>
+internal sealed class LazyTrigramIndex(long bytes, Func<IReadOnlyList<TrigramIndex>> load) : IIndex
 {
-    private IIndex? _index;
+    private const double CommonShare = 0.25;
+    private IReadOnlyList<TrigramIndex>? _segments;
 
     public long? Cost(IndexLookup lookup) =>
-        lookup is IndexLookup.Contains c && TrigramIndex.Answers(c.Text, c.CaseInsensitive) ? (_index is null ? bytes : 0) : null;
+        lookup is IndexLookup.Contains c && TrigramIndex.Answers(c.Text, c.CaseInsensitive) ? (_segments is null ? bytes : 0) : null;
 
-    public long[] Rows(IndexLookup lookup) => (_index ??= load()).Rows(lookup);
+    /// <summary>
+    /// Row ids that may match; or null, given the rows a scan would read, when the text is common: its rarest gram is in
+    /// over a quarter of them, spread over more than three quarters. Its rows then fall in most chunks, and a scan checks
+    /// each row more cheaply. Common text in rows that are together still uses the index, which skips the chunks around
+    /// them.
+    /// </summary>
+    public long[]? Rows(IndexLookup lookup, long? scanRows = null)
+    {
+        var segments = _segments ??= load();
+        if (scanRows is { } rows && segments.Sum(s => s.Bound(lookup)) > rows * CommonShare && segments.Sum(s => s.Span(lookup)) > rows * (1 - CommonShare))
+            return null;
+        // Segments hold different rows: each one's candidates are found apart, then united.
+        return segments.Count == 1 ? segments[0].Rows(lookup) : RowSet.Union(segments.Select(s => s.Rows(lookup)).ToList());
+    }
 }
 
 internal sealed class SortedIndex
@@ -705,45 +725,126 @@ internal sealed class TrigramIndexBuilder : IIndexBuilder
     }
 }
 
-internal sealed class TrigramIndex : IIndex
+internal sealed class TrigramIndex
 {
-    private readonly Dictionary<string, long[]> _grams;
+    private readonly byte[] _raw;
+    private readonly long[] _grams; // each gram as c0 << 32 | c1 << 16 | c2, ascending (ordinal order)
+    private readonly int[] _offsets; // where each gram's postings start in _raw
 
-    private TrigramIndex(Dictionary<string, long[]> grams) => _grams = grams;
+    private TrigramIndex(byte[] raw, long[] grams, int[] offsets)
+    {
+        _raw = raw;
+        _grams = grams;
+        _offsets = offsets;
+    }
 
+    /// <summary>
+    /// Reads where each gram's postings are, into two arrays: no strings are made, and no row ids until a lookup needs a
+    /// gram's. Indexed text often repeats (names, categories), and then the postings are millions of row ids.
+    /// </summary>
     public static TrigramIndex Decode(byte[] raw)
     {
         var reader = new ByteReader(raw);
         RowSet.CheckEncoding(reader, "Trigram index");
         var count = reader.Length();
         if (count > reader.Remaining / 7) throw new JazminFormatException("Trigram index is truncated"); // 6 bytes of gram, then postings
-        var grams = new Dictionary<string, long[]>(count, StringComparer.Ordinal);
+        var grams = new long[count];
+        var offsets = new int[count];
+        var ascending = true;
         for (var i = 0; i < count; i++)
         {
-            var gram = new string(new[] { (char)reader.UInt16(), (char)reader.UInt16(), (char)reader.UInt16() });
-            grams[gram] = RowSet.ReadPostings(reader);
+            long c0 = reader.UInt16(), c1 = reader.UInt16();
+            var gram = c0 << 32 | c1 << 16 | reader.UInt16();
+            if (i > 0 && gram <= grams[i - 1]) ascending = false;
+            grams[i] = gram;
+            offsets[i] = reader.Position;
+            SkipPostings(reader, raw);
         }
         if (!reader.Eof) throw new JazminFormatException("Trigram index has trailing bytes");
-        return new TrigramIndex(grams);
+        if (!ascending) Array.Sort(grams, offsets); // spec 8.2 orders the grams; an index that does not is still read
+        return new TrigramIndex(raw, grams, offsets);
+    }
+
+    /// <summary>
+    /// Steps over postings without making the row ids: eight bytes at a time, counting the bytes that end a varint (high
+    /// bit clear). A window ends at most 8 varints, so while 8 or more are left it is stepped over whole.
+    /// </summary>
+    private static void SkipPostings(ByteReader reader, byte[] raw)
+    {
+        var count = reader.Length();
+        if (count > reader.Remaining) throw new JazminFormatException("Postings are truncated"); // each takes at least one byte
+        var start = reader.Position;
+        var pos = start;
+        var left = count;
+        for (; left >= 8 && pos <= raw.Length - 8; pos += 8)
+            left -= System.Numerics.BitOperations.PopCount(~System.Buffers.Binary.BinaryPrimitives.ReadUInt64LittleEndian(raw.AsSpan(pos)) & 0x8080808080808080UL);
+        for (; left > 0; pos++)
+        {
+            if (pos >= raw.Length) throw new JazminFormatException("Postings are truncated");
+            if ((raw[pos] & 0x80) == 0) left--;
+        }
+        reader.Skip(pos - start);
+    }
+
+    /// <summary>The postings of each gram of the text, rarest first, as (At, Count); or null when a gram is in no row.</summary>
+    private List<(int At, int Count)>? Lists(string text)
+    {
+        var lists = new List<(int At, int Count)>();
+        foreach (var gram in Trigrams.Of(text))
+        {
+            var i = Array.BinarySearch(_grams, (long)gram[0] << 32 | (long)gram[1] << 16 | gram[2]);
+            if (i < 0) return null;
+            lists.Add((_offsets[i], new ByteReader(_raw, _offsets[i]).Length()));
+        }
+        lists.Sort((x, y) => x.Count.CompareTo(y.Count));
+        return lists;
+    }
+
+    /// <summary>At most how many rows <see cref="Rows"/> returns: those of the text's rarest gram, from the postings' counts alone.</summary>
+    public long Bound(IndexLookup lookup) => Lists(((IndexLookup.Contains)lookup).Text) is { Count: > 0 } lists ? lists[0].Count : 0;
+
+    /// <summary>How far apart the rows of the text's rarest gram are: from its first row id to its last, inclusive.</summary>
+    public long Span(IndexLookup lookup)
+    {
+        if (Lists(((IndexLookup.Contains)lookup).Text) is not { Count: > 0 } lists) return 0;
+        var reader = new ByteReader(_raw, lists[0].At);
+        var count = reader.Length();
+        long first = 0, last = 0;
+        for (var i = 0; i < count; i++)
+        {
+            last += (long)reader.VarUInt();
+            if (i == 0) first = last;
+        }
+        return count > 0 ? last - first + 1 : 0;
     }
 
     /// <summary>Whether a trigram index can narrow a search for the text: not under 3 characters, nor case-insensitive non-ASCII.</summary>
     public static bool Answers(string text, bool caseInsensitive) => !(caseInsensitive && text.Any(c => c > 0x7f)) && Trigrams.Of(text).Count > 0;
 
-    public long? Cost(IndexLookup lookup) => lookup is IndexLookup.Contains c && Answers(c.Text, c.CaseInsensitive) ? 0 : null;
-
     /// <summary>Superset of rows that may contain the text (a search the index <see cref="Answers"/>).</summary>
     public long[] Rows(IndexLookup lookup)
     {
-        var grams = Trigrams.Of(((IndexLookup.Contains)lookup).Text);
-        long[]? result = null;
-        foreach (var gram in grams)
+        if (Lists(((IndexLookup.Contains)lookup).Text) is not { Count: > 0 } lists) return Array.Empty<long>();
+        // From the rarest gram, so the ids kept shrink fastest; the other grams' postings are intersected as they are read.
+        var result = RowSet.ReadPostings(new ByteReader(_raw, lists[0].At));
+        for (var i = 1; i < lists.Count && result.Length > 0; i++) result = IntersectPostings(new ByteReader(_raw, lists[i].At), result);
+        return result;
+    }
+
+    /// <summary>Postings intersected with the sorted row ids <paramref name="ids"/> as they are read, kept in place in <paramref name="ids"/>.</summary>
+    private static long[] IntersectPostings(ByteReader reader, long[] ids)
+    {
+        var count = reader.Length();
+        if (count > reader.Remaining) throw new JazminFormatException("Postings are truncated"); // each takes at least one byte
+        long previous = 0;
+        int j = 0, kept = 0;
+        for (var i = 0; i < count && j < ids.Length; i++)
         {
-            if (!_grams.TryGetValue(gram, out var ids)) return Array.Empty<long>();
-            result = result is null ? ids : RowSet.Intersect(result, ids);
-            if (result.Length == 0) return result;
+            previous += (long)reader.VarUInt();
+            while (j < ids.Length && ids[j] < previous) j++;
+            if (j < ids.Length && ids[j] == previous) ids[kept++] = ids[j++];
         }
-        return result ?? Array.Empty<long>();
+        return kept == ids.Length ? ids : ids[..kept];
     }
 }
 
