@@ -816,6 +816,148 @@
     return columns;
   }
 
+  /**
+   * decodeColumnar for a few rows of a chunk (as the library's decodeColumnarAt): the rows at `positions` (ascending,
+   * distinct), one array per wanted column with one value per position.
+   */
+  function decodeColumnarAt(raw, types, rowCount, ordinal, wanted, positions, datesAsMs = false) {
+    if (!Number.isSafeInteger(rowCount) || rowCount < 0 || (rowCount > 0 && rowCount > raw.length * 8)) {
+      throw new JazminFormatError(`Chunk ${ordinal}: row count does not match its size`);
+    }
+    const reader = new Reader(raw);
+    const columns = new Array(types.length);
+    for (let j = 0; j < types.length; j++) {
+      const length = reader.varUint();
+      const end = reader.pos + length;
+      if (length < 1 || end > raw.length) throw new JazminFormatError(`Chunk ${ordinal}: invalid stream length`);
+      if (!wanted || wanted[j]) columns[j] = decodeAt(raw, reader.pos, end, types[j], rowCount, positions, ordinal, datesAsMs);
+      reader.pos = end;
+    }
+    if (!reader.eof) throw new JazminFormatError(`Chunk ${ordinal} has trailing bytes`);
+    return columns;
+  }
+
+  /** Passes over one plain value of a type, making nothing. */
+  function skipValue(r, type) {
+    switch (type) {
+      case 'bool': r.byte(); break;
+      case 'int': case 'datetime': r.varInt(); break;
+      case 'float': r.float64(); break;
+      default: skipPlain(r, type); // string, json, binary and decimal
+    }
+  }
+
+  /**
+   * The entries at `positions` (ascending, distinct, each under `entries`) of one stream at raw[start, end), one value
+   * each, null for null (as the library's decodeAt): the values between them are passed over without being made, and
+   * those after the last are not read. The rest of the stream is not checked (decodeStream checks whole streams).
+   * Lists and objects are decoded whole.
+   */
+  function decodeAt(raw, start, end, type, entries, positions, ordinal, datesAsMs) {
+    if (typeof type === 'object') {
+      const all = decodeStream(raw, start, end, type, entries, ordinal, datesAsMs);
+      return positions.map((e) => all[e]);
+    }
+    const r = new Reader(raw.subarray(0, end), start);
+    const flags = r.byte();
+    if (flags & 0xe0) throw new JazminFormatError(`Chunk ${ordinal}: reserved stream flags are set`);
+    if ((flags & 0x0f) === ENCODING.nested) throw new JazminFormatError(`Chunk ${ordinal}: encoding ${flags & 0x0f} is not valid for a ${type} column`);
+    const nulls = flags & HAS_NULLS ? r.bytes((entries + 7) >> 3) : null;
+    const isNull = (e) => nulls !== null && (nulls[e >> 3] & (1 << (e & 7))) !== 0;
+    const out = new Array(positions.length).fill(null);
+    const last = positions.length ? positions[positions.length - 1] : -1;
+    const date = datesAsMs ? msFromFile : dateFromMs;
+    let p = 0; // the next position
+    switch (flags & 0x0f) {
+      case ENCODING.plain:
+        for (let e = 0; e <= last; e++) {
+          if (isNull(e)) {
+            if (e === positions[p]) p++;
+          } else if (e !== positions[p]) skipValue(r, type);
+          else out[p++] = type === 'datetime' ? date(r.varInt()) : readPlain(r, type);
+        }
+        break;
+      case ENCODING.delta: {
+        let prev = 0;
+        for (let e = 0, i = 0; e <= last; e++) {
+          if (isNull(e)) {
+            if (e === positions[p]) p++;
+            continue;
+          }
+          const d = r.varInt();
+          let v;
+          if (i++ === 0) v = d;
+          else if (typeof prev === 'number' && typeof d === 'number' && Number.isSafeInteger(prev + d)) v = prev + d;
+          else {
+            const big = BigInt(prev) + BigInt(d);
+            v = big >= BigInt(Number.MIN_SAFE_INTEGER) && big <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(big) : big;
+          }
+          prev = v;
+          if (e === positions[p]) out[p++] = type === 'datetime' ? date(v) : v;
+        }
+        break;
+      }
+      case ENCODING.dictionary: {
+        // Where each entry starts; only the entries these values use are made, once each.
+        const k = r.varUint();
+        if (k < 1 || k > end - r.pos) throw new JazminFormatError(`Chunk ${ordinal}: invalid dictionary size`);
+        const offsets = new Array(k);
+        for (let i = 0; i < k; i++) {
+          offsets[i] = r.pos;
+          skipPlain(r, type === 'decimal' ? 'decimal' : 'string');
+        }
+        const made = new Array(k); // entry -> its value, made when first used
+        for (let e = 0; e <= last; e++) {
+          if (isNull(e)) {
+            if (e === positions[p]) p++;
+            continue;
+          }
+          const id = r.varUint();
+          if (id >= k) throw new JazminFormatError(`Chunk ${ordinal}: dictionary index out of range`);
+          if (e !== positions[p]) continue;
+          let value = made[id];
+          if (value === undefined) {
+            const entry = new Reader(r.buf, offsets[id]);
+            made[id] = value = type === 'decimal' ? readDecimal(entry) : entry.string();
+          }
+          out[p++] = value;
+        }
+        break;
+      }
+      case ENCODING.bitmap: {
+        let count = entries;
+        if (nulls) for (let e = 0; e < entries; e++) if (isNull(e)) count--;
+        const bits = r.bytes((count + 7) >> 3);
+        for (let e = 0, i = 0; e <= last; e++) {
+          if (isNull(e)) {
+            if (e === positions[p]) p++;
+            continue;
+          }
+          if (e === positions[p]) out[p++] = (bits[i >> 3] & (1 << (i & 7))) !== 0;
+          i++;
+        }
+        break;
+      }
+      case ENCODING.scaled:
+        for (let e = 0; e <= last; e++) {
+          if (isNull(e)) {
+            if (e === positions[p]) p++;
+            continue;
+          }
+          const s = r.byte();
+          let v;
+          if (s === 255) v = r.float64();
+          else if (s <= 22) v = Number(r.varInt()) / POW10[s];
+          else throw new JazminFormatError(`Chunk ${ordinal}: invalid scale ${s}`);
+          if (e === positions[p]) out[p++] = v;
+        }
+        break;
+      default:
+        throw new JazminFormatError(`Chunk ${ordinal}: unknown encoding ${flags & 0x0f}`);
+    }
+    return out;
+  }
+
   /** What decodeColumnar needs for a column: its type, or a list's or object's definition. */
   const streamType = (c) => (isNested(c.type) ? c : c.type);
 
@@ -1102,6 +1244,10 @@
 
   const ORDERED_TYPES = new Set(['int', 'float', 'decimal', 'string', 'datetime', 'bool']);
   const RANGE_OPS = new Set(['gt', 'gte', 'lt', 'lte']);
+  // A few rows of a chunk (index candidates, or matching rows) are decoded on their own when they are at most this share
+  // of its rows. The library's reader uses 1/8; here decoding row by row costs relatively more, and at 1/8 queries were
+  // a little slower than decoding whole columns.
+  const FEW_ROWS = 1 / 32;
   const SMALL_LOOKUP_BYTES = 8 * 1024; // index lookups this small are always made: the bytes are negligible
   const PAGES_CACHED = 8; // decoded pages kept per sorted index
 
@@ -2421,7 +2567,7 @@
      * definitions to decode with (nested columns with fields left out). A query that decodes a chunk in two passes
      * passes the same `read` ({ raws: Map, counted }) to both: each section is read and decompressed once.
      */
-    async function chunkColumns(chunk, wanted = null, datesAsMs = false, types = null, read = null, rows = null) {
+    async function chunkColumns(chunk, wanted = null, datesAsMs = false, types = null, read = null, rows = null, positions = null) {
       const values = new Array(table.columnCount).fill(null);
       const decodedCols = [];
       for (let g = 0; g < groups.length; g++) {
@@ -2438,7 +2584,10 @@
           raw = await file.section(chunk.parts[g], sectionId, key, { requireDigest });
           read?.raws.set(g, raw);
         }
-        const cols = decodeColumnar(raw, group.cols.map((c) => types?.[c] ?? streamType(columns[c])), chunk.rowCount, chunk.ordinal, groupWanted, datesAsMs, rows);
+        const groupTypes = group.cols.map((c) => types?.[c] ?? streamType(columns[c]));
+        const cols = positions
+          ? decodeColumnarAt(raw, groupTypes, chunk.rowCount, chunk.ordinal, groupWanted, positions, datesAsMs)
+          : decodeColumnar(raw, groupTypes, chunk.rowCount, chunk.ordinal, groupWanted, datesAsMs, rows);
         group.cols.forEach((c, j) => {
           if (groupWanted && !groupWanted[j]) return;
           values[c] = cols[j];
@@ -2759,26 +2908,56 @@
           continue;
         }
         const read = { raws: new Map(), counted: false }; // the chunk's sections, read once for both passes
-        const { values } = await chunkColumns(chunk, filterWanted, false, types, read);
-        const hits = chunkHits(chunk, values, filterCols, match, probe, rowIds, from, to);
+        const few = chunk.rowCount * FEW_ROWS;
+        let values;
+        let hits;
+        let aligned = false; // values hold one value per hit, not one per row
+        if (rowIds !== null && to - from <= few) {
+          // A few index candidates: only their values of the filter's columns are decoded.
+          const positions = [];
+          for (let k = from; k < to; k++) if (!deletedSet.has(rowIds[k])) positions.push(rowIds[k] - chunk.rowStart);
+          ({ values } = await chunkColumns(chunk, filterWanted, false, types, read, null, positions));
+          hits = [];
+          const kept = [];
+          for (let k = 0; k < positions.length; k++) {
+            for (const c of filterCols) setField(probe, columns[c].name, values[c][k]);
+            if (!match(probe)) continue;
+            hits.push(positions[k]);
+            kept.push(k);
+          }
+          for (const c of filterCols) values[c] = kept.map((k) => values[c][k]);
+          aligned = true;
+        } else {
+          ({ values } = await chunkColumns(chunk, filterWanted, false, types, read));
+          hits = chunkHits(chunk, values, filterCols, match, probe, rowIds, from, to);
+          if (hits.length <= few) {
+            for (const c of filterCols) values[c] = hits.map((r) => values[c][r]);
+            aligned = true;
+          }
+        }
         if (!hits.length) continue;
-        if (anyRest) {
+        if (anyRest && aligned) {
+          // Few rows match: the returned columns are decoded for them alone (the values between them are passed over).
+          const more = await chunkColumns(chunk, restWanted, false, null, read, null, hits);
+          for (let c = 0; c < table.columnCount; c++) if (restWanted[c]) values[c] = more.values[c];
+        } else if (anyRest) {
           // The returned columns' text, decimal, json and binary values are made only for the matching rows.
           const matching = new Uint8Array(chunk.rowCount);
           for (const r of hits) matching[r] = 1;
           const more = await chunkColumns(chunk, restWanted, false, null, read, matching);
           for (let c = 0; c < table.columnCount; c++) if (restWanted[c]) values[c] = more.values[c];
         }
-        for (const r of hits) {
+        for (let h = 0; h < hits.length; h++) {
           if (skipped < offset) {
             skipped++;
             continue;
           }
           yielded++;
-          if (sink) sink(values, r, r + 1);
+          const i = aligned ? h : hits[h];
+          if (sink) sink(values, i, i + 1);
           else {
             const row = {};
-            for (const c of returned) setField(row, columns[c].name, values[c][r]);
+            for (const c of returned) setField(row, columns[c].name, values[c][i]);
             yield row;
           }
           if (yielded >= limit) return;

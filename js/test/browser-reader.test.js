@@ -322,3 +322,59 @@ test('browser reader: filters on nested columns skip, read and decode as the lib
     library.close();
   }
 });
+
+test('browser reader: filtered reads return what the library returns, when few rows of a chunk match or many do', async () => {
+  // Every column type, chunks of 128 rows; filters matching a row or two per chunk (by index candidates and by scan),
+  // and many.
+  const columns = [
+    { name: 'id', type: 'int', nullable: false },
+    { name: 'name', type: 'string', index: 'sorted' },
+    { name: 'note', type: 'string' },
+    { name: 'amount', type: 'decimal' },
+    { name: 'doc', type: 'json' },
+    { name: 'blob', type: 'binary' },
+    { name: 'score', type: 'float' },
+    { name: 'flag', type: 'bool' },
+    { name: 'at', type: 'datetime' },
+    { name: 'tags', type: 'list', item: { type: 'string' } },
+    { name: 'code', type: 'string', index: 'sorted' }, // 1 row in 97
+  ];
+  const rows = Array.from({ length: 600 }, (_, i) => ({
+    id: i,
+    name: i % 7 === 0 ? null : `name ${i % 13}`,
+    note: i % 5 === 0 ? null : `note ${i} ${'x'.repeat(i % 9)}`,
+    amount: i % 6 === 0 ? null : `${i}.${String(i % 100).padStart(2, '0')}`,
+    doc: i % 4 === 0 ? null : { i },
+    blob: i % 8 === 0 ? null : Buffer.from([i & 255, 7]),
+    score: i % 9 === 0 ? null : i / 3,
+    flag: i % 2 === 0,
+    at: i % 10 === 0 ? null : new Date(Date.UTC(2026, 0, 1) + i * 3_600_000),
+    tags: i % 11 === 0 ? null : [`t${i % 4}`, `u${i}`],
+    code: `c${i % 97}`,
+  }));
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-few-')), 'rows.jzm');
+  write(file, rows, { columns, chunkRows: 128 });
+  append(file, { delete: { id: 102 } });
+  const filters = [
+    { id: { in: [3, 33, 50, 299] } }, { code: 'c5' }, { code: { in: ['c5', 'c9'] }, flag: true }, { name: 'name 4' },
+    { amount: { gt: '100' } }, { note: { contains: 'xxxxxxx' } }, { not: { flag: true } },
+  ];
+  const library = open(file);
+  const reader = await JazminBrowser.open(new Blob([fs.readFileSync(file)]));
+  try {
+    for (const filter of filters) {
+      const label = JSON.stringify(filter);
+      assert.deepEqual(await browserRows(reader, filter), rowsOf([...library.find(filter)]), label);
+      for (const options of [{ select: ['note', 'tags', 'at'], limit: 1000 }, { offset: 1, limit: 3 }]) {
+        const page = await reader.query(filter, { ...options, total: false });
+        assert.deepEqual(rowsOf(page.rows), rowsOf([...library.find(filter, options)]), `${label} ${JSON.stringify(options)}`);
+      }
+      const select = ['id', 'note', 'amount', 'score', 'flag', 'at'];
+      const arrays = await reader.columnArrays(filter, { select, offset: 1, limit: 8 });
+      const want = library.columnArrays(filter, { select, offset: 1, limit: 8 });
+      assert.deepEqual(plain(arrays), plain(want), `${label} column arrays`);
+    }
+  } finally {
+    library.close();
+  }
+});

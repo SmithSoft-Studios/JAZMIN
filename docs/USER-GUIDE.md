@@ -1184,10 +1184,10 @@ whether indexes can do better:
 - **Index results only narrow the scan.** Only chunks the scan would read are
   read, and in them only the rows the index names are checked, with the same
   fast column decoding as a scan.
-- **A few rows of a chunk are decoded on their own** (Node, from 1.4). When an
-  index names only a few rows of a chunk, or only a few of its rows match,
-  just their values are decoded. The values between them are stepped over
-  without being made.
+- **A few rows of a chunk are decoded on their own** (Node and the browser
+  reader, from 1.4). When an index names only a few rows of a chunk, or only
+  a few of its rows match, just their values are decoded. The values between
+  them are stepped over without being made.
 
 `explain(filter)` shows the choice (`strategy: 'index'` or `'scan'`), and
 `{ analyze: true }` shows what it read (section 9.6).
@@ -2800,9 +2800,9 @@ whole rows.
 
 A selective filter is cheap even when it returns whole rows. The other
 columns are decoded only for chunks with matching rows, and their text,
-decimal, json and binary values only for the matching rows. In Node, when
-only a few rows of a chunk match, only their values are decoded at all
-(section 9.8). On 2.5M order
+decimal, json and binary values only for the matching rows. In Node and the
+browser reader, when only a few rows of a chunk match, only their values are
+decoded at all (section 9.8). On 2.5M order
 lines, returning every column of 2,474 lines for one product takes 344 ms
 in Node and 231 ms in .NET.
 

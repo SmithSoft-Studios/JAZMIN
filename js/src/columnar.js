@@ -828,7 +828,7 @@ function decodeAt(raw, start, end, type, entries, positions, ordinal, datesAsMs 
         offsets[i] = stream.pos;
         skipValue(stream, type);
       }
-      const made = new Map();
+      const made = new Array(k); // entry -> its value, made when first used
       for (let r = 0; r <= last; r++) {
         if (isNull(r)) {
           if (r === positions[p]) p++;
@@ -837,10 +837,10 @@ function decodeAt(raw, start, end, type, entries, positions, ordinal, datesAsMs 
         const id = stream.varUint();
         if (typeof id !== 'number' || id >= k) throw new JazminFormatError(`Chunk ${ordinal}: dictionary index out of range`);
         if (r !== positions[p]) continue;
-        let text = made.get(id);
+        let text = made[id];
         if (text === undefined) {
           const entry = new ByteReader(stream.buf, offsets[id]);
-          made.set(id, (text = type === 'decimal' ? readDecimal(entry) : entry.string()));
+          made[id] = text = type === 'decimal' ? readDecimal(entry) : entry.string();
         }
         out[p++] = text;
       }
