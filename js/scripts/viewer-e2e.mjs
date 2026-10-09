@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { JazminAccessKey, JazminKey, issueUnlockToken, open, write } from '../src/index.js';
+import { JazminAccessKey, JazminKey, issueUnlockToken, open, portableHtml, write } from '../src/index.js';
 import { TEMPLATE_READY, writeTemplate } from '../test/template-fixture.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -37,6 +37,11 @@ const FILES = {
 const CASES = [];
 for (const writer of ['js', 'dotnet']) {
   CASES.push({ file: `${writer}-files-key.jzm`, key: 'key', files: FILES.key });
+  // What viewers may do with the document's files (format 1.4): data.csv can't be saved, index.html can't be printed.
+  CASES.push({
+    file: `${writer}-document-key.jzm`, key: 'key', files: ['data.csv', 'index.html', 'logo.svg'], downloads: ['index.html', 'logo.svg'],
+    actions: { print: false, pdf: true, image: false },
+  });
   for (const key of ['bob', 'sally', 'carol']) CASES.push({ file: `${writer}-files-access.jzm`, key, files: FILES[key] }); // never the master key: see below
 }
 
@@ -79,6 +84,34 @@ write(path.join(temp, 'origins.jzm'), [{ n: 1 }], {
   ],
   package: { entry: 'index.html', title: 'Origins', allowedOrigins: ['https://fonts.example.com'] },
 });
+
+// A page whose file refuses PDFs (actions, format 1.4): it turns Print off and back on, and can't turn PDFs on.
+write(path.join(temp, 'actions.jzm'), [{ n: 1 }], {
+  key: templateKey,
+  files: [
+    { path: 'index.html', content: '<!doctype html><title>Actions</title><body><p>Actions</p><script src="app.js"></script></body>', actions: { pdf: false } },
+    {
+      path: 'app.js',
+      content: `(() => {
+        const before = jazmin.actions;
+        jazmin.setActions({ print: false, pdf: true });
+        const after = jazmin.actions;
+        let refused = '';
+        try { jazmin.print(); } catch (e) { refused = e.message; }
+        jazmin.setActions({ print: true });
+        jazmin.ready({ mode: jazmin.mode, before, after, again: jazmin.actions, refused });
+      })();`,
+    },
+  ],
+  package: { entry: 'index.html', title: 'Actions' },
+});
+const ACTIONS_READY = {
+  mode: 'view',
+  before: { print: true, pdf: false, image: false },
+  after: { print: false, pdf: false, image: false },
+  again: { print: true, pdf: false, image: false },
+  refused: 'This page cannot be printed here',
+};
 
 // A shared file Bob may read, written now: a phone opens it to get the submission key it sends records back with.
 write(path.join(temp, 'shared.jzm'), [{ id: 0, person: 'P1' }], {
@@ -286,7 +319,9 @@ const SHOWN = `({
   rows: document.querySelectorAll('#jz-rows tbody tr').length,
   data: document.getElementById('jz-data-status').textContent,
   files: [...document.querySelectorAll('#jz-files .path')].map((e) => e.textContent),
+  downloads: [...document.querySelectorAll('#jz-files li')].filter((li) => li.querySelector('button')).map((li) => li.querySelector('.path').textContent),
   document: (JazminViewer.state.lastShown || {}).text || '',
+  actions: (JazminViewer.state.lastShown || {}).actions || null,
   error: document.getElementById('jz-error').textContent,
   status: document.getElementById('jz-status').textContent,
 })`;
@@ -315,6 +350,11 @@ function check(c, shown, label) {
   const problems = [];
   if (!shown.document.includes('JAZMIN interop')) problems.push(`document text: ${JSON.stringify(shown.document)}`);
   if (JSON.stringify(shown.files) !== JSON.stringify(c.files)) problems.push(`files: ${shown.files.join(', ')}`);
+  // What the files' actions allow: a Download button each, and the page's Print and Save as PDF (this viewer makes no
+  // images).
+  if (JSON.stringify(shown.downloads) !== JSON.stringify(c.downloads ?? c.files)) problems.push(`Download buttons: ${shown.downloads.join(', ')}`);
+  const actions = c.actions ?? { print: true, pdf: true, image: false };
+  if (JSON.stringify(shown.actions) !== JSON.stringify(actions)) problems.push(`page actions: ${JSON.stringify(shown.actions)}`);
   if (!(shown.rows > 0)) problems.push(`no rows (${shown.data})`);
   if (shown.error) problems.push(`error: ${shown.error}`);
   return { label, ok: problems.length === 0, problems, rows: shown.data };
@@ -376,6 +416,14 @@ for (const name of chosen) {
     const wanted = JSON.stringify(['font-src other.example.org', 'media-src other.example.org']);
     results.push({ browser: name, label: 'allowed origins: fonts and media load from them only', ok: refused === wanted, problems: refused === wanted ? [] : [`refused: ${refused}`] });
 
+    // A page's actions: its file's, narrowed by the page (setActions), never widened.
+    await page.navigate(`${base}/js/viewer/index.html`);
+    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+    await page.evaluate(`fetch('/e2e/actions.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'actions.jzm')).then(() => true)`);
+    await unlock(page, { file: 'actions.jzm', key: 'template' });
+    const acted = JSON.stringify(await waitFor(page, 'JazminViewer.state.lastReady && JazminViewer.state.lastReady.info', 'the actions page to call jazmin.ready()'));
+    results.push({ browser: name, label: 'page actions: the file refuses PDFs; the page turns Print off and on', ok: acted === JSON.stringify(ACTIONS_READY), problems: acted === JSON.stringify(ACTIONS_READY) ? [] : [acted] });
+
     // The browser writer: a file sent back with the submission key, with two attachments (a File of three blocks and a
     // string), written in the page, read back here and by the library.
     await page.navigate(`${base}/js/viewer/index.html`);
@@ -425,6 +473,15 @@ for (const name of chosen) {
     await page.navigate(fromDisk ? pathToFileURL(saved).href : `${base}/e2e/${path.basename(saved)}`);
     const shown = await unlock(page, c);
     results.push({ browser: name, ...check(c, shown, `saved as HTML (${Math.round(html.length / 1024)} KB), opened ${fromDisk ? 'from disk' : 'on its own over HTTP'} with bob's key`) });
+
+    // The same copy made by the library (portableHtml), without a browser.
+    const portable = portableHtml(path.join(fixtures, c.file));
+    const portablePath = path.join(fromDisk ? os.tmpdir() : temp, `jazmin-portable-${name}.html`);
+    fs.writeFileSync(portablePath, portable);
+    await page.navigate(fromDisk ? pathToFileURL(portablePath).href : `${base}/e2e/${path.basename(portablePath)}`);
+    const shownPortable = await unlock(page, c);
+    results.push({ browser: name, ...check(c, shownPortable, `portableHtml (${Math.round(portable.length / 1024)} KB), opened ${fromDisk ? 'from disk' : 'on its own over HTTP'} with bob's key`) });
+    fs.rmSync(portablePath, { force: true });
     fs.rmSync(saved, { force: true });
     if (page.problems.length) results.push({ browser: name, label: 'page errors', ok: false, problems: page.problems });
   } catch (error) {

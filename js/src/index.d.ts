@@ -85,6 +85,38 @@ export interface FileInput {
   type?: string;
   /** Groups that may see the file: '*' (default: everyone with a key) or partition / named file-group names. */
   groups?: '*' | string[];
+  /** What viewers may do with the file (format 1.4): each allowed when left out. */
+  actions?: FileActions;
+}
+
+/**
+ * What viewers may do with an embedded file (spec 6.8). These steer viewers (the JAZMIN viewer, editor extensions): a
+ * key that sees a file can always read it with the library.
+ */
+export interface FileActions {
+  /** Show the file in a viewer. */
+  open?: boolean;
+  /** Save (download) the file as it is. */
+  save?: boolean;
+  /** Print the page. */
+  print?: boolean;
+  /** Save the page as PDF: true, false, or the page settings for its PDFs (which allow it). */
+  pdf?: boolean | PdfSettings;
+  /** Save the page as an image. */
+  image?: boolean;
+}
+
+/** Page settings for a document's PDFs, each optional; checked when written. */
+export interface PdfSettings {
+  format?: 'A0' | 'A1' | 'A2' | 'A3' | 'A4' | 'A5' | 'A6' | 'Letter' | 'Legal' | 'Tabloid' | 'Ledger';
+  landscape?: boolean;
+  /** Lengths such as '12mm', '1cm', '0.5in' or '20px'. */
+  margin?: { top?: string; right?: string; bottom?: string; left?: string };
+  /** 0.1 to 2. */
+  scale?: number;
+  printBackground?: boolean;
+  /** The page's CSS @page size wins over format. */
+  preferCSSPageSize?: boolean;
 }
 
 export interface FileInfo {
@@ -94,6 +126,8 @@ export interface FileInfo {
   sha256: string;
   /** Present for the owner and for single-key files. */
   groups?: string[];
+  /** What viewers may do with the file, when its writer set it. */
+  actions?: FileActions;
 }
 
 /** Settings for viewers that render a file's embedded website. */
@@ -103,6 +137,8 @@ export interface PackageSettings {
   /** https origins the rendered page may contact. */
   allowedOrigins?: string[];
   allowWasm?: boolean;
+  /** The document's page settings for PDFs (format 1.4). */
+  pdf?: PdfSettings;
 }
 
 /** Where readers keep each expiring key's last-seen time (to detect a clock being set back). */
@@ -721,7 +757,12 @@ export interface RenderPdfOptions {
   entry?: string;
   /** A Puppeteer or Playwright Browser (Chromium), or a Playwright BrowserContext. */
   browser: unknown;
-  /** The browser's PDF options (default A4, with backgrounds). */
+  /** The document sees only these rows (jazmin.filter): one PDF per account, say. */
+  filter?: Filter;
+  /**
+   * The browser's PDF options, over the page settings: the package's (package.pdf), the page's file's (actions.pdf),
+   * and the page's own (jazmin.setActions). Default A4, with backgrounds.
+   */
   pdf?: Record<string, unknown>;
   /** Render when the document calls jazmin.ready() (default), or when it has loaded. */
   waitFor?: 'ready' | 'load';
@@ -734,7 +775,23 @@ export interface RenderPdfOptions {
 }
 
 /**
- * Renders a file's document to PDF with the viewer's window.jazmin API, answered from the file: one template serves
- * the viewer and PDFs. Only the package's files and allowed origins are reachable.
+ * Renders a file's document to PDF with the viewer's window.jazmin API (jazmin.mode 'print'), answered from the file:
+ * one template serves the viewer and PDFs. Only the package's files and allowed origins are reachable.
  */
 export function renderPdf(options: RenderPdfOptions): Promise<Buffer>;
+
+export interface RenderImageOptions extends Omit<RenderPdfOptions, 'pdf'> {
+  /** CSS pixels (default 1200 x 800). */
+  viewport?: { width: number; height: number };
+  /** The browser's screenshot options (default PNG, the whole page). */
+  image?: Record<string, unknown>;
+}
+
+/** Renders a file's document to an image (PNG by default), as renderPdf renders it to PDF. */
+export function renderImage(options: RenderImageOptions): Promise<Buffer>;
+
+/**
+ * The web viewer as one HTML file with the .jzm inside (still encrypted): opened in a browser, from disk or offline,
+ * it shows the file as the viewer does and asks for its key.
+ */
+export function portableHtml(file: string | Uint8Array, options?: { name?: string }): string;

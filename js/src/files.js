@@ -43,14 +43,16 @@ export function normalizeGroups(groups, filePath) {
 }
 
 /**
- * A file to store: { path, content (Buffer | string) | file (path on disk), type?, groups? }.
- * Returns { path, type, groups, size, sha256, read(offset, length) } without loading files from disk.
+ * A file to store: { path, content (Buffer | string) | file (path on disk), type?, groups?, actions? }.
+ * Returns { path, type, groups, actions?, size, sha256, read(offset, length) } without loading files from disk.
  */
 export function fileSource(entry) {
   if (entry === null || typeof entry !== 'object') throw new JazminValidationError('Each file must be an object { path, content | file }');
   const filePath = validatePath(entry.path);
   const type = entry.type === undefined ? mediaType(filePath) : String(entry.type);
   const groups = normalizeGroups(entry.groups, filePath);
+  const actions = normalizeActions(entry.actions, filePath);
+  const extra = actions ? { actions } : {};
   if ((entry.content === undefined) === (entry.file === undefined)) {
     throw new JazminValidationError(`File '${filePath}': supply exactly one of content or file`);
   }
@@ -61,7 +63,7 @@ export function fileSource(entry) {
     if (!bytes) throw new JazminValidationError(`File '${filePath}': content must be a Buffer, Uint8Array or string`);
     return {
       [FILE_SOURCE]: true,
-      path: filePath, type, groups, size: bytes.length,
+      path: filePath, type, groups, ...extra, size: bytes.length,
       sha256: crypto.createHash('sha256').update(bytes).digest('hex'),
       read: (offset, length) => bytes.subarray(offset, offset + length),
     };
@@ -82,7 +84,7 @@ export function fileSource(entry) {
   }
   return {
     [FILE_SOURCE]: true,
-    path: filePath, type, groups, size, sha256: hash.digest('hex'),
+    path: filePath, type, groups, ...extra, size, sha256: hash.digest('hex'),
     read: (offset, length) => {
       const out = Buffer.alloc(length);
       const handle = fs.openSync(diskPath, 'r');
@@ -120,6 +122,92 @@ export function normalizePackage(settings, paths) {
     });
   }
   if (settings.allowWasm !== undefined) out.allowWasm = settings.allowWasm === true;
+  if (settings.pdf !== undefined) out.pdf = normalizePdf(settings.pdf, 'package.pdf');
+  return out;
+}
+
+const FLAGS = ['open', 'save', 'print', 'image'];
+
+/**
+ * What viewers may do with a file (spec 6.8): { open, save, print, pdf, image }, each true or false (all allowed when
+ * left out); pdf may instead be the page settings for its PDFs. These steer viewers: a key that sees a file can read it
+ * with the library whatever they say.
+ */
+export function normalizeActions(actions, filePath) {
+  if (actions === undefined) return undefined;
+  const where = `File '${filePath}': actions`;
+  if (actions === null || typeof actions !== 'object' || Array.isArray(actions)) throw new JazminValidationError(`${where} must be an object`);
+  const out = {};
+  for (const [name, value] of Object.entries(actions)) {
+    if (FLAGS.includes(name)) {
+      if (typeof value !== 'boolean') throw new JazminValidationError(`${where}.${name} must be true or false`);
+      out[name] = value;
+    } else if (name === 'pdf') {
+      out.pdf = typeof value === 'boolean' ? value : normalizePdf(value, `${where}.pdf`);
+    } else {
+      throw new JazminValidationError(`${where}: unknown action '${name}' (open, save, print, pdf, image)`);
+    }
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** A file's actions as a reader takes them: the ones it knows, of the right types (others are left out). */
+export function readActions(actions) {
+  if (actions === null || typeof actions !== 'object' || Array.isArray(actions)) return undefined;
+  const out = {};
+  for (const name of FLAGS) if (typeof actions[name] === 'boolean') out[name] = actions[name];
+  if (typeof actions.pdf === 'boolean') out.pdf = actions.pdf;
+  else if (actions.pdf !== null && typeof actions.pdf === 'object' && !Array.isArray(actions.pdf)) {
+    try {
+      out.pdf = normalizePdf(actions.pdf, 'actions.pdf');
+    } catch {
+      out.pdf = true; // settings this reader doesn't know: allowed, with its own
+    }
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+const PDF_FORMATS = ['A0', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'Letter', 'Legal', 'Tabloid', 'Ledger'];
+const CSS_LENGTH = /^(?:0|\d+(?:\.\d+)?(?:px|in|cm|mm))$/;
+
+/**
+ * The document's page settings for PDFs (renderPdf, and viewers' exports): { format, landscape, margin: { top, right,
+ * bottom, left }, scale, printBackground }, each optional; checked here, so a file never holds settings a browser
+ * would refuse.
+ */
+export function normalizePdf(pdf, where = 'package.pdf') {
+  if (pdf === null || typeof pdf !== 'object' || Array.isArray(pdf)) throw new JazminValidationError(`${where} must be an object`);
+  const out = {};
+  for (const [name, value] of Object.entries(pdf)) {
+    switch (name) {
+      case 'format':
+        if (!PDF_FORMATS.includes(value)) throw new JazminValidationError(`${where}.format: '${value}' is not one of ${PDF_FORMATS.join(', ')}`);
+        out.format = value;
+        break;
+      case 'landscape':
+      case 'printBackground':
+      case 'preferCSSPageSize':
+        if (typeof value !== 'boolean') throw new JazminValidationError(`${where}.${name} must be true or false`);
+        out[name] = value;
+        break;
+      case 'scale':
+        if (typeof value !== 'number' || !(value >= 0.1 && value <= 2)) throw new JazminValidationError(`${where}.scale must be a number from 0.1 to 2`);
+        out.scale = value;
+        break;
+      case 'margin': {
+        if (value === null || typeof value !== 'object' || Array.isArray(value)) throw new JazminValidationError(`${where}.margin must be an object: { top, right, bottom, left }`);
+        out.margin = {};
+        for (const [side, length] of Object.entries(value)) {
+          if (!['top', 'right', 'bottom', 'left'].includes(side)) throw new JazminValidationError(`${where}.margin: unknown side '${side}'`);
+          if (typeof length !== 'string' || !CSS_LENGTH.test(length)) throw new JazminValidationError(`${where}.margin.${side}: '${length}' must be a length such as 12mm, 1cm, 0.5in or 20px`);
+          out.margin[side] = length;
+        }
+        break;
+      }
+      default:
+        throw new JazminValidationError(`${where}: unknown setting '${name}' (format, landscape, margin, scale, printBackground, preferCSSPageSize)`);
+    }
+  }
   return out;
 }
 

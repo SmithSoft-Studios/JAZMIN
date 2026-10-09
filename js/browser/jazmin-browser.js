@@ -648,6 +648,18 @@
     return columns;
   }
 
+  /**
+   * What viewers may do with a file (spec 6.8): the actions this reader knows, of the right types (as the library's
+   * readActions): open, save, print, image (true or false), pdf (true, false, or the page settings).
+   */
+  function fileActions(actions) {
+    if (actions === null || typeof actions !== 'object' || Array.isArray(actions)) return undefined;
+    const out = {};
+    for (const name of ['open', 'save', 'print', 'image']) if (typeof actions[name] === 'boolean') out[name] = actions[name];
+    if (typeof actions.pdf === 'boolean' || (actions.pdf !== null && typeof actions.pdf === 'object' && !Array.isArray(actions.pdf))) out.pdf = actions.pdf;
+    return Object.keys(out).length ? out : undefined;
+  }
+
   /** A sorted index's directory (spec 8.1): its pages ({ first, count, offset, length, digest }) and null postings. */
   function readIndexDirectory(bytes) {
     const firsts = [];
@@ -2666,7 +2678,9 @@
           }
           const directory = checkFileDirectory(parseJson(fromUtf8.decode(await file.section(dir.section, sectionId, key, { requireDigest })), 'An embedded-file directory', true));
           for (const c of directory.contents) contents.set(c.id, c);
-          for (const f of directory.files) if (!entries.has(f.path)) entries.set(f.path, { path: f.path, type: f.type, content: f.content });
+          for (const f of directory.files) {
+            if (!entries.has(f.path)) entries.set(f.path, { path: f.path, type: f.type, content: f.content, actions: fileActions(f.actions) });
+          }
         }
         for (const e of entries.values()) if (!contents.has(e.content)) throw new JazminFormatError(`Embedded file '${e.path}' refers to missing content`);
       }
@@ -2805,7 +2819,7 @@
         const { entries, contents } = await files();
         return [...entries.values()].map((e) => {
           const c = contents.get(e.content);
-          return { path: e.path, type: e.type, size: c.size, sha256: c.sha256 };
+          return { path: e.path, type: e.type, size: c.size, sha256: c.sha256, ...(e.actions ? { actions: JSON.parse(JSON.stringify(e.actions)) } : {}) };
         }).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
       },
       /** A whole embedded file, checked against its SHA-256. */
@@ -2900,6 +2914,7 @@
       groups = names.includes('*') ? ['*'] : names.sort();
     }
     if (entry.file !== undefined) throw new JazminValidationError(`File '${p}': browsers have no file paths - pass the File or Blob as content`);
+    if (entry.actions !== undefined) throw new JazminValidationError(`File '${p}': file actions are not written in browsers yet`);
     const c = entry.content;
     const bytes = typeof c === 'string' ? utf8.encode(c)
       : c instanceof Uint8Array ? c

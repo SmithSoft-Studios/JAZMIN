@@ -332,7 +332,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             stored = new StoredContent { Id = id, Size = source.Size, Sha256 = source.Sha256, Key = key, Blocks = blocks };
             _contents[source.Sha256] = stored;
         }
-        _fileEntries[source.Path] = new FileEntry(source.Path, source.Type, stored.Id, source.Groups);
+        _fileEntries[source.Path] = new FileEntry(source.Path, source.Type, stored.Id, source.Groups, source.Actions);
     }
 
     /// <summary>Writes the file directories (one per file group in access-controlled files); returns the header member.</summary>
@@ -349,6 +349,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                 {
                     var entry = new JsonObject { ["path"] = e.Path, ["type"] = e.Type, ["content"] = e.Content };
                     if (withGroups) entry["groups"] = new JsonArray((e.Groups ?? [EmbeddedFiles.Everyone]).Select(g => (JsonNode?)g).ToArray());
+                    if (e.Actions is not null) entry["actions"] = e.Actions.DeepClone();
                     return (JsonNode?)entry;
                 }).ToArray()),
                 ["contents"] = new JsonArray(files.Select(e => e.Content).Distinct().Order().Select(id => (JsonNode?)byId[id].ToJson()).ToArray()),

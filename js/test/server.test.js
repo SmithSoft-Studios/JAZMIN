@@ -8,7 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import { after, test } from 'node:test';
-import { JazminKey, createFileHandler, documentPolicy, open, renderPdf, serveFiles, write } from '../src/index.js';
+import { JazminKey, createFileHandler, documentPolicy, open, renderImage, renderPdf, serveFiles, write } from '../src/index.js';
 import { TEMPLATE_READY, writeTemplate } from './template-fixture.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -204,5 +204,70 @@ for (const { name, browser } of drivers) {
     assert.equal(loaded.subarray(0, 5).toString('latin1'), '%PDF-');
     await assert.rejects(renderPdf({ file: plain, key: keys.key, browser, timeout: 1500 }), /did not call jazmin\.ready\(\)/);
     await assert.rejects(renderPdf({ file: path.join(fixtures, 'js-key.jzm'), key: keys.key, browser }), /no document/);
+  });
+
+  test(`${name}: a printed document is told so (jazmin.mode), sees only the filter's rows, and gets the package's page settings`, async () => {
+    const file = path.join(temp, `print-${name.split(' ')[0]}.jzm`);
+    const rows = Array.from({ length: 30 }, (_, i) => ({ account: `A${i % 3}`, amount: `${i}.50` }));
+    write(file, rows, {
+      columns: [{ name: 'account', type: 'string' }, { name: 'amount', type: 'decimal' }],
+      files: [
+        { path: 'index.html', content: '<!doctype html><body><p id="out"></p><script src="app.js"></script></body>' },
+        {
+          path: 'app.js',
+          content: `(async () => {
+            const all = jazmin.rows().map((r) => r.account);
+            const page = (await jazmin.query({ amount: { gte: 20 } }, { orderBy: 'amount' })).map((r) => r.amount);
+            document.getElementById('out').textContent = jazmin.mode;
+            jazmin.ready({ mode: jazmin.mode, filter: jazmin.filter, rowCount: jazmin.rowCount, count: await jazmin.count(), all, page });
+          })();`,
+        },
+      ],
+      package: { entry: 'index.html', pdf: { format: 'Letter', landscape: true } },
+    });
+    let info;
+    const pdf = await renderPdf({ file, browser, filter: { account: 'A1' }, onReady: (i) => { info = i; } });
+    const a1 = rows.filter((r) => r.account === 'A1');
+    assert.deepEqual(info, {
+      mode: 'print', filter: { account: 'A1' }, rowCount: a1.length, count: a1.length, all: a1.map((r) => r.account),
+      page: a1.filter((r) => Number(r.amount) >= 20).map((r) => r.amount),
+    });
+    // The package's page settings: Letter, landscape (792 x 612 points); the caller's override them.
+    const box = (bytes) => bytes.toString('latin1').match(/\/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]/).slice(1).map(Number);
+    assert.deepEqual(box(pdf), [792, 612]);
+    // Page sizes in points, give or take a point or two by driver (browsers round them).
+    const near = (bytes, [w, h]) => {
+      const [bw, bh] = box(bytes);
+      assert.ok(Math.abs(bw - w) <= 1.5 && Math.abs(bh - h) <= 1.5, `${bw} x ${bh}, not ${w} x ${h}`);
+    };
+    near(await renderPdf({ file, browser, pdf: { format: 'A4', landscape: false } }), [595, 842]);
+    await assert.rejects(renderPdf({ file, browser, filter: { nope: 1 } }), /unknown column 'nope'/);
+
+    // The page's file's settings (actions.pdf) over the package's, and the page's own (setActions) over both. A page
+    // being rendered is offered nothing more (jazmin.actions).
+    const pages = path.join(temp, `pages-${name.split(' ')[0]}.jzm`);
+    const script = (code) => `(() => { ${code}; jazmin.ready({ actions: jazmin.actions }); })();`;
+    write(pages, rows, {
+      files: [
+        { path: 'file.html', content: '<!doctype html><body>file<script src="file.js"></script></body>', actions: { pdf: { format: 'A5' } } },
+        { path: 'file.js', content: script('') },
+        { path: 'own.html', content: '<!doctype html><body>own<script src="own.js"></script></body>', actions: { pdf: { format: 'A5' } } },
+        { path: 'own.js', content: script("jazmin.setActions({ pdf: { format: 'A3' } })") },
+        { path: 'bad.html', content: '<!doctype html><body>bad<script src="bad.js"></script></body>' },
+        { path: 'bad.js', content: script("jazmin.setActions({ pdf: { format: 'Z9' } })") },
+      ],
+      package: { entry: 'file.html', pdf: { format: 'Letter', landscape: true } },
+    });
+    let seen;
+    near(await renderPdf({ file: pages, browser, onReady: (i) => { seen = i; } }), [595, 420]); // A5, landscape
+    assert.deepEqual(seen, { actions: { print: false, pdf: false, image: false } });
+    near(await renderPdf({ file: pages, browser, entry: 'own.html' }), [1191, 842]); // A3, landscape
+    near(await renderPdf({ file: pages, browser, entry: 'own.html', pdf: { landscape: false } }), [842, 1191]);
+    await assert.rejects(renderPdf({ file: pages, browser, entry: 'bad.html' }), /The page's jazmin\.setActions pdf\.format: 'Z9'/);
+
+    // An image of it: PNG, the viewport's width.
+    const png = await renderImage({ file, browser, viewport: { width: 640, height: 400 } });
+    assert.deepEqual([...png.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    assert.equal(png.readUInt32BE(16), 640); // IHDR width
   });
 }

@@ -138,6 +138,17 @@ export function fixtureFiles() {
 
 export const FIXTURE_PACKAGE = { entry: 'index.html', title: 'Interop' };
 
+/**
+ * The *-document-key.jzm fixtures: a document whose files say what viewers may do with them (actions), and page
+ * settings for its PDFs (spec 6.8, format 1.4). Mirrored in the .NET InteropTests.
+ */
+export const DOCUMENT_FILES = [
+  { path: 'index.html', content: '<h1>JAZMIN interop document</h1>', actions: { print: false, pdf: { format: 'A5', margin: { top: '12mm' } } } },
+  { path: 'data.csv', content: 'a,b\n1,2\n', actions: { open: false, save: false } },
+  { path: 'logo.svg', content: '<svg xmlns="http://www.w3.org/2000/svg"/>' },
+];
+export const DOCUMENT_PACKAGE = { entry: 'index.html', title: 'Document', pdf: { format: 'Letter', landscape: true, scale: 0.9 } };
+
 /** Access options for *-files-access.jzm: the fixture grants, with Bob also granted the 'template' file group. */
 export function filesAccessFixture(keys) {
   const access = accessFixture(keys);

@@ -671,7 +671,7 @@ public static class JazminFile
         var contents = (state?.Contents ?? []).ToDictionary(c => c.Id);
         return existing.Values.Where(e => !dropped.Contains(e.Path)).Select(e => new FileSource
         {
-            Path = e.Path, Type = e.Type, Groups = e.Groups ?? [EmbeddedFiles.Everyone], Size = contents[e.Content].Size, Sha256 = contents[e.Content].Sha256,
+            Path = e.Path, Type = e.Type, Groups = e.Groups ?? [EmbeddedFiles.Everyone], Actions = e.Actions, Size = contents[e.Content].Size, Sha256 = contents[e.Content].Sha256,
             Read = (offset, length) => reader.ReadFileRange(e.Path, offset, offset + length),
         }).ToList();
     }

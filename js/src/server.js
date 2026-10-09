@@ -3,7 +3,7 @@
 // the viewer gives it, so one template serves both. No dependencies.
 import { Readable } from 'node:stream';
 import { JazminValidationError } from './errors.js';
-import { FILE_BLOCK_SIZE } from './files.js';
+import { FILE_BLOCK_SIZE, normalizePdf } from './files.js';
 import { JazminReader } from './reader.js';
 
 /** The origin a document has when rendered here: requests to it are answered from the file (.invalid never resolves). */
@@ -236,6 +236,8 @@ function installApi(boot) {
     get columns() { return boot.columns; },
     get access() { return boot.access; },
     get rowCount() { return boot.rowCount; },
+    get mode() { return boot.mode; },
+    get filter() { return boot.filter ? JSON.parse(JSON.stringify(boot.filter)) : null; },
     query(filter, options) { return call('query', { filter: filter || null, options: options || {} }).then((list) => list.map(decode)); },
     count(filter) { return call('count', { filter: filter || null }); },
     rows(filter) {
@@ -256,24 +258,34 @@ function installApi(boot) {
       else send(new Uint8Array(content.buffer || content, content.byteOffset || 0, content.byteLength));
     },
     print() {},
+    // Rendering is the printing: nothing more to offer. A page's own page settings (setActions pdf) are used for its PDF.
+    get actions() { return { print: false, pdf: false, image: false }; },
+    setActions(changes) {
+      if (changes === null || typeof changes !== 'object') throw new Error('setActions takes { print, pdf, image }');
+      for (const [name, value] of Object.entries(changes)) {
+        if (!['print', 'pdf', 'image'].includes(name)) throw new Error(`setActions: unknown action '${name}' (print, pdf, image)`);
+        if (typeof value !== 'boolean' && (value === null || typeof value !== 'object')) throw new Error(`setActions: ${name} is true, false or settings`);
+        if (name === 'pdf') window[Symbol.for('jazmin.pagePdf')] = typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : null;
+      }
+    },
+    savePdf() { throw new Error('This page cannot be saved as PDF here'); },
     navigate(path) { location.href = new URL(path, `${boot.origin}/`).href; },
     get online() { return boot.allowedOrigins.length > 0; },
     ready(info) { window.__jazminReady(JSON.stringify(info || {})); },
   };
 }
 
+/** A filter, and the filter it is limited to (renderPdf's `filter`): both must match. */
+const within = (scope, filter) => (scope ? (filter ? { and: [scope, filter] } : scope) : filter ?? null);
+
 /**
- * Renders a file's document (its package's entry page, or `entry`) to PDF in a browser you supply: a Puppeteer or
- * Playwright Browser (Chromium). The page gets the viewer's window.jazmin API, answered from the file here; only the
- * package's files and its allowed origins are reachable (everything else is refused), and it runs in a context of its
- * own, closed afterwards. Resolves when the document calls jazmin.ready() (or, with waitFor: 'load', when it has
- * loaded), with the PDF as a Buffer.
- *   options: { file (a path, a Buffer or a JazminReader), key, password, unlockToken, table, entry, browser,
- *              pdf (the browser's PDF options; default A4 with backgrounds), waitFor ('ready' | 'load'), timeout (ms),
- *              onReady(info), onDownload({ filename, type, bytes }) }
+ * Opens a file's document in a browser you supply and hands the loaded page to `capture(tab, pdf)`, which makes the
+ * output (a PDF, an image); pdf is the page settings for the page shown (package, file, page's own, in that order). The page gets the viewer's window.jazmin API (mode 'print'), answered from the file
+ * here, limited to `filter` when one is given; only the package's files and its allowed origins are reachable
+ * (everything else is refused), and it runs in a context of its own, closed afterwards.
  */
-export async function renderPdf({ file, key, password, unlockToken, table, entry, browser, pdf = {}, waitFor = 'ready', timeout = 30000, onReady, onDownload } = {}) {
-  if (!browser || typeof browser.newPage !== 'function') throw new JazminValidationError('renderPdf needs a Puppeteer or Playwright browser');
+async function renderDocument({ file, key, password, unlockToken, table, entry, browser, filter = null, viewport, waitFor = 'ready', timeout = 30000, onReady, onDownload } = {}, what, capture) {
+  if (!browser || typeof browser.newPage !== 'function') throw new JazminValidationError(`${what} needs a Puppeteer or Playwright browser`);
   const own = !(file instanceof JazminReader);
   const reader = own ? new JazminReader(file, { key, password, unlockToken, table }) : file;
   let context = null;
@@ -288,13 +300,17 @@ export async function renderPdf({ file, key, password, unlockToken, table, entry
     const allowed = new Set(settings.allowedOrigins ?? []);
     const types = new Map(reader.columns.map((c) => [c.name, c.type]));
     const encode = (row) => Object.fromEntries(Object.entries(row).map(([n, v]) => [n, encodeValue(types.get(n), v)]));
+    const scope = filter ?? null;
+    const rowCount = scope ? reader.count(scope) : reader.rowCount; // checks the filter, before the browser starts
     const boot = {
       origin: ORIGIN,
+      mode: 'print',
+      filter: scope,
       metadata: reader.metadata ?? null,
       columns: reader.columns,
       access: reader.access ? { isOwner: false, online: reader.access.online ?? false, expires: reader.access.expires ?? null } : null,
-      rowCount: reader.rowCount,
-      rows: reader.rowCount <= TEMPLATE_ROWS ? [...reader.find(null)].map(encode) : null,
+      rowCount,
+      rows: rowCount <= TEMPLATE_ROWS ? [...reader.find(scope)].map(encode) : null,
       paths: reader.files.map((f) => f.path),
       allowedOrigins: [...allowed],
     };
@@ -306,6 +322,7 @@ export async function renderPdf({ file, key, password, unlockToken, table, entry
     context = makeContext ? await makeContext.call(browser) : null;
     tab = await (context ?? browser).newPage();
     const playwright = typeof tab.addInitScript === 'function'; // Puppeteer pages have evaluateOnNewDocument
+    if (viewport) await (playwright ? tab.setViewportSize(viewport) : tab.setViewport(viewport));
     let ready;
     const done = new Promise((resolve) => { ready = resolve; });
     await tab.exposeFunction('__jazminReady', (text) => ready(JSON.parse(text)));
@@ -313,8 +330,8 @@ export async function renderPdf({ file, key, password, unlockToken, table, entry
       const { type, payload } = JSON.parse(text);
       try {
         let result;
-        if (type === 'query') result = templateQuery(reader, payload.filter, payload.options).map(encode);
-        else if (type === 'count') result = reader.count(payload.filter);
+        if (type === 'query') result = templateQuery(reader, within(scope, payload.filter), payload.options).map(encode);
+        else if (type === 'count') result = reader.count(within(scope, payload.filter) ?? undefined);
         else if (type === 'file') {
           const info = reader.files.find((f) => f.path === payload.path);
           result = { type: info?.type ?? '', bytes: reader.readFile(payload.path).toString('base64') };
@@ -369,10 +386,47 @@ export async function renderPdf({ file, key, password, unlockToken, table, entry
     } finally {
       clearTimeout(timer);
     }
-    return Buffer.from(await tab.pdf({ format: 'A4', printBackground: true, ...pdf }));
+    // The page settings of the page shown now: the package's, its file's (actions.pdf), the page's own (setActions).
+    const shown = decodeURIComponent(new URL(tab.url()).pathname.slice(1));
+    const fileActions = reader.files.find((f) => f.path === shown)?.actions ?? {};
+    const fromPage = await tab.evaluate(() => window[Symbol.for('jazmin.pagePdf')] ?? null);
+    const pdf = {
+      ...(settings.pdf ?? {}),
+      ...(typeof fileActions.pdf === 'object' ? fileActions.pdf : {}),
+      ...(fromPage === null ? {} : normalizePdf(fromPage, 'The page\'s jazmin.setActions pdf')),
+    };
+    return Buffer.from(await capture(tab, pdf));
   } finally {
     if (context) await context.close();
     else await tab?.close();
     if (own) reader.close();
   }
+}
+
+/**
+ * Renders a file's document (its package's entry page, or `entry`) to PDF in a browser you supply: a Puppeteer or
+ * Playwright Browser (Chromium). The page gets the viewer's window.jazmin API with jazmin.mode 'print', answered from
+ * the file here; only the package's files and its allowed origins are reachable (everything else is refused), and it
+ * runs in a context of its own, closed afterwards. Resolves when the document calls jazmin.ready() (or, with
+ * waitFor: 'load', when it has loaded), with the PDF as a Buffer.
+ *   options: { file (a path, a Buffer or a JazminReader), key, password, unlockToken, table, entry, browser,
+ *              filter (the document sees only these rows: jazmin.filter), pdf (the browser's PDF options), waitFor
+ *              ('ready' | 'load'), timeout (ms), onReady(info), onDownload({ filename, type, bytes }) }
+ * Page settings, each over the ones before: A4 with backgrounds; the package's (package.pdf); the page's file's
+ * (actions.pdf); the page's own (jazmin.setActions({ pdf })); options.pdf. A file's actions steer viewers: renderPdf
+ * renders a page whose file says pdf: false (the caller has the key, and decides).
+ */
+export function renderPdf(options = {}) {
+  return renderDocument(options, 'renderPdf', (tab, pdf) => tab.pdf({ format: 'A4', printBackground: true, ...pdf, ...(options.pdf ?? {}) }));
+}
+
+/**
+ * Renders a file's document to an image (PNG by default), as renderPdf renders it to PDF: the whole page, at
+ * `viewport` ({ width, height }; default 1200 x 800 CSS pixels).
+ *   options: renderPdf's, without pdf; plus viewport, and image (the browser's screenshot options: type 'png' or
+ *            'jpeg', quality, fullPage (default true), scale).
+ */
+export function renderImage(options = {}) {
+  const { image = {}, viewport = { width: 1200, height: 800 } } = options;
+  return renderDocument({ ...options, viewport }, 'renderImage', (tab) => tab.screenshot({ type: 'png', fullPage: true, ...image }));
 }

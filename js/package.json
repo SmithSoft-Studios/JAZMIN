@@ -35,7 +35,11 @@
   "files": [
     "src",
     "browser",
-    "bin"
+    "bin",
+    "viewer/index.html",
+    "viewer/viewer.js",
+    "viewer/viewer.css",
+    "viewer/sandbox.js"
   ],
   "engines": {
     "node": ">=22"

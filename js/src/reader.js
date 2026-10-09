@@ -18,7 +18,7 @@ import {
 } from './constants.js';
 import { JazminFormatError, JazminKeyError, JazminValidationError } from './errors.js';
 import { enforceExpiry, toMs } from './expiry.js';
-import { EVERYONE } from './files.js';
+import { EVERYONE, readActions } from './files.js';
 import { answeredExactly, evaluate, filterReads, indexPlan, mayMatch, mustMatch, normalizeFilter } from './filter.js';
 import { CompositeIndex, LazyTrigramIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
 import { JazminAccessKey, JazminKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
@@ -1348,7 +1348,8 @@ export class JazminReader {
           if (known) {
             if (known.groups && groups) known.groups = [...new Set([...known.groups, ...groups])].sort();
           } else {
-            index.entries.set(f.path, { path: f.path, type: f.type, content: f.content, ...(groups ? { groups } : {}) });
+            const actions = readActions(f.actions);
+            index.entries.set(f.path, { path: f.path, type: f.type, content: f.content, ...(groups ? { groups } : {}), ...(actions ? { actions } : {}) });
           }
         }
       }
@@ -1361,12 +1362,18 @@ export class JazminReader {
     return index;
   }
 
-  /** Embedded files this key can see: [{ path, type, size, sha256, groups? }] (groups for the owner / single-key files). */
+  /**
+   * Embedded files this key can see: [{ path, type, size, sha256, groups?, actions? }] (groups for the owner / single-key
+   * files; actions, what viewers may do with the file, when its writer set them).
+   */
   get files() {
     const { entries, contents } = this.#files();
     return [...entries.values()].map((e) => {
       const c = contents.get(e.content);
-      return { path: e.path, type: e.type, size: c.size, sha256: c.sha256, ...(e.groups ? { groups: [...e.groups] } : {}) };
+      return {
+        path: e.path, type: e.type, size: c.size, sha256: c.sha256, ...(e.groups ? { groups: [...e.groups] } : {}),
+        ...(e.actions ? { actions: structuredClone(e.actions) } : {}),
+      };
     });
   }
 

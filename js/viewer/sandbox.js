@@ -64,6 +64,7 @@ globalThis.JazminSandbox = function () {
     doc.head.prepend(policy);
 
     jazmin.page = path;
+    pageActions = {}; // a page starts from its file's settings
     document.open();
     document.write('<!doctype html>' + doc.documentElement.outerHTML);
     document.close();
@@ -76,7 +77,7 @@ globalThis.JazminSandbox = function () {
       e.preventDefault();
       show(link.getAttribute('data-jazmin-page')).catch(fail);
     });
-    report('jazmin:shown', { page: path, title: doc.title || '', text: (document.body ? document.body.innerText : '').slice(0, 2000) });
+    report('jazmin:shown', { page: path, title: doc.title || '', text: (document.body ? document.body.innerText : '').slice(0, 2000), actions: effective() });
   }
 
   const fail = (error) => report('jazmin:error', { message: String((error && error.message) || error) });
@@ -98,6 +99,36 @@ globalThis.JazminSandbox = function () {
     get columns() { return pkg.columns; },
     get access() { return pkg.access; },
     get rowCount() { return pkg.rowCount; },
+    /** 'view' in a viewer; 'print' when it is rendered as a PDF or an image: show every row, hide the controls. */
+    get mode() { return pkg.mode === 'print' ? 'print' : 'view'; },
+    /**
+     * What the viewer offers for the page shown, { print, pdf, image }: the page's file settings (its actions), what
+     * this viewer can do, and what the page turned on or off (setActions). A page shows its own buttons by these.
+     */
+    get actions() { return effective(); },
+    /**
+     * Turns the viewer's Print, Save as PDF and Save as image for this page off, or back on, while it is shown: { print:
+     * false, pdf: { format, landscape, margin, ... } | true | false, image: true | false } (pdf's settings are page
+     * settings, over the file's). What the page's file refuses stays refused. Another page starts again from its file's.
+     */
+    setActions(changes) {
+      if (changes === null || typeof changes !== 'object') throw new Error('setActions takes { print, pdf, image }');
+      for (const [name, value] of Object.entries(changes)) {
+        if (!ACTIONS.includes(name)) throw new Error(`setActions: unknown action '${name}' (print, pdf, image)`);
+        if (typeof value !== 'boolean' && (value === null || typeof value !== 'object')) throw new Error(`setActions: ${name} is true, false or settings`);
+        pageActions[name] = value;
+      }
+      report('jazmin:actions', { page: jazmin.page, actions: effective(), settings: settingsOf('pdf') });
+    },
+    /** Saves the page as a PDF (settings over the file's and the page's): the viewer renders it, or prints it. */
+    savePdf(settings) {
+      if (!effective().pdf) throw new Error('This page cannot be saved as PDF here');
+      const merged = Object.assign({}, settingsOf('pdf'), settings || {});
+      if (pkg.renders) report('jazmin:savePdf', { page: jazmin.page, settings: merged });
+      else window.print(); // a browser's print dialog saves as PDF: the page's CSS @page sets its size
+    },
+    /** The filter the document's rows are limited to (renderPdf's filter: one account's statement), or null. */
+    get filter() { return pkg.filter ? JSON.parse(JSON.stringify(pkg.filter)) : null; },
     /** A page of rows: options { select, orderBy (a column, '-column' for descending), offset, limit (default 100) }. */
     query(filter, options) { return call('jazmin:query', { filter: filter || null, options: options || {} }).then((r) => r.rows); },
     /** How many rows match. */
@@ -123,7 +154,10 @@ globalThis.JazminSandbox = function () {
       a.remove();
       setTimeout(() => URL.revokeObjectURL(a.href), 60000);
     },
-    print() { window.print(); },
+    print() {
+      if (!effective().print) throw new Error('This page cannot be printed here');
+      window.print();
+    },
     navigate(path) { return show(path); },
     /** True when the package allows network access to some origins. */
     get online() { return pkg.allowedOrigins.length > 0 && navigator.onLine; },
@@ -131,6 +165,24 @@ globalThis.JazminSandbox = function () {
     ready(info) { report('jazmin:ready', { page: jazmin.page, info: info || {} }); },
   };
   window.jazmin = jazmin;
+
+  // Actions on the page shown: its file's settings, the viewer's abilities (pkg.capabilities), the page's own changes.
+  const ACTIONS = ['print', 'pdf', 'image'];
+  let pageActions = {};
+  function effective() {
+    const file = (files.get(jazmin.page) || {}).actions || {};
+    const can = (pkg && pkg.capabilities) || ['print']; // a viewer from before actions: it printed
+    const out = {};
+    // Each allowed when the viewer can, the file allows it and the page hasn't turned it off.
+    for (const name of ACTIONS) out[name] = can.includes(name) && file[name] !== false && pageActions[name] !== false;
+    return out;
+  }
+  /** The page settings for an action: its file's, then the page's own. */
+  function settingsOf(name) {
+    const file = (files.get(jazmin.page) || {}).actions || {};
+    const pick = (v) => (v && typeof v === 'object' ? v : {});
+    return Object.assign({}, pick(file[name]), pick(pageActions[name]));
+  }
 
   function onMessage(e) {
     if (e.source !== parent || !e.data) return;

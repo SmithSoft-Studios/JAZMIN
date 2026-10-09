@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, compact, createFileHandler, exportFile, fromCSV, issueUnlockToken, open, openAsync,
-  rotateKey, toJSON, toXML, write, writeAsync,
+  portableHtml, rotateKey, toJSON, toXML, write, writeAsync,
 } from '../src/index.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-examples-'));
@@ -210,5 +210,20 @@ console.log('   ', toJSON(companies, { filter: { departments: { isNull: true } }
 // any / all on a list's items, match on an object's fields (USER-GUIDE 8.1): a department with Ben on its staff.
 console.log('   ', [...companies.find({ departments: { any: { staff: { any: 'Ben' } } } })].map((r) => r.name)); // ['Acme']
 companies.close();
+
+// 16. A print-ready document (USER-GUIDE 19.3): what viewers may do with each file, and page settings for its PDFs,
+// which renderPdf uses (USER-GUIDE 19.4). portableHtml makes the viewer's one-file copy, without a browser.
+const statementFile = path.join(dir, 'statement.jzm');
+write(statementFile, [{ account: 'A1', amount: '12.50' }], {
+  files: [
+    { path: 'index.html', content: '<h1>Statement</h1>', actions: { pdf: { format: 'A4', margin: { top: '15mm' } } } },
+    { path: 'data.csv', content: 'account,amount\nA1,12.50\n', actions: { open: false, save: false } }, // the page reads it; viewers don't offer it
+  ],
+  package: { entry: 'index.html', title: 'Statement', pdf: { format: 'A4', landscape: false } },
+});
+const statement = open(statementFile);
+console.log('16.', statement.files.map((f) => `${f.path} ${JSON.stringify(f.actions)}`).join('; '));
+statement.close();
+console.log('   ', `portableHtml: ${Math.round(portableHtml(statementFile).length / 1024)} KB, opens offline and asks for the key`);
 
 fs.rmSync(dir, { recursive: true, force: true });

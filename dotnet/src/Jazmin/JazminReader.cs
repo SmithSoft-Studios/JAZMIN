@@ -1012,7 +1012,12 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                     var path = (string)f!["path"]!;
                     List<string>? groups = f["groups"] is JsonArray g ? g.Select(x => (string)x!).ToList()
                         : ownerNames is not null && ownerNames.TryGetValue(group, out var name) ? [name] : null;
-                    if (!entries.TryGetValue(path, out var known)) entries[path] = new FileEntry(path, (string)f["type"]!, (int)f["content"]!, groups);
+                    if (!entries.TryGetValue(path, out var known))
+                    {
+                        // Actions as this library knows them (later ones, and wrong types, left out), as update keeps them.
+                        var actions = EmbeddedFiles.ActionsFrom(f["actions"]) is { } a ? EmbeddedFiles.ActionsJson(a, path) : null;
+                        entries[path] = new FileEntry(path, (string)f["type"]!, (int)f["content"]!, groups, actions);
+                    }
                     else if (known.Groups is not null && groups is not null)
                         entries[path] = known with { Groups = known.Groups.Union(groups).Order(StringComparer.Ordinal).ToList() };
                 }
@@ -1033,7 +1038,10 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         get
         {
             var (entries, contents) = FileIndex();
-            return entries.Values.Select(e => new JazminEmbeddedFile(e.Path, e.Type, contents[e.Content].Size, contents[e.Content].Sha256, e.Groups?.ToList())).ToList();
+            return entries.Values.Select(e => new JazminEmbeddedFile(e.Path, e.Type, contents[e.Content].Size, contents[e.Content].Sha256, e.Groups?.ToList())
+            {
+                Actions = EmbeddedFiles.ActionsFrom(e.Actions),
+            }).ToList();
         }
     }
 

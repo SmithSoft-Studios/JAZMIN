@@ -308,6 +308,30 @@ using (var reader = JazminReader.Open(nestedBytes))
     Console.WriteLine($"    {employer} employs Build 7-0");
 }
 
+// --- 18. A print-ready document: what viewers may do with each file, and page settings for PDFs (USER-GUIDE 19.3) --
+var statementBytes = new MemoryStream();
+using (var writer = new JazminWriter(statementBytes, [new JazminColumn("account", JazminType.String)], new JazminWriteOptions
+{
+    Files =
+    [
+        new JazminFileInput("index.html", "<h1>Statement</h1>"u8.ToArray())
+        {
+            Actions = new JazminFileActions { PdfSettings = new JazminPdfSettings { Format = "A4", Margin = new JazminPdfMargin { Top = "15mm" } } },
+        },
+        // The page reads it; viewers don't offer it.
+        new JazminFileInput("data.csv", "account\nA1\n"u8.ToArray()) { Actions = new JazminFileActions { Open = false, Save = false } },
+    ],
+    Package = new JazminPackage { Entry = "index.html", Title = "Statement", Pdf = new JazminPdfSettings { Format = "A4" } },
+}, leaveOpen: true))
+{
+    writer.WriteValues("A1");
+}
+using (var reader = JazminReader.Open(statementBytes.ToArray()))
+{
+    foreach (var f in reader.Files)
+        Console.WriteLine($"18. {f.Path}: save {f.Actions?.Save ?? true}, PDF page {f.Actions?.PdfSettings?.Format ?? reader.Package!.Pdf!.Format}");
+}
+
 Directory.Delete(dir, true);
 
 public readonly record struct Money(long Cents, string Currency);

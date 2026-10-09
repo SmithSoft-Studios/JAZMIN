@@ -608,9 +608,10 @@ text) and `segment` when an append wrote the directories.
   `*`. In access-controlled files there is one per file group, with `group`
   set to the group id (7.6.3).
 - `package` holds the entry path (which MUST be a stored path), a title, the
-  https origins the page may contact, and whether WebAssembly is allowed.
-  Viewers MUST treat stored files as untrusted content and SHOULD derive the
-  page's security policy from these settings only.
+  https origins the page may contact, whether WebAssembly is allowed, and
+  `pdf`, the page settings for the document's PDFs (below). Viewers MUST
+  treat stored files as untrusted content and SHOULD derive the page's
+  security policy from these settings only.
 - Writers MUST NOT reuse a content id within a file, so block section ids
   stay unique across appends.
 
@@ -620,7 +621,8 @@ id>` in access-controlled files, followed by `/<s>` when written by append
 
 ```json
 {
-  "files": [ { "path": "img/logo.png", "type": "image/png", "content": 0, "groups": ["*"] } ],
+  "files": [ { "path": "img/logo.png", "type": "image/png", "content": 0, "groups": ["*"],
+               "actions": { "save": false } } ],
   "contents": [ {
     "id": 0, "size": 3150, "sha256": "<hex>", "blockSize": 262144, "key": "<base64>",
     "blocks": [ { "offset": 0, "length": 0, "digest": "<base64>" } ]
@@ -635,6 +637,22 @@ id>` in access-controlled files, followed by `/<s>` when written by append
 - `groups` (files that are not access-controlled) lists the groups that may
   see the file: `*` for everyone, or group names. Access-controlled
   directories omit it, so a key does not learn the names of other groups.
+- `actions` (optional) says what viewers may do with the file: `open` (show
+  it), `save` (save it as it is), `print` (print the page), `pdf` (save the
+  page as PDF) and `image` (save the page as an image), each `true` or
+  `false`; `pdf` MAY instead be page settings, which allow it. An action
+  left out is allowed. Writers MUST NOT write other actions or other types.
+  Readers MUST ignore actions they do not know and values of the wrong
+  type, and SHOULD take page settings they do not know as `true`. Actions
+  steer viewers: a key that sees a file can read it whatever they say.
+- **Page settings** (`package.pdf`, and `pdf` in `actions`) are a JSON
+  object of optional members: `format` (`A0` to `A6`, `Letter`, `Legal`,
+  `Tabloid` or `Ledger`), `landscape`, `printBackground` and
+  `preferCSSPageSize` (booleans: the last lets the page's CSS `@page` size
+  win), `scale` (0.1 to 2) and `margin` (`top`, `right`, `bottom`, `left`:
+  `0` or a number followed by `px`, `in`, `cm` or `mm`). Writers MUST NOT
+  write other members or values. A page's PDF uses the package's settings,
+  then its file's, each member over the one before.
 - **Stored once:** within one version of a file, writers MUST store identical
   bytes (the same `sha256`) as a single content, however many paths or groups
   refer to it.
@@ -1517,6 +1535,11 @@ indexes, embedded files) written by both reference implementations.
 - **Since format 1.0, a rule writers already kept:** no name twice in one
   object of the JSON texts readers use themselves (2). Readers reject such a
   file; before, one library kept the last value and the other failed.
+- **Since format 1.0, new optional JSON members (6.8):** a file's
+  `actions` in file directories, and the page settings `package.pdf`.
+  Readers that don't know them ignore them, as they do other members; the
+  libraries of releases 1.0 to 1.3 also leave them out when they rewrite a
+  file's directories (append, update, compaction).
 
 ## Appendix C. Design Notes (informative)
 

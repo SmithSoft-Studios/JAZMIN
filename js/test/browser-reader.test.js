@@ -56,7 +56,7 @@ for (const name of files) {
         assert.deepEqual(await browserRows(reader), rowsOf([...expected.rows()]));
         assert.deepEqual(reader.package, expected.package);
         const list = await reader.files();
-        assert.deepEqual(list.map((f) => [f.path, f.size, f.sha256]), expected.files.map((f) => [f.path, f.size, f.sha256]).sort());
+        assert.deepEqual(list.map((f) => [f.path, f.size, f.sha256, f.actions]), expected.files.map((f) => [f.path, f.size, f.sha256, f.actions]).sort());
         for (const f of list) assert.ok(Buffer.from(await reader.readFile(f.path)).equals(expected.readFile(f.path)), f.path);
         if (reader.tables.length > 1) {
           const other = await reader.openTable(reader.tables[1]);

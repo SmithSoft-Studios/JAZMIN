@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { JazminKey, append, open, toJSON, write } from '../src/index.js';
 import { CHUNK_MAP, PAGING } from '../src/writer.js';
 import {
-  APPEND_DELETE, APPEND_SPLIT, COUNTRY_COLUMNS, FIXTURE_PACKAGE, PARTITIONS_SPLIT, accessFixture, countryRows, filesAccessFixture, fixtureFiles,
+  APPEND_DELETE, APPEND_SPLIT, COUNTRY_COLUMNS, DOCUMENT_FILES, DOCUMENT_PACKAGE, FIXTURE_PACKAGE, PARTITIONS_SPLIT, accessFixture, countryRows, filesAccessFixture, fixtureFiles,
   NESTED_COLUMNS, NESTED_FILTERS, NESTED_GROWN_SPLIT, fromCanonical, nestedColumnsBefore, nestedFixtureRows, nestedRowBefore, partitionsFixture, tablesFixture,
 } from '../test/fixture-helpers.js';
 
@@ -77,6 +77,8 @@ const withFiles = { ...base, files: fixtureFiles(), package: FIXTURE_PACKAGE };
 write(path.join(dir, 'js-files-key.jzm'), rows, { ...withFiles, key: keys.key });
 // Written as before the owner chunk map (spec 7.6.5), so readers keep reading such files.
 write(path.join(dir, 'js-files-access.jzm'), rows, { ...withFiles, key: keys.key, access: filesAccessFixture(keys), [CHUNK_MAP]: false });
+// A document: what viewers may do with its files, and its page settings for PDFs (format 1.4).
+write(path.join(dir, 'js-document-key.jzm'), rows, { ...base, key: keys.key, files: DOCUMENT_FILES, package: DOCUMENT_PACKAGE });
 
 // Written by the browser writer (js/browser/jazmin-browser.js), as a page would: without indexes, which browsers don't
 // write. The other library reads them in its interop tests.

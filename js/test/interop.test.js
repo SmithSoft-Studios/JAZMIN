@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { JazminAccessKey, issueUnlockToken, open, toJSON } from '../src/index.js';
 import { APPEND_STATE } from '../src/reader.js';
 import {
-  ACCESS_VIEWS, COUNTRY_COLUMNS, COUNTRY_VIEWS, FILES_VIEWS, FIXTURE_EXPIRY, FIXTURE_PACKAGE, PARTITIONS_SPLIT, PARTITION_VIEWS, appendedLive,
+  ACCESS_VIEWS, COUNTRY_COLUMNS, COUNTRY_VIEWS, DOCUMENT_FILES, DOCUMENT_PACKAGE, FILES_VIEWS, FIXTURE_EXPIRY, FIXTURE_PACKAGE, PARTITIONS_SPLIT, PARTITION_VIEWS, appendedLive,
   NESTED_COLUMNS, NESTED_GROWN_SPLIT, countryRows, fixtureFiles, nestedRowBefore, toCanonical,
 } from './fixture-helpers.js';
 
@@ -72,12 +72,29 @@ for (const writer of ['js', 'dotnet']) {
           assert.deepEqual(reader.files.map((f) => f.path).sort(), paths);
           for (const p of paths) assert.ok(reader.readFile(p).equals(expectedFiles.get(p)), p);
           assert.deepEqual(reader.package, FIXTURE_PACKAGE);
+          assert.ok(reader.files.every((f) => f.actions === undefined)); // written before file actions
         } finally {
           reader.close();
         }
       });
     }
   }
+}
+
+// A document (format 1.4): what viewers may do with its files, and its page settings, from either writer.
+for (const writer of ['js', 'dotnet']) {
+  test(`interop: ${writer}-document-key.jzm has its files' actions and its page settings`, (t) => {
+    const full = path.join(dir, `${writer}-document-key.jzm`);
+    if (!fs.existsSync(full)) return t.skip(`run the ${writer === 'js' ? 'fixture script' : '.NET tests'} to generate it`);
+    const reader = open(full, { key: keys.key });
+    try {
+      assert.deepEqual(reader.files.map((f) => [f.path, f.actions]).sort(), DOCUMENT_FILES.map((f) => [f.path, f.actions]).sort());
+      for (const f of DOCUMENT_FILES) assert.equal(reader.readFile(f.path).toString(), f.content);
+      assert.deepEqual(reader.package, DOCUMENT_PACKAGE);
+    } finally {
+      reader.close();
+    }
+  });
 }
 
 // Embedded files written by the browser writer: the same files; browsers write no package settings.

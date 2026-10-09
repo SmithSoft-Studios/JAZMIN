@@ -190,11 +190,14 @@
       const size = document.createElement('span');
       size.className = 'hint';
       size.textContent = `${f.type}, ${f.size.toLocaleString()} bytes`;
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.textContent = 'Download';
-      button.addEventListener('click', () => save(f.path.split('/').pop(), state.reader.fileBlob(f.path)).catch((e) => status(e.message)));
-      li.append(name, size, button);
+      li.append(name, size);
+      if (f.actions?.save !== false) { // the file's writer may keep viewers from offering it as a download
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = 'Download';
+        button.addEventListener('click', () => save(f.path.split('/').pop(), state.reader.fileBlob(f.path)).catch((e) => status(e.message)));
+        li.append(button);
+      }
       return li;
     }));
   }
@@ -237,7 +240,7 @@
     const settings = reader.package;
     const list = await reader.files();
     const files = [];
-    for (const f of list) files.push({ path: f.path, blob: await reader.fileBlob(f.path) });
+    for (const f of list) files.push({ path: f.path, blob: await reader.fileBlob(f.path), actions: f.actions });
     const rows = [];
     if (reader.rowCount <= ROWS_FOR_TEMPLATES) for await (const row of reader.find(null)) rows.push(row);
     frameReader = reader;
@@ -246,6 +249,8 @@
       type: 'jazmin:package', entry: settings.entry, files, policy: policy(settings), allowedOrigins: settings.allowedOrigins || [],
       metadata: reader.metadata, columns: reader.columns, access: reader.access, rowCount: reader.rowCount,
       rows: reader.rowCount <= ROWS_FOR_TEMPLATES ? rows : null,
+      // Pages print with the browser's dialog, which also saves them as PDF.
+      capabilities: ['print', 'pdf'], renders: false,
     };
     const csp = policy(settings).replace(/"/g, '&quot;');
     frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"></head>`
@@ -264,7 +269,7 @@
       frame.contentWindow.postMessage(pendingPackage, '*');
       pendingPackage = null;
     } else if (m.type === 'jazmin:shown') {
-      state.lastShown = { page: m.page, title: m.title, text: m.text };
+      state.lastShown = { page: m.page, title: m.title, text: m.text, actions: m.actions };
       if (m.title) document.title = `${m.title} - JAZMIN viewer`;
     } else if (m.type === 'jazmin:ready') {
       state.lastReady = m;

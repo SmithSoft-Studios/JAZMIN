@@ -2308,16 +2308,16 @@ import { append, open, write } from '@smithsoft-studios/jazmin';
 write('statements.jzm', rows, {
   key: owner,
   files: [
-    { path: 'index.html', content: html },
+    { path: 'index.html', content: html, actions: { pdf: { format: 'A4', margin: { top: '15mm' } } } },
     { path: 'docs/terms.pdf', file: './terms.pdf', groups: ['A', 'B', 'C', 'D'] },
-    { path: 'img/logoD.png', file: './logoD.png', groups: ['D'] },
+    { path: 'img/logoD.png', file: './logoD.png', groups: ['D'], actions: { save: false } },
   ],
-  package: { entry: 'index.html', title: 'Statement' },        // settings for viewers
+  package: { entry: 'index.html', title: 'Statement', pdf: { format: 'A4' } },   // settings for viewers
   access: { partitionBy: 'client', grants: [{ key: clientD, rows: ['D'] }, { key: designer, rows: [], files: ['template'] }] },
 });
 
 const r = open('statements.jzm', { key: clientDText });
-r.files;                                   // [{ path, type, size, sha256 }] this key can see
+r.files;                                   // [{ path, type, size, sha256, actions? }] this key can see
 r.readFile('img/logoD.png');               // Buffer (checked against its SHA-256)
 r.readFileRange('docs/terms.pdf', 0, 1024);
 r.openFile('docs/terms.pdf').pipe(res);    // a stream, block by block
@@ -2333,15 +2333,18 @@ using var writer = JazminWriter.Create("statements.jzm", columns, new JazminWrit
     Key = owner,
     Files =
     [
-        new JazminFileInput("index.html", htmlBytes),
+        new JazminFileInput("index.html", htmlBytes)
+        {
+            Actions = new JazminFileActions { PdfSettings = new JazminPdfSettings { Format = "A4", Margin = new JazminPdfMargin { Top = "15mm" } } },
+        },
         JazminFileInput.FromFile("docs/terms.pdf", "terms.pdf", groups: ["A", "B", "C", "D"]),
-        new JazminFileInput("img/logoD.png", logoD) { Groups = ["D"] },
+        new JazminFileInput("img/logoD.png", logoD) { Groups = ["D"], Actions = new JazminFileActions { Save = false } },
     ],
-    Package = new JazminPackage { Entry = "index.html", Title = "Statement" },
+    Package = new JazminPackage { Entry = "index.html", Title = "Statement", Pdf = new JazminPdfSettings { Format = "A4" } },
 });
 
 using var reader = JazminReader.Open("statements.jzm", new JazminReadOptions { AccessKey = clientD });
-foreach (var f in reader.Files) Console.WriteLine($"{f.Path} {f.Size}");
+foreach (var f in reader.Files) Console.WriteLine($"{f.Path} {f.Size} {f.Actions?.Save}");
 byte[] logo = reader.ReadFile("img/logoD.png");
 using Stream pdf = reader.OpenFile("docs/terms.pdf");   // seekable, decodes one block at a time
 
@@ -2360,6 +2363,28 @@ JazminFile.Append("statements.jzm", new JazminAppend { Key = owner, AddFiles = [
   `js/poc/self-contained-html` and its findings.
 - **Already-compressed files** (JPEG, PNG, MP4, PDF) are stored as they are.
   Compressing them would not help.
+- **What viewers may do with each file** (`actions`, format 1.4), set when
+  the file is added. Each is allowed when left out:
+
+| Action | Viewers offer | Example: `false` for |
+|---|---|---|
+| `open` | showing the file | a data file only the document reads |
+| `save` | saving (downloading) the file as it is | a logo, a script |
+| `print` | printing the page | an on-screen dashboard |
+| `pdf` | saving the page as PDF; page settings instead of `true` set its page | a page that isn't print-ready |
+| `image` | saving the page as an image | a long statement |
+
+  - **They steer viewers, they don't lock the file.** Someone with a key that
+    sees a file can always read it with the library. To keep a file from a
+    key, use groups (above).
+  - **Page settings** (`package.pdf` for the document, `actions.pdf` for one
+    page): `format` (`A0`-`A6`, `Letter`, `Legal`, `Tabloid`, `Ledger`),
+    `landscape`, `margin` (`{ top, right, bottom, left }`, such as `'12mm'`,
+    `'0.5in'`), `scale` (0.1-2), `printBackground`, and `preferCSSPageSize`
+    (the page's CSS `@page` size wins). A writer refuses anything else, so a
+    file never holds settings a browser would reject.
+  - **Older libraries** (1.0-1.3) read these files and ignore both settings,
+    but drop them when they append to or update the file.
 
 ### 19.4 On a server: serving files and rendering PDFs
 
@@ -2419,6 +2444,29 @@ await browser.close();
 - **Downloads** the document makes (`jazmin.download`) come to
   `onDownload({ filename, type, bytes })`; what it passes to `jazmin.ready()`
   comes to `onReady(info)`.
+- **Print mode:** the document sees `jazmin.mode === 'print'` (`'view'` in a
+  viewer), so it can show every row and hide its buttons and filters.
+- **One PDF per account from one file:** `filter` limits the rows the
+  document sees (and tells it, as `jazmin.filter`):
+
+```js
+for (const account of ['A1', 'A2', 'A3']) {
+  const pdf = await renderPdf({ file: 'statements.jzm', key, browser, filter: { account } });
+  fs.writeFileSync(`out/${account}.pdf`, pdf);
+}
+```
+
+- **Page settings,** each over the ones before: A4 with backgrounds; the
+  package's (`package.pdf`); the page's file's (`actions.pdf`); what the
+  page set with `jazmin.setActions({ pdf })`; and `pdf` here. `renderPdf`
+  renders a page whose file says `pdf: false`: you hold the key, and decide.
+- **An image instead:** `renderImage({ file, key, browser, viewport: { width:
+  1200, height: 800 } })` gives a PNG of the whole page (`image: { type:
+  'jpeg', quality: 80 }` for JPEG).
+- **The document as one HTML file**, without a browser:
+  `portableHtml('statement.jzm')` gives the viewer's "Save as HTML" page
+  (section 24): the viewer with the `.jzm` inside, still encrypted, which
+  asks for the key when opened.
 - **Measured** with the test template (120 rows, 4 queries, an image, a file):
   about 0.3-0.5 s per PDF in Chrome, browser already running.
 
@@ -3345,6 +3393,29 @@ jazmin.print(); jazmin.navigate('about.html'); jazmin.ready({ rows: page.length 
 
 Queries run in the viewer, which holds the reader and the key. Only the
 requested page of rows crosses into the sandbox.
+
+**Print-ready documents.** A page learns how it is shown, and what it may
+offer, so one template works on screen and on paper:
+
+```js
+if (jazmin.mode === 'print') document.body.classList.add('print');   // 'view' in a viewer, 'print' in renderPdf
+jazmin.filter;                                    // the rows a PDF was limited to, or null
+jazmin.actions;                                   // { print, pdf, image }: what the viewer offers for this page
+printButton.hidden = !jazmin.actions.print;       // show your own buttons by it
+jazmin.setActions({ pdf: { landscape: true } });  // this page, while it is shown: off, back on, or page settings
+pdfButton.onclick = () => jazmin.savePdf({ format: 'A5' });
+```
+
+- **`jazmin.actions`** combines the page's file settings (`actions`, section
+  19.3), what the viewer can do, and the page's own `setActions`. The web
+  viewer prints with the browser's dialog, which also saves as PDF;
+  `renderPdf` offers nothing more (it is already printing).
+- **`setActions`** turns actions off (or back on) and gives page settings.
+  It can't allow what the page's file refuses. It lasts until another page
+  is shown; that page starts from its own file's settings.
+- **`print()` and `savePdf()`** throw when the action isn't allowed. In the
+  web viewer `savePdf` opens the print dialog (the page's CSS `@page` sets
+  the paper); viewers that render PDFs themselves use the page settings.
 
 - Use relative paths (`img/logo.svg`, `about.html`), plain scripts rather
   than modules, and `window.jazmin` rather than `fetch()`.

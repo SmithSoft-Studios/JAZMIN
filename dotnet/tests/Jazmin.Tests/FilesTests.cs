@@ -191,6 +191,59 @@ public class FilesTests
     }
 
     [Fact]
+    public void FileActions_AreChecked_WhenWritten_AndKept_ByAppendUpdateAndCompact()
+    {
+        var path = Path.Combine(Directory.CreateTempSubdirectory("jazmin-files-").FullName, "f.jzm");
+        var key = JazminKey.Generate();
+        var pdf = new JazminPdfSettings { Format = "A5", Landscape = true, Margin = new JazminPdfMargin { Top = "1cm" }, PreferCssPageSize = true };
+        var statement = new JazminFileActions { PdfSettings = pdf, Image = false };
+        var data = new JazminFileActions { Open = false, Save = false };
+        File.WriteAllBytes(path, Write(new JazminWriteOptions
+        {
+            Key = key,
+            Files =
+            [
+                new JazminFileInput("index.html", Encoding.UTF8.GetBytes("<p>statement</p>")) { Actions = statement },
+                new JazminFileInput("data.csv", Encoding.UTF8.GetBytes("a,b")) { Actions = data },
+                new JazminFileInput("plain.txt", Encoding.UTF8.GetBytes("p")),
+            ],
+            Package = new JazminPackage { Entry = "index.html", Pdf = new JazminPdfSettings { Format = "Letter", Scale = 0.9, PrintBackground = false } },
+        }));
+        Dictionary<string, JazminFileActions?> ActionsOf()
+        {
+            using var r = JazminReader.Open(path, new JazminReadOptions { Key = key });
+            return r.Files.ToDictionary(f => f.Path, f => f.Actions);
+        }
+        Assert.Equal(new Dictionary<string, JazminFileActions?> { ["index.html"] = statement, ["data.csv"] = data, ["plain.txt"] = null }, ActionsOf());
+        using (var r = JazminReader.Open(path, new JazminReadOptions { Key = key }))
+            Assert.Equal(new JazminPdfSettings { Format = "Letter", Scale = 0.9, PrintBackground = false }, r.Package!.Pdf);
+
+        JazminFile.Append(path, new JazminAppend { Key = key, AddFiles = [new JazminFileInput("more.txt", [1]) { Actions = new JazminFileActions { Print = false } }] });
+        JazminFile.Update(path, new JazminUpdate { Key = key, RemoveFiles = ["plain.txt"] });
+        JazminFile.Compact(path, key);
+        Assert.Equal(new Dictionary<string, JazminFileActions?> { ["index.html"] = statement, ["data.csv"] = data, ["more.txt"] = new JazminFileActions { Print = false } }, ActionsOf());
+        using (var r = JazminReader.Open(path, new JazminReadOptions { Key = key }))
+            Assert.Equal("Letter", r.Package!.Pdf!.Format);
+
+        byte[] With(JazminFileActions actions) => Write(new JazminWriteOptions { Files = [new JazminFileInput("a.html", [1]) { Actions = actions }] });
+        JazminFileActions? Stored(JazminFileActions actions)
+        {
+            using var r = JazminReader.Open(With(actions), new JazminReadOptions());
+            return r.Files[0].Actions;
+        }
+        Assert.Null(Stored(new JazminFileActions()));
+        Assert.Equal(new JazminFileActions { Pdf = false, Print = true }, Stored(new JazminFileActions { Pdf = false, Print = true }));
+        Assert.Contains("actions.pdf.format: 'B5' is not one of", Assert.Throws<JazminValidationException>(() => With(new JazminFileActions { PdfSettings = new JazminPdfSettings { Format = "B5" } })).Message);
+        Assert.Contains("a length such as 12mm", Assert.Throws<JazminValidationException>(() => With(new JazminFileActions { PdfSettings = new JazminPdfSettings { Margin = new JazminPdfMargin { Left = "12" } } })).Message);
+        Assert.Contains("Pdf is false but PdfSettings", Assert.Throws<JazminValidationException>(() => With(new JazminFileActions { Pdf = false, PdfSettings = new JazminPdfSettings() })).Message);
+        Assert.Contains("package.pdf.scale", Assert.Throws<JazminValidationException>(() => Write(new JazminWriteOptions
+        {
+            Files = [new JazminFileInput("a.html", [1])],
+            Package = new JazminPackage { Pdf = new JazminPdfSettings { Scale = 3 } },
+        })).Message);
+    }
+
+    [Fact]
     public void UpdateAndCompact_KeepFilesAndTheirGroups()
     {
         var s = AccessFile();

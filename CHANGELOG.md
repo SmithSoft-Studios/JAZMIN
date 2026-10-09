@@ -61,6 +61,20 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     a given id 25 -> 13 ms, 23 -> 6 MB allocated; the same companies returned whole 167 -> 91 ms, 143 -> 99 MB.
     Queries need no settings for this or for reading only the fields they use: the file says which columns are
     nested.
+- **Print-ready documents** (USER-GUIDE 19.3, 19.4, 24.1):
+  - **What viewers may do with each embedded file:** `actions: { open, save, print, pdf, image }`, set when the
+    file is added (JS `files` / `addFiles`; .NET `JazminFileInput.Actions`), read back from `files` /
+    `Files[i].Actions`, and kept by append, update and compaction. Each is allowed when left out. They steer
+    viewers; they don't lock the file. The viewer hides Download for files with `save: false`.
+  - **Page settings for PDFs:** `package.pdf` for the document and `actions.pdf` for one page (`format`,
+    `landscape`, `margin`, `scale`, `printBackground`, `preferCSSPageSize`), checked when written. New optional
+    JSON members (spec 6.8): releases 1.0-1.3 read such files and ignore them, but drop them when they rewrite
+    the file.
+  - **The document API:** `jazmin.mode` (`'view'`, or `'print'` when rendered), `jazmin.filter`,
+    `jazmin.actions`, `jazmin.setActions()` and `jazmin.savePdf()`; `jazmin.print()` follows the actions.
+  - **JavaScript:** `renderPdf({ filter })` renders one document per account (or any filter) from one file, with
+    the page settings of the package, the page's file and the page itself; `renderImage()` makes a PNG or JPEG;
+    `portableHtml()` makes the viewer's "Save as HTML" page without a browser.
 
 ### Fixed
 - **Filters:** `{ "column": null }` (and `{ "ne": null }`) works for json and binary columns too, as spec 9.1 says;

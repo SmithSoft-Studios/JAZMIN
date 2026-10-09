@@ -1,5 +1,7 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Jazmin.Format;
 
 namespace Jazmin;
@@ -26,6 +28,10 @@ public sealed class JazminFileInput
     public static JazminFileInput FromFile(string path, string filePath, IReadOnlyList<string>? groups = null, string? type = null) =>
         new(path, filePath) { Groups = groups, Type = type };
 
+    /// <summary>A file read from disk, with what viewers may do with it.</summary>
+    public static JazminFileInput FromFile(string path, string filePath, IReadOnlyList<string>? groups, string? type, JazminFileActions? actions) =>
+        new(path, filePath) { Groups = groups, Type = type, Actions = actions };
+
     /// <summary>Relative path with '/' separators, e.g. "img/logo.png".</summary>
     public string Path { get; }
 
@@ -38,10 +44,74 @@ public sealed class JazminFileInput
 
     /// <summary>Groups that may see the file: null or ["*"] for everyone with a key, or partition / named file-group names.</summary>
     public IReadOnlyList<string>? Groups { get; init; }
+
+    /// <summary>What viewers may do with the file (format 1.4): null allows everything.</summary>
+    public JazminFileActions? Actions { get; init; }
 }
 
 /// <summary>An embedded file visible to the current key.</summary>
-public sealed record JazminEmbeddedFile(string Path, string Type, long Size, string Sha256, IReadOnlyList<string>? Groups);
+public sealed record JazminEmbeddedFile(string Path, string Type, long Size, string Sha256, IReadOnlyList<string>? Groups)
+{
+    /// <summary>What viewers may do with the file, when its writer set it (format 1.4); null allows everything.</summary>
+    public JazminFileActions? Actions { get; init; }
+}
+
+/// <summary>
+/// What viewers may do with an embedded file (spec 6.8, format 1.4). Each is allowed when null. These steer viewers
+/// (the JAZMIN viewer, editor extensions): a key that sees a file can always read it with the library.
+/// </summary>
+public sealed record JazminFileActions
+{
+    /// <summary>Open (show) the file in a viewer.</summary>
+    public bool? Open { get; init; }
+
+    /// <summary>Save (download) the file as it is.</summary>
+    public bool? Save { get; init; }
+
+    /// <summary>Print the page.</summary>
+    public bool? Print { get; init; }
+
+    /// <summary>Save the page as PDF; false refuses it. <see cref="PdfSettings"/> allows it with those page settings.</summary>
+    public bool? Pdf { get; init; }
+
+    /// <summary>The page settings for the page's PDFs, over the package's (stored as pdf: { ... }).</summary>
+    public JazminPdfSettings? PdfSettings { get; init; }
+
+    /// <summary>Save the page as an image.</summary>
+    public bool? Image { get; init; }
+}
+
+/// <summary>Page settings for a document's PDFs (spec 6.8): each optional, checked when written.</summary>
+public sealed record JazminPdfSettings
+{
+    /// <summary>A0 to A6, Letter, Legal, Tabloid or Ledger (default A4).</summary>
+    public string? Format { get; init; }
+
+    public bool? Landscape { get; init; }
+
+    public JazminPdfMargin? Margin { get; init; }
+
+    /// <summary>0.1 to 2 (default 1).</summary>
+    public double? Scale { get; init; }
+
+    /// <summary>Print background colours and images (default true).</summary>
+    public bool? PrintBackground { get; init; }
+
+    /// <summary>The page's CSS @page size wins over <see cref="Format"/> (stored as preferCSSPageSize).</summary>
+    public bool? PreferCssPageSize { get; init; }
+}
+
+/// <summary>Page margins: lengths such as "12mm", "1cm", "0.5in" or "20px".</summary>
+public sealed record JazminPdfMargin
+{
+    public string? Top { get; init; }
+
+    public string? Right { get; init; }
+
+    public string? Bottom { get; init; }
+
+    public string? Left { get; init; }
+}
 
 /// <summary>Settings for viewers that render a file's embedded website.</summary>
 public sealed class JazminPackage
@@ -54,6 +124,9 @@ public sealed class JazminPackage
     public IReadOnlyList<string>? AllowedOrigins { get; init; }
 
     public bool? AllowWasm { get; init; }
+
+    /// <summary>The document's page settings for PDFs (format 1.4).</summary>
+    public JazminPdfSettings? Pdf { get; init; }
 }
 
 /// <summary>Validation, media types and the stored-content model for embedded files (spec 6.8).</summary>
@@ -116,6 +189,7 @@ internal static class EmbeddedFiles
             json["allowedOrigins"] = origins;
         }
         if (package.AllowWasm is { } wasm) json["allowWasm"] = wasm;
+        if (package.Pdf is { } pdf) json["pdf"] = PdfJson(pdf, "package.pdf");
         return json;
     }
 
@@ -125,7 +199,123 @@ internal static class EmbeddedFiles
         Title = (string?)o["title"],
         AllowedOrigins = o["allowedOrigins"] is JsonArray a ? a.Select(x => (string)x!).ToList() : null,
         AllowWasm = (bool?)o["allowWasm"],
+        Pdf = o["pdf"] is JsonObject pdf ? PdfFrom(pdf, strict: false) : null,
     };
+
+    private static readonly string[] PdfFormats = ["A0", "A1", "A2", "A3", "A4", "A5", "A6", "Letter", "Legal", "Tabloid", "Ledger"];
+    private static readonly Regex CssLength = new(@"^(?:0|\d+(?:\.\d+)?(?:px|in|cm|mm))$", RegexOptions.CultureInvariant);
+    private static readonly string[] Sides = ["top", "right", "bottom", "left"];
+
+    /// <summary>Checks page settings and returns their JSON (spec 6.8); <paramref name="where"/> names them in errors.</summary>
+    public static JsonObject PdfJson(JazminPdfSettings pdf, string where)
+    {
+        var json = new JsonObject();
+        if (pdf.Format is { } format)
+        {
+            if (!PdfFormats.Contains(format, StringComparer.Ordinal))
+                throw new JazminValidationException($"{where}.format: '{format}' is not one of {string.Join(", ", PdfFormats)}");
+            json["format"] = format;
+        }
+        if (pdf.Landscape is { } landscape) json["landscape"] = landscape;
+        if (pdf.Margin is { } margin)
+        {
+            var sides = new JsonObject();
+            foreach (var (side, length) in new[] { ("top", margin.Top), ("right", margin.Right), ("bottom", margin.Bottom), ("left", margin.Left) })
+            {
+                if (length is null) continue;
+                if (!CssLength.IsMatch(length))
+                    throw new JazminValidationException($"{where}.margin.{side}: '{length}' must be a length such as 12mm, 1cm, 0.5in or 20px");
+                sides[side] = length;
+            }
+            json["margin"] = sides;
+        }
+        if (pdf.Scale is { } scale)
+        {
+            if (!(scale >= 0.1 && scale <= 2)) throw new JazminValidationException($"{where}.scale must be a number from 0.1 to 2");
+            json["scale"] = scale;
+        }
+        if (pdf.PrintBackground is { } background) json["printBackground"] = background;
+        if (pdf.PreferCssPageSize is { } css) json["preferCSSPageSize"] = css;
+        return json;
+    }
+
+    /// <summary>
+    /// Page settings read from a file: strict, null when any is unknown or of the wrong type (a file's actions then
+    /// allow PDFs with the viewer's own settings, as the JavaScript library); otherwise the ones this library knows.
+    /// </summary>
+    public static JazminPdfSettings? PdfFrom(JsonObject o, bool strict)
+    {
+        static bool? Flag(JsonNode? n) => n is JsonValue v && v.TryGetValue<bool>(out var b) ? b : null;
+        var bad = false;
+        string? format = null;
+        bool? landscape = null, background = null, css = null;
+        double? scale = null;
+        JazminPdfMargin? margin = null;
+        foreach (var (name, value) in o)
+        {
+            switch (name)
+            {
+                case "format":
+                    format = value is JsonValue fv && fv.TryGetValue<string>(out var f) && PdfFormats.Contains(f, StringComparer.Ordinal) ? f : null;
+                    bad |= format is null;
+                    break;
+                case "landscape": landscape = Flag(value); bad |= landscape is null; break;
+                case "printBackground": background = Flag(value); bad |= background is null; break;
+                case "preferCSSPageSize": css = Flag(value); bad |= css is null; break;
+                case "scale":
+                    scale = value is JsonValue sv && sv.TryGetValue<double>(out var s) && s >= 0.1 && s <= 2 ? s : null;
+                    bad |= scale is null;
+                    break;
+                case "margin":
+                    if (value is not JsonObject m || m.Any(p => !Sides.Contains(p.Key) || p.Value is not JsonValue lv || !lv.TryGetValue<string>(out var l) || !CssLength.IsMatch(l)))
+                    {
+                        bad = true;
+                        break;
+                    }
+                    margin = new JazminPdfMargin { Top = (string?)m["top"], Right = (string?)m["right"], Bottom = (string?)m["bottom"], Left = (string?)m["left"] };
+                    break;
+                default:
+                    bad = true;
+                    break;
+            }
+        }
+        if (bad && strict) return null;
+        return new JazminPdfSettings { Format = format, Landscape = landscape, Margin = margin, Scale = scale, PrintBackground = background, PreferCssPageSize = css };
+    }
+
+    /// <summary>Checks a file's actions and returns their JSON, or null when none is set (spec 6.8).</summary>
+    public static JsonObject? ActionsJson(JazminFileActions? actions, string path)
+    {
+        if (actions is null) return null;
+        var json = new JsonObject();
+        if (actions.Open is { } open) json["open"] = open;
+        if (actions.Save is { } save) json["save"] = save;
+        if (actions.Print is { } print) json["print"] = print;
+        if (actions.PdfSettings is { } settings)
+        {
+            if (actions.Pdf == false) throw new JazminValidationException($"File '{path}': actions.Pdf is false but PdfSettings are given");
+            json["pdf"] = PdfJson(settings, $"File '{path}': actions.pdf");
+        }
+        else if (actions.Pdf is { } pdf) json["pdf"] = pdf;
+        if (actions.Image is { } image) json["image"] = image;
+        return json.Count > 0 ? json : null;
+    }
+
+    /// <summary>A file's actions as a reader takes them: the ones it knows, of the right types; null when none.</summary>
+    public static JazminFileActions? ActionsFrom(JsonNode? json)
+    {
+        if (json is not JsonObject o) return null;
+        static bool? Flag(JsonNode? n) => n is JsonValue v && v.TryGetValue<bool>(out var b) ? b : null;
+        bool? pdf = Flag(o["pdf"]);
+        JazminPdfSettings? settings = null;
+        if (o["pdf"] is JsonObject p)
+        {
+            settings = PdfFrom(p, strict: true);
+            pdf = settings is null ? true : null; // settings it doesn't know: allowed, with the viewer's own
+        }
+        var actions = new JazminFileActions { Open = Flag(o["open"]), Save = Flag(o["save"]), Print = Flag(o["print"]), Pdf = pdf, PdfSettings = settings, Image = Flag(o["image"]) };
+        return actions == new JazminFileActions() ? null : actions;
+    }
 }
 
 /// <summary>A file to store: metadata, its SHA-256, and a block reader (from bytes, disk, or an older version).</summary>
@@ -134,6 +324,7 @@ internal sealed class FileSource
     public required string Path { get; init; }
     public required string Type { get; init; }
     public required List<string> Groups { get; init; }
+    public JsonObject? Actions { get; init; }
     public required long Size { get; init; }
     public required string Sha256 { get; init; }
     public required Func<long, int, byte[]> Read { get; init; }
@@ -143,12 +334,13 @@ internal sealed class FileSource
         var path = EmbeddedFiles.ValidatePath(input.Path);
         var type = input.Type ?? EmbeddedFiles.MediaType(path);
         var groups = EmbeddedFiles.NormalizeGroups(input.Groups, path);
+        var actions = EmbeddedFiles.ActionsJson(input.Actions, path);
         if ((input.Content is null) == (input.FilePath is null)) throw new JazminValidationException($"File '{path}': supply exactly one of content or file");
         if (input.Content is { } bytes)
         {
             return new FileSource
             {
-                Path = path, Type = type, Groups = groups, Size = bytes.Length,
+                Path = path, Type = type, Groups = groups, Actions = actions, Size = bytes.Length,
                 Sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
                 Read = (offset, length) => bytes.AsSpan((int)offset, length).ToArray(),
             };
@@ -163,7 +355,7 @@ internal sealed class FileSource
         }
         return new FileSource
         {
-            Path = path, Type = type, Groups = groups, Size = size, Sha256 = sha,
+            Path = path, Type = type, Groups = groups, Actions = actions, Size = size, Sha256 = sha,
             Read = (offset, length) =>
             {
                 using var stream = File.OpenRead(disk);
@@ -234,8 +426,8 @@ internal sealed class StoredContent
     };
 }
 
-/// <summary>A directory entry: path -> content id, with its groups where known.</summary>
-internal sealed record FileEntry(string Path, string Type, int Content, List<string>? Groups);
+/// <summary>A directory entry: path -> content id, with its groups where known, and its actions (as stored).</summary>
+internal sealed record FileEntry(string Path, string Type, int Content, List<string>? Groups, JsonObject? Actions = null);
 
 /// <summary>The files carried from one version of a file to the next (append / update).</summary>
 internal sealed record FileState(List<FileEntry> Entries, List<StoredContent> Contents, int NextId, JsonObject? Package);

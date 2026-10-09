@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { JazminFormatError, JazminKey, JazminValidationError, append, compact, open, update, write } from '../src/index.js';
+import { readActions } from '../src/files.js';
 
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-files-'));
 const columns = [{ name: 'id', type: 'int' }, { name: 'group', type: 'string' }];
@@ -64,6 +65,17 @@ test('files without embedded files are unchanged; paths and package settings are
     assert.throws(() => write(null, rows, { columns, files: [{ path: bad, content: 'x' }] }), JazminValidationError, bad);
   }
   assert.throws(() => write(null, rows, { columns, files: [{ path: 'a', content: 'x' }], package: { entry: 'b' } }), /not one of the stored files/);
+  // The document's page settings for PDFs: checked when written, kept as given.
+  const withPdf = (pdf) => write(null, rows, { columns, files: [{ path: 'a', content: 'x' }], package: { entry: 'a', pdf } });
+  assert.deepEqual(open(withPdf({ format: 'Letter', landscape: true, margin: { top: '12mm', left: '0.5in' }, scale: 0.9, printBackground: false })).package.pdf,
+    { format: 'Letter', landscape: true, margin: { top: '12mm', left: '0.5in' }, scale: 0.9, printBackground: false });
+  assert.throws(() => withPdf({ format: 'B5' }), /package\.pdf\.format: 'B5' is not one of A0/);
+  assert.throws(() => withPdf({ landscape: 'yes' }), /package\.pdf\.landscape must be true or false/);
+  assert.throws(() => withPdf({ margin: { top: '12' } }), /a length such as 12mm/);
+  assert.throws(() => withPdf({ margin: { inside: '1cm' } }), /unknown side 'inside'/);
+  assert.throws(() => withPdf({ scale: 3 }), /from 0\.1 to 2/);
+  assert.throws(() => withPdf({ colour: true }), /unknown setting 'colour'/);
+  assert.throws(() => withPdf([]), /package\.pdf must be an object/);
   assert.throws(() => write(null, rows, { columns, files: [{ path: 'a', content: 'x' }], package: { allowedOrigins: ['http://x.com'] } }), /https origin/);
   assert.throws(() => write(null, rows, { columns, files: [{ path: 'a', content: 'x' }], package: { allowedOrigins: ['https://x.com/path'] } }), /https origin/);
 });
@@ -154,6 +166,49 @@ test('append adds, replaces and removes files; content is reused; compact drops 
   assert.deepEqual(r.files.map((f) => [f.path, r.readFile(f.path).toString()]), [['old.txt', 'v2']]);
   assert.equal(r.rowCount, rows.length);
   r.close();
+});
+
+test('files carry what viewers may do with them (actions): checked when written, kept by append, update and compact', () => {
+  const file = path.join(tmpDir(), 'f.jzm');
+  const key = JazminKey.generate();
+  const pdf = { format: 'A5', landscape: true, margin: { top: '1cm' }, preferCSSPageSize: true };
+  write(file, rows, {
+    columns, key,
+    files: [
+      { path: 'index.html', content: '<p>statement</p>', actions: { pdf, image: false } },
+      { path: 'data.csv', content: 'a,b', actions: { open: false, save: false } },
+      { path: 'plain.txt', content: 'p' },
+    ],
+  });
+  const actionsOf = (r) => Object.fromEntries(r.files.map((f) => [f.path, f.actions]));
+  let r = open(file, { key });
+  assert.deepEqual(actionsOf(r), { 'index.html': { pdf, image: false }, 'data.csv': { open: false, save: false }, 'plain.txt': undefined });
+  r.files.find((f) => f.path === 'index.html').actions.pdf.format = 'A0'; // a copy
+  assert.equal(r.files.find((f) => f.path === 'index.html').actions.pdf.format, 'A5');
+  r.close();
+
+  append(file, { key, addFiles: [{ path: 'more.txt', content: 'm', actions: { print: false } }] });
+  update(file, { key, removeFiles: ['plain.txt'] });
+  compact(file, { key });
+  r = open(file, { key });
+  assert.deepEqual(actionsOf(r), { 'index.html': { pdf, image: false }, 'data.csv': { open: false, save: false }, 'more.txt': { print: false } });
+  r.close();
+
+  const withActions = (actions) => write(null, rows, { columns, files: [{ path: 'a.html', content: 'x', actions }] });
+  assert.deepEqual(open(withActions({ pdf: false, print: true })).files[0].actions, { pdf: false, print: true });
+  assert.equal(open(withActions({})).files[0].actions, undefined);
+  assert.throws(() => withActions({ download: true }), /File 'a\.html': actions: unknown action 'download'/);
+  assert.throws(() => withActions({ save: 'no' }), /actions\.save must be true or false/);
+  assert.throws(() => withActions({ pdf: { format: 'B5' } }), /actions\.pdf\.format: 'B5' is not one of/);
+  assert.throws(() => withActions({ pdf: null }), /actions\.pdf must be an object/);
+  assert.throws(() => withActions([]), /actions must be an object/);
+});
+
+test('readers take the actions they know: later ones, and wrong types, are left out', () => {
+  assert.deepEqual(readActions({ open: false, save: 'no', future: true, pdf: { format: 'A4' } }), { open: false, pdf: { format: 'A4' } });
+  assert.deepEqual(readActions({ pdf: { format: 'A4', bleed: '3mm' } }), { pdf: true }); // settings it doesn't know: allowed, with its own
+  assert.equal(readActions({ later: 1 }), undefined);
+  assert.equal(readActions('print'), undefined);
 });
 
 test('update and compact keep files and their groups in access-controlled files', () => {

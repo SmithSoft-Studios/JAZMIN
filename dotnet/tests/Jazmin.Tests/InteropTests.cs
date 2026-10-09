@@ -186,6 +186,58 @@ public class InteropTests
         ];
     }
 
+    // A document (format 1.4): what viewers may do with its files, and page settings for its PDFs. Mirrored from
+    // DOCUMENT_FILES and DOCUMENT_PACKAGE in js/test/fixture-helpers.js.
+    private static List<JazminFileInput> DocumentFiles() =>
+    [
+        new JazminFileInput("index.html", System.Text.Encoding.UTF8.GetBytes("<h1>JAZMIN interop document</h1>"))
+        {
+            Actions = new JazminFileActions { Print = false, PdfSettings = new JazminPdfSettings { Format = "A5", Margin = new JazminPdfMargin { Top = "12mm" } } },
+        },
+        new JazminFileInput("data.csv", System.Text.Encoding.UTF8.GetBytes("a,b\n1,2\n")) { Actions = new JazminFileActions { Open = false, Save = false } },
+        new JazminFileInput("logo.svg", System.Text.Encoding.UTF8.GetBytes("<svg xmlns=\"http://www.w3.org/2000/svg\"/>")),
+    ];
+
+    private static readonly JazminPackage DocumentPackage = new()
+    {
+        Entry = "index.html", Title = "Document", Pdf = new JazminPdfSettings { Format = "Letter", Landscape = true, Scale = 0.9 },
+    };
+
+    private static void AssertDocument(string path)
+    {
+        using var reader = JazminReader.Open(path, new JazminReadOptions { Key = JazminKey.Parse((string)Keys["key"]!) });
+        var expected = DocumentFiles();
+        Assert.Equal(expected.ToDictionary(f => f.Path, f => f.Actions), reader.Files.ToDictionary(f => f.Path, f => f.Actions));
+        foreach (var f in expected) Assert.Equal(f.Content, reader.ReadFile(f.Path));
+        Assert.Equal(DocumentPackage.Entry, reader.Package!.Entry);
+        Assert.Equal(DocumentPackage.Title, reader.Package.Title);
+        Assert.Equal(DocumentPackage.Pdf, reader.Package.Pdf);
+    }
+
+    [Fact]
+    public void ReadsADocumentsFileActionsWrittenByJavaScript() => AssertDocument(Path.Combine(Dir, "js-document-key.jzm"));
+
+    [Fact]
+    public void WritesADocumentsFileActionsForJavaScript()
+    {
+        const string file = "dotnet-document-key.jzm";
+        var columns = DatasetColumns();
+        using (var writer = JazminWriter.Create(Path.Combine(OutDir, file), columns, new JazminWriteOptions
+        {
+            ChunkRows = 64,
+            Metadata = Dataset["metadata"]!.DeepClone().AsObject(),
+            Key = JazminKey.Parse((string)Keys["key"]!),
+            Files = DocumentFiles(),
+            Package = DocumentPackage,
+        }))
+        {
+            foreach (var row in DatasetRows())
+                writer.WriteValues(columns.Select(c => FromDataset(c.Type, row[c.Name])).ToArray());
+        }
+        AssertMatchesDataset(file, OutDir);
+        AssertDocument(Path.Combine(OutDir, file));
+    }
+
     private static readonly Dictionary<string, string[]> FilesViews = new()
     {
         ["key"] = ["docs/shared.bin", "docs/za.bin", "empty.txt", "img/logo.svg", "index.html"],

@@ -259,7 +259,7 @@ export function carriedFiles(reader, addFiles, removeFiles) {
   return [...existing.values()].filter((e) => !dropped.has(e.path)).map((e) => {
     const c = contents.get(e.content);
     return {
-      [FILE_SOURCE]: true, path: e.path, type: e.type, groups: e.groups, size: c.size, sha256: c.sha256,
+      [FILE_SOURCE]: true, path: e.path, type: e.type, groups: e.groups, ...(e.actions ? { actions: e.actions } : {}), size: c.size, sha256: c.sha256,
       read: (offset, length) => reader.readFileRange(e.path, offset, offset + length),
     };
   });

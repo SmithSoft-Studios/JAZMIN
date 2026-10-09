@@ -409,7 +409,7 @@ export class JazminWriter {
       stored = { id, size: src.size, sha256: src.sha256, blockSize: FILE_BLOCK_SIZE, ...(key ? { key: key.toString('base64') } : {}), blocks };
       this.#files.contents.set(src.sha256, stored);
     }
-    this.#files.entries.set(src.path, { path: src.path, type: src.type, groups: src.groups, content: stored.id });
+    this.#files.entries.set(src.path, { path: src.path, type: src.type, groups: src.groups, content: stored.id, ...(src.actions ? { actions: src.actions } : {}) });
   }
 
   /** Columns of the table rows go to. */
@@ -963,7 +963,7 @@ export class JazminWriter {
     const entries = [...this.#files.entries.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     const byId = new Map([...this.#files.contents.values()].map((c) => [c.id, c]));
     const directory = (list, withGroups) => ({
-      files: list.map((e) => ({ path: e.path, type: e.type, content: e.content, ...(withGroups ? { groups: e.groups } : {}) })),
+      files: list.map((e) => ({ path: e.path, type: e.type, content: e.content, ...(withGroups ? { groups: e.groups } : {}), ...(e.actions ? { actions: e.actions } : {}) })),
       contents: [...new Set(list.map((e) => e.content))].sort((a, b) => a - b).map((id) => byId.get(id)),
     });
     const settings = normalizePackage(this.#package, new Set(this.#files.entries.keys()));
