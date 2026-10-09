@@ -1,8 +1,13 @@
 // JAZMIN beside other formats, for reference (USER-GUIDE 9.12): Parquet (hyparquet, hyparquet-writer), Arrow IPC
 // (apache-arrow), SQLite (node:sqlite) and MessagePack (msgpackr), on the same 200,000 customers as bench/benchmark.js.
 // Each format is used as its library documents it, with its defaults; the notes printed at the end say what that
-// means. Every figure is the best of 3 runs after a warm-up run, for every contender alike.
+// means. Every time is the best of 3 runs after a warm-up run, for every contender alike. Memory: each operation in a
+// process of its own (--child), first on a file of 1,000 rows (so each library's code is loaded and compiled), then
+// on the real file, measured as how far it raises the process's memory (RSS, sampled throughout by a worker thread),
+// so native memory (SQLite) and buffers count too.
 //   npm install && npm run bench [rows]
+import { spawnSync } from 'node:child_process';
+import { Worker } from 'node:worker_threads';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -12,17 +17,26 @@ import { tableFromArrays, tableFromIPC, tableToIPC } from 'apache-arrow';
 import { asyncBufferFromFile, parquetQuery, parquetReadObjects } from 'hyparquet';
 import { parquetWriteFile } from 'hyparquet-writer';
 import { pack, unpack } from 'msgpackr';
+import { fileURLToPath } from 'node:url';
 import { open, write } from '../../src/index.js';
 
-const ROWS = Number(process.argv[2] ?? 200_000);
-const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-formats-'));
+// node formats.mjs [rows], or (for memory) node formats.mjs --child <format> <measure> <dir> <rows> <small dir> <small rows>
+const a = process.argv;
+const CHILD = a[2] === '--child' ? { name: a[3], measure: a[4], dir: a[5], rows: Number(a[6]), smallDir: a[7], smallRows: Number(a[8]) } : null;
+const FULL_ROWS = CHILD ? CHILD.rows : Number(a[2] ?? 200_000);
+const SMALL_ROWS = 1000;
+// The data in use: the full file, or the small one the memory measurement warms each library up with.
+let ROWS = FULL_ROWS;
+let dir = CHILD ? CHILD.dir : fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-formats-'));
+let target;
 const f = (name) => path.join(dir, name);
 const countries = ['ZA', 'NA', 'BW', 'ZW', 'MZ', 'LS', 'SZ', 'ZM'];
 const first = ['Ann', 'Bob', 'Thabo', 'Lerato', 'Pieter', 'Aisha', 'Sipho', 'Maria'];
 const last = ['Smith', 'Johnson', 'Ndlovu', 'Botha', 'Naidoo', 'Mokoena', 'van Wyk', 'Dlamini'];
 
-// The same rows as bench/benchmark.js.
-const rows = Array.from({ length: ROWS }, (_, i) => ({
+// The same rows as bench/benchmark.js, made when a write needs them.
+let rowsMade = null;
+const rowsOf = () => (rowsMade ??= Array.from({ length: ROWS }, (_, i) => ({
   id: i,
   name: `${first[i % 8]} ${last[(i * 7) % 8]}`,
   email: `user${i}@example.com`,
@@ -31,7 +45,7 @@ const rows = Array.from({ length: ROWS }, (_, i) => ({
   balance: Math.round(((i * 7919) % 1_000_000) * 1.37) / 100,
   joined: new Date(Date.UTC(2015, 0, 1) + (i % 3650) * 86_400_000),
   active: i % 3 !== 0,
-}));
+})));
 const columns = [
   { name: 'id', type: 'int', nullable: false, index: 'sorted' },
   { name: 'name', type: 'string', index: 'trigram' },
@@ -42,9 +56,18 @@ const columns = [
   { name: 'joined', type: 'datetime' },
   { name: 'active', type: 'bool' },
 ];
-const target = Math.floor(ROWS * 0.6173);
+function useData(rowCount, directory) {
+  ROWS = rowCount;
+  dir = directory;
+  target = Math.floor(rowCount * 0.6173);
+  rowsMade = null;
+}
+useData(ROWS, dir);
 const isMatch = (r) => r.country === 'NA' && r.age > 80;
-const expected = { filter: rows.filter(isMatch).length, contains: rows.filter((r) => r.name.includes('Ndlovu')).length, sum: rows.reduce((s, r) => s + r.balance, 0) };
+const expected = () => {
+  const rows = rowsOf();
+  return { filter: rows.filter(isMatch).length, contains: rows.filter((r) => r.name.includes('Ndlovu')).length, sum: rows.reduce((s, r) => s + r.balance, 0) };
+};
 
 function time(fn, repeat = 3) {
   fn();
@@ -89,7 +112,7 @@ const contenders = [];
 
 contenders.push({
   name: 'JAZMIN',
-  write: () => write(f('data.jzm'), rows, { columns }),
+  write: () => write(f('data.jzm'), rowsOf(), { columns }),
   size: () => size('data.jzm'),
   readAll: () => [...open(f('data.jzm')).rows()].length,
   sum: () => {
@@ -118,7 +141,7 @@ contenders.push({
   },
 });
 
-const parquetColumns = () => [
+const parquetColumns = (rows = rowsOf()) => [
   { name: 'id', data: Int32Array.from(rows, (r) => r.id), type: 'INT32' },
   { name: 'name', data: rows.map((r) => r.name), type: 'STRING' },
   { name: 'email', data: rows.map((r) => r.email), type: 'STRING' },
@@ -144,6 +167,7 @@ contenders.push({
 contenders.push({
   name: 'Arrow IPC',
   write: () => {
+    const rows = rowsOf();
     const table = tableFromArrays({
       id: Int32Array.from(rows, (r) => r.id),
       name: rows.map((r) => r.name),
@@ -196,7 +220,7 @@ contenders.push({
     db.exec('CREATE INDEX customers_country ON customers (country)');
     const insert = db.prepare('INSERT INTO customers VALUES (?, ?, ?, ?, ?, ?, ?, ?)');
     db.exec('BEGIN');
-    for (const r of rows) insert.run(r.id, r.name, r.email, r.country, r.age, r.balance, r.joined.getTime(), r.active ? 1 : 0);
+    for (const r of rowsOf()) insert.run(r.id, r.name, r.email, r.country, r.age, r.balance, r.joined.getTime(), r.active ? 1 : 0);
     db.exec('COMMIT');
     db.close();
   },
@@ -236,7 +260,7 @@ contenders.push({
 const msgpackAll = () => unpack(fs.readFileSync(f('data.msgpack')));
 contenders.push({
   name: 'MessagePack',
-  write: () => fs.writeFileSync(f('data.msgpack'), pack(rows)),
+  write: () => fs.writeFileSync(f('data.msgpack'), pack(rowsOf())),
   size: () => size('data.msgpack'),
   readAll: () => msgpackAll().length,
   sum: () => msgpackAll().reduce((s, r) => s + r.balance, 0),
@@ -255,6 +279,37 @@ const MEASURES = [
   ['filter', 'Filter: country = NA, age > 80', (ms) => `${ms.toFixed(1)} ms`],
   ['contains', "Text search: name contains 'Ndlovu'", (ms) => `${ms.toFixed(1)} ms`],
 ];
+// A child process: one operation on the small file (the library's code loaded and compiled), then on the full file,
+// with a worker thread sampling the process's memory (RSS) throughout. Prints how far it rose (KB).
+if (CHILD) {
+  const c = contenders.find((x) => x.name === CHILD.name);
+  useData(CHILD.smallRows, CHILD.smallDir);
+  if (CHILD.measure === 'write') rowsOf();
+  await c[CHILD.measure]();
+  useData(CHILD.rows, CHILD.dir);
+  if (CHILD.measure === 'write') rowsOf();
+  const stop = new Int32Array(new SharedArrayBuffer(4));
+  const sampler = new Worker(`
+    const { parentPort, workerData } = require('node:worker_threads');
+    const stop = workerData;
+    let peak = 0;
+    parentPort.postMessage('ready');
+    while (Atomics.load(stop, 0) === 0) { const rss = process.memoryUsage.rss(); if (rss > peak) peak = rss; }
+    parentPort.postMessage(peak);`, { eval: true, workerData: stop });
+  const messages = [];
+  const next = () => new Promise((resolve) => (messages.length ? resolve(messages.shift()) : sampler.once('message', resolve)));
+  await next(); // the sampler is running before the baseline is taken
+  globalThis.gc?.();
+  const before = process.memoryUsage.rss();
+  await c[CHILD.measure]();
+  const after = process.memoryUsage.rss();
+  Atomics.store(stop, 0, 1);
+  const peak = Math.max(await next(), after);
+  process.stdout.write(String(Math.round((peak - before) / 1024)));
+  process.exit(0);
+}
+
+const want = expected();
 const results = new Map(contenders.map((c) => [c.name, {}]));
 for (const c of contenders) {
   const run = c.async ? timeAsync : async (fn) => time(fn);
@@ -265,9 +320,9 @@ for (const c of contenders) {
     const { ms, result } = await run(c[key]);
     if (key === 'readAll') check(`${c.name} read`, result, ROWS);
     if (key === 'lookup') check(`${c.name} lookup`, result, target);
-    if (key === 'filter') check(`${c.name} filter`, result, expected.filter);
-    if (key === 'contains') check(`${c.name} contains`, result, expected.contains);
-    if (key === 'sum') check(`${c.name} sum`, result, expected.sum);
+    if (key === 'filter') check(`${c.name} filter`, result, want.filter);
+    if (key === 'contains') check(`${c.name} contains`, result, want.contains);
+    if (key === 'sum') check(`${c.name} sum`, result, want.sum);
     r[key] = ms;
   }
 }
@@ -280,6 +335,23 @@ const cell = 13;
 console.log('Measure'.padEnd(width) + names.map((n) => n.padStart(cell)).join(''));
 console.log('File size'.padEnd(width) + names.map((n) => `${Math.round(results.get(n).size / 1024).toLocaleString('en')} KB`.padStart(cell)).join(''));
 for (const [key, label, show] of MEASURES) console.log(label.padEnd(width) + names.map((n) => show(results.get(n)[key]).padStart(cell)).join(''));
+
+// Memory: each operation in a process of its own, on the files written above, after the same operation on files of
+// SMALL_ROWS rows (written now).
+const fullDir = dir;
+const smallDir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-formats-small-'));
+useData(SMALL_ROWS, smallDir);
+for (const c of contenders) await c.write();
+useData(FULL_ROWS, fullDir);
+const memory = (name, measure) => {
+  const run = spawnSync(process.execPath, ['--expose-gc', fileURLToPath(import.meta.url), '--child', name, measure, fullDir, String(FULL_ROWS), smallDir, String(SMALL_ROWS)], { encoding: 'utf8' });
+  const kb = Number(run.stdout.trim());
+  if (run.status !== 0 || !Number.isFinite(kb)) throw new Error(`${name} ${measure} memory: ${run.stderr.trim().split(String.fromCharCode(10)).pop()}`);
+  return `${(Math.max(0, kb) / 1024).toFixed(1)} MB`;
+};
+console.log(`
+Peak memory added${' '.repeat(width - 17)}` + names.map((n) => n.padStart(cell)).join(''));
+for (const [key, label] of MEASURES) console.log(label.padEnd(width) + names.map((n) => memory(n, key).padStart(cell)).join(''));
 const gz = zlib.gzipSync(fs.readFileSync(f('data.msgpack'))).length;
 console.log(`
 Notes:
@@ -289,4 +361,5 @@ Notes:
 - Arrow IPC: the file format, uncompressed (apache-arrow writes no compressed IPC); read whole, then searched.
 - SQLite: node:sqlite, a table with id as its primary key and an index on country; LIKE scans for the text search.
 - MessagePack: msgpackr defaults; every query reads the whole file (gzipped it would be ${Math.round(gz / 1024).toLocaleString('en')} KB).`);
-fs.rmSync(dir, { recursive: true, force: true });
+fs.rmSync(fullDir, { recursive: true, force: true });
+fs.rmSync(smallDir, { recursive: true, force: true });

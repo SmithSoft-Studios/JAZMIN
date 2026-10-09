@@ -1325,13 +1325,20 @@ JAZMIN is strong, and what it can work towards.
   is the best of 2 or 3 runs, each run the best of 3 after a warm-up.
   Compare across a row; the figures in 9.1 and 9.2 were measured on a quiet
   machine.
+- **Memory:** each operation runs in a process of its own.
+  - It runs first on a file of 1,000 rows, so the library's code is loaded and
+    compiled.
+  - Then it runs on the real file while the process's memory is sampled
+    throughout (RSS in Node, the working set in .NET).
+  - The figure is how far memory rises above where it was before: objects,
+    buffers and native memory (SQLite's) alike. It is the lower of 2 runs.
 - **Run them yourself:**
   - Node: `npm install` then `npm run bench` in `js/bench/formats`;
   - .NET: `dotnet run -c Release --project bench/Jazmin.FormatBenchmarks` in
     `dotnet/`.
 
   They are kept apart from the libraries, so neither package depends on
-  these formats.
+  these formats. The memory measurement adds a few minutes.
 
 **Node.js 24:**
 
@@ -1357,11 +1364,41 @@ JAZMIN is strong, and what it can work towards.
 | Filter: country = NA, age > 80 | 10.6 ms | 25.7 ms | **8.9 ms** | 22.6 ms | 95.7 ms |
 | Text search: name contains 'Ndlovu' | 20.2 ms | 23.7 ms | **17.1 ms** | 28.4 ms | 91.9 ms |
 
+**Memory, Node.js 24** (peak memory added):
+
+| Measure | JAZMIN | Parquet | Arrow IPC | SQLite | MessagePack |
+|---|---:|---:|---:|---:|---:|
+| Write every row | 173.4 MB | 203.2 MB | 230.7 MB | **24.9 MB** | 44.7 MB |
+| Read every row (objects) | **75.5 MB** | 114.1 MB | 102.2 MB | 282.5 MB | 153.8 MB |
+| Sum one column | 11.1 MB | 35.1 MB | 12.9 MB | **1.9 MB** | 154.3 MB |
+| Find one row by id (open → row) | 1.7 MB | 86.8 MB | 13.3 MB | **0.0 MB** | 153.7 MB |
+| Filter: country = NA, age > 80 | 11.3 MB | 48.3 MB | 14.0 MB | **1.7 MB** | 150.9 MB |
+| Text search: name contains 'Ndlovu' | 33.8 MB | 18.9 MB | 15.7 MB | **1.9 MB** | 152.4 MB |
+
+**Memory, .NET 10** (peak memory added):
+
+| Measure | JAZMIN | Parquet | Arrow IPC | SQLite | MessagePack |
+|---|---:|---:|---:|---:|---:|
+| Write every row | 72.7 MB | 58.0 MB | 48.0 MB | **18.2 MB** | 23.8 MB |
+| Read every row (objects) | 58.7 MB | 94.4 MB | 72.0 MB | **14.3 MB** | 55.7 MB |
+| Sum one column | 16.2 MB | 10.5 MB | 14.1 MB | **1.8 MB** | 56.1 MB |
+| Find one row by id (open → row) | 6.3 MB | 84.5 MB | 13.8 MB | **0.1 MB** | 55.7 MB |
+| Filter: country = NA, age > 80 | 26.1 MB | 27.4 MB | 15.4 MB | **1.8 MB** | 55.7 MB |
+| Text search: name contains 'Ndlovu' | 48.8 MB | 32.9 MB | 23.5 MB | **1.8 MB** | 55.7 MB |
+
+SQLite needs almost no memory for a query: it reads its file a page at a time
+through a small cache, and returns a count or one row. Its reads of every row
+are another matter in Node (282 MB, for its row objects).
+
 **Where JAZMIN leads:**
 - **Smallest file in both, with its 3 indexes:** Parquet's is a third to two
   thirds larger, with none. Arrow and SQLite files are 5-7 times larger, MessagePack's 5-10
   times.
-- **Fastest to read every row**, in both.
+- **Fastest to read every row**, in both, and in Node with the least memory
+  (76 MB, against 102-283 MB).
+- **Little memory for queries that use its indexes or statistics:** finding
+  one row takes 1.7 MB in Node and 6.3 MB in .NET; Parquet and MessagePack take
+  56-154 MB, reading the whole file or the column first.
 - **Finding one row by id:** second only to SQLite's B-tree, and 3-110 times
   faster than the formats without an index.
 - **The only one with keys, encryption and per-key access** (sections 10 and
@@ -1382,6 +1419,13 @@ JAZMIN is strong, and what it can work towards.
   every other format's scan is faster; in .NET, Arrow's is.
 - **Writing:** MessagePack writes 4-5 times faster. It stores a document as it
   is, with no columns, compression or indexes to build.
+- **Memory:**
+  - The text search loads the whole trigram index: 34 MB in Node and 49 MB in
+    .NET, against 16-24 MB for Arrow's scan.
+  - Writing in Node adds 173 MB, against 25 MB for SQLite and 45 MB for
+    MessagePack.
+  - In .NET, filters and sums use more than Arrow's (26 and 16 MB, against
+    15 and 14 MB), most likely the reader's read-ahead and buffers.
 
 
 **What is protected.** In an encrypted file, the data, column names and

@@ -1,9 +1,13 @@
 // JAZMIN beside other formats, for reference (USER-GUIDE 9.12): Parquet (Parquet.Net), Arrow IPC (Apache.Arrow),
 // SQLite (Microsoft.Data.Sqlite) and MessagePack (MessagePack-CSharp), on the same 200,000 customers as
 // Jazmin.Benchmarks. Each format is used as its library documents it, with its defaults; the notes printed at the end
-// say what that means. Every figure is the best of 3 runs after 3 warm-up runs, for every contender alike.
+// say what that means. Every time is the best of 3 runs after 3 warm-up runs, for every contender alike. Memory: each
+// operation in a process of its own (--child), first on a file of 1,000 rows (so each library's code is loaded and
+// compiled), then on the real file, measured as how far it raises the process's working set (sampled throughout), so
+// native memory (SQLite) counts too.
 //   dotnet run -c Release --project bench/Jazmin.FormatBenchmarks [rows]
 using System.Diagnostics;
+using System.Globalization;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
 using Apache.Arrow;
@@ -16,11 +20,21 @@ using Microsoft.Data.Sqlite;
 using Parquet;
 using Parquet.Serialization;
 
-var rowsCount = args.Length > 0 ? int.Parse(args[0]) : 200_000;
+// [rows], or (for memory) --child <format> <measure> <dir> <rows> <small dir> <small rows>
+var child = args.Length == 7 && args[0] == "--child"
+    ? (Name: args[1], Measure: args[2], Dir: args[3], Rows: int.Parse(args[4]), SmallDir: args[5], SmallRows: int.Parse(args[6]))
+    : default;
+var isChild = child.Name is not null;
+var fullRows = isChild ? child.Rows : args.Length > 0 ? int.Parse(args[0]) : 200_000;
+const int SmallRows = 1000;
+// The data in use: the full file, or the small one the memory measurement warms each library up with.
+var rowsCount = fullRows;
 var countries = new[] { "ZA", "NA", "BW", "ZW", "MZ", "LS", "SZ", "ZM" };
 var first = new[] { "Ann", "Bob", "Thabo", "Lerato", "Pieter", "Aisha", "Sipho", "Maria" };
 var last = new[] { "Smith", "Johnson", "Ndlovu", "Botha", "Naidoo", "Mokoena", "van Wyk", "Dlamini" };
-var people = Enumerable.Range(0, rowsCount).Select(i => new Customer
+// The rows, made when a write (or a check) needs them.
+List<Customer>? peopleMade = null;
+List<Customer> People() => peopleMade ??= Enumerable.Range(0, rowsCount).Select(i => new Customer
 {
     Id = i,
     Name = $"{first[i % 8]} {last[i * 7 % 8]}",
@@ -32,11 +46,15 @@ var people = Enumerable.Range(0, rowsCount).Select(i => new Customer
     Active = i % 3 != 0,
 }).ToList();
 var target = (int)(rowsCount * 0.6173);
-var expectedFilter = people.Count(c => c.Country == "NA" && c.Age > 80);
-var expectedContains = people.Count(c => c.Name.Contains("Ndlovu"));
-var expectedSum = people.Sum(c => c.Balance);
 
-var dir = Directory.CreateTempSubdirectory("jazmin-formats-").FullName;
+var dir = isChild ? child.Dir : Directory.CreateTempSubdirectory("jazmin-formats-").FullName;
+void UseData(int rows, string directory)
+{
+    rowsCount = rows;
+    dir = directory;
+    target = (int)(rows * 0.6173);
+    peopleMade = null;
+}
 string F(string name) => Path.Combine(dir, name);
 
 static double Time(Func<object?> action, Action<object?> check, int repeat = 3)
@@ -73,14 +91,14 @@ var indexed = new JazminSerializerSettings
 // ---- Arrow: the rows as one record batch, and back --------------------------------------------------------------------
 
 RecordBatch ArrowBatch() => new RecordBatch.Builder()
-    .Append("Id", false, c => c.Int32(a => a.AppendRange(people.Select(p => p.Id))))
-    .Append("Name", false, c => c.String(a => a.AppendRange(people.Select(p => p.Name))))
-    .Append("Email", false, c => c.String(a => a.AppendRange(people.Select(p => p.Email))))
-    .Append("Country", false, c => c.String(a => a.AppendRange(people.Select(p => p.Country))))
-    .Append("Age", false, c => c.Int32(a => a.AppendRange(people.Select(p => p.Age))))
-    .Append("Balance", false, c => c.Double(a => a.AppendRange(people.Select(p => p.Balance))))
-    .Append("Joined", false, c => c.Timestamp(a => a.AppendRange(people.Select(p => new DateTimeOffset(p.Joined)))))
-    .Append("Active", false, c => c.Boolean(a => a.AppendRange(people.Select(p => p.Active))))
+    .Append("Id", false, c => c.Int32(a => a.AppendRange(People().Select(p => p.Id))))
+    .Append("Name", false, c => c.String(a => a.AppendRange(People().Select(p => p.Name))))
+    .Append("Email", false, c => c.String(a => a.AppendRange(People().Select(p => p.Email))))
+    .Append("Country", false, c => c.String(a => a.AppendRange(People().Select(p => p.Country))))
+    .Append("Age", false, c => c.Int32(a => a.AppendRange(People().Select(p => p.Age))))
+    .Append("Balance", false, c => c.Double(a => a.AppendRange(People().Select(p => p.Balance))))
+    .Append("Joined", false, c => c.Timestamp(a => a.AppendRange(People().Select(p => new DateTimeOffset(p.Joined)))))
+    .Append("Active", false, c => c.Boolean(a => a.AppendRange(People().Select(p => p.Active))))
     .Build();
 
 RecordBatch ReadArrow()
@@ -164,7 +182,7 @@ long Scalar(SqliteConnection c, string sql)
 var contenders = new List<Contender>
 {
     new("JAZMIN",
-        Write: () => File.WriteAllBytes(F("data.jzm"), JazminConvert.SerializeObject(people, indexed)),
+        Write: () => File.WriteAllBytes(F("data.jzm"), JazminConvert.SerializeObject(People(), indexed)),
         File: "data.jzm",
         ReadAll: () => JazminConvert.DeserializeObject<List<Customer>>(File.ReadAllBytes(F("data.jzm")))!.Count,
         Sum: () => { using var r = JazminReader.Open(F("data.jzm")); return r.AsQueryable<Customer>().Sum(c => c.Balance); },
@@ -173,7 +191,7 @@ var contenders = new List<Contender>
         Contains: () => { using var r = JazminReader.Open(F("data.jzm")); return r.Query<Customer>(c => c.Name.Contains("Ndlovu")).Count(); }),
 
     new("Parquet",
-        Write: () => { using var s = File.Create(F("data.parquet")); ParquetSerializer.SerializeAsync(people, s).GetAwaiter().GetResult(); },
+        Write: () => { using var s = File.Create(F("data.parquet")); ParquetSerializer.SerializeAsync(People(), s).GetAwaiter().GetResult(); },
         File: "data.parquet",
         ReadAll: () => { using var s = File.OpenRead(F("data.parquet")); return ParquetSerializer.DeserializeAsync<Customer>(s).GetAwaiter().GetResult().Data.Count; },
         Sum: () => ParquetColumn<double>("Balance").Values.Sum(),
@@ -237,7 +255,7 @@ var contenders = new List<Contender>
             using var insert = c.CreateCommand();
             insert.CommandText = "INSERT INTO customers VALUES ($id, $name, $email, $country, $age, $balance, $joined, $active)";
             var ps = new[] { "$id", "$name", "$email", "$country", "$age", "$balance", "$joined", "$active" }.Select(n => insert.Parameters.Add(n, SqliteType.Text)).ToArray();
-            foreach (var p in people)
+            foreach (var p in People())
             {
                 ps[0].Value = p.Id; ps[1].Value = p.Name; ps[2].Value = p.Email; ps[3].Value = p.Country; ps[4].Value = p.Age;
                 ps[5].Value = p.Balance; ps[6].Value = (long)(p.Joined - DateTime.UnixEpoch).TotalMilliseconds; ps[7].Value = p.Active ? 1 : 0;
@@ -269,7 +287,7 @@ var contenders = new List<Contender>
         Contains: () => Sqlite(c => Scalar(c, "SELECT count(*) FROM customers WHERE name LIKE '%Ndlovu%'"))),
 
     new("MessagePack",
-        Write: () => File.WriteAllBytes(F("data.msgpack"), MessagePackSerializer.Serialize(people)),
+        Write: () => File.WriteAllBytes(F("data.msgpack"), MessagePackSerializer.Serialize(People())),
         File: "data.msgpack",
         ReadAll: () => MessagePackSerializer.Deserialize<List<Customer>>(File.ReadAllBytes(F("data.msgpack"))).Count,
         Sum: () => MessagePackSerializer.Deserialize<List<Customer>>(File.ReadAllBytes(F("data.msgpack"))).Sum(c => c.Balance),
@@ -280,6 +298,55 @@ var contenders = new List<Contender>
 
 // ---- run ------------------------------------------------------------------------------------------------------------
 
+// A child process: one operation, once, and how far it raised the working set (KB), sampled on another thread.
+object? Run(Contender c, string measure) => measure switch
+{
+    "write" => Act(c.Write),
+    "readAll" => c.ReadAll(),
+    "sum" => c.Sum(),
+    "lookup" => c.Lookup(),
+    "filter" => c.Filter(),
+    _ => c.Contains(),
+};
+static object? Act(Action action)
+{
+    action();
+    return null;
+}
+
+if (isChild)
+{
+    var c = contenders.First(x => x.Name == child.Name);
+    UseData(child.SmallRows, child.SmallDir);
+    Run(c, child.Measure); // the library's code loaded and compiled
+    UseData(child.Rows, child.Dir);
+    if (child.Measure == "write") People();
+    GC.Collect();
+    GC.WaitForPendingFinalizers();
+    GC.Collect();
+    var before = Environment.WorkingSet;
+    var peak = before;
+    var done = false;
+    var sampler = new Thread(() =>
+    {
+        while (!Volatile.Read(ref done))
+        {
+            var now = Environment.WorkingSet;
+            if (now > peak) peak = now;
+        }
+    }) { IsBackground = true, Priority = ThreadPriority.Highest };
+    sampler.Start();
+    Run(c, child.Measure);
+    Volatile.Write(ref done, true);
+    sampler.Join();
+    peak = Math.Max(peak, Environment.WorkingSet);
+    Console.Write((peak - before) / 1024);
+    return;
+}
+
+var expectedFilter = People().Count(c => c.Country == "NA" && c.Age > 80);
+var expectedContains = People().Count(c => c.Name.Contains("Ndlovu"));
+var expectedSum = People().Sum(c => c.Balance);
 var results = new Dictionary<string, Dictionary<string, string>>();
 foreach (var c in contenders)
 {
@@ -302,6 +369,30 @@ var measures = new (string Key, string Label)[]
 Console.WriteLine("Measure".PadRight(38) + string.Concat(contenders.Select(c => c.Name.PadLeft(13))));
 foreach (var (key, label) in measures)
     Console.WriteLine(label.PadRight(38) + string.Concat(contenders.Select(c => results[c.Name][key].PadLeft(13))));
+
+// Memory: each operation in a process of its own, on the files written above, after the same operation on files of
+// SmallRows rows (written now).
+var fullDir = dir;
+var smallDir = Directory.CreateTempSubdirectory("jazmin-formats-small-").FullName;
+UseData(SmallRows, smallDir);
+foreach (var c in contenders) c.Write();
+UseData(fullRows, fullDir);
+string Memory(string name, string measure)
+{
+    var start = new ProcessStartInfo(Environment.ProcessPath!) { RedirectStandardOutput = true, RedirectStandardError = true };
+    foreach (var a in new[] { "--child", name, measure, fullDir, fullRows.ToString(CultureInfo.InvariantCulture), smallDir, SmallRows.ToString(CultureInfo.InvariantCulture) })
+        start.ArgumentList.Add(a);
+    using var process = Process.Start(start)!;
+    var output = process.StandardOutput.ReadToEnd();
+    var error = process.StandardError.ReadToEnd();
+    process.WaitForExit();
+    if (process.ExitCode != 0 || !long.TryParse(output.Trim(), out var kb)) throw new InvalidOperationException($"{name} {measure} memory: {error.Trim()}");
+    return $"{Math.Max(0, kb) / 1024.0:N1} MB";
+}
+Console.WriteLine();
+Console.WriteLine("Peak memory added".PadRight(38) + string.Concat(contenders.Select(c => c.Name.PadLeft(13))));
+foreach (var (key, label) in measures.Skip(1))
+    Console.WriteLine(label.PadRight(38) + string.Concat(contenders.Select(c => Memory(c.Name, key).PadLeft(13))));
 var gz = new MemoryStream();
 using (var z = new GZipStream(gz, CompressionLevel.Optimal, leaveOpen: true)) z.Write(File.ReadAllBytes(F("data.msgpack")));
 Console.WriteLine($"""
@@ -316,7 +407,8 @@ Notes:
 - MessagePack: MessagePack-CSharp with [Key] attributes (arrays, its fastest form); every query reads the whole file
   (gzipped it would be {gz.Length / 1024:N0} KB).
 """);
-Directory.Delete(dir, true);
+Directory.Delete(fullDir, true);
+Directory.Delete(smallDir, true);
 
 /// <summary>Disposes an IAsyncDisposable at the end of a using block.</summary>
 internal sealed class Closing(IAsyncDisposable target) : IDisposable
