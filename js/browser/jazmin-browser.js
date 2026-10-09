@@ -626,11 +626,22 @@
     const columns = [];
     readMessage(bytes, (f, v) => {
       if (f !== 1) return;
-      const c = { nulls: [], min: [], max: [] };
+      const c = { nulls: [], min: [], max: [], leaves: [] };
       readMessage(v, (cf, cv) => {
         if (cf === 1) c.nulls = readPacked(cv);
         else if (cf === 2) c.min.push(bytesOf(cv));
         else if (cf === 3) c.max.push(bytesOf(cv));
+        else if (cf === 4) { // a nested column's leaf (spec 6.4)
+          const leaf = { path: [], counts: [], nulls: [], min: [], max: [] };
+          readMessage(cv, (lf, lv) => {
+            if (lf === 1) leaf.path = readPacked(lv);
+            else if (lf === 2) leaf.counts = readPacked(lv);
+            else if (lf === 3) leaf.nulls = readPacked(lv);
+            else if (lf === 4) leaf.min.push(bytesOf(lv));
+            else if (lf === 5) leaf.max.push(bytesOf(lv));
+          });
+          c.leaves.push(leaf);
+        }
       });
       columns.push(c);
     });
@@ -757,12 +768,26 @@
     }
   }
 
+  /** Passes over one plain value of a type, making nothing. */
+  function skipPlain(r, type) {
+    if (type !== 'decimal') {
+      r.bytes(r.varUint()); // string, json and binary: a length, then bytes
+      return undefined;
+    }
+    if (r.varUint() > 255) throw new JazminFormatError('Decimal scale is invalid');
+    for (let n = 1; (r.byte() & 0x80) !== 0; n++) if (n >= 19) throw new JazminFormatError('Decimal is too long'); // up to 132 bits
+    return undefined;
+  }
+
+  const MADE_PER_ROW = new Set(['string', 'decimal', 'json', 'binary']); // values worth skipping for rows not returned
+
   /**
    * Decodes a columnar chunk payload into one array of values per column (null for null). `wanted[j] === false`
    * skips column j (left undefined) without decoding it. With `datesAsMs`, datetimes are milliseconds since 1970
-   * instead of Date objects (for column arrays: no object per value).
+   * instead of Date objects (for column arrays: no object per value). With `rows` (by row: truthy for the rows a query
+   * returns), plain text, decimal, json and binary values are made only for those rows; the others are left undefined.
    */
-  function decodeColumnar(raw, types, rowCount, ordinal, wanted, datesAsMs = false) {
+  function decodeColumnar(raw, types, rowCount, ordinal, wanted, datesAsMs = false, rows = null) {
     if (!Number.isSafeInteger(rowCount) || rowCount < 0 || (rowCount > 0 && rowCount > raw.length * 8)) {
       throw new JazminFormatError(`Chunk ${ordinal}: row count does not match its size`);
     }
@@ -772,7 +797,7 @@
       const length = reader.varUint();
       const end = reader.pos + length;
       if (length < 1 || end > raw.length) throw new JazminFormatError(`Chunk ${ordinal}: invalid stream length`);
-      if (!wanted || wanted[j]) columns[j] = decodeStream(raw, reader.pos, end, types[j], rowCount, ordinal, datesAsMs);
+      if (!wanted || wanted[j]) columns[j] = decodeStream(raw, reader.pos, end, types[j], rowCount, ordinal, datesAsMs, rows);
       reader.pos = end;
     }
     if (!reader.eof) throw new JazminFormatError(`Chunk ${ordinal} has trailing bytes`);
@@ -783,7 +808,7 @@
   const streamType = (c) => (isNested(c.type) ? c : c.type);
 
   /** One stream at raw[start, end) (after its length) over `rowCount` entries: one value per entry, null for null. */
-  function decodeStream(raw, start, end, type, rowCount, ordinal, datesAsMs) {
+  function decodeStream(raw, start, end, type, rowCount, ordinal, datesAsMs, rows = null) {
     const r = new Reader(raw.subarray(0, end), start);
     const flags = r.byte();
     if (flags & 0xe0) throw new JazminFormatError(`Chunk ${ordinal}: reserved stream flags are set`);
@@ -799,7 +824,12 @@
     switch (flags & 0x0f) {
       case ENCODING.plain:
         if (datesAsMs && type === 'datetime') for (let i = 0; i < count; i++) values[i] = msFromFile(r.varInt());
-        else for (let i = 0; i < count; i++) values[i] = readPlain(r, type);
+        else if (rows && MADE_PER_ROW.has(type)) {
+          for (let e = 0, i = 0; i < count; e++) {
+            if (isNull(e)) continue;
+            values[i++] = rows[e] ? readPlain(r, type) : skipPlain(r, type);
+          }
+        } else for (let i = 0; i < count; i++) values[i] = readPlain(r, type);
         break;
       case ENCODING.delta: {
         // Numbers while the running sum stays exact; BigInt beyond ±2^53 (as the library's decoder).
@@ -870,11 +900,12 @@
     const part = (child, count) => {
       if (r.pos === end) { // a field added after this chunk was written (spec 5.4): null for each entry
         if (!child.nullable) throw new JazminFormatError(`Chunk ${ordinal}: field '${child.name}' may not be null but has no stream`);
-        return new Array(count).fill(null);
+        return child.unread ? null : new Array(count).fill(null);
       }
       const at = partEnd(r, end, ordinal);
       if (count > (at - r.pos) * 8 + 8) throw new JazminFormatError(`Chunk ${ordinal}: entry count does not match its size`);
-      const values = decodeStream(raw, r.pos, at, streamType(child), count, ordinal, false);
+      // A field a filter does not read (unread) is passed over: its stream has its length.
+      const values = child.unread ? null : decodeStream(raw, r.pos, at, streamType(child), count, ordinal, false);
       r.pos = at;
       return values;
     };
@@ -909,13 +940,14 @@
       }
     } else {
       const parts = column.fields.map((f) => part(f, present));
+      const read = column.fields.flatMap((f, i) => (f.unread ? [] : [i])); // unread fields are left out of the objects
       for (let e = 0, k = 0; e < entries; e++) {
         if (isNull(e)) {
           out[e] = null;
           continue;
         }
         const object = {};
-        column.fields.forEach((f, i) => setField(object, f.name, parts[i][k]));
+        for (const i of read) setField(object, column.fields[i].name, parts[i][k]);
         out[e] = object;
         k++;
       }
@@ -1029,7 +1061,11 @@
       const objects = part.type === 'object';
       const test = objects ? compileFilter(operand, part.fields) : compileFilter({ '': operand }, [{ ...part, name: '' }]);
       if (isMatch) return (row) => row[name] != null && test(row[name]);
-      const check = (item) => (objects ? item != null && test(item) : test({ '': item ?? null }));
+      const probe = { '': null }; // the item itself, filled again for each item (no object per item)
+      const check = objects ? (item) => item != null && test(item) : (item) => {
+        probe[''] = item ?? null;
+        return test(probe);
+      };
       return (row) => Array.isArray(row[name]) && (op === 'any' ? row[name].some(check) : row[name].every(check));
     }
     if ((op === 'eq' || op === 'ne') && (operand === null || operand === undefined)) return condition(column, 'isNull', op === 'eq');
@@ -1084,7 +1120,9 @@
 
   /**
    * A filter as a tree for planning, parsed by the same rules as compileFilter (which checks it first):
-   * { kind: 'and' | 'or', items } | { kind: 'not', item } | { kind: 'leaf', column, op, value } (values as keys).
+   * { kind: 'and' | 'or', items } | { kind: 'not', item } | { kind: 'leaf', column, op, value } (values as keys)
+   * | { kind: 'nested', column, op: 'any' | 'all' | 'match', inner, part } (inner: a plan of `part`, the object's fields
+   * or the list's item, by position; the item itself at position 0).
    */
   function planOf(filter, columns) {
     if (filter === null || filter === undefined) return null;
@@ -1107,6 +1145,13 @@
   }
 
   function planLeaf(column, op, operand) {
+    if (op === 'any' || op === 'all' || op === 'match') {
+      const part = op === 'match' ? column : column.item;
+      const inner = part.type === 'object'
+        ? planOf(operand, part.fields.map((f, i) => ({ ...f, position: i })))
+        : planOf({ '': operand }, [{ ...part, name: '', position: 0 }]);
+      return { kind: 'nested', column, op, inner, part };
+    }
     const leaf = { kind: 'leaf', column, op };
     if ((op === 'eq' || op === 'ne') && (operand === null || operand === undefined)) return { ...leaf, op: 'isNull', value: op === 'eq' };
     if (op === 'isNull') return { ...leaf, value: Boolean(operand) };
@@ -1189,9 +1234,81 @@
 
   function planColumns(plan, into = new Set()) {
     if (!plan) return into;
-    if (plan.kind === 'leaf') into.add(plan.column.position);
+    if (plan.kind === 'leaf' || plan.kind === 'nested') into.add(plan.column.position);
     else (plan.items ?? [plan.item]).forEach((n) => planColumns(n, into));
     return into;
+  }
+
+  /**
+   * Nested column `column` with only the fields a plan's conditions on it read: the others are copies marked `unread`,
+   * whose streams decoding passes over (as filterReads in the library's filter.js). The same definition when the
+   * conditions read every field.
+   */
+  function filterReads(column, plan) {
+    const innerOf = (nodes, position) => {
+      const found = [];
+      const walk = (n) => {
+        if (n.kind === 'nested') {
+          if (n.column.position === position) found.push(n.inner);
+        } else if (n.kind === 'not') walk(n.item);
+        else n.items?.forEach(walk);
+      };
+      nodes.forEach(walk);
+      return found;
+    };
+    const reads = (nodes, position) => {
+      const walk = (n) => (n.kind === 'leaf' || n.kind === 'nested' ? n.column.position === position : n.kind === 'not' ? walk(n.item) : (n.items?.some(walk) ?? false));
+      return nodes.some(walk);
+    };
+    const fieldsRead = (part, nodes) => {
+      if (part.type === 'list') {
+        const item = part.item;
+        const read = item.type === 'object' ? fieldsRead(item, nodes) : isNested(item.type) ? fieldsRead(item, innerOf(nodes, 0)) : item;
+        return read === item ? part : { ...part, item: read };
+      }
+      let same = true;
+      const fields = part.fields.map((f, i) => {
+        const read = !reads(nodes, i) ? { ...f, unread: true } : isNested(f.type) ? fieldsRead(f, innerOf(nodes, i)) : f;
+        if (read !== f) same = false;
+        return read;
+      });
+      return same ? part : { ...part, fields };
+    };
+    return fieldsRead(column, innerOf([plan], column.position));
+  }
+
+  /** The type of the leaf at `path` (field positions; a list's item adds none) in a nested column, or null when none. */
+  function leafType(column, path) {
+    let node = column;
+    for (const step of path) {
+      while (node.type === 'list') node = node.item;
+      if (node.type !== 'object' || !(Number.isInteger(step) && step >= 0 && step < node.fields.length)) return null;
+      node = node.fields[step];
+    }
+    while (node.type === 'list') node = node.item;
+    return isNested(node.type) ? null : node.type;
+  }
+
+  /**
+   * Whether a nested condition may match in a chunk, from the statistics of the leaves its filter reads (spec 6.4):
+   * `any` and `match` need an item or object that may match each condition; `all` may always match (an empty list does).
+   */
+  function nestedMayMatch(node, leafOf, path) {
+    if (node.op === 'all') return true;
+    const step = (position) => (node.part.type !== 'object' ? path : path === '' ? String(position) : `${path},${position}`);
+    const partMayMatch = (n) => {
+      switch (n.kind) {
+        case 'and': return n.items.every(partMayMatch);
+        case 'or': return n.items.some(partMayMatch);
+        case 'not': return true;
+        case 'nested': return nestedMayMatch(n, leafOf, step(n.column.position));
+        default: {
+          const stat = leafOf(step(n.column.position));
+          return !stat || leafMayMatch(n, stat, stat.count);
+        }
+      }
+    };
+    return partMayMatch(node.inner);
   }
 
   function leafMayMatch(leaf, stat, rowCount) {
@@ -1224,12 +1341,20 @@
     }
   }
 
-  /** False when chunk statistics prove no row can match; `stats(col)` gives a column's statistics or undefined. */
-  function mayMatch(node, stats, rowCount) {
+  /**
+   * False when chunk statistics prove no row can match; `stats(col)` gives a column's statistics or undefined, and
+   * `leaves(col, path)` a nested column's leaf's (path: field positions, as "1,0").
+   */
+  function mayMatch(node, stats, rowCount, leaves) {
     switch (node.kind) {
-      case 'and': return node.items.every((n) => mayMatch(n, stats, rowCount));
-      case 'or': return node.items.some((n) => mayMatch(n, stats, rowCount));
+      case 'and': return node.items.every((n) => mayMatch(n, stats, rowCount, leaves));
+      case 'or': return node.items.some((n) => mayMatch(n, stats, rowCount, leaves));
       case 'not': return true;
+      case 'nested': {
+        const stat = stats(node.column.position);
+        if (stat && stat.nulls === rowCount) return false; // every list or object of the chunk is null: none matches
+        return !leaves || nestedMayMatch(node, (path) => leaves(node.column.position, path), '');
+      }
       default: return leafMayMatch(node, stats(node.column.position), rowCount);
     }
   }
@@ -1259,6 +1384,7 @@
       case 'and': return node.items.every((n) => mustMatch(n, stats, rowCount));
       case 'or': return node.items.some((n) => mustMatch(n, stats, rowCount));
       case 'not': return !mayMatch(node.item, stats, rowCount);
+      case 'nested': return false; // statistics bound values, not whether every list has a matching item
       default: return leafMustMatch(node, stats(node.column.position), rowCount);
     }
   }
@@ -1656,7 +1782,7 @@
         }
         return cost > budget ? null : { cost, rows: async () => unionAll(await Promise.all(parts.map((p) => p.rows()))) };
       }
-      case 'not': return null;
+      case 'not': case 'nested': return null;
       default: {
         const lookup = leafLookup(node);
         return lookup ? lookupPlan(node, lookup[0], lookup[1]) : null;
@@ -2151,9 +2277,11 @@
     /**
      * A chunk's columns: `values` by column position (null where not decoded) and the positions decoded. `wanted` (by
      * column position) limits the columns decoded; a column group none of whose columns is wanted is not read.
-     * `datesAsMs` gives datetimes as milliseconds instead of Date objects.
+     * `datesAsMs` gives datetimes as milliseconds instead of Date objects; `types` (by column position) other
+     * definitions to decode with (nested columns with fields left out). A query that decodes a chunk in two passes
+     * passes the same `read` ({ raws: Map, counted }) to both: each section is read and decompressed once.
      */
-    async function chunkColumns(chunk, wanted = null, datesAsMs = false) {
+    async function chunkColumns(chunk, wanted = null, datesAsMs = false, types = null, read = null, rows = null) {
       const values = new Array(table.columnCount).fill(null);
       const decodedCols = [];
       for (let g = 0; g < groups.length; g++) {
@@ -2165,8 +2293,12 @@
         const key = access
           ? await hkdf(concat(chunk.partitionSecret, group.secret), file.salt, `JAZMIN/1/${sectionId}`)
           : await file.key(sectionId, null);
-        const raw = await file.section(chunk.parts[g], sectionId, key, { requireDigest });
-        const cols = decodeColumnar(raw, group.cols.map((c) => streamType(columns[c])), chunk.rowCount, chunk.ordinal, groupWanted, datesAsMs);
+        let raw = read?.raws.get(g);
+        if (!raw) {
+          raw = await file.section(chunk.parts[g], sectionId, key, { requireDigest });
+          read?.raws.set(g, raw);
+        }
+        const cols = decodeColumnar(raw, group.cols.map((c) => types?.[c] ?? streamType(columns[c])), chunk.rowCount, chunk.ordinal, groupWanted, datesAsMs, rows);
         group.cols.forEach((c, j) => {
           if (groupWanted && !groupWanted[j]) return;
           values[c] = cols[j];
@@ -2174,7 +2306,8 @@
         });
       }
       if (file.cost) {
-        file.cost.chunksRead++;
+        if (!read?.counted) file.cost.chunksRead++;
+        if (read) read.counted = true;
         file.cost.columnsDecoded += decodedCols.length;
       }
       return { values, decodedCols };
@@ -2231,13 +2364,38 @@
             segment.chunks.forEach((chunk, i) => {
               chunk.stats[col] = { nulls: e.nulls[i], min: decodeBound(type, e.min[i]), max: decodeBound(type, e.max[i]) };
             });
+            if (e.leaves.length) loadLeafStats(segment, col, e.leaves);
           });
         }
       }
     }
 
+    /** A nested column's leaf statistics for one segment (spec 6.4): each leaf named once, with an entry per chunk. */
+    function loadLeafStats(segment, col, leaves) {
+      const column = columns[col];
+      if (!isNested(column.type)) throw new JazminFormatError('Statistics list fields of a column that has none');
+      const seen = new Set();
+      const n = segment.chunks.length;
+      for (const leaf of leaves) {
+        const type = leafType(column, leaf.path);
+        if (!type) throw new JazminFormatError('Statistics name a field that does not exist');
+        const key = leaf.path.join(',');
+        if (seen.has(key)) throw new JazminFormatError('Statistics name a field twice');
+        seen.add(key);
+        if (leaf.counts.length !== n || leaf.nulls.length !== n || leaf.min.length !== n || leaf.max.length !== n) {
+          throw new JazminFormatError('Statistics do not match the chunk directory');
+        }
+        segment.chunks.forEach((chunk, i) => {
+          if (!(leaf.nulls[i] <= leaf.counts[i])) throw new JazminFormatError('Statistics count more nulls than values');
+          const byPath = ((chunk.leafStats ??= [])[col] ??= new Map());
+          byPath.set(key, { count: Number(leaf.counts[i]), nulls: Number(leaf.nulls[i]), min: decodeBound(type, leaf.min[i]), max: decodeBound(type, leaf.max[i]) });
+        });
+      }
+    }
+
     const statsOf = (chunk) => (col) => chunk.stats[col];
-    const chunkMayMatch = (plan, chunk) => !plan || mayMatch(plan, statsOf(chunk), chunk.rowCount);
+    const leavesOf = (chunk) => (col, path) => chunk.leafStats?.[col]?.get(path);
+    const chunkMayMatch = (plan, chunk) => !plan || mayMatch(plan, statsOf(chunk), chunk.rowCount, leavesOf(chunk));
 
     /** The chunks a scan reads: on the leading sort column, a binary search on chunk statistics; then statistics. */
     function scanList(plan) {
@@ -2362,6 +2520,10 @@
       if (select) for (const name of select) if (!visibleColumns.some((c) => c.name === name)) throw new JazminError(`Unknown column '${name}' in select`);
       const plan = planOf(filter, planColumnsList);
       const { runs, rowIds } = await route(plan);
+      if (match) {
+        yield* filtered(match, plan, runs, rowIds, { offset, limit, select }, sink);
+        return;
+      }
       const wanted = wantedColumns(plan, select);
       let skipped = 0;
       let yielded = 0;
@@ -2394,36 +2556,89 @@
           if (runFrom >= 0) sink(values, runFrom, runTo);
           continue;
         }
-        if (sink) {
-          // A filter: it reads each row as an object, but the values go to the sink from the columns.
-          const { values, decodedCols } = await chunkColumns(chunk, wanted);
-          const count = rowIds === null ? chunk.rowCount : to - from;
-          for (let k = 0; k < count && yielded < limit; k++) {
-            const r = rowIds === null ? k : rowIds[from + k] - chunk.rowStart;
-            if (deletedSet.has(chunk.rowStart + r)) continue;
-            const row = {};
-            for (const i of decodedCols) setField(row, columns[i].name, values[i][r]);
-            if (!match(row)) continue;
-            if (skipped < offset) {
-              skipped++;
-              continue;
-            }
-            yielded++;
-            sink(values, r, r + 1);
-          }
-          continue;
-        }
         const rows = await chunkRows(chunk, wanted);
         const count = rowIds === null ? rows.length : to - from;
         for (let k = 0; k < count; k++) {
           const row = rows[rowIds === null ? k : rowIds[from + k] - chunk.rowStart];
-          if (row === null || (match && !match(row))) continue;
+          if (row === null) continue;
           if (skipped < offset) {
             skipped++;
             continue;
           }
           yield select ? Object.fromEntries(select.map((name) => [name, row[name]])) : row;
           if (++yielded >= limit) return;
+        }
+      }
+    }
+
+    /**
+     * How a filtered query decodes, as the library's reader: the filter's columns first - a nested column the rows
+     * don't return with only the fields the filter reads - and the columns the rows return only for chunks with
+     * matching rows. `returned`: positions of the columns rows return (null: none, as for counting).
+     */
+    function filterDecoding(plan, returned) {
+      const filterCols = [...planColumns(plan)];
+      const filterWanted = Array.from({ length: table.columnCount }, (_, c) => filterCols.includes(c));
+      const restWanted = Array.from({ length: table.columnCount }, (_, c) => !filterWanted[c] && Boolean(returned?.includes(c)));
+      const types = new Array(table.columnCount).fill(null);
+      for (const c of filterCols) if (isNested(columns[c].type) && !returned?.includes(c)) types[c] = filterReads(columns[c], plan);
+      return { filterCols, filterWanted, restWanted, anyRest: restWanted.includes(true), types };
+    }
+
+    /**
+     * The filter's matches in one chunk: positions of its rows (deleted ones left out) that `match` accepts, checked on
+     * one object holding the filter's columns of a row, filled again for each row.
+     */
+    function chunkHits(chunk, values, filterCols, match, probe, rowIds, from, to) {
+      const hits = [];
+      const count = rowIds === null ? chunk.rowCount : to - from;
+      for (let k = 0; k < count; k++) {
+        const r = rowIds === null ? k : rowIds[from + k] - chunk.rowStart;
+        if (deletedSet.has(chunk.rowStart + r)) continue;
+        for (const c of filterCols) setField(probe, columns[c].name, values[c][r]);
+        if (match(probe)) hits.push(r);
+      }
+      return hits;
+    }
+
+    /** Rows matching a filter (see matches), decoded as filterDecoding says. */
+    async function* filtered(match, plan, runs, rowIds, { offset, limit, select }, sink) {
+      const returned = select ? select.map((name) => planColumnsList.find((c) => c.name === name).position) : planColumnsList.map((c) => c.position);
+      const { filterCols, filterWanted, restWanted, anyRest, types } = filterDecoding(plan, returned);
+      const probe = {};
+      let skipped = 0;
+      let yielded = 0;
+      for (const { chunk, from, to } of runs) {
+        if (yielded >= limit) return;
+        // Chunks wholly before the offset whose every row matches are counted, not read.
+        if (rowIds === null && skipped < offset && offset - skipped >= liveRows(chunk) && mustMatch(plan, statsOf(chunk), chunk.rowCount)) {
+          skipped += liveRows(chunk);
+          continue;
+        }
+        const read = { raws: new Map(), counted: false }; // the chunk's sections, read once for both passes
+        const { values } = await chunkColumns(chunk, filterWanted, false, types, read);
+        const hits = chunkHits(chunk, values, filterCols, match, probe, rowIds, from, to);
+        if (!hits.length) continue;
+        if (anyRest) {
+          // The returned columns' text, decimal, json and binary values are made only for the matching rows.
+          const matching = new Uint8Array(chunk.rowCount);
+          for (const r of hits) matching[r] = 1;
+          const more = await chunkColumns(chunk, restWanted, false, null, read, matching);
+          for (let c = 0; c < table.columnCount; c++) if (restWanted[c]) values[c] = more.values[c];
+        }
+        for (const r of hits) {
+          if (skipped < offset) {
+            skipped++;
+            continue;
+          }
+          yielded++;
+          if (sink) sink(values, r, r + 1);
+          else {
+            const row = {};
+            for (const c of returned) setField(row, columns[c].name, values[c][r]);
+            yield row;
+          }
+          if (yielded >= limit) return;
         }
       }
     }
@@ -2547,19 +2762,17 @@
         const plan = planOf(filter, planColumnsList);
         const { runs, rowIds } = await route(plan);
         if (rowIds !== null && answeredExactly(plan)) return rowIds.filter((id) => !deletedSet.has(id)).length;
-        const wanted = wantedColumns(plan, []);
+        // Only the filter's columns are decoded: nested ones with only the fields it reads.
+        const { filterCols, filterWanted, types } = filterDecoding(plan, null);
+        const probe = {};
         let n = 0;
         for (const { chunk, from, to } of runs) {
           if (rowIds === null && mustMatch(plan, statsOf(chunk), chunk.rowCount)) {
             n += liveRows(chunk);
             continue;
           }
-          const rows = await chunkRows(chunk, wanted);
-          const count = rowIds === null ? rows.length : to - from;
-          for (let k = 0; k < count; k++) {
-            const row = rows[rowIds === null ? k : rowIds[from + k] - chunk.rowStart];
-            if (row !== null && match(row)) n++;
-          }
+          const { values } = await chunkColumns(chunk, filterWanted, false, types);
+          n += chunkHits(chunk, values, filterCols, match, probe, rowIds, from, to).length;
         }
         return n;
       },

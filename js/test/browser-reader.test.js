@@ -243,6 +243,52 @@ test('browser reader: filters on nested columns select the rows nested-filters.j
       const found = [];
       for await (const row of reader.find(filter)) found.push(row.id);
       assert.deepEqual(found, ids, `${name}: ${JSON.stringify(filter)}`);
+      const selected = []; // the filter's nested columns decoded with only the fields it reads
+      for await (const row of reader.find(filter, { select: ['id'] })) selected.push(row.id);
+      assert.deepEqual(selected, ids);
+      assert.equal(await reader.count(filter), ids.length);
     }
+  }
+});
+
+test('browser reader: filters on nested columns skip, read and decode as the library does', async () => {
+  // Values that grow with the id, so each chunk of 32 rows holds its own range of them (10 chunks).
+  const columns = [
+    { name: 'id', type: 'int', nullable: false },
+    {
+      name: 'staff', type: 'list', item: {
+        type: 'object', fields: [
+          { name: 'name', type: 'string' }, { name: 'badge', type: 'int' }, { name: 'bio', type: 'string' },
+          { name: 'tags', type: 'list', item: { type: 'string' } },
+        ],
+      },
+    },
+    { name: 'head', type: 'object', fields: [{ name: 'city', type: 'string' }, { name: 'zip', type: 'string' }] },
+  ];
+  const rows = Array.from({ length: 320 }, (_, i) => ({
+    id: i,
+    staff: i % 9 === 0 ? null : [{ name: `S${i}`, badge: i, bio: `bio ${i}`, tags: ['a', `t${i % 3}`] }, { name: `T${i}`, badge: i + 1, bio: null, tags: [] }],
+    head: i % 7 === 0 ? null : { city: `C${Math.floor(i / 32)}`, zip: `${1000 + i}` },
+  }));
+  const bytes = write(null, rows, { columns, chunkRows: 32 });
+  for (const [filter, options] of [
+    [{ staff: { any: { badge: 100 } } }, { select: ['id'] }],
+    [{ staff: { any: { badge: { gt: 300 }, name: { lt: 'T' } } } }, {}],
+    [{ staff: { all: { tags: { any: 'a' } } } }, { select: ['id', 'head'] }],
+    [{ head: { match: { city: 'C5' } } }, { select: ['id'] }],
+    [{ or: [{ staff: { any: { badge: 5 } } }, { head: { match: { zip: '1300' } } }] }, { select: ['id'] }],
+    [{ not: { staff: { any: { bio: null } } } }, { select: ['id'] }],
+  ]) {
+    const library = open(bytes);
+    const { ms: libraryMs, ...expected } = library.explain(filter, { analyze: true, ...options });
+    const reader = await JazminBrowser.open(new Blob([bytes]));
+    const { ms, ...actual } = await reader.explain(filter, { analyze: true, ...options });
+    assert.deepEqual(actual, expected, JSON.stringify(filter));
+    assert.ok(ms >= 0 && libraryMs >= 0);
+    const found = [];
+    for await (const row of reader.find(filter, options)) found.push(row);
+    assert.deepEqual(rowsOf(found), rowsOf([...library.find(filter, options)]), JSON.stringify(filter));
+    assert.equal(await reader.count(filter), library.count(filter));
+    library.close();
   }
 });

@@ -49,6 +49,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     libraries (the browser writer writes them too). 5,000 companies, the names of those with an employee of a given
     id: Node.js 35-40 -> 4.4 ms, peak 80 -> 61 MB; .NET LINQ 13 -> 3 ms, 6 -> 1 MB allocated. They help when a
     field's values are grouped by chunk; files grow 0.4%, and writing takes no measurable longer.
+  - **The browser reader (and the viewer) filter as the library does** (USER-GUIDE 24.2): the filter's columns first,
+    nested ones with only the fields it reads when the rows don't return them; the returned columns only for chunks
+    with matching rows, their text values only for those rows; and the statistics of nested fields to skip chunks. Its
+    reads, chunks and decoded columns now equal the library's for nested filters too. 5,000 companies, the names of
+    those with an employee of a given id: 411 -> 7 ms, peak 197 -> 66 MB; a nested filter whose values are in every
+    chunk: 384 -> 183 ms, 199 -> 113 MB. 200,000 plain rows, 667 returned whole: 240 -> 160 ms, the same peak.
   - **.NET LINQ conditions on nested columns become those filters** (USER-GUIDE 8.3): `Any` and `All` with a
     lambda, `Contains` on a list of values, and member chains such as `o.Ship.City`. They're checked as chunks are
     decoded, with only the fields they and the query read. 5,000 companies: the names of those with an employee of

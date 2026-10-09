@@ -3387,10 +3387,17 @@ const pdf = await reader.readFile('terms.pdf');
 
 **It plans queries as the library does** (sections 9.7 and 9.8):
 
-- **What it uses:** chunk statistics, a binary search on the file's first
-  `sortedBy` column, and offsets that skip whole chunks. For files that aren't
-  access-controlled, it also uses sorted and trigram indexes, with the same
-  cost rules.
+- **What it uses:** chunk statistics (of the fields inside nested columns
+  too), a binary search on the file's first `sortedBy` column, and offsets
+  that skip whole chunks. For files that aren't access-controlled, it also
+  uses sorted and trigram indexes, with the same cost rules.
+- **What it decodes:** a filter's columns first, nested ones with only the
+  fields the filter reads when the rows don't return them; the columns it
+  returns only for chunks with matching rows, and their text values only for
+  those rows. On 5,000 companies with departments, employees and projects,
+  finding those with an employee of a given id takes 7 ms and 66 MB instead
+  of 411 ms and 197 MB; on 200,000 plain rows, returning 667 whole rows takes
+  160 ms instead of 240 ms.
 - **What that saves:** a query reads the same chunks it would in Node. For
   example, one account's page in a 9.7 MB file reads 85 KB rather than the
   whole file.
