@@ -1298,7 +1298,91 @@ rows, two columns:
 
 ---
 
-## 10. Security guide
+### 9.12 Other formats, for reference: Parquet, Arrow, SQLite, MessagePack
+
+How JAZMIN compares with formats built for other jobs, on the same 200,000
+customers as sections 9.1 and 9.2. These are for reference: they show where
+JAZMIN is strong, and what it can work towards.
+
+| Format | What it's for | Library used |
+|---|---|---|
+| **Parquet** | Columnar files for analytics | Node: hyparquet and hyparquet-writer. .NET: Parquet.Net |
+| **Arrow IPC** | Columns as they are in memory, shared without copying | apache-arrow; Apache.Arrow |
+| **SQLite** | An embedded SQL database with B-tree indexes | node:sqlite; Microsoft.Data.Sqlite |
+| **MessagePack** | Binary JSON: a whole document in one go | msgpackr; MessagePack-CSharp |
+
+- **Same work for every format:** the same rows, written to a file and
+  queried from that file. Each query opens the file, as JAZMIN's do. Every
+  answer is checked against the expected one.
+- **Each library is used as it documents, with its defaults:**
+  - JAZMIN is deflate with 3 indexes (id, name trigram, country);
+  - SQLite has the same id and country indexes;
+  - Parquet and Arrow have no indexes; their queries read only the columns
+    they need, and the Node Parquet reader skips row groups by their
+    statistics.
+- **Machine and timing:** the same laptop as sections 9.1 and 9.2, measured on
+  9 October 2026 while about a third of it was busy with other work. Each cell
+  is the best of 2 or 3 runs, each run the best of 3 after a warm-up.
+  Compare across a row; the figures in 9.1 and 9.2 were measured on a quiet
+  machine.
+- **Run them yourself:**
+  - Node: `npm install` then `npm run bench` in `js/bench/formats`;
+  - .NET: `dotnet run -c Release --project bench/Jazmin.FormatBenchmarks` in
+    `dotnet/`.
+
+  They are kept apart from the libraries, so neither package depends on
+  these formats.
+
+**Node.js 24:**
+
+| Measure | JAZMIN | Parquet | Arrow IPC | SQLite | MessagePack |
+|---|---:|---:|---:|---:|---:|
+| File size | **2,227 KB** | 2,935 KB | 12,027 KB | 15,340 KB | 21,626 KB |
+| Write every row | 483 ms | 551 ms | 633 ms | 456 ms | **124 ms** |
+| Read every row (objects) | **109 ms** | 158 ms | 612 ms | 717 ms | 255 ms |
+| Sum one column | 30.6 ms | 32.3 ms | **15.4 ms** | 29.8 ms | 265.8 ms |
+| Find one row by id (open → row) | 4.3 ms | 105.0 ms | 14.2 ms | **1.1 ms** | 207.5 ms |
+| Filter: country = NA, age > 80 | 23.9 ms | 77.2 ms | **14.6 ms** | 27.0 ms | 243.0 ms |
+| Text search: name contains 'Ndlovu' | 35.0 ms | **23.4 ms** | 27.7 ms | 28.1 ms | 237.1 ms |
+
+**.NET 10:**
+
+| Measure | JAZMIN | Parquet | Arrow IPC | SQLite | MessagePack |
+|---|---:|---:|---:|---:|---:|
+| File size | **2,232 KB** | 3,659 KB | 13,980 KB | 15,340 KB | 11,872 KB |
+| Write every row | 214 ms | 226 ms | 135 ms | 623 ms | **41 ms** |
+| Read every row (objects) | **91 ms** | 264 ms | 671 ms | 320 ms | 107 ms |
+| Sum one column | 31.4 ms | **5.9 ms** | 13.8 ms | 25.4 ms | 111.2 ms |
+| Find one row by id (open → row) | 1.7 ms | 193.3 ms | 11.0 ms | **0.9 ms** | 89.5 ms |
+| Filter: country = NA, age > 80 | 10.6 ms | 25.7 ms | **8.9 ms** | 22.6 ms | 95.7 ms |
+| Text search: name contains 'Ndlovu' | 20.2 ms | 23.7 ms | **17.1 ms** | 28.4 ms | 91.9 ms |
+
+**Where JAZMIN leads:**
+- **Smallest file in both, with its 3 indexes:** Parquet's is a third to two
+  thirds larger, with none. Arrow and SQLite files are 5-7 times larger, MessagePack's 5-10
+  times.
+- **Fastest to read every row**, in both.
+- **Finding one row by id:** second only to SQLite's B-tree, and 3-110 times
+  faster than the formats without an index.
+- **The only one with keys, encryption and per-key access** (sections 10 and
+  15).
+
+**What it can work towards** (TASKS P-25):
+- **Finding one row by id:** SQLite takes 0.9-1.1 ms, JAZMIN 1.7 ms in .NET
+  and 4.3 ms in Node.
+- **Sums and simple filters over a column:**
+  - Arrow keeps its columns uncompressed, as they are in memory, and is up to
+    about twice as fast here.
+  - Parquet.Net reads one Snappy-compressed column in 5.9 ms where JAZMIN
+    takes 31 ms.
+  - JAZMIN decompresses deflate chunks to save space (memory first,
+    section 20.4).
+- **Text search for a common word:** an eighth of the names contain
+  'Ndlovu', and there the trigram index is slower than a plain scan. In Node,
+  every other format's scan is faster; in .NET, Arrow's is.
+- **Writing:** MessagePack writes 4-5 times faster. It stores a document as it
+  is, with no columns, compression or indexes to build.
+
 
 **What is protected.** In an encrypted file, the data, column names and
 types, metadata and indexes are all encrypted and authenticated. The

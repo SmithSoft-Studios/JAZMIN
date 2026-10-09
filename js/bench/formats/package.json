@@ -1,0 +1,15 @@
+{
+  "name": "jazmin-bench-formats",
+  "private": true,
+  "type": "module",
+  "description": "JAZMIN beside other formats, for reference: Parquet, Arrow, SQLite and MessagePack (USER-GUIDE 9.12)",
+  "scripts": {
+    "bench": "node --expose-gc formats.mjs"
+  },
+  "dependencies": {
+    "apache-arrow": "21.2.0",
+    "hyparquet": "1.31.3",
+    "hyparquet-writer": "0.16.11",
+    "msgpackr": "2.1.0"
+  }
+}

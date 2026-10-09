@@ -93,6 +93,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     (`JazminChangesResult`: `Conflicts`, `Refused`); `JazminReader.FileId` and `Access.KeyId`. Change files are read
     across the libraries (fixtures `*-edit-key.jzm`, `*-edit-changes.jzm`).
 
+- **A reference benchmark beside Parquet, Arrow IPC, SQLite and MessagePack** (USER-GUIDE 9.12), in Node.js
+  (`js/bench/formats`) and .NET (`dotnet/bench/Jazmin.FormatBenchmarks`), kept apart from the libraries. JAZMIN
+  makes the smallest files (with its indexes) and reads every row fastest. SQLite finds one row by id faster, and
+  Arrow and Parquet sum and filter single columns faster: those gaps are TASKS P-25.
+
 ### Fixed
 - **Filters:** `{ "column": null }` (and `{ "ne": null }`) works for json and binary columns too, as spec 9.1 says;
   both libraries refused it. .NET reads whole numbers in JSON filters as integers, so ids beyond 2^53 compare

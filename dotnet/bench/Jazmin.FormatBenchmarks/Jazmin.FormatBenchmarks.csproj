@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    JAZMIN beside other formats, for reference (USER-GUIDE 9.12). Not in Jazmin.slnx, so CI and the library's builds
+    don't fetch these packages: run it on demand from dotnet/ (USER-GUIDE 9.12 gives the command).
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Comparison only: the Jazmin library itself depends on none of these. -->
+    <PackageReference Include="Apache.Arrow" Version="23.0.0" />
+    <PackageReference Include="MessagePack" Version="3.1.11" />
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+    <PackageReference Include="Parquet.Net" Version="6.1.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Jazmin\Jazmin.csproj" />
+  </ItemGroup>
+
+</Project>
