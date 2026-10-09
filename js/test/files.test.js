@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { JazminFormatError, JazminKey, JazminValidationError, append, compact, open, update, write } from '../src/index.js';
+import { JazminFormatError, JazminKey, JazminValidationError, append, checkPageSettings, compact, open, update, write } from '../src/index.js';
 import { readActions } from '../src/files.js';
 
 const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-files-'));
@@ -202,6 +202,17 @@ test('files carry what viewers may do with them (actions): checked when written,
   assert.throws(() => withActions({ pdf: { format: 'B5' } }), /actions\.pdf\.format: 'B5' is not one of/);
   assert.throws(() => withActions({ pdf: null }), /actions\.pdf must be an object/);
   assert.throws(() => withActions([]), /actions must be an object/);
+});
+
+test('checkPageSettings: a clean copy of page settings, nothing a browser would take besides', () => {
+  const given = { format: 'A5', margin: { top: '1cm' }, landscape: true };
+  const checked = checkPageSettings(given);
+  assert.deepEqual(checked, given);
+  checked.margin.top = '2cm';
+  assert.equal(given.margin.top, '1cm'); // a copy
+  assert.throws(() => checkPageSettings({ format: 'A4', path: 'C:/Windows/x.pdf' }), /Page settings: unknown setting 'path'/);
+  assert.throws(() => checkPageSettings({ scale: 9 }), /Page settings\.scale/);
+  assert.throws(() => checkPageSettings(null), /Page settings must be an object/);
 });
 
 test('readers take the actions they know: later ones, and wrong types, are left out', () => {

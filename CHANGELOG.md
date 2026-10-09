@@ -73,8 +73,9 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   - **The document API:** `jazmin.mode` (`'view'`, or `'print'` when rendered), `jazmin.filter`,
     `jazmin.actions`, `jazmin.setActions()` and `jazmin.savePdf()`; `jazmin.print()` follows the actions.
   - **JavaScript:** `renderPdf({ filter })` renders one document per account (or any filter) from one file, with
-    the page settings of the package, the page's file and the page itself; `renderImage()` makes a PNG or JPEG;
-    `portableHtml()` makes the viewer's "Save as HTML" page without a browser.
+    the page settings of the package, the page's file and the page itself, over `pdfDefaults` (a viewer's paper
+    size); `checkPageSettings()` cleans settings a page asks for before they reach a browser; `renderImage()` makes
+    a PNG or JPEG; `portableHtml()` makes the viewer's "Save as HTML" page without a browser.
 
 ### Fixed
 - **Filters:** `{ "column": null }` (and `{ "ne": null }`) works for json and binary columns too, as spec 9.1 says;

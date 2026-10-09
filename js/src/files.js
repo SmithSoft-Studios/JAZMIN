@@ -175,6 +175,14 @@ const CSS_LENGTH = /^(?:0|\d+(?:\.\d+)?(?:px|in|cm|mm))$/;
  * bottom, left }, scale, printBackground }, each optional; checked here, so a file never holds settings a browser
  * would refuse.
  */
+/**
+ * Page settings checked as a writer checks package.pdf: a clean copy with only the settings browsers take, or a
+ * JazminValidationError. For settings from untrusted places (a page's jazmin.savePdf) before they reach a browser.
+ */
+export function checkPageSettings(settings) {
+  return normalizePdf(settings, 'Page settings');
+}
+
 export function normalizePdf(pdf, where = 'package.pdf') {
   if (pdf === null || typeof pdf !== 'object' || Array.isArray(pdf)) throw new JazminValidationError(`${where} must be an object`);
   const out = {};

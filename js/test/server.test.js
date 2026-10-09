@@ -264,6 +264,12 @@ for (const { name, browser } of drivers) {
     near(await renderPdf({ file: pages, browser, entry: 'own.html' }), [1191, 842]); // A3, landscape
     near(await renderPdf({ file: pages, browser, entry: 'own.html', pdf: { landscape: false } }), [842, 1191]);
     await assert.rejects(renderPdf({ file: pages, browser, entry: 'bad.html' }), /The page's jazmin\.setActions pdf\.format: 'Z9'/);
+    // A viewer's defaults (pdfDefaults) count only where the document sets nothing: the package's Letter wins here.
+    near(await renderPdf({ file: pages, browser, entry: 'file.html', pdfDefaults: { format: 'A3', landscape: false } }), [595, 420]);
+    const bare = path.join(temp, `bare-${name.split(' ')[0]}.jzm`);
+    write(bare, rows, { files: [{ path: 'index.html', content: '<p>bare</p>' }], package: { entry: 'index.html' } });
+    near(await renderPdf({ file: bare, browser, waitFor: 'load', pdfDefaults: { format: 'A5', landscape: true } }), [595, 420]);
+    await assert.rejects(renderPdf({ file: bare, browser, waitFor: 'load', pdfDefaults: { format: 'A5', path: 'x.pdf' } }), /pdfDefaults: unknown setting 'path'/);
 
     // An image of it: PNG, the viewport's width.
     const png = await renderImage({ file, browser, viewport: { width: 640, height: 400 } });

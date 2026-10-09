@@ -280,12 +280,14 @@ const within = (scope, filter) => (scope ? (filter ? { and: [scope, filter] } : 
 
 /**
  * Opens a file's document in a browser you supply and hands the loaded page to `capture(tab, pdf)`, which makes the
- * output (a PDF, an image); pdf is the page settings for the page shown (package, file, page's own, in that order). The page gets the viewer's window.jazmin API (mode 'print'), answered from the file
+ * output (a PDF, an image); pdf is the page settings for the page shown (defaults, package, file, page's own, in that
+ * order). The page gets the viewer's window.jazmin API (mode 'print'), answered from the file
  * here, limited to `filter` when one is given; only the package's files and its allowed origins are reachable
  * (everything else is refused), and it runs in a context of its own, closed afterwards.
  */
-async function renderDocument({ file, key, password, unlockToken, table, entry, browser, filter = null, viewport, waitFor = 'ready', timeout = 30000, onReady, onDownload } = {}, what, capture) {
+async function renderDocument({ file, key, password, unlockToken, table, entry, browser, filter = null, viewport, waitFor = 'ready', timeout = 30000, onReady, onDownload, pdfDefaults } = {}, what, capture) {
   if (!browser || typeof browser.newPage !== 'function') throw new JazminValidationError(`${what} needs a Puppeteer or Playwright browser`);
+  const defaults = pdfDefaults == null ? {} : normalizePdf(pdfDefaults, 'pdfDefaults');
   const own = !(file instanceof JazminReader);
   const reader = own ? new JazminReader(file, { key, password, unlockToken, table }) : file;
   let context = null;
@@ -391,6 +393,7 @@ async function renderDocument({ file, key, password, unlockToken, table, entry, 
     const fileActions = reader.files.find((f) => f.path === shown)?.actions ?? {};
     const fromPage = await tab.evaluate(() => window[Symbol.for('jazmin.pagePdf')] ?? null);
     const pdf = {
+      ...defaults,
       ...(settings.pdf ?? {}),
       ...(typeof fileActions.pdf === 'object' ? fileActions.pdf : {}),
       ...(fromPage === null ? {} : normalizePdf(fromPage, 'The page\'s jazmin.setActions pdf')),
@@ -410,11 +413,13 @@ async function renderDocument({ file, key, password, unlockToken, table, entry, 
  * runs in a context of its own, closed afterwards. Resolves when the document calls jazmin.ready() (or, with
  * waitFor: 'load', when it has loaded), with the PDF as a Buffer.
  *   options: { file (a path, a Buffer or a JazminReader), key, password, unlockToken, table, entry, browser,
- *              filter (the document sees only these rows: jazmin.filter), pdf (the browser's PDF options), waitFor
+ *              filter (the document sees only these rows: jazmin.filter), pdfDefaults (page settings for documents
+ *              that don't set them: a viewer's paper size, say), pdf (the browser's PDF options), waitFor
  *              ('ready' | 'load'), timeout (ms), onReady(info), onDownload({ filename, type, bytes }) }
- * Page settings, each over the ones before: A4 with backgrounds; the package's (package.pdf); the page's file's
- * (actions.pdf); the page's own (jazmin.setActions({ pdf })); options.pdf. A file's actions steer viewers: renderPdf
- * renders a page whose file says pdf: false (the caller has the key, and decides).
+ * Page settings, each over the ones before: A4 with backgrounds; pdfDefaults; the package's (package.pdf); the page's
+ * file's (actions.pdf); the page's own (jazmin.setActions({ pdf })); options.pdf. Settings from untrusted places (a
+ * page's jazmin.savePdf) go through checkPageSettings before they become options.pdf. A file's actions steer viewers:
+ * renderPdf renders a page whose file says pdf: false (the caller has the key, and decides).
  */
 export function renderPdf(options = {}) {
   return renderDocument(options, 'renderPdf', (tab, pdf) => tab.pdf({ format: 'A4', printBackground: true, ...pdf, ...(options.pdf ?? {}) }));

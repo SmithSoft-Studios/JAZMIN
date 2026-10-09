@@ -759,6 +759,8 @@ export interface RenderPdfOptions {
   browser: unknown;
   /** The document sees only these rows (jazmin.filter): one PDF per account, say. */
   filter?: Filter;
+  /** Page settings for documents that don't set their own (a viewer's paper size, say): under the package's. */
+  pdfDefaults?: PdfSettings;
   /**
    * The browser's PDF options, over the page settings: the package's (package.pdf), the page's file's (actions.pdf),
    * and the page's own (jazmin.setActions). Default A4, with backgrounds.
@@ -780,7 +782,14 @@ export interface RenderPdfOptions {
  */
 export function renderPdf(options: RenderPdfOptions): Promise<Buffer>;
 
-export interface RenderImageOptions extends Omit<RenderPdfOptions, 'pdf'> {
+/**
+ * Page settings checked as a writer checks package.pdf: a clean copy with only the settings browsers take. Throws
+ * JazminValidationError otherwise. For settings from untrusted places (a page's jazmin.savePdf) before they reach a
+ * browser.
+ */
+export function checkPageSettings(settings: PdfSettings): PdfSettings;
+
+export interface RenderImageOptions extends Omit<RenderPdfOptions, 'pdf' | 'pdfDefaults'> {
   /** CSS pixels (default 1200 x 800). */
   viewport?: { width: number; height: number };
   /** The browser's screenshot options (default PNG, the whole page). */

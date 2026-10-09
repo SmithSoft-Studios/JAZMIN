@@ -2456,10 +2456,15 @@ for (const account of ['A1', 'A2', 'A3']) {
 }
 ```
 
-- **Page settings,** each over the ones before: A4 with backgrounds; the
+- **Page settings,** each over the ones before: A4 with backgrounds;
+  `pdfDefaults` (your paper size for documents that don't set one); the
   package's (`package.pdf`); the page's file's (`actions.pdf`); what the
   page set with `jazmin.setActions({ pdf })`; and `pdf` here. `renderPdf`
   renders a page whose file says `pdf: false`: you hold the key, and decide.
+- **Settings from a page** (what it passes to `jazmin.savePdf`, say) are
+  untrusted: pass them through `checkPageSettings(settings)` before using
+  them as `pdf`. It returns a clean copy with only the page settings, or
+  throws, so a page can't hand the browser other options.
 - **An image instead:** `renderImage({ file, key, browser, viewport: { width:
   1200, height: 800 } })` gives a PNG of the whole page (`image: { type:
   'jpeg', quality: 80 }` for JPEG).
