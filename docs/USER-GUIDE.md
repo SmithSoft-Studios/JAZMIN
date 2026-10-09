@@ -1187,7 +1187,8 @@ whether indexes can do better:
 - **A few rows of a chunk are decoded on their own** (Node and the browser
   reader, from 1.4). When an index names only a few rows of a chunk, or only
   a few of its rows match, just their values are decoded. The values between
-  them are stepped over without being made.
+  them are stepped over without being made. .NET reads each column only as
+  far as the last row a query needs.
 
 `explain(filter)` shows the choice (`strategy: 'index'` or `'scan'`), and
 `{ analyze: true }` shows what it read (section 9.6).
@@ -1340,7 +1341,7 @@ JAZMIN is strong, and what it can work towards.
   Compare across a row; the figures in 9.1 and 9.2 were measured on a quiet
   machine. Some rows were measured again later the same day, after changes
   of 1.4 (section 9.8), each as the best of 2 runs: the text search rows,
-  and, on a quieter machine, Node's "Find one row by id" rows.
+  and, on a quieter machine, the "Find one row by id" rows.
 - **Memory:** each operation runs in a process of its own.
   - It runs first on a file of 1,000 rows, so the library's code is loaded and
     compiled.
@@ -1376,7 +1377,7 @@ JAZMIN is strong, and what it can work towards.
 | Write every row | 214 ms | 226 ms | 135 ms | 623 ms | **41 ms** |
 | Read every row (objects) | **91 ms** | 264 ms | 671 ms | 320 ms | 107 ms |
 | Sum one column | 31.4 ms | **5.9 ms** | 13.8 ms | 25.4 ms | 111.2 ms |
-| Find one row by id (open → row) | 1.7 ms | 193.3 ms | 11.0 ms | **0.9 ms** | 89.5 ms |
+| Find one row by id (open → row) | 1.2 ms | 133.7 ms | 6.5 ms | **0.6 ms** | 61.3 ms |
 | Filter: country = NA, age > 80 | 10.6 ms | 25.7 ms | **8.9 ms** | 22.6 ms | 95.7 ms |
 | Text search: name contains 'Ndlovu' | 17.6 ms | 16.5 ms | **10.7 ms** | 21.1 ms | 50.5 ms |
 
@@ -1398,7 +1399,7 @@ JAZMIN is strong, and what it can work towards.
 | Write every row | 72.7 MB | 58.0 MB | 48.0 MB | **18.2 MB** | 23.8 MB |
 | Read every row (objects) | 58.7 MB | 94.4 MB | 72.0 MB | **14.3 MB** | 55.7 MB |
 | Sum one column | 16.2 MB | 10.5 MB | 14.1 MB | **1.8 MB** | 56.1 MB |
-| Find one row by id (open → row) | 6.3 MB | 84.5 MB | 13.8 MB | **0.1 MB** | 55.7 MB |
+| Find one row by id (open → row) | 0.7 MB | 88.7 MB | 13.8 MB | **0.1 MB** | 55.7 MB |
 | Filter: country = NA, age > 80 | 26.1 MB | 27.4 MB | 15.4 MB | **1.8 MB** | 55.7 MB |
 | Text search: name contains 'Ndlovu' | 33.7 MB | 33.7 MB | 23.6 MB | **1.8 MB** | 55.7 MB |
 
@@ -1413,7 +1414,7 @@ are another matter in Node (282 MB, for its row objects).
 - **Fastest to read every row**, in both, and in Node with the least memory
   (76 MB, against 102-283 MB).
 - **Little memory for queries that use its indexes or statistics:** finding
-  one row takes 0.3 MB in Node and 6.3 MB in .NET; Parquet and MessagePack take
+  one row takes 0.3 MB in Node and 0.7 MB in .NET; Parquet and MessagePack take
   56-151 MB, reading the whole file or the column first.
 - **Finding one row by id:** second only to SQLite's B-tree, and 3-110 times
   faster than the formats without an index.
@@ -1421,13 +1422,16 @@ are another matter in Node (282 MB, for its row objects).
   15).
 
 **What it can work towards** (TASKS P-25):
-- **Finding one row by id:** SQLite takes 0.7-1.1 ms. JAZMIN takes 1.7 ms in
+- **Finding one row by id:** SQLite takes 0.6-1.1 ms. JAZMIN takes 1.2 ms in
   .NET and 1.9 ms in Node.
   - In 1.4 Node decodes only the row's values (section 9.8): 2.7 -> 1.9 ms
     side by side with the code before, and 1.15 -> 0.70 ms once Node has
     optimised the code, as fast as SQLite.
   - Most of what is left in Node is the library being compiled on its first
-    calls. In .NET a lookup takes 0.6 ms once warm.
+    calls.
+  - In 1.4 .NET decodes a lookup's chunk on the query's thread and reads each
+    column only as far as the row: 1.6 -> 1.2 ms here, and 0.63 -> 0.49 ms
+    for a LINQ lookup once warm.
 - **Sums and simple filters over a column:**
   - Arrow keeps its columns uncompressed, as they are in memory, and is up to
     about twice as fast here.

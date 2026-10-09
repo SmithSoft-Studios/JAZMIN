@@ -218,8 +218,10 @@ internal static class Columnar
     /// Decodes a columnar payload into typed columns (no boxing): values are boxed only when read with
     /// <see cref="DecodedColumn.Get"/>. Columns with <paramref name="wanted"/>[j] false are skipped and left null. With
     /// <paramref name="rows"/>, plain text, decimal, json and binary values are made only for the rows it marks (the rows
-    /// a query returns); the others are passed over and left null. The payload starts at offset (a nested column's streams
-    /// are decoded in place), and schema gives the columns by position: the structure of list and object columns (5.4).
+    /// a query returns); the others are passed over and left null. Values after the last row it marks are not read (nor
+    /// checked: whole streams are checked when every row is decoded), so a lookup reads each column only as far as its
+    /// row. The payload starts at offset (a nested column's streams are decoded in place), and schema gives the columns
+    /// by position: the structure of list and object columns (5.4).
     /// </summary>
     public static DecodedColumn?[] DecodeTyped(byte[] raw, int rawLength, IReadOnlyList<JazminType> types, int rowCount, int ordinal, bool[]? wanted = null, StringPool? strings = null,
         bool[]? rows = null, int offset = 0, IReadOnlyList<JazminColumn>? schema = null)
@@ -228,6 +230,7 @@ internal static class Columnar
         if (rowCount < 0 || (rowCount > 0 && rowCount > (long)(rawLength - offset) * 8)) throw new JazminFormatException($"Chunk {ordinal}: row count does not match its size");
         var reader = new ByteReader(raw, offset, rawLength);
         var columns = new DecodedColumn?[types.Count];
+        var last = rows is null ? rowCount - 1 : Array.LastIndexOf(rows, true); // the last row read
         for (var j = 0; j < types.Count; j++)
         {
             var length = reader.VarUInt();
@@ -277,6 +280,7 @@ internal static class Columnar
                     for (var i = 0; i < count; i++)
                     {
                         var r = NextRow();
+                        if (r > last) break;
                         if (rows[r]) column.ReadPlain(r, reader, strings);
                         else column.SkipPlain(r, reader);
                     }
@@ -287,9 +291,11 @@ internal static class Columnar
                     long previous = 0;
                     for (var i = 0; i < count; i++)
                     {
+                        var r = NextRow();
+                        if (r > last) break;
                         var d = reader.VarInt();
                         previous = i == 0 ? d : unchecked(previous + d);
-                        longs[NextRow()] = previous;
+                        longs[r] = previous;
                     }
                     break;
                 }
@@ -304,9 +310,11 @@ internal static class Columnar
                     var texts = ((StringValues)column).Values;
                     for (var i = 0; i < count; i++)
                     {
+                        var r = NextRow();
+                        if (r > last) break;
                         var id = reader.VarUInt();
                         if (id >= k) throw new JazminFormatException($"Chunk {ordinal}: dictionary index out of range");
-                        texts[NextRow()] = entries[(int)id];
+                        texts[r] = entries[(int)id];
                     }
                     break;
                 }
@@ -314,7 +322,12 @@ internal static class Columnar
                 {
                     var bits = reader.Bytes((count + 7) >> 3);
                     var bools = ((BoolValues)column).Values;
-                    for (var i = 0; i < count; i++) bools[NextRow()] = (bits[i >> 3] & (1 << (i & 7))) != 0;
+                    for (var i = 0; i < count; i++)
+                    {
+                        var r = NextRow();
+                        if (r > last) break;
+                        bools[r] = (bits[i >> 3] & (1 << (i & 7))) != 0;
+                    }
                     break;
                 }
                 case Scaled:
@@ -322,6 +335,8 @@ internal static class Columnar
                     var doubles = ((DoubleValues)column).Values;
                     for (var i = 0; i < count; i++)
                     {
+                        var r = NextRow();
+                        if (r > last) break;
                         var s = reader.Byte();
                         double v;
                         if (s == 255) v = reader.Float64();
@@ -332,12 +347,13 @@ internal static class Columnar
                             v = m / Pow10[s];
                         }
                         else throw new JazminFormatException($"Chunk {ordinal}: invalid scale {s}");
-                        doubles[NextRow()] = v;
+                        doubles[r] = v;
                     }
                     break;
                 }
             }
-            if (reader.Position != end) throw new JazminFormatException($"Chunk {ordinal}: stream length does not match its contents");
+            if (last < rowCount - 1 && reader.Position <= end) reader.Skip(end - reader.Position); // stopped after the last row read
+            else if (reader.Position != end) throw new JazminFormatException($"Chunk {ordinal}: stream length does not match its contents");
             columns[j] = column;
         }
         if (reader.Position != rawLength) throw new JazminFormatException($"Chunk {ordinal} has trailing bytes");

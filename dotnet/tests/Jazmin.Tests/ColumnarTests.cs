@@ -156,6 +156,49 @@ public class ColumnarTests
     }
 
     [Fact]
+    public void DecodingTheRowsAQueryNeeds_GivesThemAsAFullDecodeDoes_AndStopsAfterTheLast()
+    {
+        var random = new Random(5);
+        const int rows = 600;
+        // Values shaped for each encoding: sorted numbers (delta), scattered ones (plain), repeated text (dictionary).
+        object? Value(JazminType type, int i, bool repeat) => i % 7 == 3 ? null : type switch
+        {
+            JazminType.Int => repeat ? (long)i * 3 : (long)random.Next(-1_000_000, 1_000_000),
+            JazminType.DateTime => repeat ? 1_700_000_000_000L + i * 60_000L : 1_700_000_000_000L + random.Next(),
+            JazminType.Float => repeat ? random.Next(100_000) / 100.0 : random.NextDouble() * 1e9,
+            JazminType.Bool => random.Next(2) == 0,
+            JazminType.String => repeat ? new[] { "ZA", "NA", "BW" }[i % 3] : $"unique {i} 👋",
+            JazminType.Decimal => repeat ? new[] { "1.50", "-0.05", "12" }[i % 3] : $"{i}.{i % 100:D2}",
+            JazminType.Json => "{\"i\":" + i + "}",
+            _ => new[] { (byte)i, (byte)(i >> 8) },
+        };
+        bool[] Mask(Func<int, bool> f) => Enumerable.Range(0, rows).Select(f).ToArray();
+        static object? Plain(object? v) => v is System.Text.Json.Nodes.JsonNode node ? node.ToJsonString() : v; // json: by its text
+        var masks = new[] { Mask(_ => false), Mask(r => r == 0), Mask(r => r == rows - 1), Mask(r => r is 5 or 77 or 310), Mask(r => r % 3 == 1) };
+        foreach (var type in Enum.GetValues<JazminType>().Where(t => !TypeNames.IsNested(t))) // lists and objects: NestedColumnTests
+        {
+            foreach (var repeat in new[] { true, false })
+            {
+                // A second column after it: stopping early must still find where the next stream starts.
+                var values = Enumerable.Range(0, rows).Select(i => Value(type, i, repeat)).ToList();
+                var after = Enumerable.Range(0, rows).Select(i => (object?)(long)(i * i)).ToList();
+                var raw = Columnar.Encode([type, JazminType.Int], [values, after], rows);
+                var full = Columnar.DecodeTyped(raw, raw.Length, [type, JazminType.Int], rows, 0);
+                foreach (var mask in masks)
+                {
+                    var some = Columnar.DecodeTyped(raw, raw.Length, [type, JazminType.Int], rows, 0, rows: mask);
+                    for (var r = 0; r < rows; r++)
+                    {
+                        if (!mask[r]) continue;
+                        Assert.Equal(Plain(full[0]!.Get(r)), Plain(some[0]!.Get(r)));
+                        Assert.Equal(full[1]!.Get(r), some[1]!.Get(r));
+                    }
+                }
+            }
+        }
+    }
+
+    [Fact]
     public void ParallelAndSequentialWriters_ProduceTheSameData()
     {
         var owner = JazminKey.Generate();

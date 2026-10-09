@@ -1473,7 +1473,14 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
         public DecodedChunk Decode(byte[] raw, int rawLength, JazminType[] types, int rowCount, int ordinal, StringPool strings, IReadOnlyList<JazminColumn> schema)
         {
-            var columns = Columnar.DecodeTyped(raw, rawLength, types, rowCount, ordinal, _filterColumns, strings, schema: schema);
+            // With index candidates, the filter's columns are read only as far as the last candidate.
+            bool[]? candidates = null;
+            if (_rowIds is not null && _runs!.TryGetValue(ordinal, out var candidateRun))
+            {
+                candidates = new bool[rowCount];
+                for (var k = candidateRun.From; k < candidateRun.To; k++) candidates[(int)(_rowIds[k] - _rowStart[ordinal])] = true;
+            }
+            var columns = Columnar.DecodeTyped(raw, rawLength, types, rowCount, ordinal, _filterColumns, strings, candidates, schema: schema);
             var matches = new bool[rowCount];
             var any = false;
             void Check(int r)
@@ -2091,7 +2098,10 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             var rest = ordinals[i..];
             var limited = limit != long.MaxValue;
             if (limited && plan is null) rest = rest[..NeededChunks(rest, limit - yielded + Math.Max(0, offset - skipped))];
-            foreach (var chunk in DecodeAhead(rest.TakeWhile(_ => yielded < limit), _types, all ? null : wanted, rampUp: limited, filter: filter, schema: schema)) yield return chunk;
+            // One chunk left (a lookup) is passed as it is: DecodeAhead then knows its count, and decodes it here without
+            // a read-ahead task (TakeWhile would hide the count).
+            var remaining = rest.Length == 1 ? rest : rest.TakeWhile(_ => yielded < limit);
+            foreach (var chunk in DecodeAhead(remaining, _types, all ? null : wanted, rampUp: limited, filter: filter, schema: schema)) yield return chunk;
         }
     }
 
