@@ -1341,7 +1341,8 @@ JAZMIN is strong, and what it can work towards.
   Compare across a row; the figures in 9.1 and 9.2 were measured on a quiet
   machine. Some rows were measured again later the same day, after changes
   of 1.4 (section 9.8), each as the best of 2 runs: the text search rows,
-  and, on a quieter machine, the "Find one row by id" rows.
+  and, on a quieter machine, the "Find one row by id" rows and Node's
+  "Write every row" rows.
 - **Memory:** each operation runs in a process of its own.
   - It runs first on a file of 1,000 rows, so the library's code is loaded and
     compiled.
@@ -1362,7 +1363,7 @@ JAZMIN is strong, and what it can work towards.
 | Measure | JAZMIN | Parquet | Arrow IPC | SQLite | MessagePack |
 |---|---:|---:|---:|---:|---:|
 | File size | **2,227 KB** | 2,935 KB | 12,027 KB | 15,340 KB | 21,626 KB |
-| Write every row | 483 ms | 551 ms | 633 ms | 456 ms | **124 ms** |
+| Write every row | 326 ms | 424 ms | 418 ms | 405 ms | **110 ms** |
 | Read every row (objects) | **109 ms** | 158 ms | 612 ms | 717 ms | 255 ms |
 | Sum one column | 30.6 ms | 32.3 ms | **15.4 ms** | 29.8 ms | 265.8 ms |
 | Find one row by id (open → row) | 1.9 ms | 82.5 ms | 7.3 ms | **0.7 ms** | 162.7 ms |
@@ -1385,7 +1386,7 @@ JAZMIN is strong, and what it can work towards.
 
 | Measure | JAZMIN | Parquet | Arrow IPC | SQLite | MessagePack |
 |---|---:|---:|---:|---:|---:|
-| Write every row | 173.4 MB | 203.2 MB | 230.7 MB | **24.9 MB** | 44.7 MB |
+| Write every row | 124.1 MB | 179.9 MB | 230.1 MB | **16.8 MB** | 44.1 MB |
 | Read every row (objects) | **75.5 MB** | 114.1 MB | 102.2 MB | 282.5 MB | 153.8 MB |
 | Sum one column | 11.1 MB | 35.1 MB | 12.9 MB | **1.9 MB** | 154.3 MB |
 | Find one row by id (open → row) | 0.3 MB | 87.5 MB | 12.9 MB | **0.1 MB** | 151.2 MB |
@@ -1445,13 +1446,14 @@ are another matter in Node (282 MB, for its row objects).
   - Node: 35.0 -> 16.6 ms, beside Arrow's 15.8 ms.
   - .NET: 20.2 -> 17.6 ms; Arrow's scan of uncompressed columns takes
     10.7 ms. Opening the index still costs about 3 ms per query in .NET.
-- **Writing:** MessagePack writes 4-5 times faster. It stores a document as it
+- **Writing:** MessagePack writes 3-5 times faster. It stores a document as it
   is, with no columns, compression or indexes to build.
 - **Memory:**
   - The text search, since 1.4: 12 MB in Node (was 34 MB), less than
     Arrow's 15 MB; 34 MB in .NET (was 49 MB), against Arrow's 24 MB.
-  - Writing in Node adds 173 MB, against 25 MB for SQLite and 45 MB for
-    MessagePack.
+  - Writing in Node adds 124 MB, against 17 MB for SQLite and 44 MB for
+    MessagePack. In 1.4 index building keeps row ids as the bytes the file
+    stores: before, it added 181-185 MB.
   - In .NET, filters and sums use more than Arrow's (26 and 16 MB, against
     15 and 14 MB), most likely the reader's read-ahead and buffers.
 

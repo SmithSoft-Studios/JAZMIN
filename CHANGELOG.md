@@ -128,6 +128,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     on the query's thread (above), finding one customer by id with LINQ (open -> object) takes 0.63 -> 0.49 ms once
     warm, and 1.15 -> 0.7-0.9 ms after 3 warm-up calls; `Find` returning every column 0.49 -> 0.37 ms. USER-GUIDE
     9.12: 1.6 -> 1.2 ms, peak memory 6.3 -> 0.7 MB.
+- **Node: writing a file with indexes takes about half the memory** (TASKS P-25). Text indexes keep each gram's row
+  ids as the bytes the file stores (differences as varints, about a byte each) instead of arrays of numbers, and
+  sorted indexes keep later row ids only for keys that repeat. The files are byte for byte the same. Writing the
+  benchmark's 200,000 customers with its 3 indexes: peak memory 196-205 -> 101-102 MB, 503-528 -> 417-446 ms;
+  USER-GUIDE 9.12, where each measure runs in a process of its own: 181-185 -> 124 MB.
 - **Text search with a trigram index is faster and uses less memory** (TASKS P-25), in both libraries and the browser
   reader. No file changes.
   - Only the row lists of the pieces a search uses are decoded, rarest first; before, the whole index was decoded

@@ -86,10 +86,11 @@ export class SortedIndexBuilder {
   constructor(type) {
     this.type = type;
     // Distinct keys of the current run in ascending order (in table mode: all of them, as first seen), each with its
-    // first row id; later row ids only for keys seen again, so a column of unique values (ids) needs no array per key.
+    // first row id; later row ids only for keys seen again (by position), so a column of unique values (ids) needs
+    // nothing beyond its keys and first row ids.
     this.keys = [];
     this.firstRows = [];
-    this.moreRows = [];
+    this.moreRows = new Map();
     this.runs = []; // earlier ascending runs: { keys, firstRows, moreRows }, oldest first
     this.positions = null; // key id -> position in table mode, used once the keys form more than MAX_RUNS runs
     this.nulls = [];
@@ -105,7 +106,7 @@ export class SortedIndexBuilder {
     if (this.positions !== null) {
       const at = this.positions.get(keyId(key));
       if (at !== undefined) {
-        (this.moreRows[at] ??= []).push(rowId);
+        this.#more(this.moreRows, at).push(rowId);
         return;
       }
       this.positions.set(keyId(key), this.keys.length);
@@ -115,7 +116,7 @@ export class SortedIndexBuilder {
       const last = this.keys[n - 1];
       const order = compareKeys(last, key);
       if (order === 0 && keyId(last) === keyId(key)) {
-        (this.moreRows[n - 1] ??= []).push(rowId);
+        this.#more(this.moreRows, n - 1).push(rowId);
         return;
       }
       if (!(order < 0)) {
@@ -123,7 +124,7 @@ export class SortedIndexBuilder {
         this.runs.push({ keys: this.keys, firstRows: this.firstRows, moreRows: this.moreRows });
         this.keys = [];
         this.firstRows = [];
-        this.moreRows = [];
+        this.moreRows = new Map();
         if (this.runs.length >= MAX_RUNS) {
           this.#toTable();
           this.add(rowId, value);
@@ -133,7 +134,13 @@ export class SortedIndexBuilder {
     }
     this.keys.push(key);
     this.firstRows.push(rowId);
-    this.moreRows.push(undefined);
+  }
+
+  /** The later row ids of the key at a position, made when it is first seen again. */
+  #more(moreRows, at) {
+    let more = moreRows.get(at);
+    if (more === undefined) moreRows.set(at, (more = []));
+    return more;
   }
 
   /** Table mode: the runs' keys in one list, as first seen, with a lookup table; sorted when the pages are written. */
@@ -144,15 +151,16 @@ export class SortedIndexBuilder {
     for (const run of runs) {
       for (let i = 0; i < run.keys.length; i++) {
         const at = this.positions.get(keyId(run.keys[i]));
+        const runMore = run.moreRows.get(i);
         if (at === undefined) {
+          if (runMore) this.moreRows.set(this.keys.length, runMore);
           this.positions.set(keyId(run.keys[i]), this.keys.length);
           this.keys.push(run.keys[i]);
           this.firstRows.push(run.firstRows[i]);
-          this.moreRows.push(run.moreRows[i]);
         } else {
-          const more = (this.moreRows[at] ??= []);
+          const more = this.#more(this.moreRows, at);
           more.push(run.firstRows[i]);
-          if (run.moreRows[i]) for (const id of run.moreRows[i]) more.push(id);
+          if (runMore) for (const id of runMore) more.push(id);
         }
       }
     }
@@ -168,12 +176,15 @@ export class SortedIndexBuilder {
     const at = (keys, firstRows, moreRows, i) => {
       entry.key = keys[i];
       entry.first = firstRows[i];
-      entry.more = moreRows[i];
+      entry.more = moreRows.get(i);
       return entry;
     };
-    if (this.positions !== null || this.runs.length === 0) {
-      const order = Array.from(this.keys, (_, i) => i);
-      if (this.positions !== null) order.sort((a, b) => compareKeys(this.keys[a], this.keys[b]));
+    if (this.runs.length === 0 && this.positions === null) {
+      for (let i = 0; i < this.keys.length; i++) yield at(this.keys, this.firstRows, this.moreRows, i); // in order already
+      return;
+    }
+    if (this.positions !== null) {
+      const order = Array.from(this.keys, (_, i) => i).sort((a, b) => compareKeys(this.keys[a], this.keys[b]));
       for (const i of order) yield at(this.keys, this.firstRows, this.moreRows, i);
       return;
     }
@@ -190,7 +201,7 @@ export class SortedIndexBuilder {
       for (let r = best + 1; r < runs.length; r++) {
         const other = runs[r].keys[next[r]];
         if (next[r] < runs[r].keys.length && compareKeys(other, key) === 0 && keyId(other) === keyId(key)) {
-          entry.more = [...(entry.more ?? []), runs[r].firstRows[next[r]], ...(runs[r].moreRows[next[r]] ?? [])];
+          entry.more = [...(entry.more ?? []), runs[r].firstRows[next[r]], ...(runs[r].moreRows.get(next[r]) ?? [])];
           next[r]++;
         }
       }
@@ -602,11 +613,44 @@ export function trigrams(text) {
 /** Builds a trigram index used to accelerate `contains` / `icontains` filters (spec 8.2). */
 const TRIGRAM_SEEN_LIMIT = 4096; // distinct values whose grams a trigram builder remembers
 
+/**
+ * One gram's row ids while an index is built, kept as they are written (spec 8.2 postings): the differences between
+ * ascending row ids as varints, in a byte buffer that doubles as it fills. Indexed text often repeats, and a gram's
+ * ids then take about a byte each, where an array of numbers takes 8 and leaves its smaller copies to collect.
+ */
+class PostingBytes {
+  constructor(rowId) {
+    this.bytes = new Uint8Array(16);
+    this.length = 0;
+    this.count = 0;
+    this.last = 0;
+    this.add(rowId);
+  }
+
+  /** Adds a row id not below the last one; the same id again (a gram repeated within one value) counts once. */
+  add(rowId) {
+    if (this.count !== 0 && rowId === this.last) return;
+    if (this.length + 10 > this.bytes.length) {
+      const grown = new Uint8Array(this.bytes.length * 2);
+      grown.set(this.bytes);
+      this.bytes = grown;
+    }
+    let delta = rowId - this.last;
+    while (delta >= 0x80) {
+      this.bytes[this.length++] = (delta % 128) | 0x80;
+      delta = Math.floor(delta / 128);
+    }
+    this.bytes[this.length++] = delta;
+    this.count++;
+    this.last = rowId;
+  }
+}
+
 export class TrigramIndexBuilder {
   constructor() {
-    // Gram -> row ids, with no strings created while building. A gram of ASCII code units (c0, c1, c2), the usual
-    // case, is keyed as c0·2¹⁴ + c1·2⁷ + c2: a small integer, which V8 hashes fastest. Any other gram is keyed as
-    // c0·2³² + c1·2¹⁶ + c2. In both, numeric order equals the code-unit order of the text.
+    // Gram -> its row ids (PostingBytes), with no strings created while building. A gram of ASCII code units
+    // (c0, c1, c2), the usual case, is keyed as c0·2¹⁴ + c1·2⁷ + c2: a small integer, which V8 hashes fastest. Any
+    // other gram is keyed as c0·2³² + c1·2¹⁶ + c2. In both, numeric order equals the code-unit order of the text.
     this.ascii = new Map();
     this.grams = new Map();
     // Value -> the row-id lists of its grams. Indexed text often repeats (names, categories): a value seen before
@@ -623,10 +667,7 @@ export class TrigramIndexBuilder {
       const lists = seen.get(value);
       if (lists) {
         this.hits++;
-        for (let k = 0; k < lists.length; k++) {
-          const ids = lists[k];
-          if (ids[ids.length - 1] !== rowId) ids.push(rowId); // a gram repeated within one value counts once
-        }
+        for (let k = 0; k < lists.length; k++) lists[k].add(rowId);
         return;
       }
       if (++this.misses > TRIGRAM_SEEN_LIMIT && this.hits < this.misses) this.seen = null; // values rarely repeat
@@ -641,8 +682,8 @@ export class TrigramIndexBuilder {
       const grams = ascii ? this.ascii : this.grams;
       const key = ascii ? (a << 14) | (b << 7) | c : a * 4294967296 + b * 65536 + c;
       let ids = grams.get(key);
-      if (!ids) grams.set(key, (ids = [rowId]));
-      else if (ids[ids.length - 1] !== rowId) ids.push(rowId); // a gram repeated within one value counts once
+      if (!ids) grams.set(key, (ids = new PostingBytes(rowId)));
+      else ids.add(rowId);
       if (lists) lists.push(ids);
       a = b;
       b = c;
@@ -663,7 +704,8 @@ export class TrigramIndexBuilder {
       writer.u16(Math.floor(key / 4294967296));
       writer.u16(Math.floor(key / 65536) % 65536);
       writer.u16(key % 65536);
-      writePostings(writer, ids);
+      writer.varUint(ids.count); // postings: the count, then the differences already written
+      writer.bytes(ids.bytes.subarray(0, ids.length));
     }
     return writer.toBuffer();
   }
