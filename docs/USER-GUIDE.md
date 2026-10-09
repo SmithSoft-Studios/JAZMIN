@@ -1340,9 +1340,14 @@ JAZMIN is strong, and what it can work towards.
   is the best of 2 or 3 runs, each run the best of 3 after a warm-up.
   Compare across a row; the figures in 9.1 and 9.2 were measured on a quiet
   machine. Some rows were measured again later the same day, after changes
-  of 1.4 (section 9.8), each as the best of 2 runs: the text search rows,
-  and, on a quieter machine, the "Find one row by id" rows and Node's
-  "Write every row" rows.
+  of 1.4 (section 9.8), each as the best of 2 runs: Node's text search,
+  "Find one row by id" and "Write every row" rows. The .NET tables were
+  measured again, whole, on the quiet machine after those changes (best of
+  2 runs).
+- **Counting:** in both libraries JAZMIN counts without building an object
+  per row, as its guides show: `count()` in Node,
+  `AsQueryable<T>().Count(predicate)` in .NET. (Before, the .NET filter and
+  text search built every matching row as a C# object to count them.)
 - **Memory:** each operation runs in a process of its own.
   - It runs first on a file of 1,000 rows, so the library's code is loaded and
     compiled.
@@ -1375,12 +1380,12 @@ JAZMIN is strong, and what it can work towards.
 | Measure | JAZMIN | Parquet | Arrow IPC | SQLite | MessagePack |
 |---|---:|---:|---:|---:|---:|
 | File size | **2,232 KB** | 3,659 KB | 13,980 KB | 15,340 KB | 11,872 KB |
-| Write every row | 214 ms | 226 ms | 135 ms | 623 ms | **41 ms** |
-| Read every row (objects) | **91 ms** | 264 ms | 671 ms | 320 ms | 107 ms |
-| Sum one column | 31.4 ms | **5.9 ms** | 13.8 ms | 25.4 ms | 111.2 ms |
-| Find one row by id (open → row) | 1.2 ms | 133.7 ms | 6.5 ms | **0.6 ms** | 61.3 ms |
-| Filter: country = NA, age > 80 | 10.6 ms | 25.7 ms | **8.9 ms** | 22.6 ms | 95.7 ms |
-| Text search: name contains 'Ndlovu' | 17.6 ms | 16.5 ms | **10.7 ms** | 21.1 ms | 50.5 ms |
+| Write every row | 123 ms | 98 ms | 51 ms | 476 ms | **34 ms** |
+| Read every row (objects) | **39 ms** | 162 ms | 323 ms | 233 ms | 46 ms |
+| Sum one column | 26.7 ms | **2.8 ms** | 5.5 ms | 14.0 ms | 48.7 ms |
+| Find one row by id (open → row) | 0.9 ms | 95.8 ms | 5.3 ms | **0.4 ms** | 45.6 ms |
+| Filter: country = NA, age > 80 | 6.0 ms | 12.4 ms | **5.8 ms** | 12.9 ms | 44.3 ms |
+| Text search: name contains 'Ndlovu' | **6.8 ms** | 15.6 ms | 9.0 ms | 18.7 ms | 47.2 ms |
 
 **Memory, Node.js 24** (peak memory added):
 
@@ -1397,12 +1402,12 @@ JAZMIN is strong, and what it can work towards.
 
 | Measure | JAZMIN | Parquet | Arrow IPC | SQLite | MessagePack |
 |---|---:|---:|---:|---:|---:|
-| Write every row | 72.7 MB | 58.0 MB | 48.0 MB | **18.2 MB** | 23.8 MB |
-| Read every row (objects) | 58.7 MB | 94.4 MB | 72.0 MB | **14.3 MB** | 55.7 MB |
-| Sum one column | 16.2 MB | 10.5 MB | 14.1 MB | **1.8 MB** | 56.1 MB |
-| Find one row by id (open → row) | 0.7 MB | 88.7 MB | 13.8 MB | **0.1 MB** | 55.7 MB |
-| Filter: country = NA, age > 80 | 26.1 MB | 27.4 MB | 15.4 MB | **1.8 MB** | 55.7 MB |
-| Text search: name contains 'Ndlovu' | 33.7 MB | 33.7 MB | 23.6 MB | **1.8 MB** | 55.7 MB |
+| Write every row | 72.8 MB | 58.0 MB | 46.7 MB | **18.2 MB** | 23.8 MB |
+| Read every row (objects) | 59.1 MB | 99.5 MB | 77.9 MB | **12.6 MB** | 55.7 MB |
+| Sum one column | 19.3 MB | 10.5 MB | 14.1 MB | **1.8 MB** | 55.8 MB |
+| Find one row by id (open → row) | 0.7 MB | 83.0 MB | 13.8 MB | **0.1 MB** | 55.7 MB |
+| Filter: country = NA, age > 80 | 15.9 MB | 27.7 MB | 15.4 MB | **1.8 MB** | 55.7 MB |
+| Text search: name contains 'Ndlovu' | 10.7 MB | 33.7 MB | 23.5 MB | **1.8 MB** | 55.7 MB |
 
 SQLite needs almost no memory for a query: it reads its file a page at a time
 through a small cache, and returns a count or one row. Its reads of every row
@@ -1423,7 +1428,7 @@ are another matter in Node (282 MB, for its row objects).
   15).
 
 **What it can work towards** (TASKS P-25):
-- **Finding one row by id:** SQLite takes 0.6-1.1 ms. JAZMIN takes 1.2 ms in
+- **Finding one row by id:** SQLite takes 0.4-1.1 ms. JAZMIN takes 0.9 ms in
   .NET and 1.9 ms in Node.
   - In 1.4 Node decodes only the row's values (section 9.8): 2.7 -> 1.9 ms
     side by side with the code before, and 1.15 -> 0.70 ms once Node has
@@ -1433,30 +1438,33 @@ are another matter in Node (282 MB, for its row objects).
   - In 1.4 .NET decodes a lookup's chunk on the query's thread and reads each
     column only as far as the row: 1.6 -> 1.2 ms here, and 0.63 -> 0.49 ms
     for a LINQ lookup once warm.
-- **Sums and simple filters over a column:**
-  - Arrow keeps its columns uncompressed, as they are in memory, and is up to
-    about twice as fast here.
-  - Parquet.Net reads one Snappy-compressed column in 5.9 ms where JAZMIN
-    takes 31 ms.
-  - JAZMIN decompresses deflate chunks to save space (memory first,
-    section 20.4).
+- **Sums over a column:** Parquet.Net reads one Snappy-compressed column in
+  2.8 ms and Arrow its uncompressed one in 5.5 ms, where JAZMIN takes 27 ms.
+  - JAZMIN compresses each chunk whole, all its columns together, with
+    deflate, to save space (memory first, section 20.4). A sum of one column
+    decompresses all eight.
+  - Closing this gap needs columns compressed apart, or a faster codec: a
+    format change, for after 1.4.
+- **Filters:** in Node, Arrow is about twice as fast; in .NET, JAZMIN is level
+  with it (6.0 against 5.8 ms).
 - **Text search for a common word:** an eighth of the names contain
   'Ndlovu'. Since 1.4 a search reads only the parts of the trigram index it
   needs, and scans when the word is in most rows (section 9.8).
   - Node: 35.0 -> 16.6 ms, beside Arrow's 15.8 ms.
-  - .NET: 20.2 -> 17.6 ms; Arrow's scan of uncompressed columns takes
-    10.7 ms. Loading the index costs .NET 1.5-3 ms per query (3.5-7 ms
-    before 1.4 reused its buffer).
+  - .NET: 6.8 ms, the fastest here (Arrow 9.0 ms). Loading the index costs
+    .NET 1.5-3 ms per query (3.5-7 ms before 1.4 reused its buffer).
 - **Writing:** MessagePack writes 3-5 times faster. It stores a document as it
   is, with no columns, compression or indexes to build.
 - **Memory:**
-  - The text search, since 1.4: 12 MB in Node (was 34 MB), less than
-    Arrow's 15 MB; 34 MB in .NET (was 49 MB), against Arrow's 24 MB.
+  - The text search, since 1.4: 12 MB in Node (was 34 MB) and 11 MB in .NET
+    (was 49 MB), less than Arrow's 15 and 24 MB.
   - Writing in Node adds 124 MB, against 17 MB for SQLite and 44 MB for
     MessagePack. In 1.4 index building keeps row ids as the bytes the file
     stores: before, it added 181-185 MB.
-  - In .NET, filters and sums use more than Arrow's (26 and 16 MB, against
-    15 and 14 MB), most likely the reader's read-ahead and buffers.
+  - In .NET, a filter takes 16 MB, as Arrow's 15 MB, and a sum 19 MB against
+    Arrow's 14 MB. With the default priority, chunks are decoded ahead on up
+    to 4 threads; `JazminPriority.Memory` uses only the calling thread (16 MB
+    for the sum).
 
 
 **What is protected.** In an encrypted file, the data, column names and

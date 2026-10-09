@@ -95,10 +95,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 - **A reference benchmark beside Parquet, Arrow IPC, SQLite and MessagePack** (USER-GUIDE 9.12), in Node.js
   (`js/bench/formats`) and .NET (`dotnet/bench/Jazmin.FormatBenchmarks`), kept apart from the libraries, with each
-  operation's time and peak memory. JAZMIN makes the smallest files (with its indexes) and reads every row fastest
-  (in Node with the least memory). SQLite finds one row by id faster and with almost no memory, Arrow and Parquet
-  sum and filter single columns faster, and JAZMIN's text search and writes use more memory: those gaps are TASKS
-  P-25.
+  operation's time and peak memory. JAZMIN makes the smallest files (with its indexes) and reads every row fastest.
+  SQLite finds one row by id faster and with almost no memory, and Parquet and Arrow sum one column faster: those
+  gaps, and what this release closed, are TASKS P-25. Counts are made as each library documents: `count()` in Node,
+  `AsQueryable<T>().Count(predicate)` in .NET, with no object per matching row.
 
 ### Fixed
 - **Filters:** `{ "column": null }` (and `{ "ne": null }`) works for json and binary columns too, as spec 9.1 says;

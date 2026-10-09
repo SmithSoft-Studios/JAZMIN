@@ -187,8 +187,9 @@ var contenders = new List<Contender>
         ReadAll: () => JazminConvert.DeserializeObject<List<Customer>>(File.ReadAllBytes(F("data.jzm")))!.Count,
         Sum: () => { using var r = JazminReader.Open(F("data.jzm")); return r.AsQueryable<Customer>().Sum(c => c.Balance); },
         Lookup: () => { using var r = JazminReader.Open(F("data.jzm")); return r.Query<Customer>(c => c.Id == target).First().Id; },
-        Filter: () => { using var r = JazminReader.Open(F("data.jzm")); return r.Query<Customer>(c => c.Country == "NA" && c.Age > 80).Count(); },
-        Contains: () => { using var r = JazminReader.Open(F("data.jzm")); return r.Query<Customer>(c => c.Name.Contains("Ndlovu")).Count(); }),
+        // Counted as the library documents (and as the Node benchmark counts): without building an object per row.
+        Filter: () => { using var r = JazminReader.Open(F("data.jzm")); return r.AsQueryable<Customer>().Count(c => c.Country == "NA" && c.Age > 80); },
+        Contains: () => { using var r = JazminReader.Open(F("data.jzm")); return r.AsQueryable<Customer>().Count(c => c.Name.Contains("Ndlovu")); }),
 
     new("Parquet",
         Write: () => { using var s = File.Create(F("data.parquet")); ParquetSerializer.SerializeAsync(People(), s).GetAwaiter().GetResult(); },
@@ -398,7 +399,8 @@ using (var z = new GZipStream(gz, CompressionLevel.Optimal, leaveOpen: true)) z.
 Console.WriteLine($"""
 
 Notes:
-- JAZMIN: deflate, 3 indexes (Id sorted, Name trigram, Country sorted); LINQ queries read only the columns they use.
+- JAZMIN: deflate, 3 indexes (Id sorted, Name trigram, Country sorted); LINQ queries read only the columns they use, and
+  counts (AsQueryable().Count) build no objects.
 - Parquet: Parquet.Net's ParquetSerializer with its defaults (one row group, Snappy) to write and read every row;
   the queries read only the columns they need, without an index (for "Find one row", the id column, then the row).
 - Arrow IPC: the file format, uncompressed (Apache.Arrow's defaults); read whole, then searched.
