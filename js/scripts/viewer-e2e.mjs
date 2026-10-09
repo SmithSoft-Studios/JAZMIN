@@ -396,11 +396,20 @@ for (const name of chosen) {
     results.push({ browser: name, label: '(not installed)', ok: true, problems: [] });
     continue;
   }
+  // On CI machines a browser's start sometimes times out (Chrome's first start, Safari in the iPhone simulator) before
+  // any check runs: up to 3 tries before the start counts as failed.
   let page;
-  try {
-    page = await ({ firefox: launchFirefox, safari: launchSafari, ios: (driver) => launchSafari(driver, true) }[name] ?? launchChromium)(exe);
-  } catch (error) {
-    results.push({ browser: name, label: 'start', ok: false, problems: [error.message] });
+  let startError;
+  for (let attempt = 1; attempt <= 3 && !page; attempt++) {
+    try {
+      page = await ({ firefox: launchFirefox, safari: launchSafari, ios: (driver) => launchSafari(driver, true) }[name] ?? launchChromium)(exe);
+    } catch (error) {
+      startError = error;
+      if (attempt < 3) console.log(`retry  ${name.padEnd(8)} start (${attempt} of 3 failed: ${error.message.split('\n')[0]})`);
+    }
+  }
+  if (!page) {
+    results.push({ browser: name, label: 'start', ok: false, problems: [startError.message] });
     continue;
   }
   try {
