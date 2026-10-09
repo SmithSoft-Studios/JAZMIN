@@ -312,7 +312,7 @@
       ...(lines.length > 50 ? [Object.assign(document.createElement('li'), { textContent: `and ${lines.length - 50} more` })] : []));
     $('jz-changes-where').textContent = shared
       ? "They're saved as a change file for the file's owner: send it to them. Only the owner can open it, and they apply it to the shared file."
-      : "A browser can't change the file itself: they're saved as a change file, which JAZMIN Scout or the library (applyChanges) writes into it.";
+      : "A browser can't change the file itself: they're saved as a change file, which the JAZMIN library (applyChanges) writes into it.";
     const dialog = $('jz-changes');
     return new Promise((resolve) => {
       dialog.addEventListener('close', () => resolve(dialog.returnValue === 'save'), { once: true });

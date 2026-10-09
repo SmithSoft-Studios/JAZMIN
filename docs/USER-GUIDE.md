@@ -3504,8 +3504,8 @@ const result = await jazmin.saveChanges({
   `saveChanges` rejects.
 - **The web viewer** can't change a file on disk: it saves a change file.
   For a shared file the person sends it to the owner, who applies it
-  (section 19.5); for a file of their own they apply it with the library or
-  JAZMIN Scout.
+  (section 19.5); for a file of their own they apply it with the library
+  (`applyChanges`).
 - **In a PDF** (`renderPdf`), `jazmin.edit` is null and `saveChanges`
   rejects.
 

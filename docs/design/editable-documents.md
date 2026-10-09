@@ -44,8 +44,8 @@ await jazmin.saveChanges({
 - The viewer, not the page, decides: it checks the changes against `edit`, shows the person what will change, and asks.
 - A key appears once per call.
 - `renderPdf` (print mode) has no `edit`: `jazmin.edit` is null and `saveChanges` rejects.
-- The web viewer can't write a file on disk: it offers the change file as a download. JAZMIN Scout writes an own file
-  directly, and a shared file's changes as a change file.
+- The web viewer can't write a file on disk: it offers the change file as a download. A viewer that can write files
+  (an editor extension, an app) writes an own file directly, and a shared file's changes as a change file.
 
 ## 3. Change files
 
@@ -98,4 +98,5 @@ it (the browser reader has the same), and so can apps.
    review and download.
 3. .NET: `JazminPackage.Edit`, `JazminFile.WriteChanges`, `JazminFile.ApplyChanges`; change files read across the
    libraries (fixtures).
-4. JAZMIN Scout: Save Changes (own files directly, shared files as change files) and Apply Change File.
+4. Viewers that write files (editor extensions, apps): Save Changes (own files directly, shared files as change
+   files) and Apply Change File.
