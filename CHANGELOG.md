@@ -84,6 +84,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   changes now. In a shared file the sender is found by submission key and may change only its grant's partitions and
   columns. Rows changed since the sender's copy are held as conflicts (before, wanted, now) unless `overwrite: true`;
   `dryRun` shows what would happen. Readers also give `fileId` and, for an access key, `access.keyId`.
+  - **In documents:** `jazmin.edit` and `jazmin.saveChanges({ update, add, delete })` (USER-GUIDE 24.1). The web
+    viewer checks the changes, shows them and asks, then saves a change file; in a PDF there is nothing to save.
+    The browser reader makes the same change files (`JazminBrowser.writeChanges`), and gives `fileId`,
+    `appendCount` and `access.keyId`.
 
 ### Fixed
 - **Filters:** `{ "column": null }` (and `{ "ne": null }`) works for json and binary columns too, as spec 9.1 says;

@@ -3473,6 +3473,29 @@ pdfButton.onclick = () => jazmin.savePdf({ format: 'A5' });
   web viewer `savePdf` opens the print dialog (the page's CSS `@page` sets
   the paper); viewers that render PDFs themselves use the page settings.
 
+**Documents that change their data** (the package's `edit`, section 19.5):
+
+```js
+jazmin.edit;   // { table, key, columns, add, delete }, or null: nothing can be saved here
+const result = await jazmin.saveChanges({
+  update: [{ claim: 'C-104', status: 'approved' }],   // the key, and the columns that change
+  add: [{ claim: 'C-900', status: 'open' }],
+  delete: [{ claim: 'C-017' }],                       // the key only
+});
+// { saved: 'change-file', file: 'claims-changes-20261009101500.jzm', updated: 1, added: 1, deleted: 1 }
+```
+
+- **The viewer decides, not the page.** It checks the changes against `edit`
+  (a change that isn't allowed rejects with the reason), shows the person
+  what will change, and saves only when they confirm. Otherwise
+  `saveChanges` rejects.
+- **The web viewer** can't change a file on disk: it saves a change file.
+  For a shared file the person sends it to the owner, who applies it
+  (section 19.5); for a file of their own they apply it with the library or
+  JAZMIN Scout.
+- **In a PDF** (`renderPdf`), `jazmin.edit` is null and `saveChanges`
+  rejects.
+
 - Use relative paths (`img/logo.svg`, `about.html`), plain scripts rather
   than modules, and `window.jazmin` rather than `fetch()`.
 - Links to other `.html` files in the package open inside the viewer.

@@ -246,7 +246,11 @@ for (const { name, browser } of drivers) {
     // The page's file's settings (actions.pdf) over the package's, and the page's own (setActions) over both. A page
     // being rendered is offered nothing more (jazmin.actions).
     const pages = path.join(temp, `pages-${name.split(' ')[0]}.jzm`);
-    const script = (code) => `(() => { ${code}; jazmin.ready({ actions: jazmin.actions }); })();`;
+    const script = (code) => `(async () => {
+      ${code};
+      const save = await jazmin.saveChanges({ update: [] }).then(() => 'saved', (e) => e.message);
+      jazmin.ready({ actions: jazmin.actions, edit: jazmin.edit, save });
+    })();`;
     write(pages, rows, {
       files: [
         { path: 'file.html', content: '<!doctype html><body>file<script src="file.js"></script></body>', actions: { pdf: { format: 'A5' } } },
@@ -260,7 +264,7 @@ for (const { name, browser } of drivers) {
     });
     let seen;
     near(await renderPdf({ file: pages, browser, onReady: (i) => { seen = i; } }), [595, 420]); // A5, landscape
-    assert.deepEqual(seen, { actions: { print: false, pdf: false, image: false } });
+    assert.deepEqual(seen, { actions: { print: false, pdf: false, image: false }, edit: null, save: "This document can't save changes here" });
     near(await renderPdf({ file: pages, browser, entry: 'own.html' }), [1191, 842]); // A3, landscape
     near(await renderPdf({ file: pages, browser, entry: 'own.html', pdf: { landscape: false } }), [842, 1191]);
     await assert.rejects(renderPdf({ file: pages, browser, entry: 'bad.html' }), /The page's jazmin\.setActions pdf\.format: 'Z9'/);

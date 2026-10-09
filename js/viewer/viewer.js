@@ -249,8 +249,8 @@
       type: 'jazmin:package', entry: settings.entry, files, policy: policy(settings), allowedOrigins: settings.allowedOrigins || [],
       metadata: reader.metadata, columns: reader.columns, access: reader.access, rowCount: reader.rowCount,
       rows: reader.rowCount <= ROWS_FOR_TEMPLATES ? rows : null,
-      // Pages print with the browser's dialog, which also saves them as PDF.
-      capabilities: ['print', 'pdf'], renders: false,
+      // Pages print with the browser's dialog, which also saves them as PDF. Changes are saved as change files.
+      capabilities: ['print', 'pdf', 'edit'], renders: false, edit: settings.edit || null,
     };
     const csp = policy(settings).replace(/"/g, '&quot;');
     frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"></head>`
@@ -275,6 +275,13 @@
       state.lastReady = m;
     } else if (m.type === 'jazmin:error') {
       status(`Document: ${m.message}`);
+    } else if (m.type === 'jazmin:saveChanges') {
+      try {
+        const result = await saveChanges(m.changes);
+        frame.contentWindow.postMessage({ type: 'jazmin:result', id: m.id, result }, '*');
+      } catch (error) {
+        frame.contentWindow.postMessage({ type: 'jazmin:failed', id: m.id, message: error.message || String(error) }, '*');
+      }
     } else if (m.type === 'jazmin:query' || m.type === 'jazmin:count') {
       try {
         const reply = m.type === 'jazmin:count' ? { count: await frameReader.count(m.filter) } : { rows: await queryPage(frameReader, m.filter, m.options) };
@@ -284,6 +291,49 @@
       }
     }
   });
+
+  // ---- changes made in the document: checked, shown, then saved as a change file ------------------------------------
+
+  const valueText = (v) => (v === null || v === undefined ? 'empty' : v instanceof Date ? v.toISOString() : typeof v === 'object' ? JSON.stringify(v) : String(v));
+
+  /** What the person is asked: the changes, a line each (the first 50), and where they go. */
+  function confirmChanges(changes, edit, shared) {
+    const keyOf = (row) => edit.key.map((k) => valueText(row[k])).join(', ');
+    const lines = [
+      ...(changes.update || []).map((r) => `Change ${keyOf(r)}: ${Object.keys(r).filter((n) => !edit.key.includes(n)).map((n) => `${n} → ${valueText(r[n])}`).join(', ')}`),
+      ...(changes.add || []).map((r) => `Add ${keyOf(r)}`),
+      ...(changes.delete || []).map((r) => `Delete ${keyOf(r)}`),
+    ];
+    const count = (list) => (list || []).length;
+    $('jz-changes-summary').textContent = [
+      count(changes.update) && `${count(changes.update)} changed`, count(changes.add) && `${count(changes.add)} added`, count(changes.delete) && `${count(changes.delete)} deleted`,
+    ].filter(Boolean).join(', ') + ` in ${state.name}.`;
+    $('jz-changes-list').replaceChildren(...lines.slice(0, 50).map((text) => Object.assign(document.createElement('li'), { textContent: text })),
+      ...(lines.length > 50 ? [Object.assign(document.createElement('li'), { textContent: `and ${lines.length - 50} more` })] : []));
+    $('jz-changes-where').textContent = shared
+      ? "They're saved as a change file for the file's owner: send it to them. Only the owner can open it, and they apply it to the shared file."
+      : "A browser can't change the file itself: they're saved as a change file, which JAZMIN Scout or the library (applyChanges) writes into it.";
+    const dialog = $('jz-changes');
+    return new Promise((resolve) => {
+      dialog.addEventListener('close', () => resolve(dialog.returnValue === 'save'), { once: true });
+      dialog.returnValue = '';
+      dialog.showModal();
+    });
+  }
+
+  /** The document's changes: checked and made into a change file (the reader's writeChanges), shown, then saved. */
+  async function saveChanges(changes) {
+    const reader = frameReader;
+    const shared = Boolean(reader.access);
+    const blob = await JazminBrowser.writeChanges(reader, changes, shared ? {} : state.options); // checks them first
+    if (!(await confirmChanges(changes, reader.package.edit, shared))) throw new Error('The changes were not saved');
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
+    const name = `${state.name.replace(/\.jzm$/i, '')}-changes-${stamp}.jzm`;
+    state.lastSaved = { name, blob };
+    await save(name, blob);
+    const count = (list) => (list || []).length;
+    return { saved: 'change-file', file: name, updated: count(changes.update), added: count(changes.add), deleted: count(changes.delete) };
+  }
 
   /** Exact decimal strings ("-12.50", "3", "0.001") by value: -1, 0 or 1. */
   function compareDecimals(a, b) {

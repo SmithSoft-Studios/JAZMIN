@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { JazminAccessKey, JazminKey, issueUnlockToken, open, portableHtml, write } from '../src/index.js';
+import { JazminAccessKey, JazminKey, applyChanges, issueUnlockToken, open, portableHtml, write } from '../src/index.js';
 import { TEMPLATE_READY, writeTemplate } from '../test/template-fixture.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -111,6 +111,34 @@ const ACTIONS_READY = {
   after: { print: false, pdf: false, image: false },
   again: { print: true, pdf: false, image: false },
   refused: 'This page cannot be printed here',
+};
+
+// A document that changes its rows (package.edit): one change it may not make, then one it may, saved as a change file
+// once the person confirms it in the viewer's dialog.
+const editFile = path.join(temp, 'edit.jzm');
+const EDIT_ROWS = [{ id: 1, status: 'open' }, { id: 2, status: 'open' }];
+write(editFile, EDIT_ROWS, {
+  key: templateKey,
+  columns: [{ name: 'id', type: 'int', nullable: false }, { name: 'status', type: 'string' }],
+  files: [
+    { path: 'index.html', content: '<!doctype html><title>Edit</title><body><p>Edit</p><script src="app.js"></script></body>' },
+    {
+      path: 'app.js',
+      content: `(async () => {
+        const edit = jazmin.edit;
+        let refused = '';
+        try { await jazmin.saveChanges({ update: [{ id: 1, nope: 'x' }] }); } catch (e) { refused = e.message; }
+        const saved = await jazmin.saveChanges({ update: [{ id: 1, status: 'done' }], add: [{ id: 9, status: 'new' }] });
+        jazmin.ready({ edit, refused, saved: [saved.saved, saved.updated, saved.added, saved.deleted] });
+      })();`,
+    },
+  ],
+  package: { entry: 'index.html', title: 'Edit', edit: { key: ['id'], columns: ['status'], add: true } },
+});
+const EDIT_READY = {
+  edit: { key: ['id'], columns: ['status'], add: true },
+  refused: "Column 'nope' can't be changed through this document",
+  saved: ['change-file', 1, 1, 0],
 };
 
 // A shared file Bob may read, written now: a phone opens it to get the submission key it sends records back with.
@@ -415,6 +443,29 @@ for (const name of chosen) {
     const refused = JSON.stringify(origins.refused);
     const wanted = JSON.stringify(['font-src other.example.org', 'media-src other.example.org']);
     results.push({ browser: name, label: 'allowed origins: fonts and media load from them only', ok: refused === wanted, problems: refused === wanted ? [] : [`refused: ${refused}`] });
+
+    // A document's changes: checked by the viewer, shown in its dialog, saved as a change file the library applies.
+    await page.navigate(`${base}/js/viewer/index.html`);
+    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+    await page.evaluate(`fetch('/e2e/edit.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'edit.jzm')).then(() => true)`);
+    await unlock(page, { file: 'edit.jzm', key: 'template' });
+    await waitFor(page, `document.getElementById('jz-changes').open`, 'the changes dialog');
+    const listed = await page.evaluate(`[...document.querySelectorAll('#jz-changes-list li')].map((li) => li.textContent).join(' | ')`);
+    await page.evaluate(`(document.getElementById('jz-changes-save').click(), true)`);
+    const edited = await waitFor(page, 'JazminViewer.state.lastReady && JazminViewer.state.lastReady.info', 'the edit page to call jazmin.ready()');
+    const changeFile = Buffer.from(await page.evaluate(`(async () => {
+      const bytes = new Uint8Array(await JazminViewer.state.lastSaved.blob.arrayBuffer());
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      return btoa(binary);
+    })()`), 'base64');
+    const copy = path.join(temp, `edit-${name}.jzm`);
+    fs.copyFileSync(editFile, copy);
+    const applied = applyChanges(copy, changeFile, { key: templateKey });
+    const after = Object.fromEntries([...open(copy, { key: templateKey }).rows()].map((r) => [r.id, r.status]));
+    const editOk = JSON.stringify(edited) === JSON.stringify(EDIT_READY) && listed === 'Change 1: status → done | Add 9'
+      && applied.updated === 1 && applied.added === 1 && JSON.stringify(after) === JSON.stringify({ 1: 'done', 2: 'open', 9: 'new' });
+    results.push({ browser: name, label: 'editable document: changes checked, confirmed in the viewer, saved as a change file the library applies', ok: editOk, problems: editOk ? [] : [JSON.stringify({ edited, listed, applied, after })] });
 
     // A page's actions: its file's, narrowed by the page (setActions), never widened.
     await page.navigate(`${base}/js/viewer/index.html`);

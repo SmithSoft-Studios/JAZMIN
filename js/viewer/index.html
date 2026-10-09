@@ -77,6 +77,19 @@
   <p id="jz-status" class="status" role="status"></p>
 </main>
 
+<dialog id="jz-changes" class="changes" aria-labelledby="jz-changes-title">
+  <form method="dialog">
+    <h2 id="jz-changes-title">Save these changes?</h2>
+    <p id="jz-changes-summary"></p>
+    <ul id="jz-changes-list"></ul>
+    <p id="jz-changes-where" class="hint"></p>
+    <div class="buttons">
+      <button type="submit" value="cancel">Cancel</button>
+      <button type="submit" value="save" id="jz-changes-save" class="primary">Save change file</button>
+    </div>
+  </form>
+</dialog>
+
 <script src="../browser/jazmin-browser.js" data-jz-inline="reader"></script>
 <script src="sandbox.js" data-jz-inline="sandbox"></script>
 <script src="viewer.js" data-jz-inline="viewer"></script>

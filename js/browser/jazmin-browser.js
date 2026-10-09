@@ -2050,6 +2050,7 @@
       const b = (s) => base64ToBytes(String(s));
       access = {
         isOwner,
+        keyId: toHex(id), // the access key's id, as the owner's grants list it
         header: b(bundle.header),
         owner: isOwner ? b(bundle.owner) : null,
         partitions: new Map(Object.entries(bundle.partitions ?? {}).map(([pid, s]) => [pid, b(s)])),
@@ -2712,9 +2713,15 @@
       /** Rows of this table this key may not see. */
       hiddenRowCount: Math.max(0, hiddenRows),
       encrypted: Boolean(file.keys || access),
+      /** The file's id (hex), as the library's reader.fileId; a rewrite gives the file a new one. */
+      fileId: toHex(file.fileId),
+      /** Appends since the file was last written in full. */
+      appendCount: header.appendCount,
       /** When the file was last written (its last append, or when it was created), by the writer's clock. */
       writtenAt: new Date(header.modified || header.created),
-      access: access ? { isOwner: access.isOwner, online: access.online, expires: access.expires, partitionBy: table.partitionBy || null } : null,
+      access: access ? {
+        isOwner: access.isOwner, ...(access.isOwner ? {} : { keyId: access.keyId }), online: access.online, expires: access.expires, partitionBy: table.partitionBy || null,
+      } : null,
       /**
        * The submission key (spec 7.8), as key text: lock the files you send back to the owner with it, for example
        * with JazminBrowser.write(rows, { columns, key: reader.submissionKey }). Null for files written before
@@ -3900,11 +3907,122 @@
     return writer.finish();
   }
 
+  // ---- changes made through a document (docs/design/editable-documents.md, spec 7.9): the library's writeChanges ----
+
+  const CHANGE_OPS = ['add', 'update', 'delete'];
+  const changeKeyText = (row, key) => JSON.stringify(key.map((k) => {
+    const v = row[k];
+    return v instanceof Date ? v.toISOString() : typeof v === 'bigint' ? `${v}n` : v;
+  }));
+  const showKey = (row, key) => key.map((k) => `${k} ${row[k] instanceof Date ? row[k].toISOString() : String(row[k])}`).join(', ');
+  const changeDefinition = ({ name, type, nullable, item, fields }) => ({
+    name, type, nullable: nullable !== false, ...(item ? { item: changeDefinition(item) } : {}), ...(fields ? { fields: fields.map(changeDefinition) } : {}),
+  });
+
+  /** A call's changes as [{ op, key, values }], checked against what the document allows (as the library checks). */
+  function changeList(changes, edit, editable) {
+    if (changes === null || typeof changes !== 'object' || Array.isArray(changes)) throw new JazminValidationError('Changes are { update, add, delete }: lists of rows');
+    for (const name of Object.keys(changes)) if (!CHANGE_OPS.includes(name)) throw new JazminValidationError(`Changes: unknown '${name}' (update, add, delete)`);
+    const out = [];
+    const seen = new Set();
+    for (const op of CHANGE_OPS) {
+      const list = changes[op];
+      if (list === undefined || list === null) continue;
+      if (!Array.isArray(list)) throw new JazminValidationError(`Changes: ${op} must be a list of rows`);
+      if (list.length && op === 'add' && !edit.add) throw new JazminValidationError("This document doesn't allow adding rows");
+      if (list.length && op === 'delete' && !edit.delete) throw new JazminValidationError("This document doesn't allow deleting rows");
+      for (const row of list) {
+        if (row === null || typeof row !== 'object' || Array.isArray(row)) throw new JazminValidationError(`Changes: ${op} must be a list of rows (objects)`);
+        const key = {};
+        for (const k of edit.key) {
+          if (row[k] === undefined || row[k] === null) throw new JazminValidationError(`Changes: a row to ${op} without its key column '${k}'`);
+          key[k] = row[k];
+        }
+        const values = {};
+        for (const [name, value] of Object.entries(row)) {
+          if (edit.key.includes(name)) continue;
+          if (op === 'delete') throw new JazminValidationError(`Changes: give the rows to delete by their key only ('${name}' isn't a key column)`);
+          if (!editable.has(name)) throw new JazminValidationError(`Column '${name}' can't be changed through this document`);
+          values[name] = value === undefined ? null : value;
+        }
+        if (op === 'update' && !Object.keys(values).length) throw new JazminValidationError(`Changes: the update of ${showKey(key, edit.key)} changes nothing`);
+        const text = changeKeyText(key, edit.key);
+        if (seen.has(text)) throw new JazminValidationError(`Changes: ${showKey(key, edit.key)} appears twice: one change per row`);
+        seen.add(text);
+        out.push({ op, key, values });
+      }
+    }
+    if (!out.length) throw new JazminValidationError('No changes to save');
+    return out;
+  }
+
+  /**
+   * A change file (a Blob) for changes to `source`, a file opened here whose document allows them (package.edit): as
+   * the library's writeChanges, with the earlier values from `source`. Sealed with a shared file's submission key; give
+   * a file that isn't shared its key or password ({ key } / { password }).
+   */
+  async function writeChanges(source, changes, { key, password } = {}) {
+    const edit = source.package?.edit;
+    if (!edit) throw new JazminValidationError("This file's document doesn't allow changes (it has no package.edit)");
+    let seal;
+    if (source.access) {
+      if (source.access.isOwner) throw new JazminValidationError("A shared file's owner changes it directly, not with a change file");
+      if (!source.submissionKey) throw new JazminValidationError('This shared file has no submission keys yet (written before they existed): its owner adds them with any rewrite');
+      seal = { key: source.submissionKey };
+    } else if (source.encrypted) {
+      if (!key && !password) throw new JazminValidationError('Give the key or password the file opens with, to seal its changes with');
+      seal = key ? { key } : { password };
+    } else {
+      seal = {};
+    }
+    const tableName = edit.table ?? source.tables[0];
+    const reader = source.table === tableName ? source : await source.openTable(tableName);
+    const columns = new Map(reader.columns.map((c) => [c.name, c]));
+    for (const k of edit.key) if (!columns.has(k)) throw new JazminValidationError(`The key column '${k}' isn't visible with this key`);
+    const editable = edit.columns.filter((n) => columns.has(n));
+    const list = changeList(changes, edit, new Set(editable));
+    const current = new Map();
+    for (let i = 0; i < list.length; i += 500) {
+      const batch = list.slice(i, i + 500).map((c) => c.key);
+      const filter = edit.key.length === 1
+        ? { [edit.key[0]]: { in: batch.map((r) => r[edit.key[0]]) } }
+        : { or: batch.map((r) => Object.fromEntries(edit.key.map((k) => [k, r[k]]))) };
+      for await (const row of reader.find(filter)) current.set(changeKeyText(row, edit.key), row);
+    }
+    const rows = list.map(({ op, key: k, values }) => {
+      const now = current.get(changeKeyText(k, edit.key));
+      if (op === 'add' && now) throw new JazminValidationError(`A row with ${showKey(k, edit.key)} is already there: change it instead`);
+      if (op !== 'add' && !now) throw new JazminValidationError(`No row with ${showKey(k, edit.key)} is visible with this key`);
+      const set = Object.keys(values);
+      const row = { 'jazmin.op': op, 'jazmin.set': op === 'delete' ? null : set, ...k };
+      for (const n of editable) {
+        row[n] = n in values ? values[n] : null;
+        row[`jazmin.before.${n}`] = op === 'delete' || (op === 'update' && n in values) ? now[n] : null;
+      }
+      return row;
+    });
+    const defs = [
+      { name: 'jazmin.op', type: 'string', nullable: false },
+      { name: 'jazmin.set', type: 'json' },
+      ...edit.key.map((k) => changeDefinition(columns.get(k))),
+      ...editable.map((n) => ({ ...changeDefinition(columns.get(n)), nullable: true })),
+      ...editable.map((n) => ({ ...changeDefinition(columns.get(n)), name: `jazmin.before.${n}`, nullable: true })),
+    ];
+    const metadata = {
+      'jazmin.changes': {
+        version: 1, file: source.fileId, table: reader.table, key: edit.key, columns: editable, sender: source.access?.keyId ?? null,
+        based: { writtenAt: source.writtenAt.toISOString(), appendCount: source.appendCount },
+      },
+    };
+    return write(rows, { columns: defs, metadata, ...seal });
+  }
+
   global.JazminBrowser = {
     open,
     openUrl,
     createWriter,
     write,
+    writeChanges,
     compileFilter,
     base64ToBytes,
     JazminError,

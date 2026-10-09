@@ -8,6 +8,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { JazminKey, applyChanges, compact, open, update, write, writeChanges } from '../src/index.js';
+import '../browser/jazmin-browser.js';
+
+const { JazminBrowser } = globalThis;
 
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-changes-'));
 const doc = { path: 'index.html', content: '<p>claims</p>' };
@@ -211,4 +214,35 @@ test('a shared file: the sender found by submission key, limited to its grant\'s
 
   // Not a change file of this file's senders at all.
   assert.throws(() => applyChanges(file, write(null, [{ a: 1 }], { key: JazminKey.generate() }), { key: owner }), /doesn't open with the submission key of any key granted/);
+});
+
+test("the browser reader makes the same change files (a viewer's), and the library applies them", async () => {
+  const dir = tmp();
+  const owner = JazminKey.generate();
+  const bob = owner.createAccessKey();
+  const shared = path.join(dir, 'shared.jzm');
+  write(shared, claims, {
+    columns, key: owner, files: [doc], package: { entry: 'index.html', edit: EDIT },
+    access: { partitionBy: 'region', grants: [{ key: bob, rows: ['A'], columns: '*' }] },
+  });
+  const inBrowser = await JazminBrowser.open(new Blob([fs.readFileSync(shared)]), { key: bob.export() });
+  assert.equal(inBrowser.access.keyId, bob.id);
+  assert.equal(inBrowser.fileId, open(shared, { key: owner }).fileId);
+  const blob = await JazminBrowser.writeChanges(inBrowser, { update: [{ claim: 'C-2', status: 'paid', due: new Date(Date.UTC(2026, 11, 24)) }], add: [{ claim: 'C-5', status: 'new' }] });
+  await assert.rejects(JazminBrowser.writeChanges(inBrowser, { update: [{ claim: 'C-3', status: 'x' }] }), /No row with claim C-3 is visible/);
+  const result = applyChanges(shared, Buffer.from(await blob.arrayBuffer()), { key: owner });
+  assert.deepEqual(result, { sender: bob.id, fileChanged: false, updated: 1, added: 1, deleted: 0, conflicts: [], refused: [] });
+  const rows = rowsOf(shared, { key: owner });
+  assert.deepEqual([rows['C-2'].status, rows['C-2'].due], ['paid', new Date(Date.UTC(2026, 11, 24))]);
+  assert.equal(rows['C-5'].region, 'A');
+
+  // A file of one's own, opened with its key: its change file is sealed with that key.
+  const own = path.join(dir, 'own.jzm');
+  const key = JazminKey.generate();
+  write(own, claims, { columns, key, files: [doc], package: { entry: 'index.html', edit: EDIT } });
+  const mine = await JazminBrowser.open(new Blob([fs.readFileSync(own)]), { key: key.export() });
+  await assert.rejects(JazminBrowser.writeChanges(mine, { delete: [{ claim: 'C-3' }] }), /Give the key or password/);
+  const sealed = Buffer.from(await (await JazminBrowser.writeChanges(mine, { delete: [{ claim: 'C-3' }] }, { key: key.export() })).arrayBuffer());
+  assert.equal(applyChanges(own, sealed, { key }).deleted, 1);
+  assert.equal(rowsOf(own, { key })['C-3'], undefined);
 });

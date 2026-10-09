@@ -269,6 +269,8 @@ function installApi(boot) {
       }
     },
     savePdf() { throw new Error('This page cannot be saved as PDF here'); },
+    get edit() { return null; }, // a rendered document saves no changes
+    saveChanges() { return Promise.reject(new Error("This document can't save changes here")); },
     navigate(path) { location.href = new URL(path, `${boot.origin}/`).href; },
     get online() { return boot.allowedOrigins.length > 0; },
     ready(info) { window.__jazminReady(JSON.stringify(info || {})); },

@@ -127,6 +127,20 @@ globalThis.JazminSandbox = function () {
       if (pkg.renders) report('jazmin:savePdf', { page: jazmin.page, settings: merged });
       else window.print(); // a browser's print dialog saves as PDF: the page's CSS @page sets its size
     },
+    /**
+     * What this document may change (its package's edit: { table, key, columns, add, delete }), or null when it
+     * can't save changes here (none allowed, or the viewer can't save them).
+     */
+    get edit() { return pkg.edit && (pkg.capabilities || []).includes('edit') ? JSON.parse(JSON.stringify(pkg.edit)) : null; },
+    /**
+     * Saves changes to the rows: { update: [key + the columns that change], add: [rows], delete: [keys] }. The viewer
+     * checks them, shows the person what will change and asks. Resolves { saved: 'file' | 'change-file', updated,
+     * added, deleted }; rejects when they aren't allowed or the person doesn't save them.
+     */
+    saveChanges(changes) {
+      if (!jazmin.edit) return Promise.reject(new Error("This document can't save changes here"));
+      return call('jazmin:saveChanges', { changes }).then((r) => r.result);
+    },
     /** The filter the document's rows are limited to (renderPdf's filter: one account's statement), or null. */
     get filter() { return pkg.filter ? JSON.parse(JSON.stringify(pkg.filter)) : null; },
     /** A page of rows: options { select, orderBy (a column, '-column' for descending), offset, limit (default 100) }. */
