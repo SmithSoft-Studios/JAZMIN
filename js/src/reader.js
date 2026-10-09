@@ -11,7 +11,7 @@ import {
   decodeChunkDirectoryLists, decodeChunkMap, decodeColumnDefinitions, decodeDelta, decodeHeader, decodeIndexDirectory, decodeOwnerCatalog, joinChunkMaps,
   decodePartitionTable, decodeStatistics, findPartitions,
 } from './catalog.js';
-import { decodeColumnar } from './columnar.js';
+import { decodeColumnar, decodeColumnarAt } from './columnar.js';
 import {
   CODEC, DRAFT_MAGIC, ENVELOPE_SIZE, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, KEYRING_GROUPS,
   INDEX_DELTAS, KNOWN_FLAGS, MAGIC, MAX_KDF_ITERATIONS, MIN_KDF_ITERATIONS, PREAMBLE_SIZE, SUPPORTED_READER_FEATURES, TRAILER_SIZE, WHOLE_TABLE,
@@ -213,6 +213,9 @@ export const FILE_STATE = Symbol('jazmin.fileState');
 const NEXT_CHUNK = Symbol('jazmin.nextChunk'); // yielded by internal scans before each chunk is read (findAsync)
 const READ_AHEAD = 2; // chunks read ahead by findAsync
 const SMALL_LOOKUP_BYTES = 8 * 1024; // index lookups this small are always made: the bytes are negligible, and rows are not decoded
+// Index candidates are decoded on their own (decodeColumnarAt) when they are at most this share of a chunk's rows: the
+// values between them are passed over without being made. More candidates are decoded with their whole columns.
+const FEW_ROWS = 1 / 8;
 /**
  * What an owner's index lookup may cost (bytes of index pages) to be made before reading every partition: the
  * alternative reads at least a section per partition (chunk directories, statistics).
@@ -2126,6 +2129,7 @@ export class JazminReader {
     const restCount = rest ? rest.filter(Boolean).length : 0;
     const filterTypes = plan ? this.#filterTypes(plan, selection) : null;
     const whole = this.#wholeChunkTest(plan);
+    const datesAsMs = sink !== undefined; // column arrays take dates as milliseconds
     let skipped = 0;
     let yielded = 0;
     let deleted = 0;
@@ -2140,26 +2144,78 @@ export class JazminReader {
       const count = rowIds === null ? this.#rowCount[ordinal] : to - from;
       let columns;
       let matches = null;
-      if (!plan) columns = this.#decodeChunk(ordinal, wanted, sink !== undefined); // filters compare dates as milliseconds
+      let hits = null; // when few rows of the chunk match: their positions in it,
+      let found = null; // and by column, their values (one per hit)
+      if (!plan) columns = this.#decodeChunk(ordinal, wanted, datesAsMs); // filters compare dates as milliseconds
       else {
         const raw = this.#readChunk(ordinal);
         const rowCount = this.#rowCount[ordinal];
-        columns = decodeColumnar(raw, filterTypes, rowCount, ordinal, filterCols, sink !== undefined);
-        matches = new Uint8Array(rowCount);
-        let any = false;
-        for (let k = 0; k < count; k++) {
-          const r = rowIds === null ? k : rowIds[from + k] - start;
-          for (const c of filterAt) row[c] = columns[c][r];
-          if (evaluate(plan, row)) any = matches[r] = 1;
+        const few = rowCount * FEW_ROWS;
+        found = new Array(this.#columns.length);
+        if (rowIds !== null && count <= few) {
+          // A few index candidates: only their values of the filter's columns are decoded.
+          const positions = new Array(count);
+          for (let k = 0; k < count; k++) positions[k] = rowIds[from + k] - start;
+          const values = decodeColumnarAt(raw, filterTypes, rowCount, ordinal, filterCols, positions, datesAsMs);
+          hits = [];
+          for (const c of filterAt) found[c] = [];
+          for (let k = 0; k < count; k++) {
+            for (const c of filterAt) row[c] = values[c][k];
+            if (!evaluate(plan, row)) continue;
+            hits.push(positions[k]);
+            for (const c of filterAt) found[c].push(row[c]);
+          }
+        } else {
+          columns = decodeColumnar(raw, filterTypes, rowCount, ordinal, filterCols, datesAsMs);
+          matches = new Uint8Array(rowCount);
+          let matched = 0;
+          for (let k = 0; k < count; k++) {
+            const r = rowIds === null ? k : rowIds[from + k] - start;
+            for (const c of filterAt) row[c] = columns[c][r];
+            if (evaluate(plan, row)) {
+              matches[r] = 1;
+              matched++;
+            }
+          }
+          if (matched <= few) {
+            hits = [];
+            for (const c of filterAt) found[c] = [];
+            for (let r = 0; r < rowCount; r++) {
+              if (!matches[r]) continue;
+              hits.push(r);
+              for (const c of filterAt) found[c].push(columns[c][r]);
+            }
+          } else if (restCount) {
+            const more = decodeColumnar(raw, this.#streamTypes, rowCount, ordinal, rest, datesAsMs, matches);
+            for (let c = 0; c < more.length; c++) if (rest[c]) columns[c] = more[c];
+          }
         }
-        if (any && restCount) {
-          const more = decodeColumnar(raw, this.#streamTypes, rowCount, ordinal, rest, sink !== undefined, matches);
-          for (let c = 0; c < more.length; c++) if (rest[c]) columns[c] = more[c];
+        // Few rows match: the other columns are decoded for them alone (the values between them are passed over).
+        if (hits?.length && restCount) {
+          const more = decodeColumnarAt(raw, filterTypes, rowCount, ordinal, rest, hits, datesAsMs);
+          for (let c = 0; c < more.length; c++) if (rest[c]) found[c] = more[c];
         }
         if (this.#cost) {
           this.#cost.chunksRead++;
-          this.#cost.columnsDecoded += filterAt.length + (any ? restCount : 0);
+          this.#cost.columnsDecoded += filterAt.length + (!hits || hits.length ? restCount : 0);
         }
+      }
+      if (hits) {
+        for (let h = 0; h < hits.length; h++) {
+          if (yielded >= limit) return;
+          const rowId = start + hits[h];
+          while (deleted < this.#deleted.length && this.#deleted[deleted] < rowId) deleted++;
+          if (deleted < this.#deleted.length && this.#deleted[deleted] === rowId) continue;
+          for (const c of wantedAt) row[c] = found[c][h];
+          if (skipped < offset) {
+            skipped++;
+            continue;
+          }
+          yielded++;
+          if (sink) sink(found, h, h + 1);
+          else yield make(row);
+        }
+        continue;
       }
       for (let k = 0; k < count; k++) {
         if (yielded >= limit) return;

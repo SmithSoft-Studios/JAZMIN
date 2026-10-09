@@ -618,6 +618,40 @@ export function decodeColumnar(raw, types, rowCount, ordinal, wanted, datesAsMs 
 }
 
 /**
+ * decodeColumnar for a few rows of a chunk: the rows at `positions` (ascending, distinct), one array per wanted column
+ * with one value per position. The values between them are passed over without being made (decodeAt), so finding a
+ * few rows of a chunk costs little more than their own values. Lists and objects are decoded whole, with only those
+ * rows' values made.
+ */
+export function decodeColumnarAt(raw, types, rowCount, ordinal, wanted, positions, datesAsMs = false) {
+  if (!Number.isSafeInteger(rowCount) || rowCount < 0 || (rowCount > 0 && rowCount > raw.length * 8)) {
+    throw new JazminFormatError(`Chunk ${ordinal}: row count does not match its size`);
+  }
+  const reader = new ByteReader(raw);
+  const columns = new Array(types.length);
+  let rows = null; // by row: 1 for the rows at `positions` (lists and objects)
+  for (let j = 0; j < types.length; j++) {
+    const length = reader.varUint();
+    if (typeof length !== 'number' || length < 1) throw new JazminFormatError(`Chunk ${ordinal}: invalid stream length`);
+    const end = reader.pos + length;
+    if (end > raw.length) throw new JazminFormatError(`Chunk ${ordinal}: stream runs past the payload`);
+    if (!wanted || wanted[j]) {
+      if (typeof types[j] === 'object') {
+        if (!rows) {
+          rows = new Uint8Array(rowCount);
+          for (const r of positions) rows[r] = 1;
+        }
+        const all = decodeStream(raw, reader.pos, end, types[j], rowCount, ordinal, datesAsMs, rows);
+        columns[j] = positions.map((r) => all[r]);
+      } else columns[j] = decodeAt(raw, reader.pos, end, types[j], rowCount, positions, ordinal, datesAsMs);
+    }
+    reader.skip(length);
+  }
+  if (!reader.eof) throw new JazminFormatError(`Chunk ${ordinal} has trailing bytes`);
+  return columns;
+}
+
+/**
  * One stream, raw[start, end) after its length: flags, null bitmap and body over `rowCount` entries (a chunk's rows,
  * or the entries of a nested column's part). Returns one value per entry, null for null.
  */
@@ -738,12 +772,18 @@ function skipValue(r, type) {
   }
 }
 
-/**
- * Entries [from, to) of one leaf stream at raw[start, end), as to - from values: values before `from` are passed over
- * without being made, and later ones are not read, so a lookup costs little more than its own values. The rest of the
- * stream is not checked (decodeStream decodes and checks whole streams).
- */
+/** Entries [from, to) of one leaf stream at raw[start, end), as to - from values (decodeAt). */
 function decodeRange(raw, start, end, type, entries, from, to, ordinal) {
+  return decodeAt(raw, start, end, type, entries, Array.from({ length: to - from }, (_, i) => from + i), ordinal);
+}
+
+/**
+ * The entries at `positions` (ascending, distinct, each under `entries`) of one leaf stream at raw[start, end), one
+ * value each, null for null: the values between them are passed over without being made, and those after the last
+ * are not read, so a lookup costs little more than its own values. The rest of the stream is not checked
+ * (decodeStream decodes and checks whole streams). With `datesAsMs`, datetimes are milliseconds since 1970.
+ */
+function decodeAt(raw, start, end, type, entries, positions, ordinal, datesAsMs = false) {
   const stream = new ByteReader(raw.subarray(0, end), start);
   const flags = stream.byte();
   const encoding = flags & 0x0f;
@@ -751,24 +791,31 @@ function decodeRange(raw, start, end, type, entries, from, to, ordinal) {
   if (!ALLOWED[type]?.includes(encoding)) throw new JazminFormatError(`Chunk ${ordinal}: encoding ${encoding} is not valid for a ${type} column`);
   const nulls = flags & HAS_NULLS ? stream.bytes((entries + 7) >> 3) : null;
   const isNull = (r) => nulls !== null && bit(nulls, r);
-  const out = new Array(to - from).fill(null);
+  const out = new Array(positions.length).fill(null);
+  const last = positions.length ? positions[positions.length - 1] : -1;
+  const date = datesAsMs ? msFromFile : dateFromMs;
+  let p = 0; // the next position
   switch (encoding) {
     case ENCODING.plain:
-      for (let r = 0; r < to; r++) {
-        if (isNull(r)) continue;
-        if (r >= from) out[r - from] = readPlain(stream, type);
-        else skipValue(stream, type);
+      for (let r = 0; r <= last; r++) {
+        if (isNull(r)) {
+          if (r === positions[p]) p++;
+        } else if (r !== positions[p]) skipValue(stream, type);
+        else out[p++] = type === 'datetime' ? date(stream.varInt()) : readPlain(stream, type);
       }
       break;
     case ENCODING.delta: {
       let previous = 0;
       let first = true;
-      for (let r = 0; r < to; r++) {
-        if (isNull(r)) continue;
+      for (let r = 0; r <= last; r++) {
+        if (isNull(r)) {
+          if (r === positions[p]) p++;
+          continue;
+        }
         const d = stream.varInt();
         previous = first ? d : typeof previous === 'number' && typeof d === 'number' && Number.isSafeInteger(previous + d) ? previous + d : normalizeBigInt(BigInt(previous) + BigInt(d));
         first = false;
-        if (r >= from) out[r - from] = type === 'datetime' ? dateFromMs(previous) : previous;
+        if (r === positions[p]) out[p++] = type === 'datetime' ? date(previous) : previous;
       }
       break;
     }
@@ -782,17 +829,20 @@ function decodeRange(raw, start, end, type, entries, from, to, ordinal) {
         skipValue(stream, type);
       }
       const made = new Map();
-      for (let r = 0; r < to; r++) {
-        if (isNull(r)) continue;
+      for (let r = 0; r <= last; r++) {
+        if (isNull(r)) {
+          if (r === positions[p]) p++;
+          continue;
+        }
         const id = stream.varUint();
         if (typeof id !== 'number' || id >= k) throw new JazminFormatError(`Chunk ${ordinal}: dictionary index out of range`);
-        if (r < from) continue;
+        if (r !== positions[p]) continue;
         let text = made.get(id);
         if (text === undefined) {
           const entry = new ByteReader(stream.buf, offsets[id]);
           made.set(id, (text = type === 'decimal' ? readDecimal(entry) : entry.string()));
         }
-        out[r - from] = text;
+        out[p++] = text;
       }
       break;
     }
@@ -800,16 +850,22 @@ function decodeRange(raw, start, end, type, entries, from, to, ordinal) {
       let count = entries;
       if (nulls) for (let r = 0; r < entries; r++) if (isNull(r)) count--;
       const bits = stream.bytes((count + 7) >> 3);
-      for (let r = 0, i = 0; r < to; r++) {
-        if (isNull(r)) continue;
-        if (r >= from) out[r - from] = bit(bits, i);
+      for (let r = 0, i = 0; r <= last; r++) {
+        if (isNull(r)) {
+          if (r === positions[p]) p++;
+          continue;
+        }
+        if (r === positions[p]) out[p++] = bit(bits, i);
         i++;
       }
       break;
     }
     case ENCODING.scaled:
-      for (let r = 0; r < to; r++) {
-        if (isNull(r)) continue;
+      for (let r = 0; r <= last; r++) {
+        if (isNull(r)) {
+          if (r === positions[p]) p++;
+          continue;
+        }
         const s = stream.byte();
         let v;
         if (s === 255) v = stream.float64();
@@ -818,7 +874,7 @@ function decodeRange(raw, start, end, type, entries, from, to, ordinal) {
           if (typeof m !== 'number' || Math.abs(m) > 2 ** 53) throw new JazminFormatError(`Chunk ${ordinal}: scaled value out of range`);
           v = m / POW10[s];
         } else throw new JazminFormatError(`Chunk ${ordinal}: invalid scale ${s}`);
-        if (r >= from) out[r - from] = v;
+        if (r === positions[p]) out[p++] = v;
       }
       break;
     default:

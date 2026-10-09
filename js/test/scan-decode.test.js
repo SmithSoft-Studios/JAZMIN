@@ -79,3 +79,19 @@ test('a chunk without matching rows decodes only the filter\'s columns', () => {
   assert.equal(cost.columnsDecoded, 10 + 8); // the note column of every chunk, and the other 8 of the one that matches
   reader.close();
 });
+
+test('column arrays of a filtered scan hold what the rows hold, when few rows of a chunk match or many do', () => {
+  const reader = open(file);
+  const all = [...reader.find(null)];
+  const select = ['id', 'note', 'amount', 'score', 'flag', 'at'];
+  for (const filter of filters) {
+    // The same rows in a file of their own, read whole: the arrays a filtered scan must give.
+    const expected = all.filter(compileFilter(filter, reader.columns)).slice(1, 9);
+    const own = open(write(null, expected, { columns }));
+    const want = own.columnArrays(null, { select });
+    own.close();
+    const got = reader.columnArrays(filter, { select, offset: 1, limit: 8 });
+    assert.deepEqual(got, want, JSON.stringify(filter));
+  }
+  reader.close();
+});

@@ -113,6 +113,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   can't be taken apart runs as before.
 - **.NET: a query that reads one chunk decodes it at once,** without handing it to a background task: lookups, and
   the first chunk of a scan. Opening a file and reading one row by id: 0.70 -> 0.60 ms.
+- **Node: a query that needs only a few rows of a chunk decodes only their values** (TASKS P-25), when an index names
+  few rows of a chunk or few of its rows match. The values between them are stepped over without being made, in
+  every encoding. Finding one customer by id among 200,000 (open -> row): 1.15 -> 0.70 ms once Node has optimised the
+  code, 2.7 -> 1.9 ms in USER-GUIDE 9.12, peak memory 1.6 -> 0.3 MB. .NET is unchanged: it decodes numbers and dates
+  into arrays without an object each, so this would save it about 0.07 ms of 0.6.
 - **Text search with a trigram index is faster and uses less memory** (TASKS P-25), in both libraries and the browser
   reader. No file changes.
   - Only the row lists of the pieces a search uses are decoded, rarest first; before, the whole index was decoded

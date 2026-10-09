@@ -5,7 +5,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { JazminFormatError, JazminKey, append, compact, open, update, write } from '../src/index.js';
 import { ByteWriter } from '../src/binary.js';
-import { ENCODING, columnBuffer, decodeColumnar, encodeColumnBuffers, encodeColumnar } from '../src/columnar.js';
+import { ENCODING, columnBuffer, decodeColumnar, decodeColumnarAt, encodeColumnBuffers, encodeColumnar } from '../src/columnar.js';
 import { MAGIC } from '../src/constants.js';
 import { compileFilter } from '../src/filter.js';
 
@@ -52,26 +52,29 @@ test('every type and edge value round-trips exactly', () => {
   for (let i = 0; i < rows.length; i += 97) assert.deepEqual(col.get(i), rows[i]);
 });
 
+// Every type, with nulls, a BigInt mid-chunk, a column of nulls only, and text just repetitive enough for a dictionary.
+const types = ['int', 'int', 'bool', 'float', 'decimal', 'string', 'string', 'datetime', 'binary', 'json', 'string', 'string', 'int', 'int', 'datetime'];
+const value = (j, i, n) => {
+  switch (j) {
+    case 0: return i * 3;
+    case 1: return i % 50 === 0 ? null : i === Math.floor(n / 2) ? 2n ** 63n - 1n : i * 1000; // a BigInt mid-chunk
+    case 2: return i % 9 === 0 ? null : i % 3 === 0;
+    case 3: return i % 13 === 0 ? null : floats[i % floats.length];
+    case 4: return i % 4 === 0 ? null : `${i % 7}.10`;
+    case 5: return ['ZA', 'NA', 'BW'][i % 3];
+    case 6: return i % 6 === 0 ? null : `note ${i} 👋 é`;
+    case 7: return i % 8 === 0 ? null : Date.UTC(2020, 0, 1) + i * 60_000;
+    case 8: return i % 5 === 0 ? null : Buffer.from([i & 255, 1, 2]);
+    case 9: return i % 10 === 0 ? null : JSON.stringify({ i });
+    case 10: return null; // all null
+    case 11: return `v${i % Math.ceil(n / 2)}`; // exactly half distinct: dictionary just qualifies
+    case 12: return i % 2 ? 2 ** 60 : -5; // a large plain number
+    case 13: return i === 3 ? null : i; // one early null in a long chunk: the bitmap is still full length
+    default: return i % 5 === 1 ? null : i % 2 ? i * 1000 : 2 ** 40 + i; // near 1970 and in 2004 by turns: plain is smaller
+  }
+};
+
 test('typed column buffers encode the same bytes as the reference encoder', () => {
-  const types = ['int', 'int', 'bool', 'float', 'decimal', 'string', 'string', 'datetime', 'binary', 'json', 'string', 'string', 'int', 'int'];
-  const value = (j, i, n) => {
-    switch (j) {
-      case 0: return i * 3;
-      case 1: return i % 50 === 0 ? null : i === Math.floor(n / 2) ? 2n ** 63n - 1n : i * 1000; // a BigInt mid-chunk
-      case 2: return i % 9 === 0 ? null : i % 3 === 0;
-      case 3: return i % 13 === 0 ? null : floats[i % floats.length];
-      case 4: return i % 4 === 0 ? null : `${i % 7}.10`;
-      case 5: return ['ZA', 'NA', 'BW'][i % 3];
-      case 6: return i % 6 === 0 ? null : `note ${i} 👋 é`;
-      case 7: return i % 8 === 0 ? null : Date.UTC(2020, 0, 1) + i * 60_000;
-      case 8: return i % 5 === 0 ? null : Buffer.from([i & 255, 1, 2]);
-      case 9: return i % 10 === 0 ? null : JSON.stringify({ i });
-      case 10: return null; // all null
-      case 11: return `v${i % Math.ceil(n / 2)}`; // exactly half distinct: dictionary just qualifies
-      case 12: return i % 2 ? 2 ** 60 : -5; // a large plain number
-      default: return i === 3 ? null : i; // one early null in a long chunk: the bitmap is still full length
-    }
-  };
   for (const maxRows of [1, 2, 7, 64, 256, 1000]) {
     const buffers = types.map((t) => columnBuffer(t, maxRows));
     for (const n of [maxRows, Math.max(1, maxRows - 1), maxRows]) { // buffers are reused across chunks
@@ -79,6 +82,21 @@ test('typed column buffers encode the same bytes as the reference encoder', () =
       for (let i = 0; i < n; i++) types.forEach((_, j) => (columnValues[j][i] === null ? buffers[j].addNull() : buffers[j].add(columnValues[j][i])));
       const expected = Buffer.from(encodeColumnar(types, columnValues, n));
       assert.deepEqual(Buffer.from(encodeColumnBuffers(buffers)), expected, `maxRows ${maxRows}, ${n} rows`);
+    }
+  }
+});
+
+test('decoding the rows at given positions gives what decoding whole columns gives, for every type and encoding', () => {
+  for (const n of [1, 7, 64, 1000]) {
+    const raw = Buffer.from(encodeColumnar(types, types.map((_, j) => Array.from({ length: n }, (_, i) => value(j, i, n))), n));
+    for (const datesAsMs of [false, true]) {
+      const whole = decodeColumnar(raw, types, n, 0, null, datesAsMs);
+      const sets = [[], [0], [n - 1], [...new Set([0, n >> 1, n - 1])], Array.from({ length: n }, (_, i) => i).filter((i) => i % 3 === 1)];
+      for (const positions of sets) {
+        const wanted = types.map((_, j) => j % 2 === 0 || n > 7); // some columns left out
+        const at = decodeColumnarAt(raw, types, n, 0, wanted, positions, datesAsMs);
+        types.forEach((type, j) => assert.deepEqual(at[j], wanted[j] ? positions.map((p) => whole[j][p]) : undefined, `${n} rows, ${type} ${j}, at ${positions.slice(0, 5)}`));
+      }
     }
   }
 });
