@@ -386,16 +386,50 @@ function leafMayMatch(leaf, stat, rowCount) {
   }
 }
 
-/** Uses per-chunk min/max/null statistics to decide whether a chunk can be skipped. */
-/** `stats` is a chunk's statistics by column position, or a function returning a column's statistics. */
-export function mayMatch(node, stats, rowCount) {
+/**
+ * Uses per-chunk min/max/null statistics to decide whether a chunk can be skipped. `stats` is a chunk's statistics by
+ * column position, or a function returning a column's statistics; `leaves(col, path)`, a nested column's leaf's (path:
+ * field positions, as "1,0"), or undefined when not kept.
+ */
+export function mayMatch(node, stats, rowCount, leaves) {
   switch (node.kind) {
-    case 'and': return node.items.every((n) => mayMatch(n, stats, rowCount));
-    case 'or': return node.items.some((n) => mayMatch(n, stats, rowCount));
+    case 'and': return node.items.every((n) => mayMatch(n, stats, rowCount, leaves));
+    case 'or': return node.items.some((n) => mayMatch(n, stats, rowCount, leaves));
     case 'not': return true;
+    case 'nested': {
+      const stat = typeof stats === 'function' ? stats(node.col) : stats[node.col];
+      if (stat && stat.nulls === rowCount) return false; // every list or object of the chunk is null: none matches
+      return !leaves || nestedMayMatch(node, (path) => leaves(node.col, path), '');
+    }
     default: return leafMayMatch(node, typeof stats === 'function' ? stats(node.col) : stats[node.col], rowCount);
   }
 }
+
+/**
+ * Whether a nested column's condition may match in a chunk, from the statistics of the leaves its filter reads (spec
+ * 6.4): `any` and `match` need an item or object that may match each condition. `all` may always match (an empty list
+ * does).
+ */
+function nestedMayMatch(node, leafOf, path) {
+  return node.op === 'all' || partMayMatch(node.inner, node.part, leafOf, path);
+}
+
+/** A filter of `part` (its fields by position, or the item itself at 0) at `path`. */
+function partMayMatch(node, part, leafOf, path) {
+  switch (node.kind) {
+    case 'and': return node.items.every((n) => partMayMatch(n, part, leafOf, path));
+    case 'or': return node.items.some((n) => partMayMatch(n, part, leafOf, path));
+    case 'not': return true;
+    case 'nested': return nestedMayMatch(node, leafOf, step(part, node.col, path));
+    default: {
+      const stat = leafOf(step(part, node.col, path));
+      return !stat || leafMayMatch(node, stat, stat.count);
+    }
+  }
+}
+
+/** The path of an object's field (one step more), or of a list's item (the same path). */
+const step = (part, col, path) => (part.type !== 'object' ? path : path === '' ? String(col) : `${path},${col}`);
 
 function leafMustMatch(leaf, stat, rowCount) {
   // Float statistics leave NaN values out, so they cannot prove that every row matches.
@@ -425,6 +459,7 @@ export function mustMatch(node, stats, rowCount) {
     case 'and': return node.items.every((n) => mustMatch(n, stats, rowCount));
     case 'or': return node.items.some((n) => mustMatch(n, stats, rowCount));
     case 'not': return !mayMatch(node.item, stats, rowCount);
+    case 'nested': return false; // statistics bound values, not whether every list has a matching item
     default: return leafMustMatch(node, typeof stats === 'function' ? stats(node.col) : stats[node.col], rowCount);
   }
 }

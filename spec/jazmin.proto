@@ -140,6 +140,16 @@ message ColumnStatistics {
   repeated uint32 null_counts = 1; // one per chunk
   repeated bytes min = 2;          // one per chunk: a bound in key form (spec 6.5), empty = unbounded
   repeated bytes max = 3;
+  repeated LeafStatistics leaves = 4; // list and object columns (spec 5.4): their leaves, optional (spec 6.4)
+}
+
+// One leaf of a nested column (a field or item that is not a list or object), per chunk of the segment.
+message LeafStatistics {
+  repeated uint32 path = 1;         // field positions from the column to the leaf; a list's item adds none
+  repeated uint64 value_counts = 2; // one per chunk: the leaf's entries, null or not
+  repeated uint64 null_counts = 3;  // one per chunk
+  repeated bytes min = 4;           // one per chunk, over the entries that are not null (as ColumnStatistics)
+  repeated bytes max = 5;
 }
 
 message IndexRef {

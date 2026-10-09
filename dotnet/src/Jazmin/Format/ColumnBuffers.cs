@@ -14,6 +14,9 @@ internal abstract class ColumnBuffer
     protected bool HasNulls;
     public long NullCount { get; private set; }
 
+    /// <summary>The values added since the last reset, null or not.</summary>
+    public int Count => Rows;
+
     /// <summary>A buffer for one column; ordered types also collect min/max for the chunk statistics (spec 6.4).</summary>
     public static ColumnBuffer For(JazminType type) => type switch
     {

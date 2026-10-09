@@ -581,16 +581,43 @@ internal static class FilterEngine
     /// <summary>False when chunk statistics prove no row in the chunk can match.</summary>
     public static bool MayMatch(BoundFilter node, ColumnStats?[] stats, int rowCount) => MayMatch(node, c => stats[c], rowCount);
 
-    /// <summary>MayMatch with a chunk's statistics given by column position (null: unknown).</summary>
-    public static bool MayMatch(BoundFilter node, Func<int, ColumnStats?> statOf, int rowCount) => node switch
+    /// <summary>
+    /// MayMatch with a chunk's statistics given by column position (null: unknown), and with <paramref name="leafOf"/>, a
+    /// nested column's leaves' statistics by column position and path (field positions, as "1,0").
+    /// </summary>
+    public static bool MayMatch(BoundFilter node, Func<int, ColumnStats?> statOf, int rowCount, Func<int, string, ColumnStats?>? leafOf = null) => node switch
     {
-        BoundFilter.And a => a.Items.All(i => MayMatch(i, statOf, rowCount)),
-        BoundFilter.Or o => o.Items.Any(i => MayMatch(i, statOf, rowCount)),
+        BoundFilter.And a => a.Items.All(i => MayMatch(i, statOf, rowCount, leafOf)),
+        BoundFilter.Or o => o.Items.Any(i => MayMatch(i, statOf, rowCount, leafOf)),
         BoundFilter.Leaf l => LeafMayMatch(l, statOf(l.Col), rowCount),
+        // A chunk whose lists or objects are all null matches no any, all or match on them.
+        BoundFilter.Nested n => (statOf(n.Col) is not { } s || s.Nulls < rowCount) && (leafOf is null || NestedMayMatch(n, path => leafOf(n.Col, path), "")),
         _ => true,
     };
 
-    private static bool LeafMayMatch(BoundFilter.Leaf leaf, ColumnStats? stat, int rowCount)
+    /// <summary>
+    /// Whether a nested column's condition may match in a chunk, from the statistics of the leaves its filter reads (spec
+    /// 6.4): `any` and `match` need an item or object that may match each condition. `all` may always match (an empty
+    /// list does).
+    /// </summary>
+    private static bool NestedMayMatch(BoundFilter.Nested n, Func<string, ColumnStats?> leafOf, string path) =>
+        n.Op == "all" || PartMayMatch(n.Inner, n.Part, leafOf, path);
+
+    /// <summary>A filter of <paramref name="part"/> (its fields by position, or the item itself at 0) at <paramref name="path"/>.</summary>
+    private static bool PartMayMatch(BoundFilter f, JazminColumn part, Func<string, ColumnStats?> leafOf, string path) => f switch
+    {
+        BoundFilter.And a => a.Items.All(i => PartMayMatch(i, part, leafOf, path)),
+        BoundFilter.Or o => o.Items.Any(i => PartMayMatch(i, part, leafOf, path)),
+        BoundFilter.Leaf l => leafOf(Step(part, l.Col, path)) is not { } stat || LeafMayMatch(l, stat, stat.Count),
+        BoundFilter.Nested inner => NestedMayMatch(inner, leafOf, Step(part, inner.Col, path)),
+        _ => true,
+    };
+
+    /// <summary>The path of an object's field (one step more), or of a list's item (the same path).</summary>
+    private static string Step(JazminColumn part, int col, string path) =>
+        part.Type != JazminType.Object ? path : path.Length == 0 ? col.ToString(CultureInfo.InvariantCulture) : string.Concat(path, ",", col.ToString(CultureInfo.InvariantCulture));
+
+    private static bool LeafMayMatch(BoundFilter.Leaf leaf, ColumnStats? stat, long rowCount)
     {
         if (stat is null) return true;
         if (leaf.Op == "isNull") return (bool)leaf.Value! ? stat.Nulls > 0 : stat.Nulls < rowCount;

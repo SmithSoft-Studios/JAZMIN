@@ -233,6 +233,22 @@ function tableDefinition(t, { named, access, chunkRows, chunkBytes }) {
  *   tables:   [{ name, columns, sortedBy, partitionBy, columnGroups, chunkRows, chunkBytes }]   several tables
  *             (instead of columns, sortedBy and access.partitionBy / columnGroups); see startTable
  */
+
+/** A nested column's leaf statistics over a segment's chunks (spec 6.4): every chunk of a writer has the same leaves. */
+function leafEntries(chunks, col) {
+  const first = chunks[0].stats[col].leaves;
+  if (!first) return [];
+  return first.map((leaf, k) => {
+    const bounds = chunks.map((c) => c.stats[col].leaves[k].stats.bounds());
+    return {
+      path: leaf.path,
+      counts: chunks.map((c) => c.stats[col].leaves[k].count),
+      nullCounts: chunks.map((c) => c.stats[col].leaves[k].stats.nulls),
+      min: bounds.map((x) => x.min),
+      max: bounds.map((x) => x.max),
+    };
+  });
+}
 export class JazminWriter {
   #out;
   #columns;
@@ -676,6 +692,12 @@ export class JazminWriter {
       ordinal, rowStart: this.#rowCount - this.#chunkRows, rowCount: this.#chunkRows, partition,
       parts: this.#groups.map(() => ({ offset: 0, length: 0 })), stats: this.#chunkStats,
     };
+    // Nested columns' leaves (spec 6.4): taken before encoding resets the buffers.
+    for (const group of this.#groups) {
+      group.cols.forEach((col, j) => {
+        if (typeof group.buffers[j].leafStats === 'function') entry.stats[col].leaves = group.buffers[j].leafStats();
+      });
+    }
     this.#chunks.push(entry);
     const pool = this.#sectionPool();
     const partitionSecret = this.#access ? this.#secrets.partitionSecret(partition) : null;
@@ -889,7 +911,7 @@ export class JazminWriter {
         const sectionId = `${this.#tableIndex}/stats/${partition}/${b}${suffix}`;
         const columns = block.cols.map((col) => {
           const bounds = chunks.map((c) => c.stats[col].bounds());
-          return { nullCounts: chunks.map((c) => c.stats[col].nulls), min: bounds.map((x) => x.min), max: bounds.map((x) => x.max) };
+          return { nullCounts: chunks.map((c) => c.stats[col].nulls), min: bounds.map((x) => x.min), max: bounds.map((x) => x.max), leaves: leafEntries(chunks, col) };
         });
         const key = this.#access ? partKey(secret, this.#secrets.columnSecret(block.group), this.#salt, sectionId) : this.#keys?.sectionKey(KEYRING_GROUPS.data, sectionId);
         return { columns: block.cols, section: this.#writeSection(encodeStatistics(columns), sectionId, key) };

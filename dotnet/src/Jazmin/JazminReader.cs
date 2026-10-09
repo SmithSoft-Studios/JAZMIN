@@ -145,9 +145,10 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         public HashSet<int> StatsLoaded { get; } = new();
     }
 
-    /// <summary>One column's statistics by chunk ordinal, once a query needs them (spec 6.4).</summary>
-    private sealed class ColumnStatsByChunk(int chunks)
+    /// <summary>One column's (or nested leaf's) statistics by chunk ordinal, once a query needs them (spec 6.4).</summary>
+    private sealed class ColumnStatsByChunk(int chunks, bool leaf = false)
     {
+        public long[]? Counts { get; } = leaf ? new long[chunks] : null; // a leaf's entries in each chunk
         public long[] Nulls { get; } = new long[chunks];
         public object?[] Min { get; } = new object?[chunks];
         public object?[] Max { get; } = new object?[chunks];
@@ -211,6 +212,8 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private readonly int[] _partLength;
     private byte[]? _partDigests; // access-controlled files: 32 bytes per part
     private readonly ColumnStatsByChunk?[] _colStats;
+    private readonly Dictionary<string, ColumnStatsByChunk>?[] _leafStats; // nested columns' leaves, by path ("1,0")
+    private readonly Func<int, string, ColumnStats?> _leafLookup;
     private readonly HashSet<int> _statCols = new(); // loaded for every loaded segment
     private int _statOrdinal;
     private readonly Func<int, ColumnStats?> _statLookup;
@@ -295,6 +298,8 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             _partLength = new int[n * _groups.Length];
             _colStats = new ColumnStatsByChunk?[_allColumns.Length];
             _statLookup = col => StatAt(col, _statOrdinal);
+            _leafStats = new Dictionary<string, ColumnStatsByChunk>?[_allColumns.Length];
+            _leafLookup = (col, path) => LeafStatAt(col, path, _statOrdinal);
             _types = _allColumns.Select(c => c.Type).ToArray();
             _visibleCols = Enumerable.Range(0, _allColumns.Length).Where(i => _groupOf[i] >= 0).ToArray();
             _visibleColumns = _visibleCols.Select(i => _allColumns[i]).ToList();
@@ -819,10 +824,64 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         return view;
     }
 
+    /// <summary>A nested column's leaf's statistics in a chunk (path: field positions, as "1,0"), or null when not kept.</summary>
+    private ColumnStats? LeafStatAt(int col, string path, int ordinal)
+    {
+        if (_leafStats[col] is not { } leaves || !leaves.TryGetValue(path, out var s) || !s.Has[ordinal]) return null;
+        var view = s.View;
+        view.Count = s.Counts![ordinal];
+        view.Nulls = s.Nulls[ordinal];
+        view.Min = s.Min[ordinal];
+        view.Max = s.Max[ordinal];
+        return view;
+    }
+
     private bool MayMatch(BoundFilter plan, int ordinal)
     {
         _statOrdinal = ordinal;
-        return FilterEngine.MayMatch(plan, _statLookup, _rowCount[ordinal]);
+        return FilterEngine.MayMatch(plan, _statLookup, _rowCount[ordinal], _leafLookup);
+    }
+
+    /// <summary>A nested column's leaf statistics for one segment (spec 6.4): each leaf named once, with an entry per chunk.</summary>
+    private void LoadLeafStats(int col, LeafStatsEntry[] leaves, IReadOnlyList<int> ordinals)
+    {
+        if (!TypeNames.IsNested(_allColumns[col].Type)) throw new JazminFormatException("Statistics list fields of a column that has none");
+        var byPath = _leafStats[col] ??= new Dictionary<string, ColumnStatsByChunk>(StringComparer.Ordinal);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        var n = ordinals.Count;
+        foreach (var leaf in leaves)
+        {
+            var type = LeafType(_allColumns[col], leaf.Path) ?? throw new JazminFormatException("Statistics name a field that does not exist");
+            var key = string.Join(',', leaf.Path);
+            if (!seen.Add(key)) throw new JazminFormatException("Statistics name a field twice");
+            if (leaf.Counts.Length != n || leaf.NullCounts.Length != n || leaf.Min.Length != n || leaf.Max.Length != n)
+                throw new JazminFormatException("Statistics do not match the chunk directory");
+            var stats = byPath.TryGetValue(key, out var s) ? s : byPath[key] = new ColumnStatsByChunk(_loaded.Length, leaf: true);
+            for (var i = 0; i < n; i++)
+            {
+                if (leaf.NullCounts[i] < 0 || leaf.NullCounts[i] > leaf.Counts[i]) throw new JazminFormatException("Statistics count more nulls than values");
+                var o = ordinals[i];
+                stats.Has[o] = true;
+                stats.Counts![o] = leaf.Counts[i];
+                stats.Nulls[o] = leaf.NullCounts[i];
+                stats.Min[o] = Bounds.Decode(type, leaf.Min[i]);
+                stats.Max[o] = Bounds.Decode(type, leaf.Max[i]);
+            }
+        }
+    }
+
+    /// <summary>The type of the leaf at <paramref name="path"/> (field positions; a list's item adds none), or null when there is none.</summary>
+    private static JazminType? LeafType(JazminColumn column, int[] path)
+    {
+        var node = column;
+        foreach (var step in path)
+        {
+            while (node.Type == JazminType.List) node = node.Item!;
+            if (node.Type != JazminType.Object || step >= node.Fields!.Count) return null;
+            node = node.Fields[step];
+        }
+        while (node.Type == JazminType.List) node = node.Item!;
+        return TypeNames.IsNested(node.Type) ? null : node.Type;
     }
 
     /// <summary>Loads the statistics of these columns for every loaded segment (spec 6.4), one array set per column.</summary>
@@ -867,6 +926,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                         stats.Min[o] = Bounds.Decode(type, e.Min[i]);
                         stats.Max[o] = Bounds.Decode(type, e.Max[i]);
                     }
+                    if (e.Leaves.Length > 0) LoadLeafStats(col, e.Leaves, segment.Ordinals);
                 }
             }
         }

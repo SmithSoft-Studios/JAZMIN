@@ -3266,9 +3266,45 @@
         cw.packed(1, c.nullCounts);
         for (const b of c.min) cw.always(2, b);
         for (const b of c.max) cw.always(3, b);
+        for (const leaf of c.leaves ?? []) {
+          cw.message(4, (lw) => {
+            lw.packed(1, leaf.path);
+            lw.packed(2, leaf.counts);
+            lw.packed(3, leaf.nullCounts);
+            for (const b of leaf.min) lw.always(4, b);
+            for (const b of leaf.max) lw.always(5, b);
+          }, true);
+        }
       }, true);
     }
     return w.result();
+  }
+
+  /**
+   * A nested column's leaves' statistics over one chunk's values (spec 6.4), depth first as the library keeps them:
+   * { path (field positions; a list's item adds none), count (entries, null or not), stats }.
+   */
+  function leafStatsOf(column, values) {
+    const leaves = [];
+    const walk = (part, path, entries) => {
+      if (part.type === 'list') {
+        const items = [];
+        for (const list of entries) if (list !== null) for (const item of list) items.push(item);
+        walk(part.item, path, items);
+      } else if (part.type === 'object') {
+        part.fields.forEach((field, i) => {
+          const parts = [];
+          for (const object of entries) if (object !== null) parts.push(object[i]);
+          walk(field, [...path, i], parts);
+        });
+      } else {
+        const stats = new ColumnStats(part.type);
+        for (const v of entries) stats.add(v);
+        leaves.push({ path, count: entries.length, stats });
+      }
+    };
+    walk(column, [], values);
+    return leaves;
   }
 
   function encodeDirectory(chunks, statistics) {
@@ -3514,6 +3550,9 @@
       const ordinal = chunks.length;
       const sectionId = `0/chunk/${ordinal}/*`;
       const s = await section(encodeColumnar(streamTypes, values, inChunk), sectionId, await sectionKey(sectionId));
+      columns.forEach((c, i) => {
+        if (isNested(c.type)) stats[i].leaves = leafStatsOf(c, values[i]); // spec 6.4, as the library writes them
+      });
       chunks.push({ ordinal, rowStart: rowCount - inChunk, rowCount: inChunk, offset: position, length: s.length, stats });
       emit(s);
       values = types.map(() => []);
@@ -3580,7 +3619,15 @@
           const statistics = [];
           for (let col = 0; col < types.length; col++) {
             const bounds = chunks.map((c) => c.stats[col].bounds());
-            const raw = encodeStatisticsBlock([{ nullCounts: chunks.map((c) => c.stats[col].nulls), min: bounds.map((b) => b.min), max: bounds.map((b) => b.max) }]);
+            const first = chunks[0].stats[col].leaves;
+            const leaves = first ? first.map((leaf, k) => {
+              const leafBounds = chunks.map((c) => c.stats[col].leaves[k].stats.bounds());
+              return {
+                path: leaf.path, counts: chunks.map((c) => c.stats[col].leaves[k].count), nullCounts: chunks.map((c) => c.stats[col].leaves[k].stats.nulls),
+                min: leafBounds.map((b) => b.min), max: leafBounds.map((b) => b.max),
+              };
+            }) : [];
+            const raw = encodeStatisticsBlock([{ nullCounts: chunks.map((c) => c.stats[col].nulls), min: bounds.map((b) => b.min), max: bounds.map((b) => b.max), leaves }]);
             statistics.push({ columns: [col], section: await writeSection(raw, `0/stats/*/${col}`) });
           }
           partitions.push({ segments: [await writeSection(encodeDirectory(chunks, statistics), '0/dir/*')] });

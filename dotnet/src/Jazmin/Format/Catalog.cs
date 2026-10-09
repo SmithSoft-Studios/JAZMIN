@@ -133,7 +133,14 @@ internal sealed record ChunkDirectoryLists(
     int[] Ordinals, long[] RowStarts, int[] RowCounts, long[] Offsets, int[] Lengths, byte[]? Digests, List<StatsBlock> Statistics);
 
 /// <summary>One column of a statistics section: per chunk, the null count and bounds in key form (empty = unbounded).</summary>
-internal sealed record ColumnStatsEntry(long[] NullCounts, byte[][] Min, byte[][] Max);
+internal sealed record ColumnStatsEntry(long[] NullCounts, byte[][] Min, byte[][] Max)
+{
+    /// <summary>A nested column's leaves (spec 6.4); empty for other columns.</summary>
+    public LeafStatsEntry[] Leaves { get; init; } = [];
+}
+
+/// <summary>One leaf of a nested column, per chunk of a segment: its entries, its nulls, and bounds in key form.</summary>
+internal sealed record LeafStatsEntry(int[] Path, long[] Counts, long[] NullCounts, byte[][] Min, byte[][] Max);
 
 internal sealed record IndexPageRef(byte[] First, int Count, SectionRef At);
 
@@ -803,6 +810,17 @@ internal static class Catalog
                 cw.Packed(1, c.NullCounts);
                 foreach (var b in c.Min) cw.Always(2, b);
                 foreach (var b in c.Max) cw.Always(3, b);
+                foreach (var leaf in c.Leaves)
+                {
+                    cw.Message(4, lw =>
+                    {
+                        lw.Packed(1, leaf.Path.Select(p => (long)p).ToArray());
+                        lw.Packed(2, leaf.Counts);
+                        lw.Packed(3, leaf.NullCounts);
+                        foreach (var b in leaf.Min) lw.Always(4, b);
+                        foreach (var b in leaf.Max) lw.Always(5, b);
+                    }, true);
+                }
             }, true);
         }
         return w.ToArray();
@@ -821,6 +839,7 @@ internal static class Catalog
             }
             var nulls = new List<long>();
             List<byte[]> min = new(), max = new();
+            var leaves = new List<LeafStatsEntry>();
             var c = new ProtoReader(r.Bytes());
             while (c.Next(out var cf))
             {
@@ -829,12 +848,34 @@ internal static class Catalog
                     case 1: c.Packed(nulls); break;
                     case 2: min.Add(c.ByteArray()); break;
                     case 3: max.Add(c.ByteArray()); break;
+                    case 4: leaves.Add(DecodeLeafStatistics(c.Bytes())); break;
                     default: c.Skip(); break;
                 }
             }
-            columns.Add(new ColumnStatsEntry(nulls.ToArray(), min.ToArray(), max.ToArray()));
+            columns.Add(new ColumnStatsEntry(nulls.ToArray(), min.ToArray(), max.ToArray()) { Leaves = [.. leaves] });
         }
         return columns;
+    }
+
+    private static LeafStatsEntry DecodeLeafStatistics(ArraySegment<byte> raw)
+    {
+        List<long> path = new(), counts = new(), nulls = new();
+        List<byte[]> min = new(), max = new();
+        var r = new ProtoReader(raw);
+        while (r.Next(out var f))
+        {
+            switch (f)
+            {
+                case 1: r.Packed(path); break;
+                case 2: r.Packed(counts); break;
+                case 3: r.Packed(nulls); break;
+                case 4: min.Add(r.ByteArray()); break;
+                case 5: max.Add(r.ByteArray()); break;
+                default: r.Skip(); break;
+            }
+        }
+        if (path.Count > FormatConstants.MaxNestingDepth || path.Exists(p => p is < 0 or > int.MaxValue)) throw Bad("statistics name a field that does not exist");
+        return new LeafStatsEntry([.. path.Select(p => (int)p)], [.. counts], [.. nulls], [.. min], [.. max]);
     }
 
     // ---- Sorted index directory (spec 8.1) ----------------------------------------------------------

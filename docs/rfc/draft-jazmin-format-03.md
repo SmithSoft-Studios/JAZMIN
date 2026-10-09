@@ -540,6 +540,30 @@ bound. A string `max` MUST be omitted when it is longer than 64 code units.
 - A reader MAY skip a chunk only when statistics prove no row can match
   (9.4).
 
+**Leaves of nested columns.** A `list` or `object` column's entry MAY also
+list statistics of its **leaves** (`leaves`): the fields and items inside it
+that are not lists or objects. Each names its leaf by `path`, the field
+positions from the column to it; a list's item adds no position, so the
+item of a list of strings has the path of the list. Per chunk of the segment
+it holds:
+
+- `value_counts`: the leaf's entries in the chunk, null or not (one per item
+  of the lists, or per object that is not null, that holds it);
+- `null_counts`: how many of them are null;
+- `min` and `max`: bounds over the entries that are not null, as for columns.
+
+Leaves are optional, like other statistics: an entry MAY list some leaves or
+none, and segments MAY differ (a segment written before a field was added
+has none for it). Readers MUST reject an entry that lists leaves for a
+column that is not a list or object, a path that does not lead to a leaf, a
+path listed twice, lists without one entry per chunk, or a null count larger
+than its value count. Readers that do not know `leaves` ignore them, as a
+new optional field (Appendix B).
+
+Informative: the reference writers write every leaf of every nested column.
+On 5,000 companies with departments, employees and projects, they add 0.4%
+to the file.
+
 Informative: the reference writers write one block per column for tables
 with one partition, so a query loads only the statistics of the columns it
 filters on; and one block per partition and column group in
@@ -1148,7 +1172,13 @@ particular, `ne` does not match nulls; to include them, combine it with
    condition with a usable index. For an OR, take the union, but only if
    every branch has a usable index. NOT and `ne` produce no candidates.
 2. **Chunk pruning.** Without candidates, skip any chunk whose statistics
-   prove no row can match.
+   prove no row can match. For `any` and `match` (9.2), a chunk can be
+   skipped when, for some condition of the inner filter, its leaf's
+   statistics prove no entry meets it (9.2's conditions of one filter must
+   hold for the same item, so each must hold for some entry). `all` cannot
+   be pruned this way, since an empty list matches it, and nor can `not`.
+   A chunk whose list or object column is null in every row matches no
+   `any`, `all` or `match` on it.
 3. **Exact check.** Always evaluate the full filter on each row read.
 
 Indexes and statistics are optimisations only: results MUST equal those of a
@@ -1482,7 +1512,8 @@ indexes, embedded files) written by both reference implementations.
   `list` and `object` column types, stored as streams of their parts
   (encoding 5) and defined by the new `Column` fields `fields` and `item`.
   Readers that do not know it refuse such files (those of releases 1.0 to
-  1.3 report the unknown column type).
+  1.3 report the unknown column type). Their optional leaf statistics
+  (6.4) are a new field of `ColumnStatistics`, which other readers ignore.
 - **Since format 1.0, a rule writers already kept:** no name twice in one
   object of the JSON texts readers use themselves (2). Readers reject such a
   file; before, one library kept the last value and the other failed.

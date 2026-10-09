@@ -7,7 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { JazminKey, JazminWriter, append, compact, open, toCSV, toJSON, toXML, update, write } from '../src/index.js';
-import { decodeColumnDefinitions, encodeColumnDefinitions } from '../src/catalog.js';
+import { decodeColumnDefinitions, decodeStatistics, encodeColumnDefinitions, encodeStatistics } from '../src/catalog.js';
+import { crc32 } from '../src/binary.js';
 import { decodeColumnar } from '../src/columnar.js';
 import { filterReads, normalizeFilter } from '../src/filter.js';
 import { JazminError, JazminFormatError, JazminValidationError } from '../src/errors.js';
@@ -318,6 +319,65 @@ test('filters on nested columns decode only the fields they read, with the same 
   const one = open(write(null, rows.slice(0, 20), { columns }));
   for (const [filter, expected] of cases.slice(0, 3)) assert.equal(one.count(filter), rows.slice(0, 20).filter(expected).length, JSON.stringify(filter));
   one.close();
+});
+
+test('statistics of nested fields skip chunks no item can match, and never change results', () => {
+  // Values that grow with the id, so each chunk of 32 rows holds its own range of them (10 chunks).
+  const grown = Array.from({ length: 320 }, (_, i) => ({
+    id: i,
+    staff: [{ name: `S${String(i).padStart(4, '0')}`, badge: i, pay: '1.00', projects: [{ code: `P${i}`, hours: i }] }, { name: `T${String(i).padStart(4, '0')}`, badge: i + 1, pay: '2.00' }],
+    head: { street: `${i} Main`, city: `C${Math.floor(i / 32)}` },
+    grid: [[i]],
+  }));
+  const r = open(write(null, grown, { columns, chunkRows: 32 }));
+  const skips = (filter, skipped, expected) => {
+    assert.equal(r.explain(filter).chunksSkipped, skipped, JSON.stringify(filter));
+    const ids = grown.filter(expected).map((x) => x.id);
+    assert.deepEqual([...r.find(filter, { select: ['id'] })].map((x) => x.id), ids, JSON.stringify(filter));
+    assert.equal(r.count(filter), ids.length);
+  };
+  skips({ staff: { any: { badge: 100 } } }, 9, (x) => x.staff.some((s) => s.badge === 100));
+  skips({ staff: { any: { badge: { gt: 300 }, name: { lt: 'T' } } } }, 9, (x) => x.staff.some((s) => s.badge > 300 && s.name < 'T'));
+  skips({ staff: { any: { pay: null } } }, 10, () => false); // no null pay: every chunk skipped
+  skips({ staff: { any: { projects: { any: { hours: { lt: 10 } } } } } }, 9, (x) => x.staff.some((s) => s.projects?.some((p) => p.hours < 10)));
+  skips({ head: { match: { city: 'C5' } } }, 9, (x) => x.head.city === 'C5');
+  skips({ grid: { any: { any: { gte: 316 } } } }, 9, (x) => x.grid.some((g) => g.some((v) => v >= 316)));
+  skips({ or: [{ staff: { any: { badge: 5 } } }, { head: { match: { city: 'C9' } } }] }, 8, (x) => x.staff.some((s) => s.badge === 5) || x.head.city === 'C9');
+  // `all` passes empty lists, and `not` the opposite of what statistics bound: neither skips a chunk.
+  skips({ staff: { all: { badge: { gte: 300 } } } }, 0, (x) => x.staff.every((s) => s.badge >= 300));
+  skips({ not: { staff: { any: { badge: 5 } } } }, 0, (x) => !x.staff.some((s) => s.badge === 5));
+  r.close();
+});
+
+test('statistics of nested fields that do not fit the column are refused', () => {
+  // The file's statistics section of `staff`, rewritten in place (same length) with one value changed.
+  const original = write(null, rows.slice(0, 40), { columns, chunkRows: 32, codec: 'none' });
+  const filter = { staff: { any: { badge: 5 } } };
+  const changed = (change) => {
+    const buf = Buffer.from(original);
+    for (const s of sections(buf)) {
+      const payload = buf.subarray(s.at + 16, s.at + 16 + s.length);
+      let stats;
+      try {
+        stats = decodeStatistics(payload);
+      } catch {
+        continue;
+      }
+      if (!stats[0]?.leaves?.length) continue;
+      change(stats[0].leaves);
+      const out = encodeStatistics(stats);
+      assert.equal(out.length, payload.length); // the change keeps every varint's size
+      out.copy(buf, s.at + 16);
+      buf.writeUInt32LE(crc32(out), s.at + 12);
+      return buf;
+    }
+    throw new Error('no statistics of nested fields found');
+  };
+  const refused = (change, pattern) => assert.throws(() => open(changed(change)).count(filter), pattern);
+  refused((leaves) => { leaves[0].path = [99]; }, /Statistics name a field that does not exist/);
+  refused((leaves) => { leaves[1].path = leaves[0].path; }, /Statistics name a field twice/);
+  refused((leaves) => { leaves[0].nullCounts[0] = leaves[0].counts[0] + 1; }, /Statistics count more nulls than values/);
+  assert.equal(open(changed(() => {})).count(filter), rows.slice(0, 40).filter((x) => x.staff?.some((s) => s?.badge === 5)).length); // unchanged: read
 });
 
 test('filters on nested columns: misuse is refused with a message that says why', () => {

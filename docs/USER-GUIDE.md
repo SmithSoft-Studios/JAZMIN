@@ -146,7 +146,7 @@ Every column has a name, a type, `nullable` (default true), and an optional
 Indexes make the file somewhat larger (about 20–30% for three indexed
 columns) and writing slower. Add them only to columns you search on.
 Without indexes, the library still skips chunks whose min/max statistics
-rule them out.
+rule them out, for the fields inside nested columns too (8.1).
 
 A `sorted` index is stored in pages of about 64 KiB. For a column with
 millions of different account numbers, a lookup reads a small directory and
@@ -756,8 +756,14 @@ They nest: `{ "departments": { "any": { "employees": { "any": { "role":
 
 A nested column the filter checks but the rows don't return (a `select`
 without it, or `count`) is decoded with only the fields the filter reads.
-On 5,000 companies in Node.js, the names of those with an employee of a
-given id take 35-40 ms and 80 MB instead of 186 ms and 197 MB.
+Files also keep min/max statistics of the fields inside nested columns, so
+`any` and `match` skip the chunks where no item can match. On 5,000
+companies in Node.js, the names of those with an employee of a given id take
+4.4 ms and 61 MB instead of 186 ms and 197 MB: 35-40 ms come from reading
+only the filter's fields, the rest from skipped chunks. Statistics help
+when a field's values are grouped by chunk, as ids or dates that grow with
+the rows are. Where they're spread over every chunk, and for `all` and
+`not`, every chunk is read.
 
 ### 8.2 GraphQL
 
@@ -886,8 +892,11 @@ decimal total = orders.Where(o => o.Region == "NA").Sum(o => o.Amount);     // r
   an `any` on the item. Only matching rows' objects are built, and the
   column is decoded with only the fields the condition and the query read.
   On 5,000 companies, the names of those with an employee of a given id take
-  13 ms and 6 MB instead of 25 ms and 23 MB; returning such companies whole,
-  91 ms and 99 MB instead of 167 ms and 143 MB. Parts the filter can't hold
+  3 ms and 1 MB instead of 25 ms and 23 MB, and the companies with a lead
+  among the first employees of their Build department, returned whole, 4 ms
+  and 2 MB instead of 167 ms and 143 MB. Both find their values in a few
+  chunks (8.1); with values spread over every chunk, reading only the
+  condition's fields still takes them to 13 ms and 91 ms. Parts the filter can't hold
   (a `decimal` comparison, a method call) are checked on each object, as
   elsewhere. `l != null &&` before an item's conditions is fine: a null item
   matches no item's filter. Where LINQ to Objects would throw on a null list

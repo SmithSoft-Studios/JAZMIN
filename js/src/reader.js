@@ -143,6 +143,18 @@ function columnCollector({ name, type }) {
 /** Whether a chunk decoded with the columns `have` (by position; null: all) holds every column `need` asks for. */
 const decodedAll = (have, need) => have === null || (need !== null && need.every((wanted, c) => !wanted || have[c]));
 
+/** The type of the leaf at `path` (field positions; a list's item adds none) in a nested column, or null when none. */
+function leafType(column, path) {
+  let node = column;
+  for (const step of path) {
+    while (node.type === 'list') node = node.item;
+    if (node.type !== 'object' || !(Number.isInteger(step) && step >= 0 && step < node.fields.length)) return null;
+    node = node.fields[step];
+  }
+  while (node.type === 'list') node = node.item;
+  return node.type === 'object' ? null : node.type;
+}
+
 /** Positions of the columns a normalized filter reads. */
 function planColumns(plan) {
   const cols = new Set();
@@ -461,6 +473,8 @@ export class JazminReader {
   #statCols = new Set(); // columns whose statistics queries have needed (loaded for every loaded segment)
   #statOrdinal = 0;
   #statLookup = (col) => this.#statAt(col, this.#statOrdinal); // statistics of one chunk, for mayMatch
+  #leafStats = []; // by column: nested columns' leaves' statistics, by path ("1,0")
+  #leafLookup = (col, path) => this.#leafAt(col, path, this.#statOrdinal);
   #indexRefs = null;
   #indexes = new Map();
   #indexProvider = { get: (column, kind) => this.#index(column, kind) };
@@ -942,6 +956,52 @@ export class JazminReader {
     return view;
   }
 
+  /** A nested column's leaf's statistics in a chunk ({ count, nulls, min, max }), or undefined when not kept. */
+  #leafAt(col, path, ordinal) {
+    const s = this.#leafStats[col]?.get(path);
+    if (!s || !s.has[ordinal]) return undefined;
+    const view = s.view;
+    view.count = s.counts[ordinal];
+    view.nulls = s.nulls[ordinal];
+    view.min = s.min[ordinal];
+    view.max = s.max[ordinal];
+    return view;
+  }
+
+  /** A nested column's leaf statistics for one segment (spec 6.4): each leaf named once, with an entry per chunk. */
+  #loadLeafStats(col, leaves, ordinals) {
+    const column = this.#columns[col];
+    if (column.type !== 'list' && column.type !== 'object') throw new JazminFormatError('Statistics list fields of a column that has none');
+    const n = this.#loaded.length;
+    const byPath = (this.#leafStats[col] ??= new Map());
+    const seen = new Set();
+    for (const leaf of leaves) {
+      const type = leafType(column, leaf.path);
+      if (!type) throw new JazminFormatError('Statistics name a field that does not exist');
+      const key = leaf.path.join(',');
+      if (seen.has(key)) throw new JazminFormatError('Statistics name a field twice');
+      seen.add(key);
+      const count = ordinals.length;
+      if (leaf.counts.length !== count || leaf.nullCounts.length !== count || leaf.min.length !== count || leaf.max.length !== count) {
+        throw new JazminFormatError('Statistics do not match the chunk directory');
+      }
+      let s = byPath.get(key);
+      if (!s) {
+        s = { counts: new Float64Array(n), nulls: new Float64Array(n), min: new Array(n), max: new Array(n), has: new Uint8Array(n), view: { count: 0, nulls: 0, min: undefined, max: undefined } };
+        byPath.set(key, s);
+      }
+      for (let i = 0; i < count; i++) {
+        if (!(leaf.nullCounts[i] <= leaf.counts[i])) throw new JazminFormatError('Statistics count more nulls than values');
+        const o = ordinals[i];
+        s.has[o] = 1;
+        s.counts[o] = Number(leaf.counts[i]);
+        s.nulls[o] = Number(leaf.nullCounts[i]);
+        s.min[o] = decodeBound(type, leaf.min[i]);
+        s.max[o] = decodeBound(type, leaf.max[i]);
+      }
+    }
+  }
+
   /** How many of these row ids (ascending) appends have deleted. */
   #deletedAmong(rowIds) {
     let n = 0;
@@ -976,7 +1036,7 @@ export class JazminReader {
 
   #mayMatch(plan, ordinal) {
     this.#statOrdinal = ordinal;
-    return mayMatch(plan, this.#statLookup, this.#rowCount[ordinal]);
+    return mayMatch(plan, this.#statLookup, this.#rowCount[ordinal], this.#leafLookup);
   }
 
   /** Loads the statistics of these columns for every loaded segment (spec 6.4), one array set per column. */
@@ -1028,6 +1088,7 @@ export class JazminReader {
             s.min[o] = decodeBound(type, e.min[i]);
             s.max[o] = decodeBound(type, e.max[i]);
           }
+          if (e.leaves.length) this.#loadLeafStats(col, e.leaves, segment.ordinals);
         });
       });
     }

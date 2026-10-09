@@ -512,7 +512,10 @@ export function decodeChunkDirectory(buf, groupCount) {
   return { chunks, statistics };
 }
 
-/** Statistics section: [{ nullCounts: [n], min: [Buffer], max: [Buffer] }], one per covered column. */
+/**
+ * Statistics section: [{ nullCounts: [n], min: [Buffer], max: [Buffer], leaves? }], one per covered column. A nested
+ * column's `leaves` (spec 6.4): [{ path: [field positions], counts: [n], nullCounts: [n], min: [Buffer], max: [Buffer] }].
+ */
 export function encodeStatistics(columns) {
   const w = new ProtoWriter(256);
   for (const c of columns) {
@@ -520,6 +523,15 @@ export function encodeStatistics(columns) {
       cw.packed(1, c.nullCounts);
       for (const b of c.min) cw.always(2, b);
       for (const b of c.max) cw.always(3, b);
+      for (const leaf of c.leaves ?? []) {
+        cw.message(4, (lw) => {
+          lw.packed(1, leaf.path);
+          lw.packed(2, leaf.counts);
+          lw.packed(3, leaf.nullCounts);
+          for (const b of leaf.min) lw.always(4, b);
+          for (const b of leaf.max) lw.always(5, b);
+        }, true);
+      }
     }, true);
   }
   return w.toBuffer();
@@ -529,11 +541,22 @@ export function decodeStatistics(buf) {
   const columns = [];
   readMessage(buf, (f, v) => {
     if (f !== 1) return;
-    const c = { nullCounts: [], min: [], max: [] };
+    const c = { nullCounts: [], min: [], max: [], leaves: [] };
     readMessage(v, (cf, cv) => {
       if (cf === 1) readPacked(cv, c.nullCounts);
       else if (cf === 2) c.min.push(bytesOf(cv));
       else if (cf === 3) c.max.push(bytesOf(cv));
+      else if (cf === 4) {
+        const leaf = { path: [], counts: [], nullCounts: [], min: [], max: [] };
+        readMessage(cv, (lf, lv) => {
+          if (lf === 1) readPacked(lv, leaf.path);
+          else if (lf === 2) readPacked(lv, leaf.counts);
+          else if (lf === 3) readPacked(lv, leaf.nullCounts);
+          else if (lf === 4) leaf.min.push(bytesOf(lv));
+          else if (lf === 5) leaf.max.push(bytesOf(lv));
+        });
+        c.leaves.push(leaf);
+      }
     });
     columns.push(c);
   });

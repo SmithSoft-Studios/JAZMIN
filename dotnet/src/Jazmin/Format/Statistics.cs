@@ -8,7 +8,19 @@ internal sealed class ColumnStats
     public long Nulls { get; set; }
     public object? Min { get; set; }
     public object? Max { get; set; }
+
+    /// <summary>A leaf of a nested column: its entries in the chunk, null or not (a column's are its rows).</summary>
+    public long Count { get; set; }
+
+    /// <summary>A nested column's leaves (spec 6.4), as the writer collects them; null for other columns.</summary>
+    public List<LeafStats>? Leaves { get; set; }
 }
+
+/// <summary>
+/// One leaf of a nested column (a field or item that is not a list or object) in a chunk: <see cref="Path"/> is the field
+/// positions from the column to it (a list's item adds none).
+/// </summary>
+internal sealed record LeafStats(int[] Path, JazminType Type, ColumnStats Stats);
 
 /// <summary>Statistics bounds as stored (spec 6.5): key-form bytes, empty when unbounded.</summary>
 internal static class Bounds

@@ -186,6 +186,9 @@ const FILTERS = [
   null, { id: 5 }, { id: { gte: 30, lt: 60 } }, { name: { contains: 'son 1' } }, { name: { startsWith: 'Person 2' } },
   { amount: { gt: '10.5' } }, { amount: '12.12' }, { score: { lt: 10 } }, { active: true }, { when: { isNull: true } },
   { or: [{ id: { lt: 3 } }, { name: { icontains: 'AB' } }] },
+  // Nested columns (the corpus's nested file): their filters, and the statistics of their fields.
+  { staff: { any: { name: 'N3', pay: { gt: '5' } } } }, { head: { match: { city: 'C1' } } }, { staff: { all: { tags: { any: 'a' } } } },
+  { or: [{ not: { staff: { any: { since: null } } } }, { head: { match: { score: { lt: 3 } } } }] },
 ];
 
 /** Reads a (possibly damaged) file every way a caller might. Returns null, or the unexpected error. */

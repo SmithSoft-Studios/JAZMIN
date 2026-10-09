@@ -495,7 +495,39 @@ internal sealed class NestedColumn : ColumnBuffer
         return Nested.Encoding;
     }
 
-    public override ColumnStats Stats() => new() { Nulls = NullCount };
+    /// <summary>The column's null count, and its leaves' statistics (spec 6.4): taken before the buffers are reset.</summary>
+    public override ColumnStats Stats()
+    {
+        var leaves = new List<LeafStats>();
+        CollectLeaves([], leaves);
+        return new ColumnStats { Nulls = NullCount, Leaves = leaves };
+    }
+
+    private void CollectLeaves(List<int> path, List<LeafStats> into)
+    {
+        if (_lengths is not null)
+        {
+            Leaf(_items!, _column.Item!, path, into); // a list's item adds no step to the path
+            return;
+        }
+        for (var i = 0; i < _fields!.Length; i++)
+        {
+            path.Add(i);
+            Leaf(_fields[i], _fieldColumns![i], path, into);
+            path.RemoveAt(path.Count - 1);
+        }
+    }
+
+    private static void Leaf(ColumnBuffer buffer, JazminColumn column, List<int> path, List<LeafStats> into)
+    {
+        if (buffer is NestedColumn nested) nested.CollectLeaves(path, into);
+        else
+        {
+            var stats = buffer.Stats();
+            stats.Count = buffer.Count;
+            into.Add(new LeafStats([.. path], column.Type, stats));
+        }
+    }
 
     protected override void ResetValues()
     {

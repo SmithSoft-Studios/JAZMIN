@@ -206,6 +206,91 @@ public sealed class NestedFilterTests
     }
 
     [Fact]
+    public void StatisticsOfNestedFields_SkipChunksNoItemCanMatch_AndNeverChangeResults()
+    {
+        // Values that grow with the id, so each chunk of 32 orders holds its own range of them (10 chunks).
+        var orders = Enumerable.Range(0, 320).Select(i => new Order
+        {
+            Id = i, Tier = "Gold",
+            Lines = [new Line { Sku = $"S{i:D4}", Qty = i, Price = 1m }, new Line { Sku = $"T{i:D4}", Qty = i + 1, Price = 2m, Tags = ["x"] }],
+            Ship = new Address { City = $"C{i / 32}", Geo = new Geo { Lat = i } },
+            Grid = [[i]], Labels = [$"L{i:D4}"],
+        }).ToList();
+        using var reader = JazminReader.Open(JazminConvert.SerializeObject(orders, Nested));
+        Assert.Equal(10, reader.ChunkCount);
+        void Skips(string filter, int skipped, Func<Order, bool> expected)
+        {
+            Assert.Equal(skipped, reader.Explain(JazminFilter.Parse(filter)).ChunksSkipped);
+            Assert.Equal(orders.Where(expected).Select(o => o.Id), reader.Find(JazminFilter.Parse(filter)).Select(r => (int)(long)r["Id"]!));
+            Assert.Equal(orders.Count(expected), reader.Count(JazminFilter.Parse(filter)));
+        }
+        Skips("""{ "Lines": { "any": { "Qty": 100 } } }""", 9, o => o.Lines!.Any(l => l!.Qty == 100));
+        Skips("""{ "Lines": { "any": { "Qty": { "gt": 300 }, "Sku": { "lt": "T" } } } }""", 9, o => o.Lines!.Any(l => l!.Qty > 300 && string.CompareOrdinal(l.Sku, "T") < 0));
+        Skips("""{ "Lines": { "any": { "Price": null } } }""", 10, _ => false); // no line has a null price: every chunk skipped
+        Skips("""{ "Ship": { "match": { "City": "C5" } } }""", 9, o => o.Ship!.City == "C5");
+        Skips("""{ "Ship": { "match": { "Geo": { "match": { "Lat": { "lt": 10 } } } } } }""", 9, o => o.Ship!.Geo!.Lat < 10);
+        Skips("""{ "Labels": { "any": "L0042" } }""", 9, o => o.Labels!.Contains("L0042"));
+        Skips("""{ "Grid": { "any": { "any": { "gte": 316 } } } }""", 9, o => o.Grid!.Any(r => r!.Any(v => v >= 316)));
+        Skips("""{ "or": [ { "Lines": { "any": { "Qty": 5 } } }, { "Ship": { "match": { "City": "C9" } } } ] }""", 8, o => o.Lines!.Any(l => l!.Qty == 5) || o.Ship!.City == "C9");
+        // `all` passes empty lists, and `not` the opposite of what statistics bound: neither skips a chunk.
+        Skips("""{ "Lines": { "all": { "Qty": { "gte": 300 } } } }""", 0, o => o.Lines!.All(l => l!.Qty >= 300));
+        Skips("""{ "not": { "Lines": { "any": { "Qty": 5 } } } }""", 0, o => !o.Lines!.Any(l => l!.Qty == 5));
+        // LINQ conditions become the same filters.
+        Assert.Equal([99, 100], reader.AsQueryable<Order>().Where(o => o.Lines!.Any(l => l != null && l.Qty == 100)).Select(o => o.Id).ToList());
+        // A chunk whose lists are all null matches no any, all or match on them.
+        var someNull = orders.Select(o => new Order { Id = o.Id, Tier = o.Tier, Lines = o.Id < 32 ? null : o.Lines }).ToList();
+        using var nulls = JazminReader.Open(JazminConvert.SerializeObject(someNull, Nested));
+        Assert.Equal(1, nulls.Explain(JazminFilter.Parse("""{ "Lines": { "all": { "Qty": { "gte": 0 } } } }""")).ChunksSkipped);
+        Assert.Equal(288, nulls.Count(JazminFilter.Parse("""{ "Lines": { "all": { "Qty": { "gte": 0 } } } }""")));
+    }
+
+    [Fact]
+    public void StatisticsOfNestedFields_ThatDoNotFitTheColumn_AreRefused()
+    {
+        // The statistics section of Lines, rewritten in place (same length) with one value changed.
+        var map = TypeMap.For(typeof(Order), Nested);
+        using var stream = new MemoryStream();
+        using (var writer = new JazminWriter(stream, map.Columns, new JazminWriteOptions { ChunkRows = 32, Codec = JazminCodec.None }, leaveOpen: true))
+            foreach (var o in Orders.Take(64)) writer.WriteValues(map.ToValues(o, Nested));
+        var original = stream.ToArray();
+        var filter = JazminFilter.Parse("""{ "Lines": { "any": { "Qty": 3 } } }""");
+        byte[] Changed(Action<Format.LeafStatsEntry[]> change)
+        {
+            var buf = (byte[])original.Clone();
+            foreach (var (at, length) in Fuzzing.Sections(buf))
+            {
+                List<Format.ColumnStatsEntry> stats;
+                try
+                {
+                    stats = Format.Catalog.DecodeStatistics(buf[(at + 16)..(at + 16 + length)]);
+                }
+                catch (Exception)
+                {
+                    continue;
+                }
+                if (stats.Count == 0 || stats[0].Leaves.Length == 0) continue;
+                change(stats[0].Leaves);
+                var output = Format.Catalog.EncodeStatistics(stats);
+                Assert.Equal(length, output.Length); // the change keeps every varint's size
+                output.CopyTo(buf, at + 16);
+                System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(at + 12), Format.Crc32.Compute(output));
+                return buf;
+            }
+            throw new InvalidOperationException("no statistics of nested fields found");
+        }
+        void Refused(Action<Format.LeafStatsEntry[]> change, string message)
+        {
+            using var reader = JazminReader.Open(Changed(change));
+            Assert.Contains(message, Assert.Throws<JazminFormatException>(() => reader.Count(filter)).Message);
+        }
+        Refused(l => l[0] = l[0] with { Path = [99] }, "Statistics name a field that does not exist");
+        Refused(l => l[1] = l[1] with { Path = l[0].Path }, "Statistics name a field twice");
+        Refused(l => l[0].NullCounts[0] = l[0].Counts[0] + 1, "Statistics count more nulls than values");
+        using var unchanged = JazminReader.Open(Changed(_ => { }));
+        Assert.Equal(Orders.Take(64).Count(o => o.Lines?.Any(l => l?.Qty == 3) == true), unchanged.Count(filter));
+    }
+
+    [Fact]
     public void FiltersThatDoNotFitTheColumns_AreRefused()
     {
         using var reader = JazminReader.Open(File);

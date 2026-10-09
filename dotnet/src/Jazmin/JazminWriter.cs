@@ -1042,7 +1042,10 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                 var entries = block.Cols.Select(col =>
                 {
                     var bounds = list.Select(c => Bounds.Of(_columns[col].Type, c.Stats[col])).ToList();
-                    return new ColumnStatsEntry(list.Select(c => c.Stats[col].Nulls).ToArray(), bounds.Select(x => x.Min).ToArray(), bounds.Select(x => x.Max).ToArray());
+                    return new ColumnStatsEntry(list.Select(c => c.Stats[col].Nulls).ToArray(), bounds.Select(x => x.Min).ToArray(), bounds.Select(x => x.Max).ToArray())
+                    {
+                        Leaves = LeafEntries(list, col),
+                    };
                 });
                 var key = _access is not null
                     ? AccessCrypto.PartKey(secret!, _secrets!.ColumnSecret(block.Group), _salt, sectionId)
@@ -1056,6 +1059,18 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         }
         written.Sort((a, b) => a.Id.AsSpan().SequenceCompareTo(b.Id));
         return written;
+    }
+
+    /// <summary>A nested column's leaf statistics over these chunks (spec 6.4): every chunk of a segment has the same leaves.</summary>
+    private static LeafStatsEntry[] LeafEntries(List<WrittenChunk> chunks, int col)
+    {
+        if (chunks[0].Stats[col].Leaves is not { } first) return [];
+        return [.. first.Select((leaf, k) =>
+        {
+            var bounds = chunks.Select(c => Bounds.Of(leaf.Type, c.Stats[col].Leaves![k].Stats)).ToList();
+            return new LeafStatsEntry(leaf.Path, [.. chunks.Select(c => c.Stats[col].Leaves![k].Stats.Count)], [.. chunks.Select(c => c.Stats[col].Leaves![k].Stats.Nulls)],
+                [.. bounds.Select(x => x.Min)], [.. bounds.Select(x => x.Max)]);
+        })];
     }
 
     /// <summary>

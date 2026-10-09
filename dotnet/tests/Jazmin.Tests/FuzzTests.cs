@@ -374,6 +374,15 @@ internal static class Fuzzing
         JazminFilter.Lt("id", 3L) | JazminFilter.IContains("name", "AB"),
     };
 
+    /// <summary>For the corpus's nested file: filters on its nested columns, which read the statistics of their fields.</summary>
+    private static readonly JazminFilter[] NestedFilters =
+    {
+        JazminFilter.Any("staff", JazminFilter.Eq("name", "N3") & JazminFilter.Gt("pay", "5")),
+        JazminFilter.Match("head", JazminFilter.Eq("city", "C1")),
+        JazminFilter.All("staff", JazminFilter.Any("tags", JazminFilter.Eq(JazminFilter.Itself, "a"))),
+        JazminFilter.Not(JazminFilter.Any("staff", JazminFilter.IsNull("since"))) | JazminFilter.Match("head", JazminFilter.Lt("score", 3.0)),
+    };
+
     private sealed class TypedRow
     {
         public long Id { get; set; }
@@ -414,13 +423,15 @@ internal static class Fuzzing
             _ = r.SortedBy;
             _ = r.Package;
             var corpusColumns = r.Columns.Select(c => c.Name).SequenceEqual(Columns.Select(c => c.Name));
-            foreach (var filter in Filters)
+            var nestedColumns = r.Columns.Select(c => c.Name).SequenceEqual(Columns.Concat(NestedColumns).Select(c => c.Name));
+            foreach (var filter in nestedColumns ? [.. Filters, .. NestedFilters] : Filters)
             {
-                if (filter is not null && !corpusColumns) continue;
+                if (filter is not null && !corpusColumns && !nestedColumns) continue;
                 Attempt(() =>
                 {
                     r.Explain(filter);
                     foreach (var row in r.Find(filter, new JazminQueryOptions { Limit = 40 })) Touch(row);
+                    if (filter is not null) r.Count(filter);
                 }, strict);
             }
             var n = r.RowCount;

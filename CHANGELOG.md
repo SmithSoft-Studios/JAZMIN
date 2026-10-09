@@ -44,6 +44,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     in both libraries (`find` with a `select` without it, `count`). Node.js, 5,000 companies: the names of those
     with an employee of a given id 186 -> 35-40 ms, peak 197 -> 80 MB; counting those with employees hired after
     2020 162-176 -> 43-57 ms, peak 197 -> 88 MB. Checking an item no longer makes an array of its fields.
+  - **Statistics of the fields inside nested columns** (spec 6.4, an optional addition that older readers ignore):
+    min, max and counts of each field per chunk, so `any` and `match` skip chunks where no item can match, in both
+    libraries (the browser writer writes them too). 5,000 companies, the names of those with an employee of a given
+    id: Node.js 35-40 -> 4.4 ms, peak 80 -> 61 MB; .NET LINQ 13 -> 3 ms, 6 -> 1 MB allocated. They help when a
+    field's values are grouped by chunk; files grow 0.4%, and writing takes no measurable longer.
   - **.NET LINQ conditions on nested columns become those filters** (USER-GUIDE 8.3): `Any` and `All` with a
     lambda, `Contains` on a list of values, and member chains such as `o.Ship.City`. They're checked as chunks are
     decoded, with only the fields they and the query read. 5,000 companies: the names of those with an employee of

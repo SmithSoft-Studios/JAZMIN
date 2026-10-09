@@ -4,6 +4,7 @@ import { ByteReader, ByteWriter, dateFromMs, msFromFile, normalizeBigInt, parseJ
 import { readDecimal, skipDecimal, writeDecimal } from './decimal.js';
 import { JazminFormatError, JazminValidationError } from './errors.js';
 import { setField } from './schema.js';
+import { ColumnStats } from './stats.js';
 import { normalizeValue } from './types.js';
 
 export const ENCODING = Object.freeze({ plain: 0, delta: 1, dictionary: 2, bitmap: 3, scaled: 4, nested: 5 });
@@ -420,6 +421,30 @@ class NestedBuffer extends ColumnBuffer {
       this.fieldBuffers = column.fields.map((f, i) => columnBuffer(f.type, maxRows, f, this.fieldPaths[i]));
       this.names = new Set(column.fields.map((f) => f.name));
     }
+    this.#newStats();
+  }
+
+  /** Statistics of the leaves directly inside (an item or fields that are not lists or objects), for the next chunk. */
+  #newStats() {
+    if (this.lengths) this.itemStats = this.items instanceof NestedBuffer ? null : new ColumnStats(this.column.item.type);
+    else this.fieldStats = this.column.fields.map((f, i) => (this.fieldBuffers[i] instanceof NestedBuffer ? null : new ColumnStats(f.type)));
+  }
+
+  /**
+   * The statistics of every leaf inside (spec 6.4), depth first: { path, count, stats }, with `path` the field positions
+   * from the column (a list's item adds none) and `count` the leaf's entries, null or not. Taken before a reset.
+   */
+  leafStats(path = [], into = []) {
+    if (this.lengths) {
+      if (this.itemStats) into.push({ path, count: this.items.rows, stats: this.itemStats });
+      else this.items.leafStats(path, into);
+    } else {
+      this.fieldBuffers.forEach((buffer, i) => {
+        if (this.fieldStats[i]) into.push({ path: [...path, i], count: buffer.rows, stats: this.fieldStats[i] });
+        else buffer.leafStats([...path, i], into);
+      });
+    }
+    return into;
   }
 
   /** Checks and converts `value` (not null) into `stage`, adding nothing. */
@@ -460,18 +485,23 @@ class NestedBuffer extends ColumnBuffer {
     if (this.lengths) {
       const n = stage.lengths[stage.li++];
       this.lengths.add(n);
-      for (let i = 0; i < n; i++) NestedBuffer.#addChild(this.items, stage);
+      for (let i = 0; i < n; i++) NestedBuffer.#addChild(this.items, this.itemStats, stage);
     } else {
-      for (const buffer of this.fieldBuffers) NestedBuffer.#addChild(buffer, stage);
+      for (let i = 0; i < this.fieldBuffers.length; i++) NestedBuffer.#addChild(this.fieldBuffers[i], this.fieldStats[i], stage);
     }
     this.rows++;
   }
 
-  static #addChild(buffer, stage) {
+  static #addChild(buffer, stats, stage) {
     const v = stage.values[stage.vi++];
-    if (v === null) buffer.addNull();
-    else if (v === PRESENT) buffer.add(stage);
-    else buffer.add(v);
+    if (v === null) {
+      buffer.addNull();
+      stats?.add(null);
+    } else if (v === PRESENT) buffer.add(stage);
+    else {
+      buffer.add(v);
+      stats.add(v);
+    }
   }
 
   writeBody(w) {
@@ -489,6 +519,7 @@ class NestedBuffer extends ColumnBuffer {
     this.lengths?.reset();
     this.items?.reset();
     if (this.fieldBuffers) for (const buffer of this.fieldBuffers) buffer.reset();
+    this.#newStats(); // the chunk's own were taken with leafStats()
   }
 }
 
