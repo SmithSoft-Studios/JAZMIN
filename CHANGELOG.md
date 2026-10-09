@@ -3,7 +3,33 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
-## Unreleased
+## 1.4.0 - 2026-10-09 (file format 1.0)
+
+Lists and objects can be stored as columns of their fields, a file's document
+can be printed and edited, and queries do less work: a text search reads only
+the parts of its index it needs, a lookup decodes only the row it returns, and
+Node writes an indexed file with half the memory.
+
+- **Files:** still format 1.0, with one opt-in reader feature,
+  `nested-columns`. Only files with nested columns need 1.4 to read: 1.0 to
+  1.3 refuse them, naming the unknown column type. Every other file 1.4
+  writes is read by 1.3.0, with the same tables, rows and embedded files
+  (tested with the published npm and NuGet 1.3.0 on every interop variant,
+  written by both libraries and the browser writer), and 1.4 reads theirs.
+- **Changed behaviour:**
+  - A file's new document settings (file `actions`, the page settings
+    `package.pdf`, `package.edit`) are left out when 1.3 or older appends to
+    the file, updates or compacts it. Rewrite such files with 1.4.
+  - `explain()` may report `'scan'` for a text search where it reported
+    `'index'`: when the word is in most rows, the reader scans. The rows are
+    the same.
+  - A query that reads a few rows of a chunk reads each column only as far as
+    those rows, so damage further on in the chunk is not seen by that query.
+    Reading every row still checks every value.
+  - `{ "column": null }` (and `ne` null) filters work for json and binary
+    columns; before, both libraries refused them.
+- **Still deprecated, removed in 2.0:** getting a key's secret with
+  `toString()` (use `export()`), and the reader's clock option.
 
 ### Added
 - **Nested columns (opt-in): lists and objects stored as columns of their fields** instead of JSON text, in both
