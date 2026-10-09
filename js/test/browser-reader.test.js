@@ -32,7 +32,7 @@ function nodeOptions(name, keyName) {
     if (keyName === 'carol') options.unlockToken = issueUnlockToken(path.join(dir, name), keys.key, JazminAccessKey.parse(keys.carol));
     return options;
   }
-  if (name.endsWith('-key.jzm')) return { key: keys.key };
+  if (name.endsWith('-key.jzm') || name.endsWith('-changes.jzm')) return { key: keys.key }; // change files: sealed with the file's key
   if (name.endsWith('-password.jzm')) return { password: keys.password };
   return {};
 }

@@ -538,6 +538,24 @@ public static class JazminFile
     /// </summary>
     public static JazminAppendResult Append(string path, JazminAppend append) => WithLock(path, () => AppendUnlocked(path, append));
 
+    /// <summary>
+    /// A change file (spec 7.9) for changes to <paramref name="source"/>, an open file whose document allows them
+    /// (<see cref="JazminPackage.Edit"/>): checked as far as the sender can (what the document allows, rows this key
+    /// sees), with the earlier values taken from <paramref name="source"/>. Sealed with a shared file's submission key;
+    /// give a file that isn't shared its <paramref name="key"/> or <paramref name="password"/>.
+    /// </summary>
+    public static byte[] WriteChanges(JazminReader source, JazminChanges changes, JazminKey? key = null, string? password = null) =>
+        Changes.Write(source, changes, key, password);
+
+    /// <summary>
+    /// Applies a change file to the file at <paramref name="path"/>, as its document allows changes now. A shared file
+    /// is changed with its owner key; the sender is the grant whose submission key opens the change file, and may change
+    /// only that grant's rows and columns. Rows changed since the sender's copy are held as conflicts unless
+    /// <see cref="JazminApplyChangesOptions.Overwrite"/>; refused changes are reported. One append writes the rest.
+    /// </summary>
+    public static JazminChangesResult ApplyChanges(string path, byte[] change, JazminApplyChangesOptions options) =>
+        Changes.Apply(path, change, options);
+
     private static JazminAppendResult AppendUnlocked(string path, JazminAppend append)
     {
         ArgumentNullException.ThrowIfNull(append);

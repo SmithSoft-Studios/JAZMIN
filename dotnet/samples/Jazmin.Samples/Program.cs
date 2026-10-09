@@ -332,6 +332,29 @@ using (var reader = JazminReader.Open(statementBytes.ToArray()))
         Console.WriteLine($"18. {f.Path}: save {f.Actions?.Save ?? true}, PDF page {f.Actions?.PdfSettings?.Format ?? reader.Package!.Pdf!.Format}");
 }
 
+// --- 19. An editable document (USER-GUIDE 19.5): a change file carries the values the person saw, so a row someone
+// else changed in the meantime is held for the owner instead of overwritten.
+var tasksPath = Path.Combine(dir, "tasks.jzm");
+var taskColumns = new[] { new JazminColumn("id", JazminType.Int) { Nullable = false }, new JazminColumn("task", JazminType.String), new JazminColumn("owner", JazminType.String) };
+using (var writer = JazminWriter.Create(tasksPath, taskColumns, new JazminWriteOptions
+{
+    Files = [new JazminFileInput("index.html", "<h1>Tasks</h1>"u8.ToArray())],
+    Package = new JazminPackage { Entry = "index.html", Edit = new JazminEditSettings { Key = ["id"], Columns = ["owner"] } },
+}))
+{
+    writer.WriteValues(1L, "Call the client", null);
+    writer.WriteValues(2L, "Send the quote", null);
+}
+byte[] taskChanges;
+using (var seen = JazminReader.Open(tasksPath))
+    taskChanges = JazminFile.WriteChanges(seen, new JazminChanges
+    {
+        Update = [new Dictionary<string, object?> { ["id"] = 1L, ["owner"] = "Ann" }, new Dictionary<string, object?> { ["id"] = 2L, ["owner"] = "Ann" }],
+    });
+JazminFile.Update(tasksPath, new JazminUpdate { Upsert = [new Dictionary<string, object?> { ["id"] = 2L, ["task"] = "Send the quote", ["owner"] = "Ben" }], KeyColumns = ["id"] });
+var taskResult = JazminFile.ApplyChanges(tasksPath, taskChanges, new JazminApplyChangesOptions());
+Console.WriteLine($"19. {taskResult.Updated} updated; " + string.Join("; ", taskResult.Conflicts.Select(c => $"task {c.Key["id"]} held: {string.Join(", ", c.Columns!.Select(x => $"{x.Name} is now {x.Now}"))}")));
+
 Directory.Delete(dir, true);
 
 public readonly record struct Money(long Cents, string Currency);

@@ -217,6 +217,78 @@ public class InteropTests
     [Fact]
     public void ReadsADocumentsFileActionsWrittenByJavaScript() => AssertDocument(Path.Combine(Dir, "js-document-key.jzm"));
 
+    // ---- change files (spec 7.9), mirrored from EDIT_* in js/test/fixture-helpers.js ------------------------------
+
+    private static readonly JazminColumn[] EditColumns =
+    [
+        new("claim", JazminType.String) { Nullable = false }, new("region", JazminType.String) { Nullable = false }, new("status", JazminType.String),
+        new("amount", JazminType.Decimal), new("due", JazminType.DateTime), new("note", JazminType.String),
+    ];
+
+    private static Dictionary<string, object?> EditRow(string claim, string region, string? status, string? amount, DateTime? due, string? note) =>
+        new() { ["claim"] = claim, ["region"] = region, ["status"] = status, ["amount"] = amount, ["due"] = due, ["note"] = note };
+
+    private static readonly Dictionary<string, object?>[] EditRows =
+    [
+        EditRow("C-1", "A", "open", "100.50", new DateTime(2026, 10, 1, 0, 0, 0, DateTimeKind.Utc), null),
+        EditRow("C-2", "A", "open", "20.00", null, "call back"),
+        EditRow("C-3", "B", "closed", "7.25", null, null),
+    ];
+
+    private static readonly JazminEditSettings EditSettings = new() { Key = ["claim"], Columns = ["region", "status", "amount", "due", "note"], Add = true, Delete = true };
+
+    private static readonly Dictionary<string, object?>[] EditAfter =
+    [
+        EditRow("C-1", "A", "paid", "99.95", new DateTime(2026, 11, 1, 0, 0, 0, DateTimeKind.Utc), null),
+        EditRow("C-3", "B", "closed", "7.25", null, null),
+        EditRow("C-9", "B", "new", null, null, "from the document"),
+    ];
+
+    private static void AssertChangesApply(string source, string change)
+    {
+        var key = JazminKey.Parse((string)Keys["key"]!);
+        var copy = Path.Combine(Directory.CreateTempSubdirectory("jazmin-edit-").FullName, "edit.jzm");
+        File.Copy(source, copy);
+        var result = JazminFile.ApplyChanges(copy, File.ReadAllBytes(change), new JazminApplyChangesOptions { Key = key });
+        Assert.Equal((null, false, 1L, 1L, 1L, 0, 0), (result.Sender, result.FileChanged, result.Updated, result.Added, result.Deleted, result.Conflicts.Count, result.Refused.Count));
+        using var after = JazminReader.Open(copy, new JazminReadOptions { Key = key });
+        var rows = after.Rows().OrderBy(r => (string)r["claim"]!, StringComparer.Ordinal).ToList();
+        Assert.Equal(EditAfter.Length, rows.Count);
+        for (var i = 0; i < rows.Count; i++)
+            foreach (var (name, value) in EditAfter[i])
+                Assert.True(Equals(value, rows[i][name] is DateTime d ? d.ToUniversalTime() : rows[i][name]), $"{EditAfter[i]["claim"]}.{name}: {rows[i][name]} != {value}");
+    }
+
+    [Fact]
+    public void AppliesChangeFilesWrittenByJavaScript() => AssertChangesApply(Path.Combine(Dir, "js-edit-key.jzm"), Path.Combine(Dir, "js-edit-changes.jzm"));
+
+    [Fact]
+    public void WritesChangeFilesForJavaScript()
+    {
+        var key = JazminKey.Parse((string)Keys["key"]!);
+        var source = Path.Combine(OutDir, "dotnet-edit-key.jzm");
+        using (var writer = JazminWriter.Create(source, EditColumns, new JazminWriteOptions
+        {
+            Key = key,
+            Files = [new JazminFileInput("index.html", System.Text.Encoding.UTF8.GetBytes("<h1>Claims</h1>"))],
+            Package = new JazminPackage { Entry = "index.html", Edit = EditSettings },
+        }))
+        {
+            foreach (var row in EditRows) writer.WriteRow(row);
+        }
+        using (var reader = JazminReader.Open(source, new JazminReadOptions { Key = key }))
+        {
+            var change = JazminFile.WriteChanges(reader, new JazminChanges
+            {
+                Update = [new Dictionary<string, object?> { ["claim"] = "C-1", ["status"] = "paid", ["amount"] = "99.95", ["due"] = new DateTime(2026, 11, 1, 0, 0, 0, DateTimeKind.Utc) }],
+                Add = [new Dictionary<string, object?> { ["claim"] = "C-9", ["region"] = "B", ["status"] = "new", ["note"] = "from the document" }],
+                Delete = [new Dictionary<string, object?> { ["claim"] = "C-2" }],
+            }, key);
+            File.WriteAllBytes(Path.Combine(OutDir, "dotnet-edit-changes.jzm"), change);
+        }
+        AssertChangesApply(source, Path.Combine(OutDir, "dotnet-edit-changes.jzm"));
+    }
+
     [Fact]
     public void WritesADocumentsFileActionsForJavaScript()
     {

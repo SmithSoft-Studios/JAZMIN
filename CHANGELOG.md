@@ -88,6 +88,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     viewer checks the changes, shows them and asks, then saves a change file; in a PDF there is nothing to save.
     The browser reader makes the same change files (`JazminBrowser.writeChanges`), and gives `fileId`,
     `appendCount` and `access.keyId`.
+  - **.NET:** `JazminPackage.Edit` (`JazminEditSettings`), `JazminFile.WriteChanges(reader, JazminChanges)` and
+    `JazminFile.ApplyChanges(path, change, JazminApplyChangesOptions)` with the same rules and results
+    (`JazminChangesResult`: `Conflicts`, `Refused`); `JazminReader.FileId` and `Access.KeyId`. Change files are read
+    across the libraries (fixtures `*-edit-key.jzm`, `*-edit-changes.jzm`).
 
 ### Fixed
 - **Filters:** `{ "column": null }` (and `{ "ne": null }`) works for json and binary columns too, as spec 9.1 says;

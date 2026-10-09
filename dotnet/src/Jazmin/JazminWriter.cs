@@ -356,6 +356,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             };
         }
         var package = _packageSet ? EmbeddedFiles.PackageJson(_options.Package, _fileEntries.Keys) : _packageJson;
+        if (_packageSet && package?["edit"] is { } edit)
+            Changes.CheckEdit(edit, _tables.Select(t => (t.Name, (IReadOnlyList<JazminColumn>)t.Columns, t.PartitionBy)).ToList(), partial: _continue is not null);
         if (!_packageSet && package?["entry"] is { } entry && !_fileEntries.ContainsKey((string)entry!))
             throw new JazminValidationException($"package.entry '{entry}' is not one of the stored files");
         var suffix = segment > 0 ? $"/{segment}" : "";

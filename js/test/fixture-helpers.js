@@ -149,6 +149,32 @@ export const DOCUMENT_FILES = [
 ];
 export const DOCUMENT_PACKAGE = { entry: 'index.html', title: 'Document', pdf: { format: 'Letter', landscape: true, scale: 0.9 } };
 
+/**
+ * The *-edit-key.jzm fixtures: a document that changes its rows (package.edit), and *-edit-changes.jzm, a change file
+ * for it (sealed with the file's key): each library applies the other's (spec 7.9). Mirrored in the .NET InteropTests.
+ */
+export const EDIT_COLUMNS = [
+  { name: 'claim', type: 'string', nullable: false }, { name: 'region', type: 'string', nullable: false }, { name: 'status', type: 'string' },
+  { name: 'amount', type: 'decimal' }, { name: 'due', type: 'datetime' }, { name: 'note', type: 'string' },
+];
+export const EDIT_ROWS = [
+  { claim: 'C-1', region: 'A', status: 'open', amount: '100.50', due: new Date(Date.UTC(2026, 9, 1)), note: null },
+  { claim: 'C-2', region: 'A', status: 'open', amount: '20.00', due: null, note: 'call back' },
+  { claim: 'C-3', region: 'B', status: 'closed', amount: '7.25', due: null, note: null },
+];
+export const EDIT_SETTINGS = { key: ['claim'], columns: ['region', 'status', 'amount', 'due', 'note'], add: true, delete: true };
+export const EDIT_CHANGES = {
+  update: [{ claim: 'C-1', status: 'paid', amount: '99.95', due: new Date(Date.UTC(2026, 10, 1)) }],
+  add: [{ claim: 'C-9', region: 'B', status: 'new', note: 'from the document' }],
+  delete: [{ claim: 'C-2' }],
+};
+/** The rows once EDIT_CHANGES are applied. */
+export const EDIT_AFTER = [
+  { ...EDIT_ROWS[0], status: 'paid', amount: '99.95', due: new Date(Date.UTC(2026, 10, 1)) },
+  EDIT_ROWS[2],
+  { claim: 'C-9', region: 'B', status: 'new', amount: null, due: null, note: 'from the document' },
+];
+
 /** Access options for *-files-access.jzm: the fixture grants, with Bob also granted the 'template' file group. */
 export function filesAccessFixture(keys) {
   const access = accessFixture(keys);

@@ -3,10 +3,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { JazminKey, append, open, toJSON, write } from '../src/index.js';
+import { JazminKey, append, open, toJSON, write, writeChanges } from '../src/index.js';
 import { CHUNK_MAP, PAGING } from '../src/writer.js';
 import {
-  APPEND_DELETE, APPEND_SPLIT, COUNTRY_COLUMNS, DOCUMENT_FILES, DOCUMENT_PACKAGE, FIXTURE_PACKAGE, PARTITIONS_SPLIT, accessFixture, countryRows, filesAccessFixture, fixtureFiles,
+  APPEND_DELETE, APPEND_SPLIT, COUNTRY_COLUMNS, DOCUMENT_FILES, DOCUMENT_PACKAGE, EDIT_CHANGES, EDIT_COLUMNS, EDIT_ROWS, EDIT_SETTINGS, FIXTURE_PACKAGE, PARTITIONS_SPLIT, accessFixture, countryRows, filesAccessFixture, fixtureFiles,
   NESTED_COLUMNS, NESTED_FILTERS, NESTED_GROWN_SPLIT, fromCanonical, nestedColumnsBefore, nestedFixtureRows, nestedRowBefore, partitionsFixture, tablesFixture,
 } from '../test/fixture-helpers.js';
 
@@ -79,6 +79,15 @@ write(path.join(dir, 'js-files-key.jzm'), rows, { ...withFiles, key: keys.key })
 write(path.join(dir, 'js-files-access.jzm'), rows, { ...withFiles, key: keys.key, access: filesAccessFixture(keys), [CHUNK_MAP]: false });
 // A document: what viewers may do with its files, and its page settings for PDFs (format 1.4).
 write(path.join(dir, 'js-document-key.jzm'), rows, { ...base, key: keys.key, files: DOCUMENT_FILES, package: DOCUMENT_PACKAGE });
+// A document that changes its rows, and a change file for it (spec 7.9).
+write(path.join(dir, 'js-edit-key.jzm'), EDIT_ROWS, {
+  columns: EDIT_COLUMNS, key: keys.key, files: [{ path: 'index.html', content: '<h1>Claims</h1>' }], package: { entry: 'index.html', edit: EDIT_SETTINGS },
+});
+{
+  const source = open(path.join(dir, 'js-edit-key.jzm'), { key: keys.key });
+  fs.writeFileSync(path.join(dir, 'js-edit-changes.jzm'), writeChanges(source, EDIT_CHANGES, { key: keys.key }));
+  source.close();
+}
 
 // Written by the browser writer (js/browser/jazmin-browser.js), as a page would: without indexes, which browsers don't
 // write. The other library reads them in its interop tests.

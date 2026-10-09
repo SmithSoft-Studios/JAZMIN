@@ -127,6 +127,9 @@ public sealed class JazminPackage
 
     /// <summary>The document's page settings for PDFs (format 1.4).</summary>
     public JazminPdfSettings? Pdf { get; init; }
+
+    /// <summary>What the document may change (format 1.4, spec 7.9).</summary>
+    public JazminEditSettings? Edit { get; init; }
 }
 
 /// <summary>Validation, media types and the stored-content model for embedded files (spec 6.8).</summary>
@@ -190,6 +193,7 @@ internal static class EmbeddedFiles
         }
         if (package.AllowWasm is { } wasm) json["allowWasm"] = wasm;
         if (package.Pdf is { } pdf) json["pdf"] = PdfJson(pdf, "package.pdf");
+        if (package.Edit is { } edit) json["edit"] = Changes.EditJson(edit);
         return json;
     }
 
@@ -200,6 +204,7 @@ internal static class EmbeddedFiles
         AllowedOrigins = o["allowedOrigins"] is JsonArray a ? a.Select(x => (string)x!).ToList() : null,
         AllowWasm = (bool?)o["allowWasm"],
         Pdf = o["pdf"] is JsonObject pdf ? PdfFrom(pdf, strict: false) : null,
+        Edit = Changes.EditFrom(o["edit"]),
     };
 
     private static readonly string[] PdfFormats = ["A0", "A1", "A2", "A3", "A4", "A5", "A6", "Letter", "Legal", "Tabloid", "Ledger"];

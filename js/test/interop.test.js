@@ -2,13 +2,14 @@
 // against the shared dataset, so both implementations stay byte-compatible.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { JazminAccessKey, issueUnlockToken, open, toJSON } from '../src/index.js';
+import { JazminAccessKey, applyChanges, issueUnlockToken, open, toJSON } from '../src/index.js';
 import { APPEND_STATE } from '../src/reader.js';
 import {
-  ACCESS_VIEWS, COUNTRY_COLUMNS, COUNTRY_VIEWS, DOCUMENT_FILES, DOCUMENT_PACKAGE, FILES_VIEWS, FIXTURE_EXPIRY, FIXTURE_PACKAGE, PARTITIONS_SPLIT, PARTITION_VIEWS, appendedLive,
+  ACCESS_VIEWS, COUNTRY_COLUMNS, COUNTRY_VIEWS, DOCUMENT_FILES, DOCUMENT_PACKAGE, EDIT_AFTER, EDIT_SETTINGS, FILES_VIEWS, FIXTURE_EXPIRY, FIXTURE_PACKAGE, PARTITIONS_SPLIT, PARTITION_VIEWS, appendedLive,
   NESTED_COLUMNS, NESTED_GROWN_SPLIT, countryRows, fixtureFiles, nestedRowBefore, toCanonical,
 } from './fixture-helpers.js';
 
@@ -26,7 +27,8 @@ function optionsFor(file) {
   return {};
 }
 
-const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jzm') && !f.endsWith('-access.jzm') && !f.includes('-nested'));
+// The shared dataset's files (nested and edit fixtures have tables of their own, checked below).
+const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jzm') && !f.endsWith('-access.jzm') && !f.includes('-nested') && !f.includes('-edit-'));
 const accessFiles = fs.readdirSync(dir).filter((f) => f.endsWith('-access.jzm'));
 /** Dataset rows a fixture should contain: appended fixtures have rows with id < 10 deleted. */
 const liveRows = (file) => {
@@ -93,6 +95,28 @@ for (const writer of ['js', 'dotnet']) {
       assert.deepEqual(reader.package, DOCUMENT_PACKAGE);
     } finally {
       reader.close();
+    }
+  });
+}
+
+// Change files (spec 7.9): each library's, applied to a copy of its document by this library.
+for (const writer of ['js', 'dotnet']) {
+  test(`interop: ${writer}-edit-changes.jzm applies to ${writer}-edit-key.jzm`, (t) => {
+    const source = path.join(dir, `${writer}-edit-key.jzm`);
+    const change = path.join(dir, `${writer}-edit-changes.jzm`);
+    if (!fs.existsSync(change)) return t.skip(`run the ${writer === 'js' ? 'fixture script' : '.NET tests'} to generate it`);
+    const copy = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-edit-')), 'edit.jzm');
+    fs.copyFileSync(source, copy);
+    const before = open(copy, { key: keys.key });
+    assert.deepEqual(before.package.edit, EDIT_SETTINGS);
+    before.close();
+    const result = applyChanges(copy, fs.readFileSync(change), { key: keys.key });
+    assert.deepEqual(result, { sender: null, fileChanged: false, updated: 1, added: 1, deleted: 1, conflicts: [], refused: [] });
+    const after = open(copy, { key: keys.key });
+    try {
+      assert.deepEqual([...after.rows()].sort((a, b) => (a.claim < b.claim ? -1 : 1)), EDIT_AFTER);
+    } finally {
+      after.close();
     }
   });
 }

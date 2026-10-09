@@ -2537,6 +2537,19 @@ const result = applyChanges('claims.jzm', change, { key: owner });
 // { sender: 'bob's key id', updated: 1, added: 1, deleted: 0, conflicts: [], refused: [] }
 ```
 
+```csharp
+// .NET: the same change files, both ways.
+Package = new JazminPackage { Entry = "index.html", Edit = new JazminEditSettings { Key = ["claim"], Columns = ["status", "note"], Add = true } };
+
+using var mine = JazminReader.Open("claims.jzm", new JazminReadOptions { AccessKey = bob });
+byte[] change = JazminFile.WriteChanges(mine, new JazminChanges
+{
+    Update = [new Dictionary<string, object?> { ["claim"] = "C-104", ["status"] = "approved" }],
+});
+var result = JazminFile.ApplyChanges("claims.jzm", change, new JazminApplyChangesOptions { Key = owner });
+foreach (var c in result.Conflicts) Console.WriteLine($"{c.Kind}: {string.Join(", ", c.Key.Values)}");
+```
+
 - **Checked again when applied:** what the document allows *now* (the owner
   can narrow or withdraw `edit` at any time), and in a shared file the
   sender's grant: only its partitions and columns. An added row without its

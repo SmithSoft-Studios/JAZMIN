@@ -1134,6 +1134,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <summary>Number of appends since the file was last written in full (compaction resets it to 0).</summary>
     public int AppendCount => _header.AppendCount;
 
+    /// <summary>The file's id (hex), as <see cref="JazminFile.Inspect"/> gives it. A rewrite (Update, Compact) gives the file a new one.</summary>
+    public string FileId => Convert.ToHexString(_fileId).ToLowerInvariant();
+
     /// <summary>
     /// When the file was last written: its last append or, without one, when it was created. It comes from the writer's
     /// clock, so it is what the writer claims, not when the file reached you.
@@ -1271,6 +1274,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             if (!_access.IsOwner)
                 return new JazminAccessInfo(false, partitionBy, columnGroups, _access.PartitionNames.Values.ToList(), _groups.Where(g => g.Visible).Select(g => g.Name).ToList(), null)
                 {
+                    KeyId = Convert.ToHexString(OwnerSigning.SlotId(_access.KeySecret)).ToLowerInvariant(),
                     Online = _access.Online,
                     Expires = _access.Expires,
                 };

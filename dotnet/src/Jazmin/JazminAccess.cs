@@ -102,6 +102,9 @@ public sealed record JazminAccessInfo(
     IReadOnlyList<string> VisibleColumnGroups,
     IReadOnlyList<JazminGrantInfo>? Grants)
 {
+    /// <summary>Access keys: this key's id, as the owner's grants list it.</summary>
+    public string? KeyId { get; init; }
+
     /// <summary>Access keys: whether opening needs an unlock token.</summary>
     public bool Online { get; init; }
 
