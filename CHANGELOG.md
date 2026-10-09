@@ -77,6 +77,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     size); `checkPageSettings()` cleans settings a page asks for before they reach a browser; `renderImage()` makes
     a PNG or JPEG; `portableHtml()` makes the viewer's "Save as HTML" page without a browser.
 
+- **Editable documents** (USER-GUIDE 19.5, spec 7.9): a template can let people change, add and delete rows
+  (`package.edit`: the key columns, the columns a change may set, whether rows may be added or deleted).
+  `writeChanges(reader, changes)` makes a change file with the values the person saw, sealed with a shared file's
+  submission key (or the file's own key); `applyChanges(path, changeFile, { key })` applies it as the document allows
+  changes now. In a shared file the sender is found by submission key and may change only its grant's partitions and
+  columns. Rows changed since the sender's copy are held as conflicts (before, wanted, now) unless `overwrite: true`;
+  `dryRun` shows what would happen. Readers also give `fileId` and, for an access key, `access.keyId`.
+
 ### Fixed
 - **Filters:** `{ "column": null }` (and `{ "ne": null }`) works for json and binary columns too, as spec 9.1 says;
   both libraries refused it. .NET reads whole numbers in JSON filters as integers, so ids beyond 2^53 compare

@@ -13,7 +13,7 @@ import {
 } from './catalog.js';
 import { columnBuffer, encodeColumnBuffers, nestedStage } from './columnar.js';
 import { isNested } from './nested.js';
-import { EVERYONE, FILE_BLOCK_SIZE, FILE_SOURCE, fileSource, normalizePackage } from './files.js';
+import { EVERYONE, FILE_BLOCK_SIZE, FILE_SOURCE, checkEdit, fileSource, normalizePackage } from './files.js';
 import {
   DEFAULTS, DEFAULT_COLUMN_GROUP, FILE_ID_SIZE, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, INDEX_DELTAS, INLINE_PARTITIONS, NESTED_COLUMNS,
   KEYRING_GROUPS, MAGIC, MAX_KDF_ITERATIONS, MIN_KDF_ITERATIONS, PREAMBLE_SIZE, SALT_SIZE, TRAILER_SIZE, WHOLE_TABLE,
@@ -967,6 +967,7 @@ export class JazminWriter {
       contents: [...new Set(list.map((e) => e.content))].sort((a, b) => a - b).map((id) => byId.get(id)),
     });
     const settings = normalizePackage(this.#package, new Set(this.#files.entries.keys()));
+    if (settings?.edit) checkEdit(settings.edit, this.#tableDefs, { partial: Boolean(this.#continue) });
     const suffix = segment ? `/${segment}` : '';
     // nextContent: content ids are never reused, so block section ids stay unique across appends.
     const member = { directories: [], nextContent: this.#files.nextId, package: settings ? JSON.stringify(settings) : '', segment };

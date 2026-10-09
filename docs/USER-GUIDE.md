@@ -2502,6 +2502,57 @@ app.MapJazminFiles("/docs/{id}", async context =>
 - **PDFs from .NET:** not built in. Render them with `renderPdf` from
   JavaScript (above).
 
+### 19.5 Editable documents: changes made in the document
+
+A document can let people change the rows it shows: change them, add some,
+delete some (format 1.4). The template's author says what may change, in the
+package:
+
+```js
+write('claims.jzm', claims, {
+  key: owner, access: { partitionBy: 'region', grants },
+  files: templateFiles,
+  package: { entry: 'index.html', edit: { key: ['claim'], columns: ['status', 'note'], add: true, delete: false } },
+});
+```
+
+- **`key`**: the columns that identify a row. **`columns`**: what a change may
+  set. **`add`**, **`delete`**: whether rows may be added or deleted. Nothing
+  else can be changed through the document.
+- **Where the changes go:**
+  - **A file of your own** (not shared), opened with its key: written into it.
+  - **A shared file:** each person works on their own copy. Their changes go
+    back to the owner in a **change file**, sealed with their submission key
+    (section 15.6), and the owner applies it.
+
+```js
+// The person (in an app; viewers do this for the document): a change file, with the values they saw.
+const mine = open('claims.jzm', { key: bobKeyText });
+const change = writeChanges(mine, {
+  update: [{ claim: 'C-104', status: 'approved', note: 'Photos checked' }],   // the key, and what changes
+  add: [{ claim: 'C-900', status: 'open' }],
+});
+// The owner: applies it. The sender is found by their submission key.
+const result = applyChanges('claims.jzm', change, { key: owner });
+// { sender: 'bob's key id', updated: 1, added: 1, deleted: 0, conflicts: [], refused: [] }
+```
+
+- **Checked again when applied:** what the document allows *now* (the owner
+  can narrow or withdraw `edit` at any time), and in a shared file the
+  sender's grant: only its partitions and columns. An added row without its
+  partition goes into the sender's one partition. Changes that aren't allowed
+  are **refused**, with the reason.
+- **Rows changed since the sender's copy are held:** a change file carries the
+  values the sender saw. If the row has changed since (someone else's change
+  applied first), the change is held as a **conflict** and reported with the
+  value before, the value wanted and the value now. So are an added row whose
+  key is already there and a change to a row that's gone. The owner decides:
+  `applyChanges(file, change, { key: owner, overwrite: true })` applies them.
+- **`dryRun: true`** shows what would happen without writing. **`keyId`**
+  names the sender when you know it (otherwise each grant is tried), and
+  **`receivedAt`** is when the change file arrived, checked against the
+  sender's expiry as in section 15.6.
+
 ## 20. Speed and memory: practical recipes
 
 The examples below use a statements file of transactions, sorted by account:

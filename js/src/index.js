@@ -21,6 +21,7 @@ export { rotateKey, rotateOwnerKey } from './rotate.js';
 export { createFileHandler, documentPolicy, renderImage, renderPdf, serveFiles } from './server.js';
 export { portableHtml } from './portable.js';
 export { checkPageSettings } from './files.js';
+export { applyChanges, writeChanges } from './changes.js';
 export { accessKeyOf, inspect, issueUnlockToken, listUnlockTokens } from './online.js';
 export { inferSchema } from './schema.js';
 export { compileShape, shapeSchema } from './shape.js';

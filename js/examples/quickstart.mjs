@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, compact, createFileHandler, exportFile, fromCSV, issueUnlockToken, open, openAsync,
-  portableHtml, rotateKey, toJSON, toXML, write, writeAsync,
+  applyChanges, portableHtml, rotateKey, toJSON, toXML, update, write, writeAsync, writeChanges,
 } from '../src/index.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-examples-'));
@@ -225,5 +225,21 @@ const statement = open(statementFile);
 console.log('16.', statement.files.map((f) => `${f.path} ${JSON.stringify(f.actions)}`).join('; '));
 statement.close();
 console.log('   ', `portableHtml: ${Math.round(portableHtml(statementFile).length / 1024)} KB, opens offline and asks for the key`);
+
+// 17. An editable document (USER-GUIDE 19.5): the package says what may change; a change file carries the values the
+// person saw, so a row someone else changed in the meantime is held for the owner instead of overwritten.
+const tasksFile = path.join(dir, 'tasks.jzm');
+write(tasksFile, [{ id: 1, task: 'Call the client', owner: null }, { id: 2, task: 'Send the quote', owner: null }], {
+  columns: [{ name: 'id', type: 'int', nullable: false }, { name: 'task', type: 'string' }, { name: 'owner', type: 'string' }],
+  files: [{ path: 'index.html', content: '<h1>Tasks</h1>' }],
+  package: { entry: 'index.html', edit: { key: ['id'], columns: ['owner'] } },
+});
+const seen = open(tasksFile);
+const change = writeChanges(seen, { update: [{ id: 1, owner: 'Ann' }, { id: 2, owner: 'Ann' }] }); // as a viewer makes it
+seen.close();
+update(tasksFile, { upsert: [{ id: 2, task: 'Send the quote', owner: 'Ben' }], keyColumns: ['id'] }); // someone else, meanwhile
+const applied = applyChanges(tasksFile, change);
+console.log('17.', applied.updated, 'updated;', applied.conflicts.map((c) => `task ${c.key.id} held: ${c.columns.map((x) => `${x.name} is now ${x.now}`).join(', ')}`).join('; '));
+// 17. 1 updated; task 2 held: owner is now Ben
 
 fs.rmSync(dir, { recursive: true, force: true });

@@ -1151,6 +1151,11 @@ export class JazminReader {
     return this.#header.appendCount;
   }
 
+  /** The file's id (hex), as inspect() gives it. A rewrite (update, compact) gives the file a new one. */
+  get fileId() {
+    return this.#fileId.toString('hex');
+  }
+
   /**
    * When the file was last written: its last append or, without one, when it was created. It comes from the writer's
    * clock, so it is what the writer claims, not when the file reached you.
@@ -1302,6 +1307,7 @@ export class JazminReader {
       visibleColumnGroups: isOwner ? columnGroups : this.#groups.filter((g) => g.visible).map((g) => g.name),
     };
     if (!isOwner) {
+      info.keyId = slotId(this.#access.keySecret).toString('hex'); // the access key's id, as the owner's grants list it
       info.online = this.#access.online;
       if (this.#access.expires) info.expires = this.#access.expires;
     }

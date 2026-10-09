@@ -608,10 +608,11 @@ text) and `segment` when an append wrote the directories.
   `*`. In access-controlled files there is one per file group, with `group`
   set to the group id (7.6.3).
 - `package` holds the entry path (which MUST be a stored path), a title, the
-  https origins the page may contact, whether WebAssembly is allowed, and
-  `pdf`, the page settings for the document's PDFs (below). Viewers MUST
-  treat stored files as untrusted content and SHOULD derive the page's
-  security policy from these settings only.
+  https origins the page may contact, whether WebAssembly is allowed, `pdf`,
+  the page settings for the document's PDFs (below), and `edit`, what the
+  document may change (7.9). Viewers MUST treat stored files as untrusted
+  content and SHOULD derive the page's security policy from these settings
+  only.
 - Writers MUST NOT reuse a content id within a file, so block section ids
   stay unique across appends.
 
@@ -1038,6 +1039,61 @@ Software that files submitted files into a shared file:
 Test vector: for the owner key `00 01 02 ... 1f` and the key id
 `0001020304050607`, the submission key is
 `457ac056dd344efb467cdc8a574b1469c328daafd2f09fe14782cd2818ecf29e`.
+
+### 7.9. Change Files
+
+A file's document MAY let people change, add and delete rows of one table.
+The package (6.8) says what it may change in `edit`:
+
+```json
+{ "table": "claims", "key": ["claim"], "columns": ["status", "note"], "add": true, "delete": false }
+```
+
+- `table` (optional, default the first table); `key`, one or more columns
+  that identify a row (string, int, decimal, datetime or bool); `columns`, the
+  columns a change may set, not the key's; `add` and `delete` (optional,
+  default false). At least one of `columns`, `add` and `delete` allows
+  something.
+- Writers MUST check that the table and columns exist, and, when `add` is
+  true, that every column that can't be empty is a key column, an editable
+  column or the partition column.
+
+Changes reach the file as a **change file**: an ordinary file with one table,
+`changes`, and the metadata member `jazmin.changes`:
+`{ "version": 1, "file", "table", "key", "columns", "sender", "based" }`
+(the file id the changes were made on, in hexadecimal; the table and key; the
+editable columns the sender sees; the sender's access key id, or null;
+`{ "writtenAt", "appendCount" }` of the sender's copy). Its columns:
+
+| Column | Type | |
+|---|---|---|
+| `jazmin.op` | string, not null | `update`, `add` or `delete` |
+| `jazmin.set` | json | the columns an update or add sets (null for delete) |
+| each key column | as in the file | |
+| each editable column | as in the file, nullable | the value wanted |
+| `jazmin.before.` + each editable column | as in the file, nullable | the value the sender saw: of the columns an update sets; of all of them for a delete |
+
+A shared file's change file is encrypted with the sender's submission key
+(7.8); another encrypted file's with its own key or password (7.3); an
+unencrypted file's is not encrypted.
+
+Applying a change file:
+- MUST use the file's `edit` at the time of applying, and MUST refuse a
+  change file whose table or key differs, or whose columns have other types.
+- In a shared file, MUST identify the sender as 7.8 says (a grant whose
+  submission key opens the change file; not revoked; written and received
+  before the grant expires), and MUST refuse each change to a row in a
+  partition the grant doesn't cover, or that sets a column the grant doesn't
+  cover. An added row without the partition column goes into the grant's
+  partition when the grant has exactly one, and is refused otherwise.
+- MUST refuse changes `edit` doesn't allow (an operation, a column), and
+  added rows that would leave a column that can't be empty empty.
+- SHOULD hold, not apply, a change to a row that changed since the sender's
+  copy (a `jazmin.before.` value differs from the row's), an added key that
+  exists, or a change to a row that is gone; and report each, with the values
+  before, wanted and now. Software MAY apply held changes when the owner asks.
+- The file id is informative: a rewrite gives a file a new id, so it is not
+  checked.
 
 ## 8. Indexes
 
@@ -1536,7 +1592,8 @@ indexes, embedded files) written by both reference implementations.
   object of the JSON texts readers use themselves (2). Readers reject such a
   file; before, one library kept the last value and the other failed.
 - **Since format 1.0, new optional JSON members (6.8):** a file's
-  `actions` in file directories, and the page settings `package.pdf`.
+  `actions` in file directories, the page settings `package.pdf`, and
+  `package.edit` with change files (7.9), which are ordinary files.
   Readers that don't know them ignore them, as they do other members; the
   libraries of releases 1.0 to 1.3 also leave them out when they rewrite a
   file's directories (append, update, compaction).

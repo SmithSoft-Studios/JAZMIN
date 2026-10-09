@@ -123,7 +123,69 @@ export function normalizePackage(settings, paths) {
   }
   if (settings.allowWasm !== undefined) out.allowWasm = settings.allowWasm === true;
   if (settings.pdf !== undefined) out.pdf = normalizePdf(settings.pdf, 'package.pdf');
+  if (settings.edit !== undefined) out.edit = normalizeEdit(settings.edit);
   return out;
+}
+
+const EDIT_SETTINGS = ['table', 'key', 'columns', 'add', 'delete'];
+const KEY_TYPES = new Set(['string', 'int', 'decimal', 'datetime', 'bool']);
+
+/**
+ * What a document may change (docs/design/editable-documents.md): { table, key: [columns], columns: [columns], add,
+ * delete }. Its columns are checked against the table by the writer (checkEdit).
+ */
+function normalizeEdit(edit) {
+  if (edit === null || typeof edit !== 'object' || Array.isArray(edit)) throw new JazminValidationError('package.edit must be an object: { table, key, columns, add, delete }');
+  for (const name of Object.keys(edit)) {
+    if (!EDIT_SETTINGS.includes(name)) throw new JazminValidationError(`package.edit: unknown setting '${name}' (${EDIT_SETTINGS.join(', ')})`);
+  }
+  const names = (value, what) => {
+    if (!Array.isArray(value) || value.some((n) => typeof n !== 'string' || n.length === 0)) throw new JazminValidationError(`package.edit.${what} must be a list of column names`);
+    if (new Set(value).size !== value.length) throw new JazminValidationError(`package.edit.${what} names a column twice`);
+    return [...value];
+  };
+  const out = {};
+  if (edit.table !== undefined) {
+    if (typeof edit.table !== 'string') throw new JazminValidationError('package.edit.table must be a table name');
+    out.table = edit.table;
+  }
+  out.key = names(edit.key, 'key');
+  if (!out.key.length) throw new JazminValidationError('package.edit.key: give the column (or columns) that identify a row');
+  out.columns = edit.columns === undefined ? [] : names(edit.columns, 'columns');
+  for (const c of out.columns) if (out.key.includes(c)) throw new JazminValidationError(`package.edit.columns: '${c}' is a key column, which changes can't alter`);
+  for (const flag of ['add', 'delete']) {
+    if (edit[flag] === undefined) continue;
+    if (typeof edit[flag] !== 'boolean') throw new JazminValidationError(`package.edit.${flag} must be true or false`);
+    out[flag] = edit[flag];
+  }
+  if (!out.columns.length && !out.add && !out.delete) throw new JazminValidationError('package.edit allows nothing: give columns, add or delete');
+  return out;
+}
+
+/**
+ * Checks package.edit against the file's tables ([{ name, columns, partitionBy }]): the table and columns exist, key
+ * columns are of a type that identifies rows, and rows can be added (every column that can't be empty is set). A table
+ * this writer doesn't know (an append to another table) was checked when it was written.
+ */
+export function checkEdit(edit, tables, { partial = false } = {}) {
+  const table = edit.table === undefined ? tables[0] : tables.find((t) => t.name === edit.table);
+  if (!table) {
+    if (partial) return;
+    throw new JazminValidationError(`package.edit.table: the file has no table '${edit.table}'`);
+  }
+  const byName = new Map(table.columns.map((c) => [c.name, c]));
+  for (const k of edit.key) {
+    const c = byName.get(k);
+    if (!c) throw new JazminValidationError(`package.edit.key: no column '${k}'`);
+    if (!KEY_TYPES.has(c.type)) throw new JazminValidationError(`package.edit.key: '${k}' is a ${c.type} column; keys are string, int, decimal, datetime or bool columns`);
+  }
+  for (const n of edit.columns) if (!byName.has(n)) throw new JazminValidationError(`package.edit.columns: no column '${n}'`);
+  if (edit.add) {
+    const set = new Set([...edit.key, ...edit.columns, ...(table.partitionBy ? [table.partitionBy] : [])]);
+    for (const c of table.columns) {
+      if (c.nullable === false && !set.has(c.name)) throw new JazminValidationError(`package.edit.add: column '${c.name}' can't be empty, so added rows must set it: list it in columns`);
+    }
+  }
 }
 
 const FLAGS = ['open', 'save', 'print', 'image'];

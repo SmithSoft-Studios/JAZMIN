@@ -139,7 +139,81 @@ export interface PackageSettings {
   allowWasm?: boolean;
   /** The document's page settings for PDFs (format 1.4). */
   pdf?: PdfSettings;
+  /** What the document may change (format 1.4; docs/design/editable-documents.md). */
+  edit?: EditSettings;
 }
+
+/** What a file's document may change: rows of one table, by their key. */
+export interface EditSettings {
+  /** The table (default: the file's first). */
+  table?: string;
+  /** The columns that identify a row: string, int, decimal, datetime or bool. */
+  key: string[];
+  /** The columns a change may set (not the key's). */
+  columns?: string[];
+  /** Whether rows may be added (default false). */
+  add?: boolean;
+  /** Whether rows may be deleted (default false). */
+  delete?: boolean;
+}
+
+/** Changes to a file's rows: each row by its key, once per call. */
+export interface Changes {
+  /** The key, and the columns that change. */
+  update?: JazminRow[];
+  /** The key, and the columns set (the others are left empty). */
+  add?: JazminRow[];
+  /** The key only. */
+  delete?: JazminRow[];
+}
+
+export interface ChangeConflict {
+  op: 'update' | 'add' | 'delete';
+  key: JazminRow;
+  /** changed: a value differs from what the sender saw; exists: an added key is there; missing: the row is gone. */
+  kind: 'changed' | 'exists' | 'missing';
+  columns?: { name: string; before: unknown; wanted: unknown; now: unknown }[];
+}
+
+export interface ApplyChangesResult {
+  /** The sender's access key id (shared files), or null. */
+  sender: string | null;
+  /** The file was rewritten since the changes were made (a new file id). */
+  fileChanged: boolean;
+  updated: number;
+  added: number;
+  deleted: number;
+  /** Held: rows changed since the sender's copy (applied only with overwrite). */
+  conflicts: ChangeConflict[];
+  /** Never applied: what the document or the sender's grant doesn't allow. */
+  refused: { op: string; key: JazminRow; reason: string }[];
+}
+
+export interface ApplyChangesOptions {
+  /** The file's key (a shared file's owner key) or password. */
+  key?: string | JazminKey;
+  password?: string;
+  /** A shared file: the sender's access key id, when known (otherwise each grant is tried). */
+  keyId?: string;
+  /** Apply rows changed since the sender's copy too. */
+  overwrite?: boolean;
+  /** Everything but the write: what would happen. */
+  dryRun?: boolean;
+  /** When the change file arrived (ms or Date; default now): checked against the sender's grant's expiry. */
+  receivedAt?: number | Date;
+}
+
+/**
+ * A change file for changes to an open file whose document allows them (package.edit), with the earlier values from
+ * that file. Sealed with a shared file's submission key, or the key or password given for a file that isn't shared.
+ */
+export function writeChanges(source: JazminReader, changes: Changes, options?: { key?: string | JazminKey; password?: string }): Buffer;
+
+/**
+ * Applies a change file to the file at `path`, as its document allows changes now. Rows changed since the sender's
+ * copy are held as conflicts; a shared file's sender may change only its grant's rows and columns.
+ */
+export function applyChanges(path: string, change: string | Uint8Array, options?: ApplyChangesOptions): ApplyChangesResult;
 
 /** Where readers keep each expiring key's last-seen time (to detect a clock being set back). */
 export type AccessState = false | { dir: string } | { read(name: string): string | undefined; write(name: string, text: string): void };
@@ -159,6 +233,8 @@ export interface AccessInfo {
   columnGroups: string[];
   visiblePartitions: string[];
   visibleColumnGroups: string[];
+  /** Access keys: this key's id, as the owner's grants list it. */
+  keyId?: string;
   /** Access keys: whether opening needs an unlock token, and when access ends. */
   online?: boolean;
   expires?: string;
@@ -553,6 +629,8 @@ export class JazminReader implements Iterable<JazminRow> {
   readonly deletedRowCount: number;
   /** Appends since the file was last written in full. */
   readonly appendCount: number;
+  /** The file's id (hex); a rewrite (update, compact) gives it a new one. */
+  readonly fileId: string;
   /** When the file was last written (its last append, or when it was created), by the writer's clock. */
   readonly writtenAt: Date;
   /**
