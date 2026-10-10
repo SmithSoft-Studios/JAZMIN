@@ -3599,13 +3599,15 @@ needed are read from disk.
     access key: `grantAccess(file, owner, key, { rows: '*', columns: '*' })`.
     It reads every row and column but changes nothing, and it can be revoked.
 
-It comes in three forms:
+It comes in these forms:
 
 | Form | How | Good for |
 |---|---|---|
 | **Installed app** | Host `js/viewer` and `js/browser` side by side over HTTPS; people choose "Install". Chrome and Edge then open `.jzm` files with it, also offline | People who receive `.jzm` files often |
 | **Hosted page** | The same folders on any web server; choose or drop a file | Anyone with a link |
-| **One HTML file** | "Save as HTML" in the viewer: the viewer and the `.jzm` in one file, opened by double-click, offline | Sending a document to someone once. Best under about 50 MB; many mail systems block `.html` attachments |
+| **Folder on disk** | The same folders on a computer; double-click `viewer/index.html`, then choose or drop a file (section 24.4) | No web server and no Node; files of any size |
+| **In your own page** | `<iframe src="viewer/index.html">` in a page of yours, on a web server or on disk; people choose a file in the viewer, or your page passes it one (section 24.4) | Your own page around the viewer |
+| **One HTML file** | "Save as HTML" in the viewer: the viewer and the `.jzm` in one file, opened by double-click, offline | Sending a document to someone once. Best under about 50 MB, because the browser holds the whole file; many mail systems block `.html` attachments |
 
 Try it locally with `npm run viewer` (in `js/`). The saved HTML file still
 asks for the key: the data inside it stays encrypted.
@@ -3822,6 +3824,79 @@ const file = await JazminBrowser.write(records, { columns, key, files: [{ path: 
   - **Encryption** needs a secure page (`https://` or `localhost`).
   - **Compression** needs Chrome 103, Firefox 113 or Safari 16.4 or later.
     Elsewhere, pass `codec: 'none'`.
+
+### 24.4 Opening files from disk, and the viewer in your own page
+
+The viewer needs no web server and no Node. Pages opened from disk
+(`file://`) work as pages on a server do, with one difference: browsers don't
+let them read a file beside them by themselves. So the person chooses the
+file, or drops it, and the viewer reads only the parts it needs, straight from
+disk. There are three ways:
+
+1. **The viewer's folder.** Put the `viewer` and `browser` folders side by
+   side (from the npm package, or `js/` in the repository) and double-click
+   `viewer/index.html`.
+2. **The viewer in your own page.** Show it in an iframe,
+   `<iframe src="viewer/index.html">`, and people choose or drop the file in
+   it.
+3. **Your page passes the file.** Your page has its own button or drop area,
+   and hands the viewer the file it gets:
+
+```html
+<input id="pick" type="file" accept=".jzm">
+<iframe id="viewer" src="viewer/index.html" title="JAZMIN viewer"></iframe>
+<script>
+  const viewer = document.getElementById('viewer');
+  document.getElementById('pick').addEventListener('change', (event) => {
+    const file = event.target.files[0];
+    if (file) viewer.contentWindow.postMessage({ type: 'jazmin:open', file, name: file.name }, '*');
+  });
+  // How it opens: 'opened', 'locked' (the person types the key in the viewer), or 'failed' with a message.
+  addEventListener('message', (event) => {
+    if (event.source === viewer.contentWindow && event.data?.type === 'jazmin:status') {
+      console.log(event.data.name, event.data.state, event.data.message ?? '');
+    }
+  });
+</script>
+```
+
+- **The file stays on disk.** Your page hands over a reference to the file,
+  not its contents, and the viewer reads the slices it needs.
+- **Send the message once the iframe has loaded** (its `load` event); a
+  message sent earlier is lost.
+- **Where to send it:** `'*'` from a page on disk, whose origin is `null`;
+  from a web server, the viewer's origin, such as
+  `'https://viewer.example.com'`.
+- **What your page hears:** how the file opens, and nothing else. The key is
+  typed in the viewer, and the data stays there.
+- **Who can pass files:** only the page that holds the viewer's iframe. A
+  document inside a `.jzm` can't, and a viewer that isn't in a frame takes no
+  files this way.
+- **What your page can reach:** across sites, and from disk in Chrome and
+  Edge, your page can't look inside the viewer. On the same site, and from
+  disk in Firefox (within one folder), it can, key field included: put the
+  viewer only in pages you trust.
+- **Hosting the viewer for others?** Send the header
+  `Content-Security-Policy: frame-ancestors 'self'` with it if other sites
+  shouldn't show it in their pages or pass it files.
+- **Opening a file with no choosing at all** works from disk only when the
+  file is inside the page, as "Save as HTML" puts it: the browser then holds
+  all of it.
+
+**Measured** with `npm run bench:viewer` (in `js/`) on a 201 MB file of
+10,000,000 rows, in Chrome, Edge and Firefox on Windows 11 (i7-12700H). The
+three ways read and use the same; the ranges cover every browser and way:
+
+| Step | Time | Read from disk | Extra memory |
+|---|---|---|---|
+| Open, first page of rows | 62–130 ms | 0.07 MB | |
+| Find one row by id | 67–81 ms | 0.15 MB | 19–30 MB after the lookup (once 92 MB, Firefox) |
+| A filter that reads every row | 8.3–11 s | 166 MB, at most 69 KB at a time | peak 100–212 MB |
+
+The memory is the browser's processes, sampled a few times a second, above
+what they used before the file was chosen. A larger file reads about as
+little to open and to look up a row: only filters that must read every row
+take longer.
 
 ---
 

@@ -141,6 +141,43 @@ const EDIT_READY = {
   saved: ['change-file', 1, 1, 0],
 };
 
+// A document that tries to pass the viewer a file of its own: the viewer takes files only from the page around it.
+write(path.join(temp, 'post.jzm'), [{ n: 1 }], {
+  files: [
+    { path: 'index.html', content: '<!doctype html><title>Post</title><body><p>Post</p><script src="app.js"></script></body>' },
+    {
+      path: 'app.js',
+      content: `(() => {
+        parent.postMessage({ type: 'jazmin:open', file: new Blob(['not a JAZMIN file']), name: 'from-document.jzm' }, '*');
+        top.postMessage({ type: 'test:from-document' }, '*');
+      })();`,
+    },
+  ],
+  package: { entry: 'index.html', title: 'Post' },
+});
+
+// The viewer as files on disk: its folder and the browser reader's side by side, and a page of one's own that shows the
+// viewer in an iframe (src from ?viewer=, else viewer/index.html beside it), passes it files and hears how they open.
+const disk = path.join(temp, 'disk');
+fs.cpSync(path.join(root, 'js/viewer'), path.join(disk, 'viewer'), { recursive: true });
+fs.cpSync(path.join(root, 'js/browser'), path.join(disk, 'browser'), { recursive: true });
+fs.writeFileSync(path.join(disk, 'host.html'), `<!doctype html>
+<meta charset="utf-8">
+<title>A page with the viewer</title>
+<iframe id="viewer" title="JAZMIN viewer" style="width:100%;height:600px;border:0"></iframe>
+<script>
+  const frame = document.getElementById('viewer');
+  window.statuses = [];
+  addEventListener('message', (event) => {
+    if (event.source === frame.contentWindow && event.data && event.data.type === 'jazmin:status') statuses.push(event.data);
+    if (event.data && event.data.type === 'test:from-document') window.fromDocument = true;
+  });
+  frame.addEventListener('load', () => { window.loaded = true; });
+  frame.src = new URLSearchParams(location.search).get('viewer') || 'viewer/index.html';
+  window.pass = (file, name) => (frame.contentWindow.postMessage({ type: 'jazmin:open', file, name }, '*'), true);
+</script>
+`);
+
 // A shared file Bob may read, written now: a phone opens it to get the submission key it sends records back with.
 write(path.join(temp, 'shared.jzm'), [{ id: 0, person: 'P1' }], {
   columns: [{ name: 'id', type: 'int' }, { name: 'person', type: 'string' }],
@@ -150,7 +187,7 @@ write(path.join(temp, 'shared.jzm'), [{ id: 0, person: 'P1' }], {
 
 // ---- a static server for the repository (the viewer, the browser reader and the fixtures) ----------------
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
-const server = http.createServer((req, res) => {
+const serve = (req, res) => {
   const pathname = decodeURIComponent(new URL(req.url, 'http://x').pathname);
   const [dirOf, rel] = pathname.startsWith('/e2e/') ? [temp, pathname.slice(5)] : [root, pathname];
   const file = path.join(dirOf, rel);
@@ -160,9 +197,14 @@ const server = http.createServer((req, res) => {
   }
   res.writeHead(200, { 'content-type': TYPES[path.extname(file)] ?? 'application/octet-stream' });
   fs.createReadStream(file).pipe(res);
-});
+};
+const server = http.createServer(serve);
 await new Promise((r) => server.listen(0, '127.0.0.1', r));
 const base = `http://127.0.0.1:${server.address().port}`;
+// The same files on another port: another origin, for a page that shows the viewer from a different site.
+const otherServer = http.createServer(serve);
+await new Promise((r) => otherServer.listen(0, '127.0.0.1', r));
+const otherBase = `http://127.0.0.1:${otherServer.address().port}`;
 
 // ---- browser drivers: navigate and evaluate (an expression whose value is returned as JSON) ----------------
 async function launchChromium(exe) {
@@ -543,6 +585,55 @@ for (const name of chosen) {
     results.push({ browser: name, ...check(c, shownPortable, `portableHtml (${Math.round(portable.length / 1024)} KB), opened ${fromDisk ? 'from disk' : 'on its own over HTTP'} with bob's key`) });
     fs.rmSync(portablePath, { force: true });
     fs.rmSync(saved, { force: true });
+
+    // From disk (Safari's WebDriver can't open file:// pages): the viewer's folder opened as it is, then shown in an
+    // iframe by a page of its own that passes it the file. Pages on disk can't fetch, so the file is made in the page.
+    const doc = CASES.find((x) => x.file === 'js-document-key.jzm');
+    const blobOf = (file) => `new Blob([Uint8Array.from(atob(${JSON.stringify(fs.readFileSync(file).toString('base64'))}), (ch) => ch.charCodeAt(0))])`;
+    if (fromDisk) {
+      await page.navigate(pathToFileURL(path.join(disk, 'viewer/index.html')).href);
+      await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer from disk');
+      await page.evaluate(`JazminViewer.choose(${blobOf(path.join(fixtures, doc.file))}, ${JSON.stringify(doc.file)}).then(() => true)`);
+      results.push({ browser: name, ...check(doc, await unlock(page, doc), 'the viewer folder opened from disk') });
+
+      // Chrome and Edge give a page on disk the origin "null", so it can't reach into the viewer (Firefox can, within
+      // its folder): the page hears the statuses, and the document's own message shows it ran.
+      await page.navigate(pathToFileURL(path.join(disk, 'host.html')).href);
+      await waitFor(page, 'window.loaded', 'the viewer in the page');
+      await page.evaluate(`pass(${blobOf(path.join(fixtures, doc.file))}, 'statement.jzm')`);
+      await waitFor(page, `statuses.some((s) => s.name === 'statement.jzm')`, 'statement.jzm');
+      await page.evaluate(`pass(${blobOf(path.join(temp, 'post.jzm'))}, 'post.jzm')`);
+      const inPage = await waitFor(page, `window.fromDocument && statuses.some((s) => s.name === 'post.jzm') && statuses.map((s) => s.name + ' ' + s.state)`, 'the document in the page');
+      await sleep(500);
+      const after = await page.evaluate(`statuses.map((s) => s.name + ' ' + s.state)`);
+      const ok = JSON.stringify(after) === JSON.stringify(['statement.jzm locked', 'post.jzm opened']);
+      results.push({ browser: name, label: 'from disk: a page passes the viewer in its iframe files; one locked, one opened and its document run', ok, problems: ok ? [] : [JSON.stringify({ inPage, after })] });
+    }
+
+    // A page on one site passes files to the viewer on another: it hears how each opens, and can't reach into the viewer.
+    // A document inside a file can't pass the viewer files, and neither can anything when the viewer isn't in a frame.
+    await page.navigate(`${otherBase}/e2e/disk/host.html?viewer=${encodeURIComponent(`${base}/js/viewer/index.html`)}`);
+    await waitFor(page, 'window.loaded', 'the viewer in the page');
+    const passed = (url, file) => page.evaluate(`fetch(${JSON.stringify(url)}).then((r) => r.blob()).then((b) => pass(b, ${JSON.stringify(file)}))`);
+    await passed('/spec/fixtures/js-plain.jzm', 'plain.jzm');
+    await waitFor(page, `statuses.some((s) => s.name === 'plain.jzm')`, 'plain.jzm');
+    await passed('/spec/fixtures/js-key.jzm', 'locked.jzm');
+    await waitFor(page, `statuses.some((s) => s.name === 'locked.jzm')`, 'locked.jzm');
+    await page.evaluate(`pass(new Blob(['not a JAZMIN file']), 'bad.jzm')`);
+    await waitFor(page, `statuses.some((s) => s.name === 'bad.jzm')`, 'bad.jzm');
+    await passed('/e2e/post.jzm', 'post.jzm');
+    await waitFor(page, `window.fromDocument && statuses.some((s) => s.name === 'post.jzm')`, 'the document that passes a file');
+    await sleep(800);
+    const heard = await page.evaluate(`statuses.map((s) => s.name + ' ' + s.state + (s.message ? ': ' + s.message : ''))`);
+    const reached = await page.evaluate(`(() => { try { return !!document.getElementById('viewer').contentWindow.document; } catch { return false; } })()`);
+    await page.navigate(`${base}/js/viewer/index.html`);
+    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+    await page.evaluate(`(postMessage({ type: 'jazmin:open', file: new Blob(['x']), name: 'self.jzm' }, '*'), true)`);
+    await sleep(500);
+    const unframed = await page.evaluate('JazminViewer.state.name');
+    const crossOk = heard.length === 4 && heard[0] === 'plain.jzm opened' && heard[1] === 'locked.jzm locked' && heard[2].startsWith('bad.jzm failed: ')
+      && heard[3] === 'post.jzm opened' && reached === false && unframed === '';
+    results.push({ browser: name, label: 'across sites: a page passes the viewer files and hears opened / locked / failed; documents and unframed viewers take none', ok: crossOk, problems: crossOk ? [] : [JSON.stringify({ heard, reached, unframed })] });
     if (page.problems.length) results.push({ browser: name, label: 'page errors', ok: false, problems: page.problems });
   } catch (error) {
     results.push({ browser: name, label: 'run', ok: false, problems: [error.message] });
@@ -551,6 +642,7 @@ for (const name of chosen) {
   }
 }
 server.close();
+otherServer.close();
 fs.rmSync(temp, { recursive: true, force: true });
 
 for (const r of results) console.log(`${r.ok ? 'ok  ' : 'FAIL'} ${r.browser.padEnd(8)} ${r.label}${r.rows ? `  [${r.rows}]` : ''}${r.problems.length ? `\n       ${r.problems.join('\n       ')}` : ''}`);

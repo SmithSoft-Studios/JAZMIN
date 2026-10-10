@@ -3,6 +3,21 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## Unreleased
+
+### Added
+- **The viewer in your own page: your page can pass it the file.** A page that shows the viewer in an iframe, from a
+  web server or from disk, can hand it a file the person chose there:
+  `postMessage({ type: 'jazmin:open', file, name })`. The file stays on disk, and the viewer reads only the parts it
+  needs. The page hears how the file opens (`jazmin:status`: `opened`, `locked` or `failed`) and nothing more: the key
+  is typed in the viewer and the data stays there. Only the page holding the iframe can pass files: a document inside
+  a file can't, and a viewer that isn't in a frame takes none (USER-GUIDE 24.4).
+- **Opening files from disk, documented and measured** (USER-GUIDE 24.4, `npm run bench:viewer`): the viewer's folder
+  opened as it is, the viewer in an iframe on your page, and your page passing the file. On a 201 MB file of
+  10,000,000 rows, in Chrome, Edge and Firefox, each way opens it in 62-130 ms reading 0.07 MB, and finds one row by
+  id in 67-81 ms reading 0.15 MB, with 19-30 MB of extra memory. The viewer tests (`npm run test:viewer`) open the
+  viewer from disk and in a page, and pass it files from another site.
+
 ## 1.4.0 - 2026-10-09 (file format 1.0)
 
 Lists and objects can be stored as columns of their fields, a file's document

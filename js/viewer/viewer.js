@@ -9,7 +9,7 @@
   const PAGE_ROWS = 50;
   const ROWS_FOR_TEMPLATES = 20000; // jazmin.rows() is offered up to this many rows; beyond it, templates use query()
 
-  const state = { blob: null, name: '', options: null, reader: null, readers: new Map(), filter: null, page: 0, total: 0, shown: null };
+  const state = { blob: null, name: '', options: null, reader: null, readers: new Map(), filter: null, page: 0, total: 0, shown: null, answerTo: null };
 
   const status = (message) => { $('jz-status').textContent = message || ''; };
 
@@ -19,10 +19,14 @@
 
   // ---- choosing and unlocking a file -------------------------------------------------------------
 
-  /** Takes a file (picker, drop, file handler or an embedded copy) and opens it, asking for a key when it needs one. */
-  async function choose(blob, name) {
+  /**
+   * Takes a file (picker, drop, file handler, an embedded copy, or the page around the viewer) and opens it, asking for
+   * a key when it needs one. `answerTo`: the origin of the page that passed the file, which hears how it opens.
+   */
+  async function choose(blob, name, answerTo = null) {
     state.blob = blob;
     state.name = name || 'file.jzm';
+    state.answerTo = answerTo;
     state.readers.clear();
     $('jz-name').textContent = state.name;
     $('jz-key').value = '';
@@ -36,7 +40,13 @@
       $('jz-unlock-title').textContent = `${state.name} is locked`;
       show('jz-unlock');
       $('jz-key').focus();
+      tell('locked');
     }
+  }
+
+  /** Tells the page that passed the file how it opens: 'opened', 'locked' (the key is typed here) or 'failed'. */
+  function tell(outcome, message) {
+    if (state.answerTo) window.parent.postMessage(Object.assign({ type: 'jazmin:status', state: outcome, name: state.name }, message ? { message } : {}), state.answerTo);
   }
 
   /** Opens the chosen file with these options: { key | password, unlockToken }. */
@@ -48,12 +58,14 @@
     state.reader = reader;
     await render(reader);
     status(describe(reader));
+    tell('opened');
     return reader;
   }
 
   function fail(error) {
     show(state.reader ? 'jz-content' : 'jz-start');
     status(`Could not open ${state.name}: ${error.message || error}`);
+    tell('failed', String(error.message || error));
   }
 
   async function unlock(event) {
@@ -489,6 +501,18 @@
   if ('serviceWorker' in navigator && /^https?:$/.test(location.protocol)) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
+  // The page that shows the viewer in an iframe can pass it a file it has (picked, dropped or made):
+  // postMessage({ type: 'jazmin:open', file, name }). Only that page: not a document's sandbox below the viewer, and
+  // nothing when the viewer isn't in a frame. It hears { type: 'jazmin:status', state, name, message } and no more:
+  // the key is typed here and the data stays here. A File stays on disk: the viewer reads the slices it needs.
+  addEventListener('message', (event) => {
+    const m = event.data;
+    if (window.parent === window || event.source !== window.parent || !m || m.type !== 'jazmin:open' || !(m.file instanceof Blob)) return;
+    // A page opened from disk has the origin "null" (Chrome: "file://"), which postMessage can't address.
+    const answerTo = /^(null|file:)/.test(event.origin) ? '*' : event.origin;
+    choose(m.file, typeof m.name === 'string' && m.name ? m.name : m.file.name, answerTo);
+  });
+
   // A saved HTML copy carries its .jzm.
   const embedded = document.getElementById('jz-embedded');
   if (embedded) choose(new Blob([JazminBrowser.base64ToBytes(embedded.textContent)]), embedded.dataset.name);

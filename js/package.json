@@ -50,6 +50,7 @@
     "bench": "node bench/benchmark.js",
     "bench:proposals": "node bench/proposals.mjs",
     "bench:filing": "node bench/filing.mjs",
+    "bench:viewer": "node bench/viewer-disk.mjs",
     "fixtures": "node scripts/make-fixtures.js",
     "viewer": "node viewer/serve.mjs",
     "test:viewer": "node scripts/viewer-e2e.mjs"
