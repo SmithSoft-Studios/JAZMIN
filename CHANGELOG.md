@@ -25,9 +25,9 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   0.2-0.4 s and the page holds about 60-110 MB). Files over about 380 MB, which Chrome and Edge can't load as a script,
   are refused (USER-GUIDE 24.4).
 - **A sample of both, from disk:** [js/examples/from-disk](js/examples/from-disk) builds a folder you can copy anywhere
-  and double-click, with a page that opens a small statement with no choosing (`data.js` names it), a page that passes
-  a chosen file to the viewer, and the viewer; its README explains how both work. The viewer tests build it and use
-  both pages. The quickstart (step 18) and the .NET sample (step 20) make a file into a script.
+  and double-click, with a page that opens a small statement with no choosing (`data.js` names it), a start page that
+  asks for a file (Browse, or drop it) and then opens it in the viewer, and the viewer; its README explains how both
+  work. The viewer tests build it and use both pages. The quickstart (step 18) and the .NET sample (step 20) make a file into a script.
 
 ## 1.4.0 - 2026-10-09 (file format 1.0)
 

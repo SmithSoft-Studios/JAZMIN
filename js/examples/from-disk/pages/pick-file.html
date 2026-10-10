@@ -3,43 +3,106 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Choose a file for the viewer</title>
+<title>Open a JAZMIN file</title>
 <link rel="stylesheet" href="style.css">
 </head>
-<body>
-<h1>Choose a file for the viewer</h1>
-<p>Choose any <code>.jzm</code> file, of any size. This page passes it to the viewer below, which reads only the parts
-  it needs, straight from disk. Try <code>data/statement.jzm</code> (password "demo").</p>
-<div class="bar">
-  <input id="pick" type="file" accept=".jzm" disabled>
-  <span id="status" role="status"></span>
-</div>
-<iframe id="viewer" src="viewer/index.html" title="JAZMIN viewer"></iframe>
+<body class="app">
+
+<!-- First: a page that asks for the file. -->
+<main id="start" class="start">
+  <section class="card">
+    <h1>Open a JAZMIN file</h1>
+    <p>Choose a <code>.jzm</code> file on this computer. It opens in the viewer, read straight from disk: nothing is
+      uploaded, and large files are fine, because only the parts needed are read.</p>
+    <div id="drop" class="drop" role="button" tabindex="0" aria-label="Drop a .jzm file here, or press to choose one">
+      <strong>Drop a .jzm file here</strong>
+      <span>or choose one below</span>
+    </div>
+    <label for="file-name">File</label>
+    <div class="field">
+      <input id="file-name" type="text" readonly placeholder="No file chosen">
+      <button id="browse" type="button" class="primary" disabled>Browse…</button>
+    </div>
+    <input id="pick" type="file" accept=".jzm" hidden>
+    <p id="error" class="error" role="alert"></p>
+    <p class="hint">Try <code>data/statement.jzm</code> in this folder (password "demo"). A locked file asks for its
+      password in the viewer.</p>
+  </section>
+</main>
+
+<!-- Then: the viewer, with the chosen file. -->
+<section id="shown" class="shown" hidden>
+  <header class="bar">
+    <span id="status" role="status"></span>
+    <button id="another" type="button">Open another file</button>
+  </header>
+  <iframe id="viewer" src="viewer/index.html" title="JAZMIN viewer"></iframe>
+</section>
 
 <script>
-  const viewer = document.getElementById('viewer');
-  const pick = document.getElementById('pick');
-  const status = document.getElementById('status');
+  const $ = (id) => document.getElementById(id);
+  const viewer = $('viewer');
 
-  // The viewer listens once it has loaded.
-  viewer.addEventListener('load', () => { pick.disabled = false; });
+  // The viewer listens once it has loaded: until then there is nothing to pass a file to.
+  viewer.addEventListener('load', () => { $('browse').disabled = false; });
 
-  /** Hands the viewer a file: a reference to it on disk, not its contents. */
+  /** Hands the viewer the chosen file (a reference to it on disk, not its contents), and shows the viewer. */
   function passFile(file) {
+    if ($('browse').disabled) return;
+    $('file-name').value = file.name;
+    $('error').textContent = '';
+    $('status').textContent = `Opening ${file.name}…`;
     // A page opened from disk has no origin to name, so the message goes to '*'. On a web server, name the viewer's.
     viewer.contentWindow.postMessage({ type: 'jazmin:open', file, name: file.name }, '*');
+    show('viewer');
   }
 
-  pick.addEventListener('change', () => {
-    if (pick.files[0]) passFile(pick.files[0]);
+  function show(panel) {
+    $('start').hidden = panel !== 'start';
+    $('shown').hidden = panel !== 'viewer';
+  }
+
+  // Choosing: the Browse button, or the drop area (clicked, or Enter / Space on it), opens the file picker.
+  $('browse').addEventListener('click', () => $('pick').click());
+  $('pick').addEventListener('change', () => {
+    if ($('pick').files[0]) passFile($('pick').files[0]);
+    $('pick').value = ''; // the same file can be chosen again
+  });
+  const drop = $('drop');
+  drop.addEventListener('click', () => $('browse').click());
+  drop.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      $('browse').click();
+    }
   });
 
-  // The viewer says how the file opens: 'opened', 'locked' (the password is typed in the viewer) or 'failed'.
+  // Dropping: on the drop area. Anywhere else the browser would open the file itself, so that is stopped.
+  addEventListener('dragover', (e) => e.preventDefault());
+  addEventListener('drop', (e) => e.preventDefault());
+  drop.addEventListener('dragover', () => drop.classList.add('over'));
+  drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+  drop.addEventListener('drop', (e) => {
+    drop.classList.remove('over');
+    if (e.dataTransfer.files[0]) passFile(e.dataTransfer.files[0]);
+  });
+
+  $('another').addEventListener('click', () => {
+    show('start');
+    $('browse').focus();
+  });
+
+  // The viewer says how the file opens: 'opened', 'locked' (the password is typed in the viewer) or 'failed', when the
+  // page asks for a file again, with the reason.
   addEventListener('message', (event) => {
     if (event.source !== viewer.contentWindow || !event.data || event.data.type !== 'jazmin:status') return;
     const { name, state, message } = event.data;
-    status.textContent = state === 'locked' ? `${name} is locked: type its password in the viewer`
-      : state === 'opened' ? `${name} is open` : `${name}: ${message}`;
+    if (state === 'failed') {
+      $('error').textContent = `${name} couldn't be opened: ${message}`;
+      show('start');
+      return;
+    }
+    $('status').textContent = state === 'locked' ? `${name} is locked: type its password in the viewer` : `${name} is open`;
   });
 </script>
 </body>

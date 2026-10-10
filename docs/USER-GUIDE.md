@@ -3835,7 +3835,7 @@ disk.
 
 > **A sample to try:** [js/examples/from-disk](../js/examples/from-disk)
 > builds a folder you can copy anywhere and double-click: a page that opens a
-> small file with no choosing, a page that passes a chosen file to the viewer,
+> small file with no choosing, a page that asks for a file and opens it in the viewer,
 > and the viewer. Its README explains how both work.
 
 There are three ways:

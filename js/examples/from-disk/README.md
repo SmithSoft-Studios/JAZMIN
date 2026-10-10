@@ -6,7 +6,7 @@ nothing uploaded. See USER-GUIDE §24.4 for the details and measurements.
 | Page | What it shows |
 |---|---|
 | `small-file.html` | A small file that opens **with no choosing**: the statement, named in `data.js` |
-| `pick-file.html` | **Any file, any size**: you choose it, the page passes it to the viewer, which reads only what it needs |
+| `pick-file.html` | **Any file, any size**: a start page asks for the file (Browse, or drop it); once chosen, it opens in the viewer, which reads only what it needs. Nothing is named in advance |
 | `viewer/index.html` | The viewer on its own: choose or drop a file in it |
 
 ## Run it
@@ -30,8 +30,10 @@ browser security rule, and no code in the page can get past it. A page on disk m
 
 Each of the two ways below uses one of these.
 
-**Any file, any size: the person chooses it** (`pick-file.html`). The person chooses the file, and the page hands the
-reference to the viewer in its iframe:
+**Any file, any size: the person chooses it** (`pick-file.html`). The page starts by asking for the file: a drop area,
+and a text box that shows the chosen file's name beside a Browse button. (The box can't take a typed path: browsers
+open only files the person chooses or drops.) Once a file is chosen, the page shows the viewer and hands it the
+reference:
 
 ```js
 viewer.contentWindow.postMessage({ type: 'jazmin:open', file, name: file.name }, '*');
@@ -39,7 +41,11 @@ viewer.contentWindow.postMessage({ type: 'jazmin:open', file, name: file.name },
 
 The viewer reads only the parts it needs, straight from disk. Opening a 201 MB file reads 0.07 MB, and finding one row
 by id reads 0.15 MB more. The viewer tells the page how the file opened (`opened`, `locked` or `failed`) and nothing
-else: the password is typed in the viewer, and the data stays there.
+else: the password is typed in the viewer, and the data stays there. On `failed` (not a JAZMIN file, say), the page
+asks for a file again, with the reason; "Open another file" goes back to it too.
+
+This way names nothing in advance, so it suits files that change or that people keep themselves. `small-file.html`
+below is the other way: the file is named in `data.js` and opens with no choosing.
 
 **A small file, with no choosing: the file as a script** (`small-file.html`). Because a page may load a script, we put
 the file inside one. `statement.jzm.js` holds the file's bytes written as text (base64, the usual way to carry bytes

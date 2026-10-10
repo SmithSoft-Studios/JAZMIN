@@ -674,13 +674,21 @@ for (const name of chosen) {
     const wrong = await waitFor(page, `/password/i.test(document.getElementById('status').textContent) && document.getElementById('status').textContent`, 'the wrong password');
     await page.evaluate(`(document.getElementById('password').value = 'demo', document.getElementById('unlock').requestSubmit(), true)`);
     const statementShown = await waitFor(page, `/^\\d+ rows/.test(document.getElementById('status').textContent) && { status: document.getElementById('status').textContent, rows: document.querySelectorAll('#rows tbody tr').length }`, 'the statement');
+    // The start page asks for a file; a file that isn't one brings it back with the reason; a chosen statement opens in
+    // the viewer, which says it is locked.
     await page.navigate(sample('pick-file.html'));
-    await waitFor(page, `!document.getElementById('pick').disabled`, 'the viewer in the page');
+    await waitFor(page, `!document.getElementById('browse').disabled`, 'the viewer in the page');
+    const panels = `(document.getElementById('start').hidden ? 'viewer' : 'start')`;
+    const asked = await page.evaluate(`${panels} === 'start' && document.getElementById('shown').hidden`);
+    await page.evaluate(`(passFile(new File(['not a JAZMIN file'], 'notes.jzm')), true)`);
+    const notFile = await waitFor(page, `document.getElementById('error').textContent && { error: document.getElementById('error').textContent, panel: ${panels} }`, 'the refusal');
     const statementBytes = fs.readFileSync(path.join(temp, 'sample/data/statement.jzm')).toString('base64');
     await page.evaluate(`(passFile(new File([Uint8Array.from(atob(${JSON.stringify(statementBytes)}), (ch) => ch.charCodeAt(0))], 'statement.jzm')), true)`);
-    const picked = await waitFor(page, `/locked/.test(document.getElementById('status').textContent) && document.getElementById('status').textContent`, 'the locked status');
-    const sampleOk = statementShown.rows === 8 && statementShown.status.startsWith('8 rows') && picked === 'statement.jzm is locked: type its password in the viewer';
-    results.push({ browser: name, label: `the from-disk sample: the statement with no choosing (wrong password, then right), and a chosen file passed to the viewer${fromDisk ? '' : ' (over HTTP)'}`, ok: sampleOk, problems: sampleOk ? [] : [JSON.stringify({ wrong, statementShown, picked })] });
+    const picked = await waitFor(page, `/locked/.test(document.getElementById('status').textContent) && { status: document.getElementById('status').textContent, panel: ${panels}, name: document.getElementById('file-name').value }`, 'the locked status');
+    const sampleOk = statementShown.rows === 8 && statementShown.status.startsWith('8 rows') && asked === true
+      && notFile.panel === 'start' && notFile.error.startsWith("notes.jzm couldn't be opened: ")
+      && JSON.stringify(picked) === JSON.stringify({ status: 'statement.jzm is locked: type its password in the viewer', panel: 'viewer', name: 'statement.jzm' });
+    results.push({ browser: name, label: `the from-disk sample: the statement with no choosing (wrong password, then right); the start page asks for a file and opens it in the viewer${fromDisk ? '' : ' (over HTTP)'}`, ok: sampleOk, problems: sampleOk ? [] : [JSON.stringify({ wrong, statementShown, asked, notFile, picked })] });
     if (page.problems.length) results.push({ browser: name, label: 'page errors', ok: false, problems: page.problems });
   } catch (error) {
     results.push({ browser: name, label: 'run', ok: false, problems: [error.message] });
