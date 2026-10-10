@@ -6,6 +6,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Added
+- **Queries with arrow functions in JavaScript:** `from(reader).where((t) => t.city === 'Durban').select(…).toArray()`,
+  LINQ-style, in Node and the browser (`await JazminBrowser.from(reader)…`). The where functions are read into filters
+  the reader answers with its indexes, statistics and sort order, and only the columns the functions use are read;
+  the functions still decide, so a function the library can't fully read gives the right rows, reading more of them.
+  `select`, `orderBy` / `thenBy`, `skip` / `take`, `join`, `groupJoin`, `groupBy`, `count`, `sum`, `min`, `max`,
+  `average`, `first`, `any`, and `explain()` (USER-GUIDE 8.4). The from-disk demo's queries across two tables use it.
 - **A Blazor WebAssembly sample** ([dotnet/samples/Jazmin.Blazor](dotnet/samples/Jazmin.Blazor)): the .NET library
   in the browser, with no server. It makes a file of two tables and queries both with LINQ (lambda and query syntax:
   filters, a sub-query per client, joins, groups), each query shown as compiled. Unencrypted files only: .NET in the

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, compact, createFileHandler, exportFile, fromCSV, issueUnlockToken, open, openAsync,
-  applyChanges, portableHtml, portableScript, rotateKey, toJSON, toXML, update, write, writeAsync, writeChanges,
+  applyChanges, from, portableHtml, portableScript, rotateKey, toJSON, toXML, update, write, writeAsync, writeChanges,
 } from '../src/index.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-examples-'));
@@ -267,5 +267,13 @@ const asTeller = open(branchesFile, { key: teller });
 console.log('19.', asTeller.shapes.map((s) => s.name), toJSON(asTeller, { shape: 'Accounts per branch' }));
 asTeller.close();
 // 19. [ 'Accounts per branch' ] [{"branch":"CPT","accounts":2},{"branch":"JHB","accounts":1}]
+
+// 20. Queries with arrow functions (USER-GUIDE 8.4): the where function is read into a filter the reader answers;
+// the rest runs in memory, as LINQ does.
+const accounts = open(branchesFile, { key: teller });
+const capeTown = from(accounts).where((a) => a.branch === 'CPT').orderBy((a) => a.id).select((a) => a.id);
+console.log('20.', capeTown.toArray(), capeTown.explain().filter);
+accounts.close();
+// 20. [ 1, 3 ] { branch: { eq: 'CPT' } }
 
 fs.rmSync(dir, { recursive: true, force: true });

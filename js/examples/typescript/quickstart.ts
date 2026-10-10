@@ -134,6 +134,13 @@ update('shared.jzm', { key: owner, addShapes: [{ name: 'Sections', shape, descri
 const saved = open('shared.jzm', { key: owner });
 const offered: SavedShape[] = saved.shapes;
 console.log(offered.map((s) => s.name), toJSON(saved, { shape: 'Sections' }));
+// Queries with arrow functions (USER-GUIDE 8.4): the where function is read as { amount: { gte: 2 } }.
+import { from } from '@smithsoft-studios/jazmin';
+const sections: { section: unknown; total: number }[] = from(saved)
+  .where((r) => (r.amount as number) >= 2)
+  .groupBy((r) => r.section, (section, rows) => ({ section, total: rows.sum((r) => r.amount) }))
+  .toArray();
+console.log(sections, from(saved).where((r) => r.section === 'B').explain().filter);
 saved.close();
 
 // 9. Async: non-blocking reads (a server keeps serving other requests during long scans) and async row sources.

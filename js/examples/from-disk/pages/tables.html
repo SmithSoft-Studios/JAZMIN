@@ -66,8 +66,9 @@
     <section class="panel">
       <h2>Query both tables</h2>
       <p class="hint">Each query below is the JavaScript that runs (shown as written), with the same query in C# LINQ
-        under it. The filters (<code>{ city: 'Durban' }</code>) are what the reader answers from the file, with its
-        indexes and sort order; arrow functions then join, group and sort the rows that come back.</p>
+        under it. <code>from(reader)</code> reads its <code>where</code> functions into filters the file answers, with
+        its indexes and sort order, and reads only the columns the functions use; joins, groups and sorts then run in
+        memory, as LINQ to Objects does.</p>
       <div id="queries" class="tabs query-tabs" role="tablist"></div>
       <div class="query-code">
         <div>
@@ -203,20 +204,16 @@
 
   // Queries across both tables: the reader answers the filters from the file; arrow functions do the rest. The page
   // shows each run() as it is written here, so what you read is what runs.
+  const { from } = JazminBrowser; // queries with arrow functions (USER-GUIDE 8.4)
   const queries = [
     {
       title: 'Durban clients and their spending',
-      run: async () => {
-        const { rows: durban } = await clients.query({ city: 'Durban' }, { limit: 1000, total: false });
-        const spent = new Map(durban.map((c) => [c.id, 0]));
-        const theirs = { client: { in: [...spent.keys()] }, amount: { lt: '0' } };
-        for await (const t of transactions.find(theirs, { select: ['client', 'amount'] })) {
-          spent.set(t.client, spent.get(t.client) + Number(t.amount));
-        }
-        return durban
-          .map((c) => ({ name: c.name, segment: c.segment, spent: spent.get(c.id) }))
-          .sort((a, b) => a.spent - b.spent);
-      },
+      run: () => from(clients)
+        .where((c) => c.city === 'Durban')
+        .groupJoin(from(transactions).where((t) => t.amount < 0), (c) => c.id, (t) => t.client,
+          (c, spent) => ({ name: c.name, segment: c.segment, spent: spent.sum((t) => t.amount) }))
+        .orderBy((x) => x.spent)
+        .toArray(),
       linq: `var spent = clients
     .Where(c => c.City == "Durban")
     .Select(c => new
@@ -231,16 +228,12 @@
     },
     {
       title: 'Big travel spends, with the client',
-      run: async () => {
-        const travel = { category: 'Travel', amount: { lt: '-20000' } };
-        const { rows: big } = await transactions.query(travel, { limit: 1000, total: false });
-        const ids = [...new Set(big.map((t) => t.client))];
-        const { rows: who } = await clients.query({ id: { in: ids } }, { limit: ids.length, total: false });
-        const names = new Map(who.map((c) => [c.id, c.name]));
-        return big
-          .map((t) => ({ name: names.get(t.client), date: t.date, merchant: t.merchant, amount: t.amount }))
-          .sort((a, b) => a.amount - b.amount);
-      },
+      run: () => from(transactions)
+        .where((t) => t.category === 'Travel' && t.amount < -20000)
+        .join(from(clients), (t) => t.client, (c) => c.id,
+          (t, c) => ({ name: c.name, date: t.date, merchant: t.merchant, amount: t.amount }))
+        .orderBy((x) => Number(x.amount)) // decimal values are text: compare them as numbers
+        .toArray(),
       linq: `var big =
     from t in transactions
     where t.Category == "Travel" && t.Amount < -20000
@@ -250,19 +243,12 @@
     },
     {
       title: 'Spending per segment',
-      run: async () => {
-        const { rows: all } = await clients.query(null, { limit: 1000, select: ['id', 'segment'], total: false });
-        const segment = new Map(all.map((c) => [c.id, c.segment]));
-        const totals = new Map();
-        for await (const t of transactions.find({ amount: { lt: '0' } }, { select: ['client', 'amount'] })) {
-          const name = segment.get(t.client);
-          const s = totals.get(name) ?? { segment: name, spent: 0, payments: 0 };
-          s.spent += Number(t.amount);
-          s.payments++;
-          totals.set(s.segment, s);
-        }
-        return [...totals.values()].sort((a, b) => a.spent - b.spent);
-      },
+      run: () => from(transactions)
+        .where((t) => t.amount < 0)
+        .join(from(clients), (t) => t.client, (c) => c.id, (t, c) => ({ segment: c.segment, amount: t.amount }))
+        .groupBy((x) => x.segment, (segment, rows) => ({ segment, spent: rows.sum((x) => x.amount), payments: rows.count() }))
+        .orderBy((x) => x.spent)
+        .toArray(),
       linq: `var perSegment =
     from t in transactions
     where t.Amount < 0
@@ -273,16 +259,13 @@
     },
     {
       title: 'Who drinks the most coffee',
-      run: async () => {
-        const visits = new Map();
-        for await (const t of transactions.find({ merchant: { icontains: 'coffee' } }, { select: ['client'] })) {
-          visits.set(t.client, (visits.get(t.client) ?? 0) + 1);
-        }
-        const top = [...visits].sort((a, b) => b[1] - a[1]).slice(0, 10);
-        const { rows: who } = await clients.query({ id: { in: top.map(([id]) => id) } }, { limit: 10, total: false });
-        const names = new Map(who.map((c) => [c.id, c.name]));
-        return top.map(([id, coffees]) => ({ name: names.get(id), coffees }));
-      },
+      run: () => from(transactions)
+        .where((t) => t.merchant.toLowerCase().includes('coffee'))
+        .groupBy((t) => t.client, (client, rows) => ({ client, coffees: rows.count() }))
+        .orderByDescending((x) => x.coffees)
+        .take(10)
+        .join(from(clients), (x) => x.client, (c) => c.id, (x, c) => ({ name: c.name, coffees: x.coffees }))
+        .toArray(),
       linq: `var coffee = transactions
     .Where(t => t.Merchant.Contains("coffee", StringComparison.OrdinalIgnoreCase))
     .GroupBy(t => t.Client)
@@ -295,9 +278,10 @@
 
   /** The function's own text, without the indentation it has in this page. */
   const shown = (fn) => {
-    const lines = fn.toString().split('\n');
+    const lines = fn.toString().replace(/^\(\) => /, '').split('\n');
     const indent = Math.min(...lines.slice(1).filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length));
-    return [lines[0], ...lines.slice(1).map((l) => l.slice(indent))].join('\n');
+    const under = lines[1]?.trim().startsWith('.') ? '  ' : ''; // a chain of calls stays under its first line
+    return [lines[0], ...lines.slice(1).map((l) => under + l.slice(indent))].join('\n');
   };
 
   async function runQuery(q) {

@@ -946,6 +946,81 @@ Measured on .NET 10 (200,000 rows x 300 columns, a type mapping 9 of them;
 | `Sum(o => o.Qty)` | 3.2-3.4 s | 0.25 s |
 | `First(o => o.Id == 123_456)` | 0.08-0.09 s | 0.07 s |
 
+### 8.4 Queries with arrow functions (JavaScript)
+
+**Coming in the next release.** `from(reader)` queries a table with arrow
+functions, LINQ-style, in Node and the browser. The reader still uses the
+file's indexes, statistics and sort order, and reads only the columns the
+functions use:
+
+```js
+import { from, open } from '@smithsoft-studios/jazmin';
+
+const transactions = open('bank.jzm', { password }).openTable('transactions');
+const big = from(transactions)
+  .where((t) => t.category === 'Travel' && t.amount < -20000)   // read as { category: 'Travel', amount: { lt: -20000 } }
+  .orderByDescending((t) => t.date)
+  .select((t) => ({ when: t.date, where: t.merchant, amount: t.amount }))
+  .take(20)
+  .toArray();
+
+const city = 'Durban';
+const spent = from(clients)
+  .where((c, $) => c.city === $.city, { city })                 // values from outside: the second argument
+  .join(from(transactions).where((t) => t.amount < 0), (c) => c.id, (t) => t.client, (c, t) => ({ id: c.id, name: c.name, amount: t.amount }))
+  .groupBy((x) => x.id, (id, rows) => ({ name: rows.first().name, spent: rows.sum((x) => x.amount) }))
+  .orderBy((x) => x.spent)
+  .toArray();
+
+// In the browser the same, awaited: await JazminBrowser.from(reader).where(…).toArray()
+```
+
+**How a function becomes a filter.** JavaScript doesn't tell a library what a
+function does, as C# does for LINQ, so `where` reads the function's text and
+turns what it can into the filter language (section 8.1):
+`===`, `==`, `!==`, `!=`, `<`, `<=`, `>`, `>=` between a column and a value;
+`&&`, `||`, `!`; `.includes(…)`, `.startsWith(…)`,
+`.toLowerCase().includes(…)` on text; `[…].includes(t.column)`; `== null`; a
+column on its own (`t.active`).
+
+- **Always the function's answer.** The filter only narrows the rows read;
+  the function then runs on each of them, unless the filter says exactly
+  what it says. A function the library can't fully read (a helper call, a
+  regular expression, statements) still gives the right rows: it just reads
+  more of them. JavaScript's own rules hold, for example `null < 5` is true,
+  so those rows are let through too.
+- **Values from outside the function:** its text doesn't carry the values of
+  the variables it uses. The answer is still right, but to let indexes use
+  them, pass them as the second argument and read them through the second
+  parameter: `(c, $) => c.city === $.city, { city }`.
+- **`explain()`** shows the filter, whether it is exact, the columns read, the
+  offset and limit given to the reader, what runs in memory, and notes on
+  what wasn't translated (`city: a value from outside the function; …`).
+- **The rest runs in memory**, as LINQ to Objects: `select`, `orderBy` and
+  `thenBy` (none when they follow the file's `sortedBy`), `skip` and `take`
+  (given to the reader when nothing before them runs in memory), `join` and
+  `groupJoin` (the inner side read once, by key), `groupBy` (groups are
+  queries, so `rows.sum(…)` works), and `count`, `sum`, `min`, `max`,
+  `average`, `first`, `firstOrDefault`, `any`.
+- **Decimal values are text.** `orderBy((t) => t.amount)` on a decimal column
+  of the table sorts by exact value; after `select`, the text is just text, so
+  sort by `Number(x.amount)`. `sum` and `average` add decimals as numbers (for
+  exact totals, use an export shape's `$sum`).
+- **Not translated:** nested fields (`t.address.city`) and comparisons between
+  two columns: they run in JavaScript.
+
+Measured in Node on the from-disk sample's 1,000,000 transactions (section
+24.4), each query against plain JavaScript over every row
+(`[...reader.rows()].filter(f)`, about 0.6 s):
+
+| Query | Rows | `from` |
+|---|---:|---:|
+| `where((t) => t.account === 'ACC-1042')` (indexed) | 2,053 | 0.14 s |
+| `count((t) => t.category === 'Travel' && t.amount < -20000)` | 3,763 | 0.12 s |
+| `count((t) => t.merchant.toLowerCase().includes('coffee'))` (text index) | 63,535 | 0.15 s |
+| `orderBy((t) => t.date).take(10)` (the file is sorted by date) | 10 | 2 ms |
+| `where(…city…).select((t) => [t.date, t.amount])` (two columns read) | 107,993 | 0.21 s |
+
 ---
 
 ## 9. Performance and benchmarks
@@ -3866,6 +3941,7 @@ const blob = await JazminBrowser.exportBlob(reader, 'json', { filter: { country:
 const shaped = await JazminBrowser.toJSON(reader, { shape: { $rows: { x: 'date', y: 'amount' } }, maxLength: 20000 });
 const schema = await JazminBrowser.shapeSchema(reader, shape); // also checks the shape: throws where it doesn't fit
 await reader.shapes();                                 // shapes saved in the file that this key can use (section 21.7)
+await JazminBrowser.from(reader).where((t) => t.city === 'Durban').take(10).toArray(); // arrow functions (section 8.4)
 await JazminBrowser.toJSON(reader, { shape: 'Monthly totals' }); // one of them, by name
 await reader.columnArrays(null, { select: ['at', 'amount'] }); // arrays for charts (section 9.11)
 reader.submissionKey;                                  // the key to send records back with (section 15.6)

@@ -25,6 +25,7 @@ export { applyChanges, writeChanges } from './changes.js';
 export { accessKeyOf, inspect, issueUnlockToken, listUnlockTokens } from './online.js';
 export { inferSchema } from './schema.js';
 export { compileShape, shapeSchema } from './shape.js';
+export { from, JazminQuery } from './query.js';
 export { TYPES } from './types.js';
 export {
   JazminAccessExpiredError, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminValidationError,

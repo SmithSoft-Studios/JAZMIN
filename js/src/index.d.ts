@@ -783,6 +783,66 @@ export function toJSON(reader: JazminReader, options?: ExportOptions): string;
  * columns of the file's other tables by name, for links ($from).
  */
 export function compileShape(columns: JazminColumn[], shape: ExportShape, tables?: Record<string, JazminColumn[]>): unknown;
+
+/** How a query runs (explain()): the reader's part and what runs in memory. */
+export interface JazminQueryPlan {
+  /** The filter read from the leading where functions, or null. */
+  filter: Filter | null;
+  /** The filter says exactly what the functions say, so they don't run again. */
+  exact: boolean;
+  /** The columns read (all of them when rows leave the query whole). */
+  columns: string[] | null;
+  offset: number;
+  limit: number | null;
+  /** The rows come in the file's own order (sortedBy): no sort. */
+  fileOrder: boolean;
+  /** The steps that run in memory. */
+  inMemory: string[];
+  /** What wasn't translated, and why. */
+  notes: string[];
+}
+
+/**
+ * A LINQ-style query with arrow functions (USER-GUIDE 8.4): where functions are read into filters where that is
+ * safe, so the reader uses indexes; the functions still decide. Each method returns a new query; nothing is read until
+ * the query runs (toArray, iteration, count, sum, first, …).
+ */
+export declare class JazminQuery<T = JazminRow> implements Iterable<T> {
+  private constructor();
+  /** A group's key (groupBy). */
+  readonly key?: unknown;
+  where(predicate: (row: T) => unknown): JazminQuery<T>;
+  /** With values from outside the function, read through its second parameter: (t, $) => t.city === $.city, { city }. */
+  where<V>(predicate: (row: T, values: V) => unknown, values: V): JazminQuery<T>;
+  select<R>(selector: (row: T, index: number) => R): JazminQuery<R>;
+  orderBy(key: (row: T) => unknown): JazminQuery<T>;
+  orderByDescending(key: (row: T) => unknown): JazminQuery<T>;
+  thenBy(key: (row: T) => unknown): JazminQuery<T>;
+  thenByDescending(key: (row: T) => unknown): JazminQuery<T>;
+  skip(count: number): JazminQuery<T>;
+  take(count: number): JazminQuery<T>;
+  join<I, R>(inner: JazminQuery<I> | Iterable<I>, outerKey: (row: T) => unknown, innerKey: (row: I) => unknown, result: (row: T, inner: I) => R): JazminQuery<R>;
+  groupJoin<I, R>(inner: JazminQuery<I> | Iterable<I>, outerKey: (row: T) => unknown, innerKey: (row: I) => unknown, result: (row: T, matches: JazminQuery<I>) => R): JazminQuery<R>;
+  groupBy<K>(key: (row: T) => K): JazminQuery<JazminQuery<T> & { readonly key: K }>;
+  groupBy<K, R>(key: (row: T) => K, result: (key: K, rows: JazminQuery<T> & { readonly key: K }) => R): JazminQuery<R>;
+  [Symbol.iterator](): Iterator<T>;
+  toArray(): T[];
+  count(predicate?: (row: T) => unknown): number;
+  any(predicate?: (row: T) => unknown): boolean;
+  /** Throws when there is none. */
+  first(predicate?: (row: T) => unknown): T;
+  firstOrDefault<D = null>(predicate?: (row: T) => unknown, fallback?: D): T | D;
+  /** Decimal text and big integers are added as numbers; 0 for none. */
+  sum(selector?: (row: T) => unknown): number;
+  min<R = unknown>(selector?: (row: T) => R): R | null;
+  max<R = unknown>(selector?: (row: T) => R): R | null;
+  average(selector?: (row: T) => unknown): number | null;
+  explain(): JazminQueryPlan;
+}
+
+/** A query over a table (a reader), or anything iterable (an array). */
+export function from(reader: JazminReader): JazminQuery<JazminRow>;
+export function from<T>(source: Iterable<T>): JazminQuery<T>;
 /** JSON Schema (draft 2020-12) of a shape's JSON output. */
 export function shapeSchema(reader: JazminReader, shape: ExportShape | string): Record<string, JsonValue>;
 export function toCSV(reader: JazminReader, options?: ExportOptions): string;
