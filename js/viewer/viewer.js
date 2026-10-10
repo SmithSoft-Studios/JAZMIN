@@ -293,6 +293,11 @@
     $('jz-shape-check').className = `shape-check ${ok ? 'ok' : 'bad'}`;
     $('jz-shape-check').textContent = text;
   };
+  /** Until the shape is checked again, no ✓ or mistake for text that has changed. */
+  const shapeChecking = () => {
+    $('jz-shape-check').className = 'shape-check';
+    $('jz-shape-check').textContent = 'Checking…';
+  };
 
   function openShape() {
     $('jz-export-menu').open = false;
@@ -303,6 +308,7 @@
     }
     $('jz-shape-output').hidden = true;
     $('jz-shape-note').textContent = '';
+    shapeChecking();
     $('jz-shape').showModal();
     checkShape();
   }
@@ -739,6 +745,7 @@
   $('jz-shape-text').addEventListener('input', () => {
     $('jz-shape-output').hidden = true; // a preview or schema of the shape as it was
     $('jz-shape-note').textContent = '';
+    shapeChecking();
     clearTimeout(shapeTyping);
     shapeTyping = setTimeout(checkShape, 250);
   });

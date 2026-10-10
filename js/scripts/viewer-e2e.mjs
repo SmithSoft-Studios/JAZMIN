@@ -410,7 +410,14 @@ async function launchSafari(exe, simulator = false) {
   return {
     problems: [],
     async navigate(url) {
+      // WebDriver doesn't wait when the URL is the page's own, so mark this page and wait until a new one replaces it.
+      await call('POST', `${session}/execute/sync`, { script: 'window.jazminOldPage = true', args: [] }).catch(() => {});
       await call('POST', `${session}/url`, { url });
+      for (const end = Date.now() + 60000; Date.now() < end; await sleep(100)) {
+        const fresh = await call('POST', `${session}/execute/sync`, { script: 'return !window.jazminOldPage && document.readyState === "complete"', args: [] }).catch(() => false);
+        if (fresh === true) return;
+      }
+      throw new Error(`Timed out opening ${url}`);
     },
     async evaluate(expression) {
       const r = await call('POST', `${session}/execute/async`, {
