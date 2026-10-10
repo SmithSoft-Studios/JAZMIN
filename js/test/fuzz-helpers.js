@@ -4,7 +4,7 @@
 // Whole files: plain (unencrypted) files are damaged section by section, and each damaged section gets a correct
 // CRC-32 again, so the damage reaches the decoders instead of stopping at the checksum. Encrypted files would only
 // exercise the authenticated decryption; their decoders are the same, and are also fuzzed directly.
-import { append, JazminError, open, write } from '../src/index.js';
+import { append, JazminError, open, toJSON, write } from '../src/index.js';
 import { crc32 } from '../src/binary.js';
 import {
   decodeChunkDirectoryLists, decodeChunkMap, decodeColumnDefinitions, decodeDelta, decodeHeader, decodeIndexDirectory, decodeOwnerCatalog, joinChunkMaps,
@@ -77,6 +77,12 @@ const nestedRow = (i) => ({
 });
 
 /** Plain files covering the reader's features: indexes in several pages, sort order, appends, embedded files, codecs. */
+/** Saved shapes for the corpus file with embedded files: grouped, and a plain list. */
+const SHAPES = [
+  { name: 'Totals', default: true, description: 'By name', shape: { $groupBy: 'name', $sort: ['name'], $rows: { name: 'name', total: { $sum: 'amount' }, n: { $count: true } } } },
+  { name: 'List', shape: { $rows: { id: 'id', name: 'name', when: 'when' } } },
+];
+
 export function corpus() {
   const rows = Array.from({ length: 120 }, (_, i) => row(i));
   const base = { columns: COLUMNS, chunkRows: 16, metadata: { title: 'fuzz', n: 1 }, sortedBy: ['id'], [PAGING]: { pageBytes: 96 } };
@@ -88,6 +94,7 @@ export function corpus() {
       ...base, codec: 'none',
       files: [{ path: 'index.html', content: '<p>x</p>' }, { path: 'a/b.bin', content: Buffer.alloc(300, 7) }],
       package: { entry: 'index.html', title: 'Fuzz' },
+      shapes: SHAPES, // saved shapes live in the files directory
     }),
     write(null, rows.slice(0, 60).map((r, i) => ({ ...r, ...nestedRow(i) })), { ...base, columns: [...COLUMNS, ...NESTED_COLUMNS], codec: 'none' }),
   ];
@@ -224,6 +231,13 @@ export function exercise(buf) {
         try {
           r.readFile(f.path);
           r.readFileRange(f.path, 1, 20);
+        } catch (error) {
+          if (!(error instanceof JazminError)) throw error;
+        }
+      }
+      for (const s of r.shapes) {
+        try {
+          toJSON(r, { shape: s.name });
         } catch (error) {
           if (!(error instanceof JazminError)) throw error;
         }

@@ -200,6 +200,12 @@ internal static class Fuzzing
         {
             options.Files = [new JazminFileInput("index.html", "<p>x</p>"u8.ToArray()), new JazminFileInput("a/b.bin", Enumerable.Repeat((byte)7, 300).ToArray())];
             options.Package = new JazminPackage { Entry = "index.html", Title = "Fuzz" };
+            // Saved shapes live in the files directory: grouped, and a plain list (as js/test/fuzz-helpers.js).
+            options.Shapes =
+            [
+                new JazminSavedShape("Totals", JsonNode.Parse("""{"$groupBy":"name","$sort":["name"],"$rows":{"name":"name","total":{"$sum":"amount"},"n":{"$count":true}}}""")!.AsObject()) { IsDefault = true, Description = "By name" },
+                new JazminSavedShape("List", JsonNode.Parse("""{"$rows":{"id":"id","name":"name","when":"when"}}""")!.AsObject()),
+            ];
         }
         using (var writer = new JazminWriter(stream, nested ? [.. Columns, .. NestedColumns] : Columns, options, leaveOpen: true))
             for (var i = 0; i < rows; i++) writer.WriteValues(nested ? [.. Row(i), .. NestedRow(i)] : Row(i));
@@ -447,6 +453,7 @@ internal static class Fuzzing
                     r.ReadFileRange(f.Path, 1, 20);
                 }, strict);
             }
+            foreach (var s in r.Shapes) Attempt(() => Formats.JazminShape.FromFile(r, s.Name).ToJson(r), strict);
             Attempt(() =>
             {
                 foreach (var row in r.Rows(new JazminQueryOptions { Select = r.Columns.Take(2).Select(c => c.Name).ToList() })) Touch(row);
