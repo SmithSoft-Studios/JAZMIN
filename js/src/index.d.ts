@@ -882,3 +882,10 @@ export function renderImage(options: RenderImageOptions): Promise<Buffer>;
  * it shows the file as the viewer does and asks for its key.
  */
 export function portableHtml(file: string | Uint8Array, options?: { name?: string }): string;
+
+/**
+ * The .jzm as a script (still encrypted), for pages opened from disk: they can't read a file beside them, but they can
+ * load a script, and the browser reader's `JazminBrowser.openScript(url, options)` opens it. The page holds the whole
+ * file in memory: for small files. `name` defaults to the path's file name, or file.jzm.
+ */
+export function portableScript(file: string | Uint8Array, options?: { name?: string }): string;

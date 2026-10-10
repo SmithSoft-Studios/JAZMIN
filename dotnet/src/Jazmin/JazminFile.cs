@@ -1,6 +1,7 @@
 using System.Buffers.Binary;
 using System.Globalization;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Nodes;
 using Jazmin.Format;
 using Jazmin.Query;
@@ -800,6 +801,67 @@ public static class JazminFile
             (flags & FormatConstants.FlagPassword) != 0,
             (flags & FormatConstants.FlagAccess) != 0,
             (flags & FormatConstants.FlagAppended) != 0);
+    }
+
+    // The longest text V8 holds (Chrome, Edge, Node): a larger file can't be loaded as a script there.
+    private const long MaxScriptText = 536_870_888 - 1024;
+
+    /// <summary>
+    /// The file as a script, for pages opened from disk: they can't read a file beside them, but they can load a script,
+    /// and the browser reader's <c>JazminBrowser.openScript()</c> opens it. The script registers the file, as base64,
+    /// under the script's own address, so a page can load several. The file inside is the file as it is (still
+    /// encrypted), and the page holds all of it in memory: for small files. The JavaScript library's
+    /// <c>portableScript</c> writes the same text. <paramref name="name"/> defaults to the file's name.
+    /// </summary>
+    public static string PortableScript(string path, string? name = null) => PortableScript(File.ReadAllBytes(path), name ?? Path.GetFileName(path));
+
+    /// <summary>A file's bytes as a script (see the overload that takes a path).</summary>
+    public static string PortableScript(byte[] file, string name = "file.jzm")
+    {
+        ArgumentNullException.ThrowIfNull(file);
+        if (file.Length < FormatConstants.PreambleSize || !file.AsSpan(0, 4).SequenceEqual(FormatConstants.Magic))
+            throw new JazminValidationException("PortableScript: not a JAZMIN file");
+        var base64Length = ((long)file.Length + 2) / 3 * 4;
+        if (base64Length > MaxScriptText)
+            throw new JazminValidationException($"PortableScript: {name} is {Math.Round(file.Length / 1048576.0).ToString(CultureInfo.InvariantCulture)} MB, too large to load as a script in Chrome or Edge (at most about 380 MB, and best under about 20 MB): open it from a picked file instead");
+        var quoted = JavaScriptString(name);
+        var head = "/* A JAZMIN file as a script, for pages opened from disk: JazminBrowser.openScript() opens it. */\n"
+            + "(function (scripts, script) { scripts[script ? script.src : " + quoted + "] = { name: " + quoted + ", data: \"";
+        const string tail = "\" }; })(globalThis.JazminScripts = globalThis.JazminScripts || {}, typeof document === \"undefined\" ? null : document.currentScript);\n";
+        // One allocation: the base64 is written straight into the script's text.
+        return string.Create(head.Length + (int)base64Length + tail.Length, (head, file), static (span, s) =>
+        {
+            s.head.CopyTo(span);
+            Convert.TryToBase64Chars(s.file, span[s.head.Length..], out var written);
+            tail.CopyTo(span[(s.head.Length + written)..]);
+        });
+    }
+
+    /// <summary>Text quoted as JavaScript's JSON.stringify quotes it, so both libraries write the same script.</summary>
+    private static string JavaScriptString(string text)
+    {
+        var quoted = new StringBuilder(text.Length + 2).Append('"');
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            switch (c)
+            {
+                case '"': quoted.Append("\\\""); break;
+                case '\\': quoted.Append("\\\\"); break;
+                case '\b': quoted.Append("\\b"); break;
+                case '\f': quoted.Append("\\f"); break;
+                case '\n': quoted.Append("\\n"); break;
+                case '\r': quoted.Append("\\r"); break;
+                case '\t': quoted.Append("\\t"); break;
+                default:
+                    var lone = char.IsHighSurrogate(c) ? i + 1 == text.Length || !char.IsLowSurrogate(text[i + 1])
+                        : char.IsLowSurrogate(c) && (i == 0 || !char.IsHighSurrogate(text[i - 1]));
+                    if (c < ' ' || lone) quoted.Append("\\u").Append(((int)c).ToString("x4", CultureInfo.InvariantCulture));
+                    else quoted.Append(c);
+                    break;
+            }
+        }
+        return quoted.Append('"').ToString();
     }
 
     private static JsonArray OwnerGrantList(string path, JazminKey ownerKey, string need = "Unlock tokens exist only for access-controlled files, and need the owner key")

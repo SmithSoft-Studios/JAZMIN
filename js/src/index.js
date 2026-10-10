@@ -19,7 +19,7 @@ export { grantAccess, revokeAccess, update } from './update.js';
 export { append, compact } from './append.js';
 export { rotateKey, rotateOwnerKey } from './rotate.js';
 export { createFileHandler, documentPolicy, renderImage, renderPdf, serveFiles } from './server.js';
-export { portableHtml } from './portable.js';
+export { portableHtml, portableScript } from './portable.js';
 export { checkPageSettings } from './files.js';
 export { applyChanges, writeChanges } from './changes.js';
 export { accessKeyOf, inspect, issueUnlockToken, listUnlockTokens } from './online.js';

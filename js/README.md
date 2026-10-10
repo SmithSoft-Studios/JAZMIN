@@ -51,7 +51,8 @@ reader.close();
 - **Editable documents:** a document can let people change, add and delete rows. Their changes travel as small change
   files (`writeChanges()`), which the owner applies (`applyChanges()`), with conflicts held back.
 - **Browser:** `@smithsoft-studios/jazmin/browser` reads every kind of file, and writes files with one key, a
-  password or none, with embedded files (photos, PDFs).
+  password or none, with embedded files (photos, PDFs). Pages opened from disk open small files made into scripts
+  (`portableScript()`, `jazmin script`) with `openScript()`.
 - **Sending records back:** people in the field send records from a phone, often offline, in a small file locked with
   their submission key, which they get only by opening the shared file. The owner files them; a ready-made filing
   service is in the repository.

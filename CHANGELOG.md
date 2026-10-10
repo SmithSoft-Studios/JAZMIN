@@ -17,6 +17,13 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   10,000,000 rows, in Chrome, Edge and Firefox, each way opens it in 62-130 ms reading 0.07 MB, and finds one row by
   id in 67-81 ms reading 0.15 MB, with 19-30 MB of extra memory. The viewer tests (`npm run test:viewer`) open the
   viewer from disk and in a page, and pass it files from another site.
+- **Small files from disk with no choosing: the file as a script.** A page opened from disk can't read a `.jzm` by its
+  path, but it can load a script from any folder. `jazmin script file.jzm` (or `portableScript()` in Node,
+  `JazminFile.PortableScript()` in .NET, which write the same text) makes the file into one, still encrypted, and the
+  browser reader's `JazminBrowser.openScript(url, { password })` loads and opens it; a page can open several. The page
+  holds the whole file in memory: best under about 20 MB (`npm run bench:viewer -- --script`: a 21 MB file opens in
+  0.2-0.4 s and the page holds about 60-110 MB). Files over about 380 MB, which Chrome and Edge can't load as a script,
+  are refused (USER-GUIDE 24.4).
 
 ## 1.4.0 - 2026-10-09 (file format 1.0)
 

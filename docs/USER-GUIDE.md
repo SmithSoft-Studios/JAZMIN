@@ -3879,9 +3879,9 @@ disk. There are three ways:
 - **Hosting the viewer for others?** Send the header
   `Content-Security-Policy: frame-ancestors 'self'` with it if other sites
   shouldn't show it in their pages or pass it files.
-- **Opening a file with no choosing at all** works from disk only when the
-  file is inside the page, as "Save as HTML" puts it: the browser then holds
-  all of it.
+- **Opening a file with no choosing at all** works from disk when the file
+  comes as a script (below) or inside the page, as "Save as HTML" puts it:
+  the browser then holds all of it.
 
 **Measured** with `npm run bench:viewer` (in `js/`) on a 201 MB file of
 10,000,000 rows, in Chrome, Edge and Firefox on Windows 11 (i7-12700H). The
@@ -3897,6 +3897,48 @@ The memory is the browser's processes, sampled a few times a second, above
 what they used before the file was chosen. A larger file reads about as
 little to open and to look up a row: only filters that must read every row
 take longer.
+
+**Small files, with no choosing: the file as a script.** A page opened from
+disk can't read a `.jzm` by its path, but it can load a script from any
+folder. So make the file into a script, and your page opens it with no
+choosing:
+
+```bash
+jazmin script reports/statement.jzm      # writes reports/statement.jzm.js
+```
+
+In code, `portableScript(file)` (Node) and `JazminFile.PortableScript(path)`
+(.NET) return the same text. Your page, with the browser reader:
+
+```html
+<script src="jazmin-browser.js"></script>
+<script>
+  JazminBrowser.openScript('../reports/statement.jzm.js', { password })   // or 'file:///C:/Reports/statement.jzm.js'
+    .then((table) => table.query({ country: 'ZA' }, { limit: 50 }))
+    .then(({ rows, total }) => console.log(total, rows));
+</script>
+```
+
+- **The path** is relative to the page, or a `file:///` address (forward
+  slashes, `%20` for spaces). A page can open several such files.
+- **The file inside is the `.jzm` as it is,** still encrypted: the page still
+  needs the key or password. Don't put it in the page.
+- **The page holds the whole file in memory,** decoded once from the
+  script's text, which is then let go. Make the script again whenever the
+  `.jzm` changes.
+- **A `.jzm.js` is a script, and the page runs it.** Load only scripts you
+  made, or trust.
+- **Size:** best under about 20 MB. Chrome and Edge can't load a script of a
+  file over about 380 MB, so `portableScript` refuses one.
+
+Measured with `npm run bench:viewer -- --script` (in `js/`), in Chrome, Edge
+and Firefox on the same machine. The ranges cover the three browsers:
+
+| File (script) | Load and open | One lookup | Memory the page holds |
+|---|---|---|---|
+| 0.4 MB (0.5 MB) | 9–12 ms | 7–18 ms | within the browser's own variation |
+| 21 MB (28 MB) | 0.2–0.4 s | 7–14 ms | about 60–110 MB |
+| 101 MB (135 MB) | 1.3–6.2 s | 15–22 ms | 400–450 MB, peaks of 740–850 MB |
 
 ---
 
@@ -3917,6 +3959,7 @@ npx @smithsoft-studios/jazmin --help          # or, installed in a project: npx 
 | `jazmin advise <file> --column account` | Layout advice for lookups of a column (below) |
 | `jazmin convert <input> <output>` | JSON, JSON Lines, CSV or XML to `.jzm` (`--sorted-by a,b`), or `.jzm` to JSON, CSV or XML (`--filter`) |
 | `jazmin keygen [--access]` | A new key or, with `--access`, an access key issued from the owner key |
+| `jazmin script <file.jzm> [<file.js>] [--name <name>]` | The file as a script (default: `<file.jzm>.js` beside it), which a page opened from disk opens with `JazminBrowser.openScript()` (section 24.4). Needs no key: the file inside stays encrypted |
 
 Every command takes `--help`. `--table <name>` picks a table in a file with
 several.

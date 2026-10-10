@@ -1,10 +1,10 @@
 #!/usr/bin/env node
-// The jazmin command-line tool (GitHub issue #15): inspect, query, explain, advise, convert and keygen. Keys are read
-// from the environment or a file and never printed, except by keygen.
+// The jazmin command-line tool (GitHub issue #15): inspect, query, explain, advise, convert, keygen and script. Keys are
+// read from the environment or a file and never printed, except by keygen.
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { JazminError, JazminKey, exportFile, fromCSV, fromXML, importJSONFile, inspect, open } from '../src/index.js';
+import { JazminError, JazminKey, exportFile, fromCSV, fromXML, importJSONFile, inspect, open, portableScript } from '../src/index.js';
 
 const HELP = {
   main: `jazmin - inspect and query JAZMIN (.jzm) files
@@ -18,6 +18,7 @@ Commands:
   advise <file>     Layout advice: how many chunks a value spans, and a better sortedBy or chunkRows
   convert <in> <out>  JSON, JSON Lines, CSV or XML to .jzm, or .jzm to JSON, CSV or XML
   keygen            A new key (or, with --access, an access key from the owner key)
+  script <file>     The file as a script, which a page opened from disk opens with JazminBrowser.openScript()
 
 Keys: set JAZMIN_KEY (key text), JAZMIN_PASSWORD or JAZMIN_UNLOCK_TOKEN, or pass --key-file, --password-file or
 --unlock-token-file. Keys are never printed, except by keygen.
@@ -48,6 +49,12 @@ Reads only chunk directories and statistics, not rows.`,
 
 Prints a new key. With --access, prints a new access key issued from the owner key (JAZMIN_KEY or --key-file); grant
 it rows and columns with grantAccess() or update({ grant }).`,
+  script: `Usage: jazmin script <file.jzm> [<file.js>] [--name <name>]
+
+Writes the file as a script (default: <file.jzm>.js beside it). Pages opened from disk can't read a file beside them,
+but they can load a script, from any folder: JazminBrowser.openScript('<file.js>', { password }) opens it. The file
+inside stays as it is (still encrypted), so no key is needed here. The page holds the whole file in memory: for files
+up to about 20 MB. --name names the file inside (default: its file name).`,
 };
 
 const KEY_OPTIONS = { 'key-file': { type: 'string' }, 'password-file': { type: 'string' }, 'unlock-token-file': { type: 'string' } };
@@ -247,6 +254,14 @@ const commands = {
     const accessKey = JazminKey.parse(ownerText).createAccessKey();
     out(accessKey.export());
     process.stderr.write(`Key id ${accessKey.id}. Grant it rows and columns with grantAccess() or update({ grant }).\n`);
+  },
+
+  script(args) {
+    const { values, positionals } = parse(args, { name: { type: 'string' } });
+    if (positionals.length < 1 || positionals.length > 2) throw new UsageError('Give a .jzm file, and where to write the script if not beside it');
+    const [input, output = `${input}.js`] = positionals;
+    if (!fs.existsSync(input)) throw new JazminError(`No such file: ${input}`);
+    fs.writeFileSync(output, portableScript(input, { name: values.name }));
   },
 };
 

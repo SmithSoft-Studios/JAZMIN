@@ -2210,6 +2210,40 @@
     return open(await urlSource(url, { headers, blockSize }), openOptions);
   }
 
+  /**
+   * Opens a JAZMIN file made into a script (the library's portableScript(), or "jazmin script"), at `url`: relative to
+   * the page, or a file:/// address. Pages opened from disk can't read a file beside them, but they can load a script,
+   * from any folder. The script registers the file under its own address (globalThis.JazminScripts); one the page
+   * already loaded with a <script> element is used as it is. The page holds the whole file in memory: for small files.
+   * options: those of open().
+   */
+  async function openScript(url, options = {}) {
+    if (typeof document === 'undefined') throw new JazminError('openScript() loads a script into a page; elsewhere, open the .jzm with open()');
+    const scripts = (global.JazminScripts = global.JazminScripts || {});
+    const src = new URL(url, document.baseURI).href;
+    // Taken as the script's load event fires, right after it ran: another load of the same script can't mix in.
+    const take = () => {
+      const entry = scripts[src];
+      delete scripts[src]; // the text can go: the reader keeps the bytes
+      return entry;
+    };
+    const entry = scripts[src] ? take() : await new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      script.onload = () => {
+        script.remove();
+        resolve(take());
+      };
+      script.onerror = () => {
+        script.remove();
+        reject(new JazminError(`Could not load ${url}`));
+      };
+      script.src = src;
+      document.head.append(script);
+    });
+    if (!entry || typeof entry.data !== 'string') throw new JazminFormatError(`${url} is not a JAZMIN file made into a script (portableScript, or "jazmin script")`);
+    return open(typeof Uint8Array.fromBase64 === 'function' ? Uint8Array.fromBase64(entry.data) : base64ToBytes(entry.data), options);
+  }
+
   // ---- the reader ---------------------------------------------------------------------------------
 
   /**
@@ -4329,6 +4363,7 @@
   global.JazminBrowser = {
     open,
     openUrl,
+    openScript,
     createWriter,
     write,
     writeChanges,

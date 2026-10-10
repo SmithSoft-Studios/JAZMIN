@@ -6,20 +6,26 @@
 // Each way opens the file, filters it by id, then by a condition that reads every row. Bytes read: the slices the viewer
 // takes of the file. Memory: the browser's processes (private memory on Windows, resident memory elsewhere), sampled a
 // few times a second, above what they used before the file was picked: a second after the lookup, the peak while every
-// row is read, and what is held after that. Chrome and Edge are driven through the DevTools protocol with plain settings, Firefox through
-// WebDriver BiDi (no packages). The file is written once to the temp folder and reused.
+// row is read, and what is held after that.
+// With --script, instead: the file made into a script (portableScript) in another folder, opened by a page on disk with
+// JazminBrowser.openScript(): how long loading and opening take, one lookup, and the memory the page holds (the whole
+// file is in it), for files of several sizes (default 20,000, 1,000,000 and 5,000,000 rows: 0.4, 21 and 101 MB).
+// Chrome and Edge are driven through the DevTools protocol with plain settings, Firefox through WebDriver BiDi (no
+// packages). Files are written once to the temp folder and reused.
 // Run: node bench/viewer-disk.mjs [rows] [--browser chrome|edge|firefox ...]   (default 10,000,000 rows, about 200 MB)
+//      node bench/viewer-disk.mjs --script [rows ...] [--browser ...]
 import { execFile, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { write } from '../src/index.js';
+import { portableScript, write } from '../src/index.js';
 
 const js = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const { values: args, positionals } = parseArgs({ allowPositionals: true, options: { browser: { type: 'string', multiple: true } } });
+const { values: args, positionals } = parseArgs({ allowPositionals: true, options: { browser: { type: 'string', multiple: true }, script: { type: 'boolean' } } });
 const ROWS = Number(positionals[0] ?? 10_000_000);
+const SCRIPT_ROWS = positionals.length ? positionals.map(Number) : [20_000, 1_000_000, 5_000_000];
 const BROWSERS = {
   chrome: ['C:/Program Files/Google/Chrome/Application/chrome.exe', '/usr/bin/google-chrome', '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'],
   edge: ['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe', '/usr/bin/microsoft-edge', '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge'],
@@ -28,16 +34,17 @@ const BROWSERS = {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const MB = (bytes) => `${(bytes / 1048576).toFixed(bytes < 10 * 1048576 ? 2 : 0)} MB`;
 
-// ---- the file: ROWS rows of 5 columns, a sorted index on id ---------------------------------------------------
+// ---- the files: rows of 5 columns, a sorted index on id ------------------------------------------------------
 
-const file = path.join(os.tmpdir(), `jazmin-bench-viewer-${ROWS}.jzm`);
-if (!fs.existsSync(file)) {
-  console.log(`Writing ${ROWS.toLocaleString('en-US')} rows to ${file} (once)...`);
+function fileOf(count) {
+  const file = path.join(os.tmpdir(), `jazmin-bench-viewer-${count}.jzm`);
+  if (fs.existsSync(file)) return file;
+  console.log(`Writing ${count.toLocaleString('en-US')} rows to ${file} (once)...`);
   const words = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango'.split(' ');
   let seed = 7;
   const rnd = (n) => ((seed = (seed * 1103515245 + 12345) % 2147483648), seed % n);
   function* rows() {
-    for (let i = 0; i < ROWS; i++) {
+    for (let i = 0; i < count; i++) {
       yield {
         id: i, name: `${words[rnd(20)]} ${words[rnd(20)]} ${i}`, country: ['ZA', 'NL', 'GB', 'US', 'DE'][rnd(5)], amount: rnd(100000) / 100,
         note: `${Array.from({ length: 6 }, () => words[rnd(20)]).join(' ')} #${rnd(1e9)}`,
@@ -47,9 +54,8 @@ if (!fs.existsSync(file)) {
   const columns = [{ name: 'id', type: 'int' }, { name: 'name', type: 'string' }, { name: 'country', type: 'string' }, { name: 'amount', type: 'float' }, { name: 'note', type: 'string' }];
   write(`${file}.part`, rows(), { columns, indexes: { id: 'sorted' } });
   fs.renameSync(`${file}.part`, file);
+  return file;
 }
-const SIZE = fs.statSync(file).size;
-const NAME = path.basename(file);
 
 // ---- the pages, on disk: the viewer and the browser reader side by side, and a page with the viewer in an iframe ----
 
@@ -73,9 +79,23 @@ fs.writeFileSync(path.join(site, 'page.html'), `<!doctype html>
   });
 </script>
 `);
+fs.writeFileSync(path.join(site, 'script.html'), `<!doctype html>
+<meta charset="utf-8">
+<title>A file as a script</title>
+<script src="browser/jazmin-browser.js"></script>
+<script>
+  window.run = async (url, id) => {
+    const t0 = performance.now();
+    const table = await JazminBrowser.openScript(url);
+    const t1 = performance.now();
+    const found = (await table.query({ id }, { limit: 1, total: false })).rows.length;
+    return { openMs: t1 - t0, lookupMs: performance.now() - t1, found };
+  };
+</script>
+`);
 
 // In every frame: counts the slices taken of the file; frames report their totals to the top page, which adds them up.
-const COUNTER = `(() => {
+const counter = (size) => `(() => {
   const own = { id: Math.random(), bytes: 0, slices: 0, largest: 0, whole: 0 };
   const report = () => { if (window.top !== window) window.top.postMessage(Object.assign({ type: 'bench:read' }, own), '*'); };
   if (window.top === window) {
@@ -87,18 +107,18 @@ const COUNTER = `(() => {
   const slice = Blob.prototype.slice;
   Blob.prototype.slice = function (start, end, type) {
     const out = slice.call(this, start, end, type);
-    if (this.size === ${SIZE}) { own.bytes += out.size; own.slices++; own.largest = Math.max(own.largest, out.size); report(); }
+    if (this.size === ${size}) { own.bytes += out.size; own.slices++; own.largest = Math.max(own.largest, out.size); report(); }
     return out;
   };
   for (const m of ['arrayBuffer', 'bytes', 'text', 'stream']) {
     const f = Blob.prototype[m];
-    if (f) Blob.prototype[m] = function (...a) { if (this.size === ${SIZE}) { own.whole++; report(); } return f.apply(this, a); };
+    if (f) Blob.prototype[m] = function (...a) { if (this.size === ${size}) { own.whole++; report(); } return f.apply(this, a); };
   }
 })();`;
 
 // ---- browsers: a top page and its first iframe, each with evaluate(expression) and pick(selector, file) ----------
 
-async function chromium(exe) {
+async function chromium(exe, init) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-bench-viewer-cr-'));
   const proc = spawn(exe, ['--headless=new', '--disable-gpu', '--no-first-run', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'], { stdio: 'ignore' });
   let port;
@@ -129,7 +149,7 @@ async function chromium(exe) {
   });
   await send('Runtime.enable');
   await send('Page.enable');
-  await send('Page.addScriptToEvaluateOnNewDocument', { source: COUNTER });
+  await send('Page.addScriptToEvaluateOnNewDocument', { source: init });
   const frameId = async (child) => {
     const { frameTree } = await send('Page.getFrameTree');
     return child ? frameTree.childFrames?.[0]?.frame.id : frameTree.frame.id;
@@ -170,7 +190,7 @@ async function chromium(exe) {
   };
 }
 
-async function firefox(exe) {
+async function firefox(exe, init) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-bench-viewer-ff-'));
   const port = 9300 + Math.floor(Math.random() * 500);
   const proc = spawn(exe, ['--headless', `--remote-debugging-port=${port}`, '--profile', profile, '--no-remote', 'about:blank'], { stdio: 'ignore' });
@@ -202,7 +222,7 @@ async function firefox(exe) {
     ws.send(JSON.stringify({ id: n, method, params }));
   });
   await send('session.new', { capabilities: {} });
-  await send('script.addPreloadScript', { functionDeclaration: `() => { ${COUNTER} }` });
+  await send('script.addPreloadScript', { functionDeclaration: `() => { ${init} }` });
   const top = (await send('browsingContext.getTree', {})).contexts[0].context;
   const contextOf = async (child) => (child ? (await send('browsingContext.getTree', { root: top })).contexts[0].children?.[0]?.context : top);
   const target = (child) => ({
@@ -288,60 +308,115 @@ const WAYS = [
   { label: '2 viewer in an iframe, picked in it', url: 'page.html', frame: true, picker: '#jz-input' },
   { label: '3 page passes the file to the viewer', url: 'page.html', frame: true, picker: '#pick', fromPage: true },
 ];
-const ID = Math.floor(ROWS * 0.765);
-const chosen = args.browser ?? Object.keys(BROWSERS);
-console.log(`${NAME}: ${ROWS.toLocaleString('en-US')} rows, ${MB(SIZE)}; ${os.cpus()[0].model.trim()}, ${os.platform()} ${os.release()}\n`);
-console.log('browser  way                                    open (read)            id filter (read)      reads every row (read, largest piece)       memory: after lookup / peak reading every row / held');
-for (const name of chosen) {
-  const exe = BROWSERS[name]?.find((p) => fs.existsSync(p));
-  if (!exe) {
-    console.log(`${name.padEnd(8)} (not installed)`);
-    continue;
-  }
-  for (const way of WAYS) {
-    const browser = await (name === 'firefox' ? firefox : chromium)(exe);
-    const memory = sampleMemory(browser.pid);
-    try {
-      await browser.navigate(pathToFileURL(path.join(site, way.url)).href);
-      const viewer = way.frame ? browser.frame : browser.top;
-      await waitFor(viewer, `typeof JazminViewer === 'object'`, 'the viewer');
-      await sleep(2500);
-      const before = memory.samples.at(-1)?.[1] ?? 0;
-      const read = async () => (await sleep(150), browser.top.evaluate('benchRead()'));
-      const t0 = Date.now();
-      await (way.fromPage ? browser.top : viewer).pick(way.picker, file);
-      await waitFor(viewer, `JazminViewer.state.name === ${JSON.stringify(NAME)} && JazminViewer.state.total > 0`, 'the first rows');
-      if (way.fromPage) await waitFor(browser.top, `statuses.some((s) => s.state === 'opened')`, 'the opened status');
-      const openMs = Date.now() - t0;
-      const opened = await read();
-      const filter = async (text) => {
-        const prev = await viewer.evaluate(`document.getElementById('jz-data-status').textContent`);
-        const t = Date.now();
-        await viewer.evaluate(`(document.getElementById('jz-filter').value = ${JSON.stringify(text)}, document.getElementById('jz-filter-form').requestSubmit(), true)`);
-        await waitFor(viewer, `((s) => s.includes('matching the filter') && s !== ${JSON.stringify(prev)})(document.getElementById('jz-data-status').textContent)`, `the filter ${text}`);
-        return Date.now() - t;
-      };
-      const idMs = await filter(`{ "id": ${ID} }`);
-      const byId = await read();
-      await sleep(1000);
-      const afterLookup = (memory.samples.at(-1)?.[1] ?? before) - before;
-      const t2 = Date.now();
-      const scanMs = await filter('{ "country": "ZA", "amount": { "gt": 999 } }');
-      const scanned = await read();
-      const t1 = Date.now();
-      await sleep(2500);
-      const during = memory.samples.filter(([t]) => t >= t2 && t <= t1 + 500).map(([, b]) => b);
-      const peak = Math.max(before, ...during) - before;
-      const held = (memory.samples.at(-1)?.[1] ?? before) - before;
-      const whole = scanned.whole ? `, ${scanned.whole} whole-file read(s)` : '';
-      console.log(`${name.padEnd(8)} ${way.label.padEnd(38)} ${`${openMs} ms (${MB(opened.bytes)})`.padEnd(22)} ${`${idMs} ms (${MB(byId.bytes - opened.bytes)})`.padEnd(21)} ${`${scanMs} ms (${MB(scanned.bytes - byId.bytes)}, ${Math.round(scanned.largest / 1024)} KB${whole})`.padEnd(43)} ${MB(Math.max(0, afterLookup))} / ${MB(peak)} / ${MB(Math.max(0, held))}`);
-    } catch (error) {
-      console.log(`${name.padEnd(8)} ${way.label.padEnd(38)} FAILED: ${error.message.split('\n')[0]}`);
-    } finally {
-      memory.stop();
-      await browser.close();
+const chosen = (args.browser ?? Object.keys(BROWSERS)).map((name) => ({ name, exe: BROWSERS[name]?.find((p) => fs.existsSync(p)) }));
+const launch = (b, init) => (b.name === 'firefox' ? firefox : chromium)(b.exe, init);
+const machine = `${os.cpus()[0].model.trim()}, ${os.platform()} ${os.release()}`;
+
+if (args.script) await scripts();
+else await ways();
+fs.rmSync(site, { recursive: true, force: true });
+
+/** The three ways of opening a large file from disk. */
+async function ways() {
+  const file = fileOf(ROWS);
+  const SIZE = fs.statSync(file).size;
+  const NAME = path.basename(file);
+  const ID = Math.floor(ROWS * 0.765);
+  console.log(`${NAME}: ${ROWS.toLocaleString('en-US')} rows, ${MB(SIZE)}; ${machine}\n`);
+  console.log('browser  way                                    open (read)            id filter (read)      reads every row (read, largest piece)       memory: after lookup / peak reading every row / held');
+  for (const { name, exe } of chosen) {
+    if (!exe) {
+      console.log(`${name.padEnd(8)} (not installed)`);
+      continue;
+    }
+    for (const way of WAYS) {
+      const browser = await launch({ name, exe }, counter(SIZE));
+      const memory = sampleMemory(browser.pid);
+      try {
+        await browser.navigate(pathToFileURL(path.join(site, way.url)).href);
+        const viewer = way.frame ? browser.frame : browser.top;
+        await waitFor(viewer, `typeof JazminViewer === 'object'`, 'the viewer');
+        await sleep(2500);
+        const before = memory.samples.at(-1)?.[1] ?? 0;
+        const read = async () => (await sleep(150), browser.top.evaluate('benchRead()'));
+        const t0 = Date.now();
+        await (way.fromPage ? browser.top : viewer).pick(way.picker, file);
+        await waitFor(viewer, `JazminViewer.state.name === ${JSON.stringify(NAME)} && JazminViewer.state.total > 0`, 'the first rows');
+        if (way.fromPage) await waitFor(browser.top, `statuses.some((s) => s.state === 'opened')`, 'the opened status');
+        const openMs = Date.now() - t0;
+        const opened = await read();
+        const filter = async (text) => {
+          const prev = await viewer.evaluate(`document.getElementById('jz-data-status').textContent`);
+          const t = Date.now();
+          await viewer.evaluate(`(document.getElementById('jz-filter').value = ${JSON.stringify(text)}, document.getElementById('jz-filter-form').requestSubmit(), true)`);
+          await waitFor(viewer, `((s) => s.includes('matching the filter') && s !== ${JSON.stringify(prev)})(document.getElementById('jz-data-status').textContent)`, `the filter ${text}`);
+          return Date.now() - t;
+        };
+        const idMs = await filter(`{ "id": ${ID} }`);
+        const byId = await read();
+        await sleep(1000);
+        const afterLookup = (memory.samples.at(-1)?.[1] ?? before) - before;
+        const t2 = Date.now();
+        const scanMs = await filter('{ "country": "ZA", "amount": { "gt": 999 } }');
+        const scanned = await read();
+        const t1 = Date.now();
+        await sleep(2500);
+        const during = memory.samples.filter(([t]) => t >= t2 && t <= t1 + 500).map(([, b]) => b);
+        const peak = Math.max(before, ...during) - before;
+        const held = (memory.samples.at(-1)?.[1] ?? before) - before;
+        const whole = scanned.whole ? `, ${scanned.whole} whole-file read(s)` : '';
+        console.log(`${name.padEnd(8)} ${way.label.padEnd(38)} ${`${openMs} ms (${MB(opened.bytes)})`.padEnd(22)} ${`${idMs} ms (${MB(byId.bytes - opened.bytes)})`.padEnd(21)} ${`${scanMs} ms (${MB(scanned.bytes - byId.bytes)}, ${Math.round(scanned.largest / 1024)} KB${whole})`.padEnd(43)} ${MB(Math.max(0, afterLookup))} / ${MB(peak)} / ${MB(Math.max(0, held))}`);
+      } catch (error) {
+        console.log(`${name.padEnd(8)} ${way.label.padEnd(38)} FAILED: ${error.message.split('\n')[0]}`);
+      } finally {
+        memory.stop();
+        await browser.close();
+      }
     }
   }
+  console.log(`\nThe file is kept for the next run: ${file}`);
 }
-fs.rmSync(site, { recursive: true, force: true });
-console.log(`\nThe file is kept for the next run: ${file}`);
+
+/** Files made into scripts, in another folder, opened with openScript() by a page on disk. */
+async function scripts() {
+  const files = SCRIPT_ROWS.map((count) => {
+    const file = fileOf(count);
+    const script = `${file}.js`;
+    if (!fs.existsSync(script)) fs.writeFileSync(script, portableScript(file));
+    return { count, size: fs.statSync(file).size, script, scriptSize: fs.statSync(script).size };
+  });
+  console.log(`Files made into scripts (portableScript), opened with openScript(); ${machine}\n`);
+  console.log('browser  rows        file      script    load and open   one lookup   memory: peak / held');
+  for (const { name, exe } of chosen) {
+    if (!exe) {
+      console.log(`${name.padEnd(8)} (not installed)`);
+      continue;
+    }
+    for (const f of files) {
+      const browser = await launch({ name, exe }, '');
+      const memory = sampleMemory(browser.pid);
+      const row = `${name.padEnd(8)} ${f.count.toLocaleString('en-US').padEnd(11)} ${MB(f.size).padEnd(9)} ${MB(f.scriptSize).padEnd(9)}`;
+      try {
+        await browser.navigate(pathToFileURL(path.join(site, 'script.html')).href);
+        await waitFor(browser.top, `typeof window.run === 'function'`, 'the page');
+        await sleep(2500);
+        const before = memory.samples.at(-1)?.[1] ?? 0;
+        const t0 = Date.now();
+        const r = await browser.top.evaluate(`run(${JSON.stringify(pathToFileURL(f.script).href)}, ${Math.floor(f.count * 0.765)})`);
+        const t1 = Date.now();
+        await sleep(2500);
+        const during = memory.samples.filter(([t]) => t >= t0 && t <= t1 + 500).map(([, b]) => b);
+        const peak = Math.max(before, ...during) - before;
+        const held = (memory.samples.at(-1)?.[1] ?? before) - before;
+        if (r.found !== 1) throw new Error('the lookup found no row');
+        console.log(`${row} ${`${Math.round(r.openMs)} ms`.padEnd(15)} ${`${Math.round(r.lookupMs)} ms`.padEnd(12)} ${MB(peak)} / ${MB(Math.max(0, held))}`);
+      } catch (error) {
+        console.log(`${row} FAILED: ${error.message.split('\n')[0]}`);
+      } finally {
+        memory.stop();
+        await browser.close();
+      }
+    }
+  }
+  console.log('\nThe files and scripts are kept for the next run, in the temp folder (jazmin-bench-viewer-*).');
+}

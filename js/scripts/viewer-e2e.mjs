@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { JazminAccessKey, JazminKey, applyChanges, issueUnlockToken, open, portableHtml, write } from '../src/index.js';
+import { JazminAccessKey, JazminKey, applyChanges, issueUnlockToken, open, portableHtml, portableScript, write } from '../src/index.js';
 import { TEMPLATE_READY, writeTemplate } from '../test/template-fixture.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -175,6 +175,21 @@ fs.writeFileSync(path.join(disk, 'host.html'), `<!doctype html>
   frame.addEventListener('load', () => { window.loaded = true; });
   frame.src = new URLSearchParams(location.search).get('viewer') || 'viewer/index.html';
   window.pass = (file, name) => (frame.contentWindow.postMessage({ type: 'jazmin:open', file, name }, '*'), true);
+</script>
+`);
+// Files made into scripts (portableScript), which a page opens with openScript(): one in another folder, one in a folder
+// beside the page.
+fs.mkdirSync(path.join(temp, 'elsewhere'));
+fs.writeFileSync(path.join(temp, 'elsewhere/js-key.jzm.js'), portableScript(path.join(fixtures, 'js-key.jzm')));
+fs.mkdirSync(path.join(disk, 'data'));
+fs.writeFileSync(path.join(disk, 'data/js-plain.jzm.js'), portableScript(path.join(fixtures, 'js-plain.jzm')));
+fs.writeFileSync(path.join(disk, 'script.html'), `<!doctype html>
+<meta charset="utf-8">
+<title>Files as scripts</title>
+<script src="browser/jazmin-browser.js"></script>
+<script>
+  window.opened = (url, options) => JazminBrowser.openScript(url, options)
+    .then(async (table) => ({ rows: table.rowCount, first: (await table.query({}, { limit: 1, total: false })).rows[0].id }));
 </script>
 `);
 
@@ -634,6 +649,18 @@ for (const name of chosen) {
     const crossOk = heard.length === 4 && heard[0] === 'plain.jzm opened' && heard[1] === 'locked.jzm locked' && heard[2].startsWith('bad.jzm failed: ')
       && heard[3] === 'post.jzm opened' && reached === false && unframed === '';
     results.push({ browser: name, label: 'across sites: a page passes the viewer files and hears opened / locked / failed; documents and unframed viewers take none', ok: crossOk, problems: crossOk ? [] : [JSON.stringify({ heard, reached, unframed })] });
+
+    // Files made into scripts, opened with openScript(): from disk (one in another folder, by its file:/// address), or
+    // over HTTP where the browser's automation can't open files from disk.
+    const keyRows = open(path.join(fixtures, 'js-key.jzm'), { key: keys.key }).rowCount;
+    const plainRows = open(path.join(fixtures, 'js-plain.jzm')).rowCount;
+    await page.navigate(fromDisk ? pathToFileURL(path.join(disk, 'script.html')).href : `${base}/e2e/disk/script.html`);
+    await waitFor(page, `typeof window.opened === 'function'`, 'the page');
+    const elsewhere = fromDisk ? pathToFileURL(path.join(temp, 'elsewhere/js-key.jzm.js')).href : '/e2e/elsewhere/js-key.jzm.js';
+    const scripted = await page.evaluate(`Promise.all([opened(${JSON.stringify(elsewhere)}, { key: ${JSON.stringify(keys.key)} }), opened('data/js-plain.jzm.js'),
+      opened('data/missing.jzm.js').catch((e) => e.message), Object.keys(window.JazminScripts).length])`);
+    const scriptOk = JSON.stringify(scripted) === JSON.stringify([{ rows: keyRows, first: 0 }, { rows: plainRows, first: 0 }, 'Could not load data/missing.jzm.js', 0]);
+    results.push({ browser: name, label: `files as scripts opened with openScript(), one from another folder${fromDisk ? ', from disk' : ' (over HTTP)'}`, ok: scriptOk, problems: scriptOk ? [] : [JSON.stringify(scripted)] });
     if (page.problems.length) results.push({ browser: name, label: 'page errors', ok: false, problems: page.problems });
   } catch (error) {
     results.push({ browser: name, label: 'run', ok: false, problems: [error.message] });

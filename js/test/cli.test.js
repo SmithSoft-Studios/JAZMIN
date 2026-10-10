@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { JazminAccessKey, JazminKey, open } from '../src/index.js';
+import { JazminAccessKey, JazminKey, open, portableScript } from '../src/index.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cli = path.join(here, '../bin/jazmin.mjs');
@@ -24,7 +24,7 @@ const withKey = { JAZMIN_KEY: keys.key };
 test('every command has help, and mistakes are usage errors', () => {
   const main = jazmin(['--help']);
   assert.equal(main.status, 0);
-  for (const command of ['inspect', 'query', 'explain', 'advise', 'convert', 'keygen']) {
+  for (const command of ['inspect', 'query', 'explain', 'advise', 'convert', 'keygen', 'script']) {
     assert.match(main.stdout, new RegExp(`^  ${command}`, 'm'));
     const help = jazmin([command, '--help']);
     assert.deepEqual([help.status, help.stdout.startsWith(`Usage: jazmin ${command}`)], [0, true], command);
@@ -97,4 +97,24 @@ test('keygen prints a new key, or an access key issued from the owner key', () =
   const accessKey = JazminAccessKey.parse(access.stdout.trim());
   assert.match(access.stderr, new RegExp(`Key id ${accessKey.id}`));
   assert.equal(jazmin(['keygen', '--access']).status, 2);
+});
+
+test('script writes a .jzm as a script for pages opened from disk, beside it or where asked; no key is needed', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-cli-script-'));
+  try {
+    const file = path.join(dir, 'report.jzm');
+    fs.copyFileSync(paged, file);
+    assert.equal(jazmin(['script', file]).status, 0);
+    assert.equal(fs.readFileSync(`${file}.js`, 'utf8'), portableScript(file));
+    const other = path.join(dir, 'pages', 'data.js');
+    fs.mkdirSync(path.dirname(other));
+    assert.equal(jazmin(['script', file, other, '--name', 'statement.jzm']).status, 0);
+    assert.equal(fs.readFileSync(other, 'utf8'), portableScript(file, { name: 'statement.jzm' }));
+    fs.writeFileSync(path.join(dir, 'notes.jzm'), 'not a JAZMIN file, only some text that is long enough to be checked');
+    const refused = jazmin(['script', path.join(dir, 'notes.jzm')]);
+    assert.deepEqual([refused.status, /not a JAZMIN file/.test(refused.stderr)], [1, true]);
+    assert.equal(jazmin(['script']).status, 2);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
