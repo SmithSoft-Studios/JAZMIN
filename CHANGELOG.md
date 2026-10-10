@@ -6,6 +6,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Added
+- **A Blazor WebAssembly sample** ([dotnet/samples/Jazmin.Blazor](dotnet/samples/Jazmin.Blazor)): the .NET library
+  in the browser, with no server. It makes a file of two tables and queries both with LINQ (lambda and query syntax:
+  filters, a sub-query per client, joins, groups), each query shown as compiled. Unencrypted files only: .NET in the
+  browser has no AES-GCM or ECDSA, which locked and shared files need.
 - **A demo gallery** in the from-disk sample ([js/examples/from-disk](js/examples/from-disk)), opened by double-click
   with no server: **export shapes** (a chart's data from a saved shape in one call, the file's saved shapes as JSON,
   XML and JSON Schema, a shape lab that checks as you type), **several tables** (clients and their transactions linked

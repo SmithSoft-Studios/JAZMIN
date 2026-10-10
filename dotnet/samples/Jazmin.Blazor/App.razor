@@ -1,0 +1,241 @@
+@using System.Collections
+@using System.Globalization
+@using System.Runtime.CompilerServices
+@using Jazmin.Serialization
+
+<main class="page">
+    <header class="head">
+        <div>
+            <span class="badge">.NET in the browser</span>
+            <h1>LINQ over a JAZMIN file, in Blazor</h1>
+            <p>This page runs the JAZMIN .NET library in your browser (Blazor WebAssembly): it makes a file of two tables,
+                then queries both with LINQ, lambda and query syntax. No server is involved.</p>
+        </div>
+        <span class="badge" role="status">@status</span>
+    </header>
+
+    <section class="panel note">
+        <strong>Unencrypted files only.</strong> .NET in the browser has no AES-GCM or ECDSA, which files locked with a
+        key or password, and shared files, need. Open those in the JAZMIN viewer, which runs JavaScript, or read them
+        with the library on a server.
+    </section>
+
+    @if (clients is not null)
+    {
+        <section class="stats">
+            <div class="panel stat"><span>Table <code>clients</code></span><strong>@clientCount.ToString("N0", CultureInfo.InvariantCulture) rows</strong></div>
+            <div class="panel stat"><span>Table <code>transactions</code></span><strong>@transactionCount.ToString("N0", CultureInfo.InvariantCulture) rows</strong></div>
+            <div class="panel stat"><span>The file</span><strong>@((fileSize / 1024.0).ToString("N0", CultureInfo.InvariantCulture)) KB</strong></div>
+            <div class="panel stat"><span>Made in the browser in</span><strong>@madeIn</strong></div>
+        </section>
+
+        <section class="panel">
+            <h2>Query both tables</h2>
+            <p class="hint">Each query is the C# that runs (taken from this page's source as it was compiled). Filters in
+                <code>Where</code> run in the file, with its indexes and sort order; a sub-query per client is read once,
+                as a lookup; joins and groups across tables run in memory.</p>
+            <div class="tabs" role="tablist">
+                @foreach (var q in queries)
+                {
+                    <button type="button" role="tab" aria-selected="@(q == current ? "true" : "false")" @onclick="() => Run(q)">@q.Title</button>
+                }
+            </div>
+            @if (current is not null)
+            {
+                <pre class="code" id="query-code">@current.Code</pre>
+                <p class="hint muted" id="query-note" role="status">@note</p>
+                @if (result is not null)
+                {
+                    <div class="table-scroll">
+                        <table id="query-result">
+                            <thead><tr>@foreach (var column in result.Columns) { <th class="@(result.Numeric(column) ? "number" : "")">@column</th> }</tr></thead>
+                            <tbody>
+                                @foreach (var row in result.Items)
+                                {
+                                    <tr>@foreach (var column in result.Columns) { <td class="@(result.Numeric(column) ? "number" : "")">@Show(row[column])</td> }</tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            }
+        </section>
+    }
+
+    <section class="panel">
+        <h2>Your own file</h2>
+        <p class="hint">An unencrypted <code>.jzm</code>: its tables, columns and first rows. It is read here, in the
+            browser; nothing is uploaded.</p>
+        <InputFile OnChange="OpenOwn" accept=".jzm" />
+        @if (own is not null)
+        {
+            <p class="hint" role="status">@own</p>
+        }
+        @if (ownRows is not null)
+        {
+            <div class="table-scroll">
+                <table>
+                    <thead><tr>@foreach (var column in ownRows.Columns) { <th>@column</th> }</tr></thead>
+                    <tbody>@foreach (var row in ownRows.Items) { <tr>@foreach (var column in ownRows.Columns) { <td>@Show(row[column])</td> }</tr> }</tbody>
+                </table>
+            </div>
+        }
+    </section>
+</main>
+
+@code {
+    private string status = "Making the demo file…";
+    private IQueryable<Client>? clients;
+    private IQueryable<Transaction>? transactions;
+    private long clientCount;
+    private long transactionCount;
+    private long fileSize;
+    private string madeIn = "";
+    private readonly List<Query> queries = new();
+    private Query? current;
+    private string note = "";
+    private Rows? result;
+    private string? own;
+    private Rows? ownRows;
+
+    /// <summary>A query: its title, what runs, and its code as written (the compiler passes it).</summary>
+    private sealed record Query(string Title, Func<IEnumerable<object>> Run, string Code);
+
+    /// <summary>Rows to show, with their columns.</summary>
+    private sealed record Rows(List<string> Columns, List<Dictionary<string, object?>> Items)
+    {
+        public bool Numeric(string column) => Items.Count > 0 && Items[0][column] is long or int or decimal or double;
+    }
+
+    private void Add(string title, Func<IEnumerable<object>> run, [CallerArgumentExpression(nameof(run))] string code = "") =>
+        queries.Add(new Query(title, run, Dedent(code)));
+
+    /// <summary>
+    /// The code as written, without the lambda's "() =>" and the indentation it has in this page; a chain of calls
+    /// (".Where(...)") keeps its lines indented under the query's first line.
+    /// </summary>
+    private static string Dedent(string code)
+    {
+        code = code.StartsWith("() =>", StringComparison.Ordinal) ? code[5..].TrimStart() : code;
+        var lines = code.Split('\n');
+        var indent = lines.Skip(1).Where(l => l.Trim().Length > 0).Select(l => l.Length - l.TrimStart().Length).DefaultIfEmpty(0).Min();
+        var under = lines.Skip(1).FirstOrDefault()?.TrimStart().StartsWith('.') == true ? "    " : "";
+        return string.Join('\n', lines.Take(1).Concat(lines.Skip(1).Select(l => under + (l.Length >= indent ? l[indent..] : l.TrimStart()))));
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        await Task.Yield(); // show the page first
+        var watch = Stopwatch.StartNew();
+        var bytes = DemoData.BankFile();
+        madeIn = $"{watch.ElapsedMilliseconds} ms";
+        fileSize = bytes.Length;
+        var reader = JazminReader.Open(bytes);
+        var other = reader.OpenTable("transactions");
+        clientCount = reader.RowCount;
+        transactionCount = other.RowCount;
+        var camel = new JazminSerializerSettings { NamingStrategy = JazminNamingStrategy.CamelCase }; // Client.Id <-> id
+        clients = reader.AsQueryable<Client>(camel);
+        transactions = other.AsQueryable<Transaction>(camel);
+        status = "Ready";
+
+        Add("Durban clients and their spending", () => clients
+            .Where(c => c.City == "Durban")
+            .Select(c => new
+            {
+                c.Name,
+                c.Segment,
+                Spent = transactions.Where(t => t.Client == c.Id && t.Amount < 0).Sum(t => t.Amount),
+            })
+            .AsEnumerable()
+            .OrderBy(x => x.Spent));
+
+        Add("Big travel spends, with the client", () =>
+            from t in transactions
+            where t.Category == "Travel" && t.Amount < -20000
+            join c in clients on t.Client equals c.Id
+            orderby t.Amount
+            select new { c.Name, t.Date, t.Merchant, t.Amount });
+
+        Add("Spending per segment", () =>
+            from t in transactions
+            where t.Amount < 0
+            join c in clients on t.Client equals c.Id
+            group t by c.Segment into g
+            orderby g.Sum(t => t.Amount)
+            select new { Segment = g.Key, Spent = g.Sum(t => t.Amount), Payments = g.Count() });
+
+        Add("Who drinks the most coffee", () => transactions
+            .Where(t => t.Merchant.Contains("coffee", StringComparison.OrdinalIgnoreCase))
+            .GroupBy(t => t.Client)
+            .Select(g => new { Client = g.Key, Coffees = g.Count() })
+            .OrderByDescending(x => x.Coffees)
+            .Take(10)
+            .Join(clients, x => x.Client, c => c.Id, (x, c) => new { c.Name, x.Coffees }));
+
+        Run(queries[0]);
+    }
+
+    private void Run(Query q)
+    {
+        current = q;
+        var watch = Stopwatch.StartNew();
+        try
+        {
+            var items = q.Run().ToList(); // the query runs here
+            note = $"{items.Count} rows · {watch.ElapsedMilliseconds} ms";
+            result = RowsOf(items);
+        }
+        catch (Exception e)
+        {
+            note = $"{e.GetType().Name}: {e.Message}";
+            result = null;
+        }
+    }
+
+    /// <summary>The objects' properties as columns (the queries return anonymous objects).</summary>
+    private static Rows RowsOf(IReadOnlyList<object> items)
+    {
+        var properties = items.Count == 0 ? [] : items[0].GetType().GetProperties();
+        return new Rows(properties.Select(p => p.Name).ToList(),
+            items.Select(item => properties.ToDictionary(p => p.Name, p => p.GetValue(item))).ToList());
+    }
+
+    private static string Show(object? value) => value switch
+    {
+        null => "—",
+        decimal d => (d < 0 ? "−R " : "R ") + Math.Abs(d).ToString("N2", CultureInfo.InvariantCulture),
+        DateTime t => t.ToString("dd MMM", CultureInfo.InvariantCulture),
+        long or int => Convert.ToInt64(value).ToString("N0", CultureInfo.InvariantCulture),
+        _ => value.ToString() ?? "",
+    };
+
+    private async Task OpenOwn(InputFileChangeEventArgs e)
+    {
+        own = $"Reading {e.File.Name}…";
+        ownRows = null;
+        try
+        {
+            using var stream = new MemoryStream();
+            await e.File.OpenReadStream(maxAllowedSize: 512L * 1024 * 1024).CopyToAsync(stream);
+            using var reader = JazminReader.Open(stream.ToArray());
+            var tables = reader.Tables.Select(name =>
+            {
+                using var table = name == reader.TableName ? null : reader.OpenTable(name);
+                var t = table ?? reader;
+                return $"{(name.Length > 0 ? name : "(one table)")}: {t.RowCount:N0} rows, {string.Join(", ", t.Columns.Select(c => c.Name))}";
+            });
+            own = $"{e.File.Name}: {string.Join(" · ", tables)}";
+            ownRows = new Rows(reader.Columns.Select(c => c.Name).ToList(),
+                reader.Rows().Take(20).Select(row => reader.Columns.ToDictionary(c => c.Name, c => row[c.Name])).ToList());
+        }
+        catch (JazminKeyException)
+        {
+            own = $"{e.File.Name} is locked with a key or password, or shared: .NET in the browser can't decrypt it. Open it in the JAZMIN viewer.";
+        }
+        catch (Exception ex)
+        {
+            own = $"{e.File.Name} couldn't be opened: {ex.Message}";
+        }
+    }
+}

@@ -3608,6 +3608,13 @@ output (each client with their transactions), use an export shape with
 `$from` (section 21.6): it reads each table once when they are sorted by the
 link.
 
+**In the browser** (next release): the .NET library runs in Blazor
+WebAssembly, LINQ included, on unencrypted files ([dotnet/samples/Jazmin.Blazor](../dotnet/samples/Jazmin.Blazor)):
+.NET in the browser has no AES-GCM or ECDSA, which locked and shared files
+need. In JavaScript, the readers take filters, and arrow functions join and
+group what they return: the from-disk sample's several-tables demo shows the
+same queries both ways.
+
 ### 23.3 Access control across tables
 
 Partition names and column-group names are shared by every table of a file.
