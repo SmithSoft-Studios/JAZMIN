@@ -696,10 +696,10 @@ contents.
 ```
 
 - `name` (1 to 200 characters) is unique within the file, and `shape` is
-  an export shape: a JSON object, as the reference implementations define
-  it. `description` (at most 2,000 characters), `default` (offered first;
-  at most one per group) and `table` (the table the shape reads; left out,
-  the file's first table) are optional. A file keeps at most 1,000 shapes.
+  an export shape (10.4), a JSON object. `description` (at most 2,000
+  characters), `default` (offered first; at most one per group) and
+  `table` (the table the shape reads; left out, the file's first table) are
+  optional. A file keeps at most 1,000 shapes.
 - A shape is listed in the directory of each group that sees it, with
   `groups` as for files: written in files that are not access-controlled,
   left out in access-controlled ones.
@@ -707,8 +707,9 @@ contents.
   are secret from keys that can't see them (7.6.5). Writers MUST NOT give
   a key a group with a shape that uses a column, in any table it reads,
   that the key can't see: they refuse the write or the grant. Readers
-  SHOULD list only the shapes that use columns their key can see, and
-  MUST ignore entries that are not well-formed.
+  SHOULD list only the shapes that use columns their key can see (checked
+  as 10.4 checks a shape), and MUST ignore entries that are not
+  well-formed.
 
 ## 7. Encryption and Keys
 
@@ -1336,6 +1337,99 @@ forbidden by XML 1.0 cannot be exported: writers MUST report an error rather
 than corrupt the output. Import infers types as for CSV, and importers MUST
 disable DTD processing.
 
+### 10.4. Export Shapes
+
+An **export shape** is a JSON template that turns a table's rows into nested
+JSON or XML: one entry per client with its transactions and totals, a
+chart's labels and values, rows of another table linked to each row. Files
+MAY carry shapes under names (6.8). The language is defined here so that
+every implementation gives the same output for the same shape and rows.
+
+**Contexts.** A template is evaluated in a context: a **set of rows** (the
+table's rows, narrowed by the export's filter; a group; the rows a list's
+filter selects; linked rows taken as one set) or **one row** (an item of a
+list without `$groupBy`). The shape itself is evaluated in the set of the
+table's rows.
+
+| Node | Value | Context |
+|---|---|---|
+| a string | the named column's value; in a set, the first row's (null for an empty set) | both |
+| a number, `true`, `false`, `null` | that literal | both |
+| `{ "$value": v }` | `v`, any JSON value, as given | both |
+| `{ "$meta": "k" }` | the file's metadata member `k`, or null | both |
+| an object without `$` members | an object of its members, evaluated in the same context, in order | both |
+| `{ "$count": true }` | the number of rows | set |
+| `{ "$sum": "c" }` | the sum of `c`'s non-null values (`int`, `float`, `decimal`), or null if none | set |
+| `{ "$min": "c" }`, `{ "$max": "c" }` | the smallest / largest non-null value of an ordered column (5.2), or null if none | set |
+| `{ "$rows": t, … }` | a list (below) | set |
+| `{ "$from": "table", "$on": {…}, "$rows" or "$one": t, … }` | rows of another table (below) | both |
+
+- **Mistakes are reported before any row is read,** naming the place:
+  members by name, list items as `[]`, so `clients[].name`, or `shape` for
+  the template itself. A column that doesn't exist, or that the key can't
+  see, is "unknown or hidden". Arrays are not templates; `$` members can't
+  be mixed with other members; an unknown `$` member, an aggregate or a
+  list without `$groupBy` in one-row context, and an aggregate on a column
+  of another type are mistakes.
+- **Sums:** `int` exactly, as an integer of any size; `decimal` exactly,
+  with the largest scale of its values; `float` as IEEE-754 double
+  additions in row order, NaN values skipped. `$min` and `$max` compare as
+  key forms do (5.2): decimals by value, nulls and NaN skipped.
+
+**Lists.** `{ "$rows": t, "$filter"?, "$groupBy"?, "$sort"?, "$limit"?,
+"$xmlItem"? }` evaluates in a set and gives an array:
+
+- `$filter` (9) narrows the set; the filters of enclosing lists and groups
+  apply too.
+- Without `$groupBy`: one item per row, in file order, each evaluated in
+  that row's context.
+- With `$groupBy` (a column name, or an array of names, of ordered types):
+  one item per distinct key, in the order keys first appear, each evaluated
+  in the set of its rows. Key parts are equal as in filters (decimals by
+  value); null is a key of its own.
+- `$sort`: an array of column names of ordered types, each optionally
+  preceded by `-` for descending. Items are ordered by those values (a
+  group's first values), nulls first (5.3); items that compare equal keep
+  their order. Without `$sort`, the order above is kept.
+- `$limit`: a non-negative integer, at most that many items, after sorting.
+- `$xmlItem`: the XML name of each item (default `item`).
+
+**Links.** In a file of several tables (6.2), `$from` names a table whose
+rows the node takes, and `$on` pairs that table's columns with the columns
+of the row (or set) the node is written for: `{ "customer_id": "id" }`. All
+pairs must be equal; paired columns have the same ordered type; a null or
+NaN on either side links no row. Inside the node, column names are the
+linked table's, and `$filter` narrows the linked rows.
+
+- With `$rows` (and the list options above), the node is a list of the
+  linked rows. Unlike other lists, it is allowed in one-row context: it is
+  how a row's details nest.
+- With `$one` (and `$filter`), the linked rows are one set, in which its
+  template is evaluated; it is null when no row is linked.
+- The linked table is read with the same key, so its partitions and column
+  groups apply (7.6); a hidden column is a mistake, as elsewhere.
+
+**Output.**
+
+- **JSON:** values as in 10.1, the members of objects in template order.
+  Two exports of the same shape and rows MUST be equal as JSON values;
+  whitespace is not significant (the reference writers write none, or
+  indent by two spaces).
+- **XML:** after the XML declaration, a root element (named by the caller,
+  default `export`) holds the shape's value. An object's members are child
+  elements, a list is an element whose items are child elements named by
+  `$xmlItem`, and other values are text, in the forms of 10.1 and 10.3
+  (`$value` and `$meta` values that are not strings are written as JSON
+  text). Null values, non-finite floats and a `$one` that links no row are
+  omitted. Names that are not valid XML names, or that start with `xml`,
+  are written as `<field name="…">`. Values with characters XML 1.0 can't
+  hold are an error, as in 10.3.
+
+Informative: the reference implementations also give a JSON Schema (draft
+2020-12) of a shape's JSON output, read each list as a query (only the
+columns it uses, with indexes and statistics), and hold rows in memory only
+where groups or sorts need them.
+
 ## 11. Reader and Writer Requirements
 
 Writers:
@@ -1626,6 +1720,15 @@ indexes, embedded files) written by both reference implementations.
   shapes, `shapes` in file directories. Readers that don't know it ignore
   it, and the libraries of releases 1.0 to 1.4 leave it out when they
   rewrite a file's directories, as above.
+- **Since format 1.0, the export-shape language specified (10.4):** as the
+  reference implementations have given it since release 1.0 (links between
+  tables since 1.3), so that saved shapes mean the same in every reader. No
+  change to files.
+- **Since format 1.0, a clarification (8.1):** a sorted index's page always
+  has a first key, so for a `string` index no bytes are the empty text, not
+  an absent key. The writers always wrote it so; the readers of releases
+  1.0 to 1.4 refused such an index ("Index page has no first key") when the
+  smallest indexed text was empty. Files need no change.
 
 ## Appendix C. Design Notes (informative)
 
