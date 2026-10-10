@@ -77,3 +77,6 @@ npx @smithsoft-studios/jazmin --help           # the command-line tool: inspect,
 ## Licence
 
 MIT: see [LICENSE](LICENSE).
+
+JAZMIN™ is a trademark of SmithSoft Pty Ltd. The MIT licence covers the code, not the name: please don't
+call another product or service JAZMIN, or use the JAZMIN logo for one.

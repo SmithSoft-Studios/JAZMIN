@@ -60,4 +60,5 @@ reader.close();
 Full documentation, the format specification and the .NET library:
 [github.com/SmithSoft-Studios/JAZMIN](https://github.com/SmithSoft-Studios/JAZMIN).
 
-MIT licence.
+MIT licence. JAZMIN™ is a trademark of SmithSoft Pty Ltd. The MIT licence covers the code, not the name: please don't
+call another product or service JAZMIN, or use the JAZMIN logo for one.
