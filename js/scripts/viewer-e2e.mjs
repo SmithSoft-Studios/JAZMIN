@@ -11,7 +11,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { JazminAccessKey, JazminKey, applyChanges, issueUnlockToken, open, portableHtml, portableScript, write } from '../src/index.js';
+import { JazminAccessKey, JazminKey, applyChanges, exportString, issueUnlockToken, open, portableHtml, portableScript, write } from '../src/index.js';
 import { TEMPLATE_READY, writeTemplate } from '../test/template-fixture.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -26,6 +26,16 @@ const BROWSERS = {
   ios: ['/usr/bin/safaridriver'],
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// A browser's own folder, removed once it has quit; a file it still holds is left for the system to clear, not a failure.
+const removeProfile = (profile) => {
+  try {
+    fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5 });
+  } catch { /* still in use */ }
+};
+// The viewer saves files (change files, exports) through a link that downloads them. The checks read what it saved
+// from JazminViewer.state.lastSaved instead, so the page's download links are made to do nothing: nothing reaches the
+// Downloads folder of whoever runs the checks.
+const NO_DOWNLOADS = `(HTMLAnchorElement.prototype.click = ((click) => function () { return this.download ? undefined : click.call(this); })(HTMLAnchorElement.prototype.click), true)`;
 
 // What each key sees in the files fixtures (mirrors FILES_VIEWS in js/test/fixture-helpers.js).
 const FILES = {
@@ -201,6 +211,7 @@ write(path.join(temp, 'busy.jzm'), (function* rows() {
 })(), { columns: [{ name: 'id', type: 'int' }, { name: 'amount', type: 'float' }, { name: 'note', type: 'string' }] });
 const busyReader = open(path.join(temp, 'busy.jzm'));
 const BUSY_TOTAL = busyReader.count({ amount: { gt: 990 } });
+const BUSY_EXPORT = { csv: exportString(busyReader, 'csv', { filter: { amount: { gt: 990 } } }), xml: exportString(busyReader, 'xml', { filter: { amount: { gt: 990 } } }) };
 busyReader.close();
 
 // The from-disk sample (examples/from-disk), built as its README says: a folder opened by double-clicking its pages.
@@ -298,7 +309,7 @@ async function launchChromium(exe) {
       ws.close();
       proc.kill();
       await sleep(500);
-      fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5 });
+      removeProfile(profile);
     },
   };
 }
@@ -358,7 +369,7 @@ async function launchFirefox(exe) {
       ws.close();
       proc.kill();
       await sleep(800);
-      fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5 });
+      removeProfile(profile);
     },
   };
 }
@@ -544,6 +555,7 @@ for (const name of chosen) {
     await unlock(page, { file: 'edit.jzm', key: 'template' });
     await waitFor(page, `document.getElementById('jz-changes').open`, 'the changes dialog');
     const listed = await page.evaluate(`[...document.querySelectorAll('#jz-changes-list li')].map((li) => li.textContent).join(' | ')`);
+    await page.evaluate(NO_DOWNLOADS);
     await page.evaluate(`(document.getElementById('jz-changes-save').click(), true)`);
     const edited = await waitFor(page, 'JazminViewer.state.lastReady && JazminViewer.state.lastReady.info', 'the edit page to call jazmin.ready()');
     const changeFile = Buffer.from(await page.evaluate(`(async () => {
@@ -713,6 +725,18 @@ for (const name of chosen) {
       && overlay.shown && overlay.hidden && /Searching 1\D?000\D?000 rows/.test(overlay.text) && /^Rows 0–0 of 0 matching the filter/.test(nothing);
     results.push({ browser: name, label: `busy display: the first page at once, the total counted with Stop, an overlay while nothing is ready (${BUSY_ROWS.toLocaleString('en-US')} rows)`, ok: busyOk, problems: busyOk ? [] : [JSON.stringify({ whileCounting, counted, stoppedCount, overlay, nothing, BUSY_TOTAL })] });
 
+    // Export: the rows the filter matches, saved as CSV and XML, the same text as the library's.
+    await filterBy('{ "amount": { "gt": 990 } }');
+    await waitFor(page, `/matching the filter/.test(${dataStatus})`, 'the filter to export');
+    await page.evaluate(NO_DOWNLOADS);
+    const exported = {};
+    for (const format of ['csv', 'xml']) {
+      await page.evaluate(`(JazminViewer.state.lastSaved = null, document.querySelector('#jz-export-menu [data-format="${format}"]').click(), true)`);
+      exported[format] = await waitFor(page, `JazminViewer.state.lastSaved && JazminViewer.state.lastSaved.name.endsWith('.${format}') && JazminViewer.state.lastSaved.blob.text().then((text) => ({ name: JazminViewer.state.lastSaved.name, text, note: document.getElementById('jz-export-note').textContent }))`, `the ${format} export`, 120000);
+    }
+    const exportOk = ['csv', 'xml'].every((format) => exported[format].name === `busy-filtered.${format}` && exported[format].text === BUSY_EXPORT[format] && /^Saved busy-filtered\./.test(exported[format].note));
+    results.push({ browser: name, label: `export: the filter's ${BUSY_TOTAL.toLocaleString('en-US')} rows saved as CSV and XML, the same text as the library's`, ok: exportOk, problems: exportOk ? [] : [JSON.stringify(Object.fromEntries(Object.entries(exported).map(([f, e]) => [f, { name: e.name, note: e.note, length: e.text.length, expected: BUSY_EXPORT[f].length }])))] });
+
     // The from-disk sample's pages, as a person uses them: the statement opened with its password, with no choosing; and
     // a chosen file passed to the viewer, which says it is locked.
     const sample = (page_) => (fromDisk ? pathToFileURL(path.join(temp, 'sample', page_)).href : `${base}/e2e/sample/${page_}`);
@@ -725,6 +749,10 @@ for (const name of chosen) {
     // A search narrows the rows, and says how long it took.
     await page.evaluate(`(document.getElementById('search').value = 'coffee', document.getElementById('search').dispatchEvent(new Event('input')), true)`);
     const searched = await waitFor(page, `/ of \\d+ · \\d+ ms$/.test(document.getElementById('found').textContent) && { found: document.getElementById('found').textContent, rows: document.querySelectorAll('#rows tbody tr').length }`, 'the search');
+    // Export: the transactions shown, saved as CSV.
+    await page.evaluate(NO_DOWNLOADS);
+    await page.evaluate(`(document.querySelector('#export [data-format="csv"]').click(), true)`);
+    const savedStatement = await waitFor(page, `/^Saved /.test(document.getElementById('found').textContent) && document.getElementById('found').textContent`, 'the statement export');
     // The start page asks for a file; a file that isn't one brings it back with the reason; a chosen statement opens in
     // the viewer, which says it is locked.
     await page.navigate(sample('pick-file.html'));
@@ -738,9 +766,10 @@ for (const name of chosen) {
     const picked = await waitFor(page, `/locked/.test(document.getElementById('status').textContent) && { status: document.getElementById('status').textContent, panel: ${panels}, name: document.getElementById('file-name').value }`, 'the locked status');
     const sampleOk = statementShown.rows === SAMPLE.statementRows && statementShown.status.startsWith(`${SAMPLE.statementRows} transactions · opened in `)
       && statementShown.closing === SAMPLE.closing && searched.rows === SAMPLE.coffee && searched.found.startsWith(`${SAMPLE.coffee} of ${SAMPLE.statementRows} · `)
+      && savedStatement.startsWith(`Saved statement-search.csv · `)
       && asked === true && notFile.panel === 'start' && notFile.error.startsWith("notes.jzm couldn't be opened: ")
       && JSON.stringify(picked) === JSON.stringify({ status: 'statement.jzm is locked: type its password in the viewer', panel: 'viewer', name: 'statement.jzm' });
-    results.push({ browser: name, label: `the from-disk sample: the statement with no choosing (wrong password, then right; totals, a search); the start page asks for a file and opens it in the viewer${fromDisk ? '' : ' (over HTTP)'}`, ok: sampleOk, problems: sampleOk ? [] : [JSON.stringify({ wrong, statementShown, searched, asked, notFile, picked, SAMPLE })] });
+    results.push({ browser: name, label: `the from-disk sample: the statement with no choosing (wrong password, then right; totals, a search, an export); the start page asks for a file and opens it in the viewer${fromDisk ? '' : ' (over HTTP)'}`, ok: sampleOk, problems: sampleOk ? [] : [JSON.stringify({ wrong, statementShown, searched, savedStatement, asked, notFile, picked, SAMPLE })] });
 
     // The demo's Try buttons send filters to the viewer (jazmin:filter). Over HTTP, where the test can type the password
     // into the viewer in the page's iframe (a page on disk can't reach into it in Chrome and Edge).

@@ -6,6 +6,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Added
+- **Exports in the browser and the viewer.** The browser reader writes JSON, CSV and XML: `JazminBrowser.toJSON` /
+  `toCSV` / `toXML(reader, options)` give the same text as the libraries' exports (tested on every value type, nested
+  columns, several tables, filters, a selection of columns, offset and limit, and each format's options), and
+  `exportBlob(reader, format, options)` gives it as a Blob to save, with `{ signal, onProgress }` for long exports. The
+  viewer's Export ▾ saves the rows the filter matches as CSV, JSON or XML, with progress and Stop; the from-disk
+  sample's statement exports the transactions shown. Shaped exports stay with the libraries for now.
 - **The viewer shows a filter's first page at once, and counts the rest while the rows show.** Before, it showed
   nothing until it had counted every match: on a 500 MB file of 25,000,000 rows, `{ "amount": 88 }` (no index on
   amount) showed its rows after about 20 s; now they show after 0.4 s. While counting, the line above the rows gives the

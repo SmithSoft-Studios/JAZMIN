@@ -153,7 +153,7 @@
 
   // ---- searching: a page of rows at once, the total counted while they show -------------------------------------------
 
-  const work = { page: null, count: null }; // the page being read and the count running (AbortControllers)
+  const work = { page: null, count: null, export: null }; // the page being read, the count running, an export (AbortControllers)
   const OVERLAY_AFTER_MS = 250; // a page found sooner shows without an overlay flashing up
   const elapsed = (ms) => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`);
   const percent = (p) => (p ? Math.floor((p.done / p.total) * 100) : 0);
@@ -179,34 +179,16 @@
       $('jz-data-status').textContent = 'Searching…';
       $('jz-count-stop').hidden = true;
     }
-    let progress = null;
-    let painted = 0;
-    const overlay = setTimeout(() => {
-      $('jz-busy').hidden = false;
-      state.busyShown = (state.busyShown || 0) + 1;
-      paintBusy(reader, progress);
-    }, OVERLAY_AFTER_MS);
+    const busy = busyWith(`Searching ${reader.rowCount.toLocaleString()} rows…`, ['match', 'matches'], stopSearch);
     let rows;
     try {
-      ({ rows } = await reader.query(filter, {
-        offset, limit: PAGE_ROWS, total: false, signal: page.signal,
-        onProgress: (p) => {
-          progress = p;
-          if (!$('jz-busy').hidden && performance.now() - painted > 50) {
-            painted = performance.now();
-            paintBusy(reader, p);
-          }
-        },
-      }));
+      ({ rows } = await reader.query(filter, { offset, limit: PAGE_ROWS, total: false, signal: page.signal, onProgress: busy.progress }));
     } catch (error) {
       if (page.signal.aborted) return; // a newer search, or Stop
       throw error;
     } finally {
-      clearTimeout(overlay);
-      if (work.page === page) {
-        work.page = null;
-        $('jz-busy').hidden = true;
-      }
+      busy.end(work.page === page);
+      if (work.page === page) work.page = null;
     }
     showTable(reader, rows);
     state.shownRows = rows.length;
@@ -267,12 +249,69 @@
     $('jz-next').disabled = state.total !== null ? offset + shown >= state.total : shown < PAGE_ROWS;
   }
 
-  /** The overlay over the rows while a page is searched for: how many rows, how far, the matches so far, Stop. */
-  function paintBusy(reader, p) {
-    $('jz-busy-title').textContent = `Searching ${reader.rowCount.toLocaleString()} rows…`;
-    const matches = p?.matches ?? 0;
-    $('jz-busy-detail').textContent = p ? `${percent(p)}% · ${matches.toLocaleString()} ${matches === 1 ? 'match' : 'matches'} so far` : 'Starting…';
-    $('jz-busy-bar').style.width = `${percent(p)}%`;
+  let onBusyStop = stopSearch;
+
+  /**
+   * The overlay over the rows, for work that takes a moment (it shows only after OVERLAY_AFTER_MS): `title`, how far it
+   * is and how many `nouns` so far from each progress report, and Stop, which calls `stop`. Returns { progress(p),
+   * end(hide) }: end clears it; hide: false when newer work has the overlay now.
+   */
+  function busyWith(title, nouns, stop) {
+    let progress = null;
+    let painted = 0;
+    const paint = () => {
+      const n = progress?.matches ?? 0;
+      $('jz-busy-title').textContent = title;
+      $('jz-busy-detail').textContent = progress ? `${percent(progress)}% · ${n.toLocaleString()} ${n === 1 ? nouns[0] : nouns[1]} so far` : 'Starting…';
+      $('jz-busy-bar').style.width = `${percent(progress)}%`;
+    };
+    const timer = setTimeout(() => {
+      onBusyStop = stop;
+      $('jz-busy').hidden = false;
+      state.busyShown = (state.busyShown || 0) + 1;
+      paint();
+    }, OVERLAY_AFTER_MS);
+    return {
+      progress(p) {
+        progress = p;
+        if (!$('jz-busy').hidden && performance.now() - painted > 50) {
+          painted = performance.now();
+          paint();
+        }
+      },
+      end(hide = true) {
+        clearTimeout(timer);
+        if (hide) $('jz-busy').hidden = true;
+      },
+    };
+  }
+
+  // ---- export: the rows the filter matches, as CSV, JSON or XML -----------------------------------------------------
+
+  /** Saves the rows the filter matches (every row without one), with the browser reader's exports; Stop ends it. */
+  async function exportRows(format) {
+    $('jz-export-menu').open = false;
+    work.export?.abort();
+    const job = (work.export = new AbortController());
+    const reader = state.reader;
+    const what = state.filter ? 'the matching rows' : `${reader.rowCount.toLocaleString()} rows`;
+    const busy = busyWith(`Exporting ${what} as ${format.toUpperCase()}…`, ['row', 'rows'], () => job.abort());
+    const note = $('jz-export-note');
+    note.hidden = false;
+    note.textContent = `Exporting ${what} as ${format.toUpperCase()}…`;
+    const started = performance.now();
+    try {
+      const blob = await JazminBrowser.exportBlob(reader, format, { filter: state.filter, signal: job.signal, onProgress: busy.progress });
+      const name = `${state.name.replace(/\.jzm$/i, '')}${state.filter ? '-filtered' : ''}.${format}`;
+      state.lastSaved = { name, blob };
+      await save(name, blob);
+      note.textContent = `Saved ${name} · ${(blob.size / 1048576).toFixed(blob.size < 10485760 ? 2 : 1)} MB in ${elapsed(performance.now() - started)}`;
+    } catch (error) {
+      note.textContent = job.signal.aborted ? 'Export stopped.' : `Export: ${error.message || error}`;
+    } finally {
+      busy.end();
+      if (work.export === job) work.export = null;
+    }
   }
 
   /** Stop on the overlay: the search ends, and the rows it was looking for aren't shown. */
@@ -614,7 +653,8 @@
   });
   $('jz-unlock').addEventListener('submit', unlock);
   $('jz-filter-form').addEventListener('submit', applyFilter);
-  $('jz-busy-stop').addEventListener('click', stopSearch);
+  $('jz-busy-stop').addEventListener('click', () => onBusyStop());
+  for (const item of document.querySelectorAll('#jz-export-menu [data-format]')) item.addEventListener('click', () => exportRows(item.dataset.format));
   $('jz-count-stop').addEventListener('click', () => work.count?.abort());
   $('jz-prev').addEventListener('click', () => { state.page--; showRows(); });
   $('jz-next').addEventListener('click', () => { state.page++; showRows(); });

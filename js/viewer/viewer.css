@@ -53,6 +53,13 @@ th { position: sticky; top: 0; background: #f8f9fb; }
 td.null { color: var(--muted); font-style: italic; }
 .pager { display: flex; gap: 8px; margin-top: 10px; }
 .data-status { display: flex; align-items: center; gap: 10px; min-height: 34px; }
+.menu { position: relative; }
+.menu > summary { list-style: none; white-space: nowrap; user-select: none; }
+.menu > summary::-webkit-details-marker { display: none; }
+.menu-items { position: absolute; right: 0; top: calc(100% + 4px); z-index: 5; display: grid; min-width: 140px; padding: 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, .12); }
+.menu-items button { border: 0; text-align: left; border-radius: 6px; }
+.menu-items button:hover, .menu-items button:focus-visible { background: var(--bg); }
+#jz-export-note { margin: 6px 0 0; }
 button.small { padding: 3px 10px; font-size: 12.5px; }
 .results { position: relative; min-height: 220px; }
 .busy { position: absolute; inset: 0; display: flex; justify-content: center; align-items: flex-start; padding-top: 56px; border-radius: 8px; background: rgba(244, 245, 247, .72); backdrop-filter: blur(1.5px); }

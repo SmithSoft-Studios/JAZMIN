@@ -3629,6 +3629,12 @@ soon as it has found them, then counts the rest while the rows show:
   20 s in a browser. With an index on `amount`, counting takes a few
   milliseconds (1 ms on 5,000,000 rows).
 
+**Exporting.** Export ▾ beside the filter saves the rows it matches (every
+row without one) as CSV, JSON or XML: the same text the libraries' `toCSV`,
+`toJSON` and `toXML` write (section 11). A long export shows its progress under
+the overlay, with Stop; the line below the filter then says what was saved, how
+large it is and how long it took.
+
 ### 24.1 Templates: the document API
 
 A package's entry page runs in a sandbox. It has no network access (except
@@ -3741,6 +3747,10 @@ await reader.count({ country: 'ZA' });
 // Long reads: progress after each chunk, and Stop (count, query and find take both).
 const stop = new AbortController();
 await reader.count({ amount: 88 }, { signal: stop.signal, onProgress: ({ done, total, matches }) => show(done / total, matches) });
+// Exports: the library's text (toJSON / toCSV / toXML), or a Blob to save; filter, select, offset, limit, the format's
+// options (json: pretty, omitNulls; csv: delimiter, newline; xml: root, row), and signal / onProgress as above.
+const csv = await JazminBrowser.toCSV(reader, { filter: { country: 'ZA' } });
+const blob = await JazminBrowser.exportBlob(reader, 'json', { filter: { country: 'ZA' }, pretty: true });
 await reader.columnArrays(null, { select: ['at', 'amount'] }); // arrays for charts (section 9.11)
 reader.submissionKey;                                  // the key to send records back with (section 15.6)
 await reader.explain({ id: 7 }, { analyze: true });    // as in the library (section 9.6)

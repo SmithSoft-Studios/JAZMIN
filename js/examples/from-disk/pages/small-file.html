@@ -42,8 +42,16 @@
       <section class="panel">
         <div class="search">
           <input id="search" type="search" placeholder="Search merchants, for example coffee" aria-label="Search merchants">
-          <span id="found" class="muted" role="status"></span>
+          <details id="export" class="menu">
+            <summary class="button soft">Export ▾</summary>
+            <div class="menu-items" role="menu">
+              <button type="button" role="menuitem" data-format="csv">CSV</button>
+              <button type="button" role="menuitem" data-format="json">JSON</button>
+              <button type="button" role="menuitem" data-format="xml">XML</button>
+            </div>
+          </details>
         </div>
+        <p id="found" class="muted hint" role="status"></p>
         <div class="table-scroll">
           <table id="rows">
             <thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th class="number">Amount</th></tr></thead>
@@ -132,16 +140,22 @@
     }));
   }
 
-  /** The transactions matching the search and the chosen category, and how long finding them took. */
-  let asked = 0;
-  async function show() {
-    const ask = ++asked;
+  /** The filter for the search and the chosen category (null for every transaction). */
+  function currentFilter() {
     const text = $('search').value.trim();
     const filter = {};
     if (category) filter.category = category;
     if (text) filter.merchant = { icontains: text };
+    return Object.keys(filter).length ? filter : null;
+  }
+
+  /** The transactions matching the search and the chosen category, and how long finding them took. */
+  let asked = 0;
+  async function show() {
+    const ask = ++asked;
+    const filter = currentFilter();
     const started = performance.now();
-    const { rows, total } = await table.query(Object.keys(filter).length ? filter : null, { limit: 1000 });
+    const { rows, total } = await table.query(filter, { limit: 1000 });
     if (ask !== asked) return; // a newer search answered first
     $('rows').tBodies[0].replaceChildren(...rows.map((row) => {
       const tr = document.createElement('tr');
@@ -152,8 +166,23 @@
       ]) tr.append(Object.assign(document.createElement('td'), { textContent: value, className }));
       return tr;
     }));
-    $('found').textContent = text || category ? `${total} of ${table.rowCount} · ${since(started)}` : '';
+    $('found').textContent = filter ? `${total} of ${table.rowCount} · ${since(started)}` : '';
   }
+  // Export: the transactions shown, as CSV, JSON or XML: the library's own text, made here in the browser.
+  for (const item of document.querySelectorAll('#export [data-format]')) {
+    item.addEventListener('click', async () => {
+      $('export').open = false;
+      const format = item.dataset.format;
+      const started = performance.now();
+      const blob = await JazminBrowser.exportBlob(table, format, { filter: currentFilter() });
+      const name = `statement${category ? `-${category.toLowerCase()}` : ''}${$('search').value.trim() ? '-search' : ''}.${format}`;
+      const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 60000);
+      $('found').textContent = `Saved ${name} · ${blob.size.toLocaleString()} bytes · ${since(started)}`;
+    });
+  }
+
   let typing;
   $('search').addEventListener('input', () => {
     clearTimeout(typing);

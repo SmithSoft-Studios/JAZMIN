@@ -61,7 +61,16 @@
         <label for="jz-filter">Filter</label>
         <input id="jz-filter" spellcheck="false" placeholder='{ "country": "ZA", "amount": { "gt": 100 } }'>
         <button type="submit">Apply</button>
+        <details id="jz-export-menu" class="menu">
+          <summary class="button">Export ▾</summary>
+          <div class="menu-items" role="menu">
+            <button type="button" role="menuitem" data-format="csv">CSV</button>
+            <button type="button" role="menuitem" data-format="json">JSON</button>
+            <button type="button" role="menuitem" data-format="xml">XML</button>
+          </div>
+        </details>
       </form>
+      <p id="jz-export-note" class="hint" role="status" hidden></p>
       <div class="data-status">
         <p id="jz-data-status" class="hint" role="status"></p>
         <button id="jz-count-stop" type="button" class="small" hidden>Stop</button>

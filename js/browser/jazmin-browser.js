@@ -3212,6 +3212,150 @@
     };
   }
 
+  // ---- exports: JSON, CSV and XML text, as the library writes them (js/src/formats) ------------------------------
+
+  const EXPORT_TYPES = { json: 'application/json', csv: 'text/csv', xml: 'application/xml' };
+  const XML_NAME = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
+  const XML_UNWRITABLE = /[\x00-\x08\x0B\x0C\x0E-\x1F￾￿]/;
+
+  function bytesToBase64(bytes) {
+    if (typeof bytes.toBase64 === 'function') return bytes.toBase64();
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return global.btoa(bin);
+  }
+
+  /** Text form of a non-null value, for CSV and XML (lists and objects, given their column definition, as JSON). */
+  function exportText(type, value, column) {
+    switch (type) {
+      case 'datetime': return value.toISOString();
+      case 'binary': return bytesToBase64(value);
+      case 'json': return JSON.stringify(value);
+      case 'list':
+      case 'object': return exportNested(column, value);
+      default: return String(value);
+    }
+  }
+
+  /** JSON literal for a value (exact for int and decimal, which may exceed double precision). */
+  function exportJson(type, value, column) {
+    if (value === null || value === undefined) return 'null';
+    switch (type) {
+      case 'int':
+      case 'decimal': return String(value);
+      case 'float': return Number.isFinite(value) ? JSON.stringify(value) : 'null';
+      case 'datetime': return JSON.stringify(value.toISOString());
+      case 'binary': return JSON.stringify(bytesToBase64(value));
+      case 'list':
+      case 'object': return exportNested(column, value);
+      default: return JSON.stringify(value);
+    }
+  }
+
+  /** A list or object value as JSON: every field in position order, nulls written. */
+  function exportNested(column, value) {
+    if (value === null || value === undefined) return 'null';
+    if (column.type === 'list') {
+      let out = '[';
+      for (let i = 0; i < value.length; i++) out += (i ? ',' : '') + exportJson(column.item.type, value[i], column.item);
+      return `${out}]`;
+    }
+    if (column.type === 'object') {
+      let out = '{';
+      column.fields.forEach((f, i) => {
+        out += `${i ? ',' : ''}${JSON.stringify(f.name)}:${exportJson(f.type, Object.hasOwn(value, f.name) ? value[f.name] : null, f)}`;
+      });
+      return `${out}}`;
+    }
+    return exportJson(column.type, value, column);
+  }
+
+  const csvQuote = (text, delimiter) => (text === '' || /["\r\n]/.test(text) || text.includes(delimiter) || text.trim() !== text ? `"${text.replace(/"/g, '""')}"` : text);
+  function xmlEscape(text) {
+    if (XML_UNWRITABLE.test(text)) throw new JazminValidationError('Value contains characters that XML 1.0 cannot represent');
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  const xmlElement = (name) => (XML_NAME.test(name) && !/^xml/i.test(name)
+    ? { open: `<${name}>`, close: `</${name}>` }
+    : { open: `<field name="${xmlEscape(name)}">`, close: '</field>' });
+
+  /**
+   * An export's text, piece by piece. options: { filter, select, offset, limit } as for find, the format's own
+   * (json: pretty, omitNulls; csv: delimiter, newline; xml: root, row), and { signal, onProgress } for long exports.
+   */
+  async function* exportPieces(reader, format, options = {}) {
+    if (!EXPORT_TYPES[format]) throw new JazminValidationError(`Unknown export format '${format}'`);
+    const { filter, select, limit, offset, signal, onProgress, shape, ...o } = options;
+    if (shape !== undefined) throw new JazminValidationError('The browser reader exports without shapes for now: use the library for shaped exports');
+    const columns = select ? reader.columns.filter((c) => select.includes(c.name)) : reader.columns;
+    const rows = reader.find(filter, { select, limit, offset, signal, onProgress });
+    if (format === 'csv') {
+      const delimiter = o.delimiter ?? ',';
+      const newline = o.newline ?? '\r\n';
+      yield columns.map((c) => csvQuote(c.name, delimiter)).join(delimiter) + newline;
+      for await (const row of rows) {
+        yield columns.map((c) => {
+          const value = row[c.name] ?? null;
+          return value === null ? '' : csvQuote(exportText(c.type, value, c), delimiter);
+        }).join(delimiter) + newline;
+      }
+    } else if (format === 'xml') {
+      const rowName = o.row ?? 'row';
+      const root = o.root ?? 'jazmin';
+      const elements = columns.map((c) => xmlElement(c.name));
+      yield `<?xml version="1.0" encoding="UTF-8"?>\n<${root}>\n`;
+      for await (const row of rows) {
+        let out = `  <${rowName}>`;
+        columns.forEach((c, i) => {
+          const value = row[c.name] ?? null;
+          if (value !== null) out += elements[i].open + xmlEscape(exportText(c.type, value, c)) + elements[i].close;
+        });
+        yield `${out}</${rowName}>\n`;
+      }
+      yield `</${root}>\n`;
+    } else {
+      const names = columns.map((c) => JSON.stringify(c.name));
+      const nl = o.pretty ? '\n' : '';
+      const indent = o.pretty ? '  ' : '';
+      const sep = o.pretty ? ': ' : ':';
+      yield '[';
+      let first = true;
+      for await (const row of rows) {
+        const fields = [];
+        columns.forEach((c, i) => {
+          const value = row[c.name] ?? null;
+          if (value === null && o.omitNulls) return;
+          fields.push(`${names[i]}${sep}${exportJson(c.type, value, c)}`);
+        });
+        yield `${first ? '' : ','}${nl}${indent}{${fields.join(o.pretty ? ', ' : ',')}}`;
+        first = false;
+      }
+      yield `${first ? '' : nl}]`;
+    }
+  }
+
+  /** An export as one string: the library's toJSON / toCSV / toXML text. */
+  async function exportString(reader, format, options) {
+    let out = '';
+    for await (const piece of exportPieces(reader, format, options)) out += piece;
+    return out;
+  }
+
+  /** An export as a Blob of its media type, to save or download: built in pieces of about 1 MB, not one string. */
+  async function exportBlob(reader, format, options) {
+    const parts = [];
+    let buffer = '';
+    for await (const piece of exportPieces(reader, format, options)) {
+      buffer += piece;
+      if (buffer.length >= 1 << 20) {
+        parts.push(buffer);
+        buffer = '';
+      }
+    }
+    if (buffer) parts.push(buffer);
+    return new Blob(parts, { type: EXPORT_TYPES[format] });
+  }
+
   // ---- writing: files with one key, a password or no key ------------------------------------------------------
   // The library's writer (js/src/writer.js and the modules it uses) for this subset, on the browser's own crypto
   // (WebCrypto) and compression (CompressionStream). Shared files are never written in a browser: their master key
@@ -4383,6 +4527,10 @@
     open,
     openUrl,
     openScript,
+    toJSON: (reader, options) => exportString(reader, 'json', options),
+    toCSV: (reader, options) => exportString(reader, 'csv', options),
+    toXML: (reader, options) => exportString(reader, 'xml', options),
+    exportBlob,
     createWriter,
     write,
     writeChanges,
