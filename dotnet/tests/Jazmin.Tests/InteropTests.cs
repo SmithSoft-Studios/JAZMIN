@@ -615,6 +615,71 @@ public class InteropTests
         AssertTablesViews(file, OutDir, accessControlled);
     }
 
+    private static readonly JsonObject SavedShapesFixture = JsonNode.Parse(File.ReadAllText(Path.Combine(Dir, "saved-shapes.json")))!.AsObject();
+
+    /// <summary>The saved shapes of spec/fixtures/saved-shapes.json (docs/design/saved-shapes.md).</summary>
+    private static List<JazminSavedShape> SavedShapes() => SavedShapesFixture["shapes"]!.AsArray().Select(s => new JazminSavedShape((string)s!["name"]!, s["shape"]!.DeepClone().AsObject())
+    {
+        Description = (string?)s["description"],
+        IsDefault = (bool?)s["default"] ?? false,
+        Table = (string?)s["table"],
+        Groups = s["groups"]?.AsArray().Select(g => (string)g!).ToList(),
+    }).ToList();
+
+    /// <summary>Each key lists exactly the saved shapes it can use, and a saved shape gives what the shape itself gives.</summary>
+    private static void AssertSavedShapes(string file, string? dir)
+    {
+        var path = Path.Combine(dir ?? Dir, file);
+        var views = SavedShapesFixture["views"]!.AsObject().Where(v => file.Contains("-access") || v.Key == "key");
+        foreach (var (keyName, names) in views)
+        {
+            var options = keyName == "key"
+                ? new JazminReadOptions { Key = JazminKey.Parse((string)Keys["key"]!) }
+                : new JazminReadOptions { AccessKey = JazminAccessKey.Parse((string)Keys[keyName]!), CheckClockRollback = false };
+            using var reader = JazminReader.Open(path, options);
+            var expected = names!.AsArray().Select(n => SavedShapes().Single(s => s.Name == (string)n!)).ToList();
+            Assert.Equal(expected.Select(s => s.Name), reader.Shapes.Select(s => s.Name));
+            foreach (var (want, got) in expected.Zip(reader.Shapes))
+            {
+                Assert.Equal((want.Description, want.IsDefault, want.Table), (got.Description, got.IsDefault, got.Table));
+                Assert.True(JsonNode.DeepEquals(want.Shape, got.Shape), got.Shape.ToJsonString());
+                Assert.Equal(keyName == "key" ? want.Groups ?? ["*"] : null, got.Groups); // the owner's and single-key files' only
+                using var table = want.Table is null ? null : reader.OpenTable(want.Table);
+                Assert.Equal(JazminShape.FromJson(want.Shape).ToJson(table ?? reader), JazminShape.FromFile(reader, want.Name).ToJson(reader));
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData("js-shapes-key.jzm")]
+    [InlineData("js-shapes-access.jzm")]
+    public void ReadsSavedShapesWrittenByJavaScript(string file) => AssertSavedShapes(file, null);
+
+    /// <summary>The tables fixtures with the saved shapes; in the shared one, Sally's key also sees the file group 'finance'.</summary>
+    [Theory]
+    [InlineData("dotnet-shapes-key.jzm", false)]
+    [InlineData("dotnet-shapes-access.jzm", true)]
+    public void WritesSavedShapesForJavaScript(string file, bool accessControlled)
+    {
+        var options = TablesFixture(accessControlled);
+        options.Key = JazminKey.Parse((string)Keys["key"]!);
+        options.Shapes = SavedShapes();
+        if (options.Access is { } access)
+        {
+            var sally = access.Grants[1];
+            access.Grants[1] = new JazminGrant(sally.Key) { Rows = sally.Rows, Columns = sally.Columns, Label = sally.Label, Files = ["finance"] };
+        }
+        var columns = DatasetColumns();
+        using (var writer = JazminWriter.Create(Path.Combine(OutDir, file), options))
+        {
+            foreach (var row in DatasetRows())
+                writer.WriteValues(columns.Select(c => FromDataset(c.Type, row[c.Name])).ToArray());
+            writer.StartTable("countries");
+            foreach (var row in CountryRows()) writer.WriteValues(row);
+        }
+        AssertSavedShapes(file, OutDir);
+    }
+
     [Theory]
     [InlineData("js-plain.jzm")]
     [InlineData("js-brotli.jzm")]

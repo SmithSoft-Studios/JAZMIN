@@ -29,12 +29,35 @@ public sealed class JazminShape
     /// <summary>Uses a shape given as a JSON object (copied).</summary>
     public static JazminShape FromJson(JsonObject shape) => new((JsonObject)shape.DeepClone());
 
+    /// <summary>
+    /// A shape saved in the file under <paramref name="name"/> that this key can use (<see cref="JazminReader.Shapes"/>).
+    /// It reads the table it was saved for, whichever table the reader given to it reads.
+    /// </summary>
+    public static JazminShape FromFile(JazminReader reader, string name)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        var saved = reader.Shapes.FirstOrDefault(s => s.Name == name) ?? throw new JazminValidationException($"No saved shape '{name}' is visible with this key");
+        return new JazminShape(saved.Shape) { Table = saved.Table ?? reader.Tables[0] };
+    }
+
+    /// <summary>The table a saved shape reads (<see cref="FromFile"/>); null: the table of the reader it runs on.</summary>
+    public string? Table { get; private init; }
+
+    /// <summary>A saved shape's own table, opened for one call when the reader reads another (dispose it after); else null.</summary>
+    private JazminReader? OwnTable(JazminReader reader) => Table is null || Table == reader.TableName ? null : reader.OpenTable(Table);
+
     /// <summary>Checks the shape against the columns this reader can see; throws naming the first mistake.</summary>
     public void Validate(JazminReader reader)
     {
+        using var own = OwnTable(reader);
+        reader = own ?? reader;
         using var tables = new TableReaders(reader);
         Compile(reader, tables);
     }
+
+    /// <summary>Checks a shape against tables' columns, before any reader exists (saved shapes): it reads <paramref name="table"/>.</summary>
+    internal static void Check(JsonObject shape, string table, Func<string, IReadOnlyList<JazminColumn>?> columnsOf) =>
+        new JazminShape(shape).Compile(name => columnsOf(name ?? table));
 
     /// <summary>The shape's output for these rows as JSON text.</summary>
     public string ToJson(JazminReader reader, JazminFilter? filter = null, bool indented = false)
@@ -47,6 +70,8 @@ public sealed class JazminShape
     /// <summary>Streams the shape's output as JSON (UTF-8).</summary>
     public void WriteJson(JazminReader reader, Stream output, JazminFilter? filter = null, bool indented = false)
     {
+        using var own = OwnTable(reader);
+        reader = own ?? reader;
         using var tables = new TableReaders(reader);
         var root = Compile(reader, tables);
         using var sink = new JsonSink(output, indented);
@@ -67,6 +92,8 @@ public sealed class JazminShape
     public void WriteXml(JazminReader reader, TextWriter output, JazminFilter? filter = null, string root = "export")
     {
         if (!XmlName.IsMatch(root)) throw new JazminValidationException($"'{root}' is not a valid XML element name");
+        using var own = OwnTable(reader);
+        reader = own ?? reader;
         using var tables = new TableReaders(reader);
         var compiled = Compile(reader, tables);
         using var sink = new XmlSink(output, root);
@@ -78,6 +105,8 @@ public sealed class JazminShape
     /// <summary>A JSON Schema (draft 2020-12) describing the shape's JSON output for this reader.</summary>
     public JsonObject ToJsonSchema(JazminReader reader)
     {
+        using var own = OwnTable(reader);
+        reader = own ?? reader;
         JsonObject schema;
         using (var tables = new TableReaders(reader)) schema = Schema(Compile(reader, tables), mayBeEmpty: true);
         var result = new JsonObject { ["$schema"] = "https://json-schema.org/draft/2020-12/schema" };
@@ -238,11 +267,14 @@ public sealed class JazminShape
     private static string TypeName(JazminType type) => TypeNames.ToName(type);
 
     /// <summary>A table's columns for compiling: the reader's (Table null), or a linked table's (<c>$from</c>).</summary>
-    private sealed record Scope(string? Table, Dictionary<string, JazminColumn> Columns, JazminReader Reader);
+    private sealed record Scope(string? Table, Dictionary<string, JazminColumn> Columns, IReadOnlyList<JazminColumn> List);
 
-    private Node Compile(JazminReader reader, TableReaders tables)
+    private Node Compile(JazminReader reader, TableReaders tables) => Compile(name => name is null ? reader.Columns : tables.Open(name)?.Columns);
+
+    /// <summary>Compiles against tables' columns: <c>columnsOf(null)</c> gives the columns of the table the shape reads.</summary>
+    private Node Compile(Func<string?, IReadOnlyList<JazminColumn>?> columnsOf)
     {
-        Scope ScopeOf(string? table, JazminReader r) => new(table, r.Columns.ToDictionary(c => c.Name, StringComparer.Ordinal), r);
+        Scope ScopeOf(string? table, IReadOnlyList<JazminColumn> columns) => new(table, columns.ToDictionary(c => c.Name, StringComparer.Ordinal), columns);
 
         JazminColumn Column(Scope scope, JsonNode? name, string path, HashSet<JazminType>? allowed, string what)
         {
@@ -259,7 +291,7 @@ public sealed class JazminShape
             try
             {
                 var parsed = JazminFilter.Parse(filter.ToJsonString());
-                scope.Reader.Explain(parsed); // validates columns, operators and operands
+                BoundFilter.Bind(parsed, scope.List); // validates columns, operators and operands
                 return parsed;
             }
             catch (JazminException e)
@@ -311,8 +343,8 @@ public sealed class JazminShape
             foreach (var k in keys)
                 if (!(one ? OneKeys : LinkKeys).Contains(k)) throw Fail(path, $"unknown option '{k}' {(one ? "with $one" : "in a linked list")}");
             if (obj["$from"] is not JsonValue fv || !fv.TryGetValue<string>(out var table)) throw Fail(Child(path, "$from"), "$from must name a table");
-            var linkedReader = tables.Open(table) ?? throw Fail(Child(path, "$from"), $"unknown table '{table}'");
-            var linked = ScopeOf(table, linkedReader);
+            var linkedColumns = columnsOf(table) ?? throw Fail(Child(path, "$from"), $"unknown table '{table}'");
+            var linked = ScopeOf(table, linkedColumns);
             if (obj["$on"] is not JsonObject on || on.Count == 0)
                 throw Fail(Child(path, "$on"), "$on needs at least one column pair, such as { \"customer_id\": \"id\" }");
             var pairs = new List<(JazminColumn, JazminColumn)>();
@@ -330,7 +362,7 @@ public sealed class JazminShape
             {
                 return new LinkNode
                 {
-                    Table = table, Columns = linkedReader.Columns, On = pairs, Where = filter, One = true,
+                    Table = table, Columns = linkedColumns, On = pairs, Where = filter, One = true,
                     Sort = [], XmlItem = "item",
                     Item = Node(linked, obj["$one"], Child(path.Length > 0 ? path : "shape", "$one"), inRow: false),
                 };
@@ -338,7 +370,7 @@ public sealed class JazminShape
             var (groupBy, sort, limit, xmlItem) = ListOptions(linked, obj, path);
             return new LinkNode
             {
-                Table = table, Columns = linkedReader.Columns, On = pairs, Where = filter,
+                Table = table, Columns = linkedColumns, On = pairs, Where = filter,
                 GroupBy = groupBy, Sort = sort, Limit = limit, XmlItem = xmlItem,
                 Item = Node(linked, obj["$rows"], $"{(path.Length > 0 ? path : "shape")}[]", groupBy is null),
             };
@@ -397,7 +429,7 @@ public sealed class JazminShape
             }
         }
 
-        return Node(ScopeOf(null, reader), _shape, "", inRow: false);
+        return Node(ScopeOf(null, columnsOf(null) ?? throw Fail("", "the table it reads is not in the file")), _shape, "", inRow: false);
     }
 
     // ---- needs ---------------------------------------------------------------------------------------

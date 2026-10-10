@@ -165,6 +165,38 @@ for (const writer of ['js', 'dotnet']) {
   }
 }
 
+// Saved export shapes (docs/design/saved-shapes.md): each key lists exactly the shapes it can use, and a saved shape gives
+// what the shape itself gives, in files written by either library.
+const savedShapes = JSON.parse(fs.readFileSync(path.join(dir, 'saved-shapes.json'), 'utf8'));
+for (const writer of ['js', 'dotnet']) {
+  for (const [file, keyNames] of [[`${writer}-shapes-key.jzm`, ['key']], [`${writer}-shapes-access.jzm`, Object.keys(savedShapes.views)]]) {
+    for (const keyName of keyNames) {
+      test(`interop: ${file} opened with the ${keyName === 'key' ? 'owner' : keyName} key lists the saved shapes it can use`, (t) => {
+        const full = path.join(dir, file);
+        if (!fs.existsSync(full)) return t.skip(`run the ${writer === 'js' ? 'fixture script' : '.NET tests'} to generate ${file}`);
+        const reader = open(full, { key: keys[keyName], accessState: false });
+        try {
+          const expected = savedShapes.views[keyName].map((name) => {
+            const { groups = ['*'], ...shape } = savedShapes.shapes.find((s) => s.name === name);
+            return keyName === 'key' ? { ...shape, groups } : shape; // groups: the owner's and single-key files' only
+          });
+          assert.deepEqual(reader.shapes, expected);
+          for (const s of expected) {
+            const table = s.table ? reader.openTable(s.table) : reader;
+            try {
+              assert.equal(toJSON(reader, { shape: s.name }), toJSON(table, { shape: s.shape }), s.name);
+            } finally {
+              if (table !== reader) table.close();
+            }
+          }
+        } finally {
+          reader.close();
+        }
+      });
+    }
+  }
+}
+
 // Several tables (D-3): the first table is the dataset (checked above); the second is a lookup table of countries.
 const expectedCountries = countryRows(dataset.rows);
 for (const writer of ['js', 'dotnet']) {

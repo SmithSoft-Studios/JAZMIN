@@ -1,0 +1,24 @@
+{
+  "shapes": [
+    {
+      "name": "Balances", "description": "The first balances, for the finance group (keys that see balance)", "groups": ["finance"],
+      "shape": { "$rows": { "id": "id", "balance": "balance" }, "$limit": 5 }
+    },
+    { "name": "Countries", "table": "countries", "shape": { "$rows": { "code": "country", "people": "people" } } },
+    {
+      "name": "People by country", "description": "How many people live in each country", "default": true,
+      "shape": { "$groupBy": "country", "$sort": ["country"], "$rows": { "country": "country", "people": { "$count": true } } }
+    },
+    {
+      "name": "People with country",
+      "shape": { "$rows": { "id": "id", "country": { "$from": "countries", "$on": { "country": "country" }, "$one": { "people": "people" } } }, "$limit": 4 }
+    },
+    { "name": "South", "groups": ["ZA"], "shape": { "$rows": "id", "$limit": 3 } }
+  ],
+  "views": {
+    "key": ["Balances", "Countries", "People by country", "People with country", "South"],
+    "bob": ["Countries", "People by country", "People with country", "South"],
+    "sally": ["Balances", "Countries", "People by country", "People with country"],
+    "erin": ["Countries", "People by country", "People with country", "South"]
+  }
+}

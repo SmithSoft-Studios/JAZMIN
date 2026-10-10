@@ -70,6 +70,9 @@ test('a shape that does not fit the file is refused when written, naming the sha
   refused(tryWrite([{ name: 'X', shape: totals, colour: 'red' }]), /^shapes\[0\]: unknown member 'colour'/);
   refused(tryWrite([{ name: 'X', shape: totals, groups: [] }]), /^Saved shape 'X': groups must be '\*' or a non-empty array$/);
   refused(tryWrite({ name: 'X' }), /^shapes must be an array$/);
+  const dir = tmpDir(); // refused before anything is written: no file is left
+  refused(() => write(path.join(dir, 'bad.jzm'), rows, { columns, shapes: [{ name: 'X', shape: { $rows: 'nope' } }] }), /^Saved shape 'X'/);
+  assert.deepEqual(fs.readdirSync(dir), []);
   // Different groups may each have their own default.
   const key = JazminKey.generate();
   assert.ok(write(null, rows, { columns, key, shapes: [{ name: 'X', shape: totals, default: true, groups: ['a'] }, { name: 'Y', shape: balances, default: true, groups: ['b'] }] }));
@@ -205,6 +208,11 @@ test('several tables: a shape reads its own table, links to others, and is check
     /^Saved shape 'Bad': Shape at shape\[\]\.x\.\$on\.nope: unknown or hidden column 'nope' in table 'tx'$/);
   update(file, { table: 'tx', addShapes: [{ name: 'Count', table: 'tx', shape: { $count: true } }] });
   assert.deepEqual(names(open(file)), ['Amounts', 'Big', 'Clients', 'Count']);
+  // A file's first shape, added by an append to another table, is checked against the tables it links.
+  const fresh = path.join(dir, 'fresh.jzm');
+  write(fresh, { clients: [{ id: 1, name: 'Ann' }], tx: [{ client: 1, amount: 5 }] }, { tables });
+  append(fresh, { table: 'tx', insert: [{ client: 1, amount: 6 }], addShapes: [{ name: 'Clients', shape: withTx }] });
+  assert.equal(toJSON(open(fresh), { shape: 'Clients' }), '[{"name":"Ann","tx":[5,6]}]');
 });
 
 test('readers leave out saved shapes they cannot use or do not understand', () => {

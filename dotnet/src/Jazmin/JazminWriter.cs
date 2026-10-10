@@ -53,6 +53,12 @@ public sealed class JazminWriteOptions
     public JazminPackage? Package { get; set; }
 
     /// <summary>
+    /// Export shapes saved in the file, offered by name. In a shared file each key that sees one (its groups) must see
+    /// every column it uses, or the file is refused.
+    /// </summary>
+    public IReadOnlyList<JazminSavedShape>? Shapes { get; set; }
+
+    /// <summary>
     /// Memory or speed first (default <see cref="JazminPriority.Balanced"/>): sets the default of
     /// <see cref="MaxDegreeOfParallelism"/>. The file is the same either way.
     /// </summary>
@@ -187,6 +193,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     private JsonObject? _packageJson;
     private bool _packageSet;
     private List<string> _fileGroupNames = new();
+    private readonly Dictionary<string, SavedShape> _shapes = new(StringComparer.Ordinal); // saved export shapes (spec 6.8) by name
     private readonly List<WrittenChunk> _chunks = new();
     private readonly List<(int Col, string Column, string Kind, IIndexBuilder Builder)> _indexBuilders = new();
     private object?[] _normalized = []; // reused per row
@@ -242,6 +249,15 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         // Column groups a grant may name: those of every table (when appending, of the file's other tables too).
         _allGroupNames = _tables.SelectMany(t => t.ColumnGroups.Select(g => g.Name))
             .Concat((cont?.Header.Tables ?? []).SelectMany(t => t.ColumnGroups.Select(g => g.Name))).Distinct().ToList();
+        // Saved shapes: the file's own, replaced by name by those given. Checked against the tables before anything is
+        // written, and against the columns of every key that will see them when the file is finished.
+        foreach (var s in cont?.Files?.Shapes ?? []) _shapes[s.Name] = s;
+        foreach (var s in SavedShapes.NormalizeList(_options.Shapes)) _shapes[s.Name] = s;
+        if (_shapes.Count > 0)
+        {
+            SavedShapes.CheckList(_shapes.Values);
+            SavedShapes.Check(_shapes.Values, ShapeTables());
+        }
 
         var encrypted = _options.Key is not null || _options.Password is not null;
         _fileId = cont?.FileId ?? RandomNumberGenerator.GetBytes(FormatConstants.FileIdSize);
@@ -304,6 +320,16 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         foreach (var file in _options.Files ?? []) AddFile(file);
     }
 
+    /// <summary>The file's tables and their column groups, the first table first: what saved shapes are checked against.</summary>
+    private List<ShapeTable> ShapeTables()
+    {
+        static ShapeTable Declared(TableSpec t) =>
+            new(t.Name, t.ColumnGroups.Select(g => (g.Name, (IReadOnlyList<JazminColumn>)g.Cols.Select(i => t.Columns[i]).ToList())).ToList());
+        if (_continue is not { } cont) return _tables.Select(Declared).ToList();
+        // An append writes one table: the others are as the file has them.
+        return cont.Header.Tables.Select((t, i) => i == cont.TableIndex ? Declared(_tables[0]) : cont.ShapeTables?[i] ?? new ShapeTable(t.Name, [])).ToList();
+    }
+
     /// <summary>Embeds a file (spec 6.8). Identical content is stored once; adding a path twice is an error.</summary>
     public void AddFile(JazminFileInput file) => AddSource(FileSource.From(file));
 
@@ -340,10 +366,12 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     {
         var entries = _fileEntries.Values.OrderBy(e => e.Path, StringComparer.Ordinal).ToList();
         var byId = _contents.Values.ToDictionary(c => c.Id);
-        JsonObject Directory(IEnumerable<FileEntry> list, bool withGroups)
+        var shapes = _shapes.Values.OrderBy(s => s.Name, StringComparer.Ordinal).ToList();
+        var firstTable = _continue?.Header.Tables[0].Name ?? _tables[0].Name;
+        JsonObject Directory(IEnumerable<FileEntry> list, bool withGroups, IEnumerable<SavedShape> saved)
         {
             var files = list.ToList();
-            return new JsonObject
+            var directory = new JsonObject
             {
                 ["files"] = new JsonArray(files.Select(e =>
                 {
@@ -354,6 +382,9 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                 }).ToArray()),
                 ["contents"] = new JsonArray(files.Select(e => e.Content).Distinct().Order().Select(id => (JsonNode?)byId[id].ToJson()).ToArray()),
             };
+            var savedList = saved.Select(s => (JsonNode?)s.ToJson(withGroups, firstTable)).ToArray();
+            if (savedList.Length > 0) directory["shapes"] = new JsonArray(savedList);
+            return directory;
         }
         var package = _packageSet ? EmbeddedFiles.PackageJson(_options.Package, _fileEntries.Keys) : _packageJson;
         if (_packageSet && package?["edit"] is { } edit)
@@ -368,16 +399,17 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         {
             if (_keys is not null && !_keys.Keyring.ContainsKey(FormatConstants.KeyringFiles)) _keys.Keyring[FormatConstants.KeyringFiles] = RandomNumberGenerator.GetBytes(32);
             var sectionId = $"files/dir{suffix}";
-            WriteDirectory(EmbeddedFiles.Everyone, sectionId, Directory(entries, true), _keys?.SectionKey(FormatConstants.KeyringFiles, sectionId));
+            WriteDirectory(EmbeddedFiles.Everyone, sectionId, Directory(entries, true, shapes), _keys?.SectionKey(FormatConstants.KeyringFiles, sectionId));
         }
         else
         {
-            _fileGroupNames = entries.SelectMany(e => e.Groups ?? [EmbeddedFiles.Everyone]).Distinct().Order(StringComparer.Ordinal).ToList();
+            _fileGroupNames = entries.SelectMany(e => e.Groups ?? [EmbeddedFiles.Everyone]).Concat(shapes.SelectMany(s => s.Groups))
+                .Distinct().Order(StringComparer.Ordinal).ToList();
             foreach (var name in _fileGroupNames)
             {
                 var id = _secrets!.PartitionId(name); // same opaque HMAC id as partitions
                 var sectionId = $"files/dir/{id}{suffix}";
-                WriteDirectory(id, sectionId, Directory(entries.Where(e => (e.Groups ?? [EmbeddedFiles.Everyone]).Contains(name)), false),
+                WriteDirectory(id, sectionId, Directory(entries.Where(e => (e.Groups ?? [EmbeddedFiles.Everyone]).Contains(name)), false, shapes.Where(s => s.Groups.Contains(name))),
                     Crypto.Hkdf(_secrets.FileGroupSecret(id), _salt, $"JAZMIN/1/{sectionId}"));
             }
         }
@@ -863,6 +895,24 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             }
         }
 
+        if (_access is not null && _shapes.Count > 0)
+        {
+            // Every key that sees a saved shape must see every column it uses: its text names them.
+            var viewers = _access.Grants.Select(g => new ShapeViewer(
+                () => string.IsNullOrEmpty(g.Label) ? g.Key.Id : $"{g.Key.Id} ({g.Label})",
+                g.Columns?.ToHashSet(StringComparer.Ordinal),
+                name => SeesFileGroup(g, name, _secrets!.PartitionId(name)))).ToList();
+            try
+            {
+                SavedShapes.Check(_shapes.Values, ShapeTables(), viewers);
+            }
+            catch
+            {
+                _faulted = true; // refused: Dispose leaves the output incomplete instead of finishing it again
+                throw;
+            }
+        }
+
         var cont = _continue;
         var segment = cont is null ? 0 : cont.Header.AppendCount + 1;
         var tables = cont is null
@@ -884,7 +934,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             Metadata = (_options.Metadata ?? new JsonObject()).ToJsonString(),
             Tables = tables,
             Keyring = _keys?.Keyring,
-            Files = _fileEntries.Count > 0 ? WriteFileDirectories(segment) : null,
+            Files = _fileEntries.Count > 0 || _shapes.Count > 0 ? WriteFileDirectories(segment) : null,
             Deltas = deltas,
         };
 
@@ -1169,14 +1219,11 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                 .Select(n => new KeyValuePair<string, JsonNode?>(n, Convert.ToBase64String(s.ColumnSecret(n)))));
             var bundle = new JsonObject { ["header"] = header, ["partitions"] = partitions, ["partitionNames"] = partitionNames, ["columns"] = columns };
             bundle["submission"] = Convert.ToBase64String(_options.Key!.SubmissionKey(grant.Key.Id).Bytes); // what this holder sends back (spec 7.8)
-            // File groups this key sees: everyone's, its partitions', and the named ones it was granted.
             var fileSecrets = new JsonObject();
             foreach (var name in _fileGroupNames)
             {
                 var id = s.PartitionId(name);
-                var visible = name == EmbeddedFiles.Everyone || (grant.Files?.Contains(EmbeddedFiles.Everyone) ?? false) || (grant.Files?.Contains(name) ?? false)
-                    || (grant.Rows is null ? s.PartitionNames.ContainsKey(id) : grant.Rows.Contains(name));
-                if (visible) fileSecrets[id] = Convert.ToBase64String(s.FileGroupSecret(id));
+                if (SeesFileGroup(grant, name, id)) fileSecrets[id] = Convert.ToBase64String(s.FileGroupSecret(id));
             }
             if (fileSecrets.Count > 0) bundle["files"] = fileSecrets;
             if (grant.Expires is { } expires) bundle["expires"] = Iso(expires);
@@ -1185,6 +1232,11 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         }
         return slots;
     }
+
+    /// <summary>File groups a grant's key sees: everyone's, its partitions', and the named ones it was granted.</summary>
+    private bool SeesFileGroup(AccessConfig.NormalizedGrant grant, string name, string id) =>
+        name == EmbeddedFiles.Everyone || (grant.Files?.Contains(EmbeddedFiles.Everyone) ?? false) || (grant.Files?.Contains(name) ?? false)
+        || (grant.Rows is null ? _secrets!.PartitionNames.ContainsKey(id) : grant.Rows.Contains(name));
 
     /// <summary>
     /// Abandons the file without writing the catalog and trailer, so readers will reject it as

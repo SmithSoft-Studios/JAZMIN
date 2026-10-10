@@ -7,7 +7,7 @@ import { JazminKey, append, open, toJSON, write, writeChanges } from '../src/ind
 import { CHUNK_MAP, PAGING } from '../src/writer.js';
 import {
   APPEND_DELETE, APPEND_SPLIT, COUNTRY_COLUMNS, DOCUMENT_FILES, DOCUMENT_PACKAGE, EDIT_CHANGES, EDIT_COLUMNS, EDIT_ROWS, EDIT_SETTINGS, FIXTURE_PACKAGE, PARTITIONS_SPLIT, accessFixture, countryRows, filesAccessFixture, fixtureFiles,
-  NESTED_COLUMNS, NESTED_FILTERS, NESTED_GROWN_SPLIT, fromCanonical, nestedColumnsBefore, nestedFixtureRows, nestedRowBefore, partitionsFixture, tablesFixture,
+  NESTED_COLUMNS, NESTED_FILTERS, NESTED_GROWN_SPLIT, fromCanonical, nestedColumnsBefore, nestedFixtureRows, nestedRowBefore, partitionsFixture, shapesAccessFixture, tablesFixture,
 } from '../test/fixture-helpers.js';
 
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../spec/fixtures');
@@ -120,6 +120,12 @@ append(manyPartitions, { key: keys.key, insert: rows.slice(...PARTITIONS_SPLIT),
 const countryTable = countryRows(dataset.rows).map((r) => fromCanonical(COUNTRY_COLUMNS, r));
 write(path.join(dir, 'js-tables.jzm'), { people: rows, countries: countryTable }, { ...tablesFixture(dataset.columns), metadata: dataset.metadata, chunkRows: 64 });
 write(path.join(dir, 'js-tables-access.jzm'), { people: rows, countries: countryTable }, { ...tablesFixture(dataset.columns, keys), key: keys.key, metadata: dataset.metadata, chunkRows: 64 });
+
+// Saved export shapes (docs/design/saved-shapes.md): the tables fixtures with spec/fixtures/saved-shapes.json.
+const savedShapes = JSON.parse(fs.readFileSync(path.join(dir, 'saved-shapes.json'), 'utf8')).shapes;
+const shapesBase = { metadata: dataset.metadata, chunkRows: 64, key: keys.key, shapes: savedShapes };
+write(path.join(dir, 'js-shapes-key.jzm'), { people: rows, countries: countryTable }, { ...tablesFixture(dataset.columns), ...shapesBase });
+write(path.join(dir, 'js-shapes-access.jzm'), { people: rows, countries: countryTable }, { ...tablesFixture(dataset.columns, keys, shapesAccessFixture), ...shapesBase });
 
 // Export shape (docs/design/export-shapes.md): the expected output of spec/fixtures/shape.json on the dataset.
 const shape = JSON.parse(fs.readFileSync(path.join(dir, 'shape.json'), 'utf8'));

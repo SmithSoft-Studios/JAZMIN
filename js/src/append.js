@@ -114,7 +114,7 @@ function appendUnlocked(path, options) {
       throw new JazminValidationError(`removeShapes: no saved shape '${removeShapes[0]}'`);
     }
     // Saved shapes are checked against every table they read: the file's other tables are as it has them.
-    const shapeTables = state.files?.shapes.length && reader.tables.length > 1
+    const shapeTables = (state.files?.shapes.length || addShapes.length) && reader.tables.length > 1
       ? reader.tables.map((name) => {
         if (name === reader.table) return null;
         const other = reader.openTable(name);

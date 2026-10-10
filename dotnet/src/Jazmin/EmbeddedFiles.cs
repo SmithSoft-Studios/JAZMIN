@@ -434,8 +434,8 @@ internal sealed class StoredContent
 /// <summary>A directory entry: path -> content id, with its groups where known, and its actions (as stored).</summary>
 internal sealed record FileEntry(string Path, string Type, int Content, List<string>? Groups, JsonObject? Actions = null);
 
-/// <summary>The files carried from one version of a file to the next (append / update).</summary>
-internal sealed record FileState(List<FileEntry> Entries, List<StoredContent> Contents, int NextId, JsonObject? Package);
+/// <summary>The files and saved shapes carried from one version of a file to the next (append / update).</summary>
+internal sealed record FileState(List<FileEntry> Entries, List<StoredContent> Contents, int NextId, JsonObject? Package, List<SavedShape>? Shapes = null);
 
 /// <summary>Read-only, seekable view of an embedded file; decodes one block at a time.</summary>
 internal sealed class EmbeddedFileStream(JazminReader reader, StoredContent content) : Stream

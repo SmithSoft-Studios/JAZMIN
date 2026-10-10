@@ -346,6 +346,15 @@ export class JazminWriter {
       ...(cont?.header.tables ?? []).flatMap((t) => t.columnGroups.map((g) => g.name)),
     ])];
 
+    // Saved shapes: the file's own, replaced by name by those given. Checked against the tables before anything is
+    // written, and against the columns of every key that will see them when the file is finished.
+    for (const s of cont?.files?.shapes ?? []) this.#shapes.set(s.name, s);
+    for (const s of normalizeShapes(shapes)) this.#shapes.set(s.name, s);
+    if (this.#shapes.size) {
+      checkShapeList([...this.#shapes.values()]);
+      checkShapes([...this.#shapes.values()], this.#shapeTables());
+    }
+
     this.#fileId = cont ? cont.fileId : crypto.randomBytes(FILE_ID_SIZE);
     this.#salt = cont ? cont.salt : key || password || access ? crypto.randomBytes(SALT_SIZE) : Buffer.alloc(SALT_SIZE);
     if (access) {
@@ -385,14 +394,6 @@ export class JazminWriter {
       this.#files.nextId = cont.files.nextId;
     }
     this.#package = packageSettings !== undefined ? packageSettings : cont?.files?.package;
-    // Saved shapes: the file's own, replaced by name by those given. Checked against the tables now, and against the
-    // columns of every key that will see them when the file is finished.
-    for (const s of cont?.files?.shapes ?? []) this.#shapes.set(s.name, s);
-    for (const s of normalizeShapes(shapes)) this.#shapes.set(s.name, s);
-    if (this.#shapes.size) {
-      checkShapeList([...this.#shapes.values()]);
-      checkShapes([...this.#shapes.values()], this.#shapeTables());
-    }
     for (const f of files ?? []) this.addFile(f);
   }
 

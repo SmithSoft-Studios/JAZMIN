@@ -55,6 +55,12 @@ public sealed class JazminUpdate
     /// <summary>New package settings (default: keep the current ones).</summary>
     public JazminPackage? Package { get; set; }
 
+    /// <summary>Saved export shapes to add (a name that exists is replaced).</summary>
+    public IReadOnlyList<JazminSavedShape> AddShapes { get; set; } = Array.Empty<JazminSavedShape>();
+
+    /// <summary>Names of saved export shapes to remove.</summary>
+    public IReadOnlyList<string> RemoveShapes { get; set; } = Array.Empty<string>();
+
     public int ChunkRows { get; set; } = FormatConstants.DefaultChunkRows;
 
     /// <summary>Memory or speed first while the file is read and rewritten (default <see cref="JazminPriority.Balanced"/>).</summary>
@@ -148,6 +154,12 @@ public sealed class JazminAppend
 
     /// <summary>New package settings (default: keep the current ones).</summary>
     public JazminPackage? Package { get; set; }
+
+    /// <summary>Saved export shapes to add (a name that exists is replaced).</summary>
+    public IReadOnlyList<JazminSavedShape> AddShapes { get; set; } = Array.Empty<JazminSavedShape>();
+
+    /// <summary>Names of saved export shapes to remove.</summary>
+    public IReadOnlyList<string> RemoveShapes { get; set; } = Array.Empty<string>();
 
     public int ChunkRows { get; set; } = FormatConstants.DefaultChunkRows;
 
@@ -396,6 +408,8 @@ public static class JazminFile
                 CompressionLevel = update.CompressionLevel,
                 ChunkRows = update.ChunkRows,
                 Package = update.Package ?? reader.Package,
+                Shapes = SavedShapes.Kept(reader.FileState()?.Shapes ?? [], update.AddShapes, update.RemoveShapes)
+                    .Select(s => s.ToPublic(withGroups: true)).Concat(update.AddShapes).ToList(),
                 Access = access is null ? null : several ? new JazminAccessOptions { Grants = access.Grants } : access,
                 Now = update.Now, // expired grants are dropped; the new version's fresh secrets lock them out
                 Priority = update.Priority,
@@ -612,6 +626,16 @@ public static class JazminFile
                     .OrderBy(x => x.Key, Comparer<object?[]>.Create(SortKeys.Compare)).Select(x => x.Values).ToList();
             }
             var accessOptions = ownerGrants is null ? null : AccessFor(reader, ownerGrants, new JazminUpdate { Grant = append.Grant });
+            var files = AppendFiles(state.Files, append);
+            // Saved shapes are checked against every table they read: the file's other tables are as it has them.
+            var shapeTables = (files?.Shapes is { Count: > 0 } || append.AddShapes.Count > 0) && reader.Tables.Count > 1
+                ? reader.Tables.Select(name =>
+                {
+                    if (name == reader.TableName) return null;
+                    using var other = reader.OpenTable(name);
+                    return ShapeTable.Of(other);
+                }).ToList()
+                : null;
             var metadata = reader.Metadata;
             var (rowCountBefore, appendCountBefore) = (reader.RowCount, reader.AppendCount);
             reader.Dispose();
@@ -630,7 +654,8 @@ public static class JazminFile
                 Now = append.Now, // expired grants lose their key slots (full lock-out needs Compact/Update)
                 Files = append.AddFiles,
                 Package = append.Package,
-            }, state with { Deleted = allDeleted, Files = AppendFiles(state.Files, append) });
+                Shapes = append.AddShapes,
+            }, state with { Deleted = allDeleted, Files = files, ShapeTables = shapeTables });
             try
             {
                 foreach (var values in incoming) writer.WriteValues(values);
@@ -664,19 +689,21 @@ public static class JazminFile
         return result;
     }
 
-    /// <summary>Files an append keeps (referenced, not rewritten): every file except removed or replaced ones.</summary>
+    /// <summary>Files an append keeps (referenced, not rewritten): every file except removed or replaced ones; and the saved shapes.</summary>
     private static FileState? AppendFiles(FileState? state, JazminAppend append)
     {
-        if (state is null && append.AddFiles.Count == 0)
+        if (state is null && append.AddFiles.Count == 0 && append.AddShapes.Count == 0)
         {
             if (append.RemoveFiles.Count > 0) throw new JazminValidationException($"RemoveFiles: no file '{append.RemoveFiles[0]}'");
+            if (append.RemoveShapes.Count > 0) throw new JazminValidationException($"RemoveShapes: no saved shape '{append.RemoveShapes[0]}'");
             return null;
         }
         var entries = (state?.Entries ?? []).ToDictionary(e => e.Path, StringComparer.Ordinal);
         foreach (var p in append.RemoveFiles)
             if (!entries.Remove(p)) throw new JazminValidationException($"RemoveFiles: no file '{p}'");
         foreach (var f in append.AddFiles) entries.Remove(f.Path);
-        return new FileState(entries.Values.ToList(), state?.Contents ?? [], state?.NextId ?? 0, state?.Package);
+        return new FileState(entries.Values.ToList(), state?.Contents ?? [], state?.NextId ?? 0, state?.Package,
+            SavedShapes.Kept(state?.Shapes ?? [], append.AddShapes, append.RemoveShapes));
     }
 
     /// <summary>The files a rewrite keeps, read block by block from the old version while the new one is written.</summary>

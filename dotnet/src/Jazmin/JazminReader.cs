@@ -161,7 +161,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         HeaderDef Header, TableDef Table, byte[] FileId, byte[] Salt, ushort Flags, KeySchedule? Keys, FileSecrets? OwnerSecrets,
         JsonObject? Directory, string? DirectoryText, SectionRef? DirectoryRef, (long Offset, int Length, byte[] Section)? KeySlots,
         List<IndexRef> Indexes, Dictionary<string, int> SegmentCounts, long[] Deleted, long ValidEnd, object?[]? LastRow, FileState? Files = null,
-        int TableIndex = 0, List<OwnerTable>? OwnerCatalog = null, ChunkMapState? ChunkMap = null);
+        int TableIndex = 0, List<OwnerTable>? OwnerCatalog = null, ChunkMapState? ChunkMap = null, List<ShapeTable?>? ShapeTables = null);
 
     /// <summary>Owner, appending: the table's chunk map so far - the whole one's section, the chunks appended since, and how many chunks they cover.</summary>
     internal sealed record ChunkMapState(SectionRef Base, ChunkMap? Appended, int Chunks);
@@ -994,14 +994,16 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     // ---- embedded files (spec 6.8) ---------------------------------------------------------------
 
-    private (Dictionary<string, FileEntry> Entries, Dictionary<int, StoredContent> Contents)? _fileIndex;
+    private (Dictionary<string, FileEntry> Entries, Dictionary<int, StoredContent> Contents, Dictionary<string, SavedShape> Shapes)? _fileIndex;
+    private List<SavedShape>? _shapeList; // saved shapes this key can use, worked out once
 
-    /// <summary>Loads the file directories this key can open, merged by path (once).</summary>
-    private (Dictionary<string, FileEntry> Entries, Dictionary<int, StoredContent> Contents) FileIndex()
+    /// <summary>Loads the file directories this key can open, merged by path (once), with their saved shapes merged by name.</summary>
+    private (Dictionary<string, FileEntry> Entries, Dictionary<int, StoredContent> Contents, Dictionary<string, SavedShape> Shapes) FileIndex()
     {
         if (_fileIndex is { } cached) return cached;
         var entries = new Dictionary<string, FileEntry>(StringComparer.Ordinal);
         var contents = new Dictionary<int, StoredContent>();
+        var shapes = new Dictionary<string, SavedShape>(StringComparer.Ordinal);
         if (_header.Files is { } member)
         {
             var suffix = member.Segment > 0 ? $"/{member.Segment}" : "";
@@ -1045,14 +1047,23 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                     else if (known.Groups is not null && groups is not null)
                         entries[path] = known with { Groups = known.Groups.Union(groups).Order(StringComparer.Ordinal).ToList() };
                 }
+                foreach (var (shape, hasGroups) in SavedShapes.FromDirectory(json))
+                {
+                    // Groups as for files: stored in files that aren't shared, the directory's own for the owner; else unknown (empty).
+                    List<string> groups = hasGroups ? shape.Groups : ownerNames is not null && ownerNames.TryGetValue(group, out var name) ? [name] : [];
+                    if (!shapes.TryGetValue(shape.Name, out var known)) shapes[shape.Name] = shape with { Groups = groups };
+                    else if (known.Groups.Count > 0 && groups.Count > 0) shapes[shape.Name] = known with { Groups = known.Groups.Union(groups).Order(StringComparer.Ordinal).ToList() };
+                }
             }
             foreach (var (path, e) in entries.ToList())
             {
                 if (!contents.ContainsKey(e.Content)) throw new JazminFormatException($"Embedded file '{path}' refers to missing content");
                 if (e.Groups?.Contains(EmbeddedFiles.Everyone) == true) entries[path] = e with { Groups = [EmbeddedFiles.Everyone] };
             }
+            foreach (var (name, s) in shapes.ToList())
+                if (s.Groups.Contains(EmbeddedFiles.Everyone)) shapes[name] = s with { Groups = [EmbeddedFiles.Everyone] };
         }
-        _fileIndex = (entries, contents);
+        _fileIndex = (entries, contents, shapes);
         return _fileIndex.Value;
     }
 
@@ -1061,7 +1072,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     {
         get
         {
-            var (entries, contents) = FileIndex();
+            var (entries, contents, _) = FileIndex();
             return entries.Values.Select(e => new JazminEmbeddedFile(e.Path, e.Type, contents[e.Content].Size, contents[e.Content].Sha256, e.Groups?.ToList())
             {
                 Actions = EmbeddedFiles.ActionsFrom(e.Actions),
@@ -1074,9 +1085,33 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <summary>Settings for viewers that render the embedded files, or null.</summary>
     public JazminPackage? Package => EmbeddedFiles.PackageFrom(PackageJson);
 
+    /// <summary>
+    /// Saved export shapes this key can use, by name (groups for the owner and in files that aren't shared). Shapes that
+    /// use a column this key can't see are left out. Run one with <see cref="Formats.JazminShape.FromFile"/>.
+    /// </summary>
+    public IReadOnlyList<JazminSavedShape> Shapes
+    {
+        get
+        {
+            if (_shapeList is null)
+            {
+                var tables = new Dictionary<string, IReadOnlyList<JazminColumn>>(StringComparer.Ordinal) { [TableName] = Columns };
+                IReadOnlyList<JazminColumn>? ColumnsOf(string name)
+                {
+                    if (tables.TryGetValue(name, out var known)) return known;
+                    if (!Tables.Contains(name)) return null;
+                    using var table = OpenTable(name);
+                    return tables[name] = table.Columns;
+                }
+                _shapeList = FileIndex().Shapes.Values.Where(s => SavedShapes.Fits(s, Tables[0], ColumnsOf)).OrderBy(s => s.Name, StringComparer.Ordinal).ToList();
+            }
+            return _shapeList.Select(s => s.ToPublic(withGroups: s.Groups.Count > 0)).ToList();
+        }
+    }
+
     private StoredContent FileContent(string path)
     {
-        var (entries, contents) = FileIndex();
+        var (entries, contents, _) = FileIndex();
         if (!entries.TryGetValue(path, out var entry)) throw new JazminValidationException($"No file '{path}' is visible with this key");
         return contents[entry.Content];
     }
@@ -1133,9 +1168,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     internal FileState? FileState()
     {
         if (_header.Files is not { } member) return null;
-        var (entries, contents) = FileIndex();
+        var (entries, contents, shapes) = FileIndex();
         return new FileState(entries.Values.Select(e => e with { Groups = e.Groups ?? [EmbeddedFiles.Everyone] }).ToList(), contents.Values.ToList(),
-            member.NextContent, PackageJson);
+            member.NextContent, PackageJson, shapes.Values.Select(s => s.Groups.Count > 0 ? s : s with { Groups = [EmbeddedFiles.Everyone] }).ToList());
     }
 
     // ---- file properties -------------------------------------------------------------------------

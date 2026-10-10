@@ -73,8 +73,8 @@ export function countryRows(datasetRows) {
   return [...byCountry.values()].sort((a, b) => (a.country < b.country ? -1 : a.country > b.country ? 1 : 0));
 }
 
-export function tablesFixture(datasetColumns, access) {
-  const { partitionBy, columnGroups, ...grants } = access ? accessFixture(access) : {};
+export function tablesFixture(datasetColumns, access, accessOf = accessFixture) {
+  const { partitionBy, columnGroups, ...grants } = access ? accessOf(access) : {};
   return {
     ...(access ? { access: grants } : {}),
     tables: [
@@ -179,6 +179,16 @@ export const EDIT_AFTER = [
 export function filesAccessFixture(keys) {
   const access = accessFixture(keys);
   access.grants[0] = { ...access.grants[0], files: ['template'] };
+  return access;
+}
+
+/**
+ * *-shapes-access.jzm: the tables fixture with the saved shapes of spec/fixtures/saved-shapes.json; Sally's key also sees
+ * the named file group 'finance', whose shape uses balance.
+ */
+export function shapesAccessFixture(keys) {
+  const access = accessFixture(keys);
+  access.grants[1] = { ...access.grants[1], files: ['finance'] };
   return access;
 }
 
