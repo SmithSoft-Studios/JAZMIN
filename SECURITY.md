@@ -18,11 +18,12 @@ it, and credit you in the release notes unless you prefer not to be named.
 
 | Version | Supported |
 |---|---|
-| 1.4.x | Yes |
-| 1.3.x | No: upgrade to 1.4 (the same file format, and no breaking changes) |
-| 1.2.x | No: upgrade to 1.4 (the same file format, and no breaking changes) |
-| 1.1.x | No: upgrade to 1.4 (the same file format, and no breaking changes) |
-| 1.0.x | No: upgrade to 1.4 (1.1 fixed a data-loss bug in the JS writer) |
+| 1.5.x | Yes |
+| 1.4.x | No: upgrade to 1.5 (the same file format, and no breaking changes) |
+| 1.3.x | No: upgrade to 1.5 (the same file format, and no breaking changes) |
+| 1.2.x | No: upgrade to 1.5 (the same file format, and no breaking changes) |
+| 1.1.x | No: upgrade to 1.5 (the same file format, and no breaking changes) |
+| 1.0.x | No: upgrade to 1.5 (1.1 fixed a data-loss bug in the JS writer) |
 | Pre-release versions (before 1.0.0) | No |
 
 ## Scope

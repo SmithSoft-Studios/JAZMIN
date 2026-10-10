@@ -3,7 +3,27 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
-## Unreleased
+## 1.5.0 - 2026-10-11 (file format 1.0)
+
+A file can carry export shapes under names, and each key sees only the shapes it
+can use; JavaScript queries can be written as arrow functions that the file's
+indexes answer; and the browser reader and the viewer export, open files from
+disk, and show a filter's first rows at once.
+
+- **Files:** still format 1.0, with no new reader feature. Saved shapes are a
+  new optional member of the file directories (spec 6.8; the shape language is
+  now specified in spec 10.4). The published npm 1.4.0 reads all 46 interop
+  fixtures exactly as 1.5 does, with every key, including the files with saved
+  shapes written by both libraries (which NuGet 1.4.0 reads too), without the
+  shapes; 1.5 reads 1.4's files.
+- **Changed behaviour:**
+  - 1.0 to 1.4 leave saved shapes out when they append to, update or compact a
+    file. Rewrite such files with 1.5, or add the shapes again.
+  - .NET `JazminWriter.Create` checks its options before it opens the file, and
+    a writer refused after it opened its file removes it (both libraries); see
+    Fixed.
+- **Still deprecated, removed in 2.0:** getting a key's secret with
+  `toString()` (use `export()`), and the reader's clock option.
 
 ### Added
 - **Queries with arrow functions in JavaScript:** `from(reader).where((t) => t.city === 'Durban').select(…).toArray()`,
@@ -73,7 +93,7 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 - **Opening files from disk, documented and measured** (USER-GUIDE 24.4, `npm run bench:viewer`): the viewer's folder
   opened as it is, the viewer in an iframe on your page, and your page passing the file. On a 201 MB file of
   10,000,000 rows, in Chrome, Edge and Firefox, each way opens it in 62-130 ms reading 0.07 MB, and finds one row by
-  id in 67-81 ms reading 0.15 MB, with 19-30 MB of extra memory. The viewer tests (`npm run test:viewer`) open the
+  id in 59-81 ms reading 0.08 MB, with 19-35 MB of extra memory. The viewer tests (`npm run test:viewer`) open the
   viewer from disk and in a page, and pass it files from another site.
 - **Small files from disk with no choosing: the file as a script.** A page opened from disk can't read a `.jzm` by its
   path, but it can load a script from any folder. `jazmin script file.jzm` (or `portableScript()` in Node,

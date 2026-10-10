@@ -42,6 +42,8 @@ var page = reader.AsQueryable<Customer>().Where(c => c.Country == "ZA").Skip(20)
   references.
 - **LINQ the reader runs:** `AsQueryable<T>()` turns conditions, `Skip`/`Take`, counts and sort order into one query on
   the file, reading only the columns it uses.
+- **Export shapes saved in the file:** `JazminWriteOptions.Shapes`, then `JazminShape.FromFile(reader, "Totals")`; in a
+  shared file each key sees only the shapes it can use.
 - **Memory or speed first,** key and password changes without rewriting rows, and rows as a JSON stream.
 - **ASP.NET Core:** the `Jazmin.AspNetCore` package serves a file's embedded files from an endpoint.
 

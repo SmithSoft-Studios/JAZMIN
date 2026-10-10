@@ -43,6 +43,10 @@ reader.close();
 - **Lists and objects as columns** (opt-in `list` and `object` column types): smaller and faster to read than JSON
   text, with filters inside them (`any`, `all`, `match`).
 - **Conversion:** lossless JSON round trip, plus CSV and XML; large CSV and XML files are imported without loading them.
+- **Queries with arrow functions:** `from(reader).where((t) => t.city === 'Durban').select(…).toArray()`, LINQ-style.
+  The functions are read into filters the file's indexes answer, and only the columns they use are read.
+- **Export shapes saved in the file:** named shapes the file carries, run by name (`toJSON(reader, { shape: 'Totals' })`);
+  in a shared file each key sees only the shapes it can use.
 - **Memory or speed first:** one `priority` setting; opt-in compact indexes for much smaller index files.
 - **Key changes:** `rotateKey()` gives a file a new key or password without rewriting its rows; `rotateOwnerKey()` re-keys a shared file.
 - **On a server:** `serveFiles()` serves a file's embedded files (byte ranges, per key), and `renderPdf()` and

@@ -1078,6 +1078,12 @@ lookups 2.6-2.7 ms (1.1.0) against 1.9 ms (1.2.0), the filter 15-17 ms
 against 12-14 ms, the rest unchanged; file sizes identical. The memory for one
 .NET lookup is 1.1 MB in both.
 
+**Checked again for 1.5.0** on 10 October, against the published 1.4.0 side
+by side, each workload in its own process, alternating (300,000 rows): Node,
+the browser reader and .NET the same within noise for writing, opening and
+queries, reading every row, JSON and CSV exports, a grouped shape, update
+and append, in time and in memory.
+
 **Checked again for 1.4.0** on 9 October, against 1.3.0 side by side, 3 runs
 each, alternating. The machine was busier than on 5 October, so both took
 longer than the tables show; file sizes are identical.
@@ -4124,12 +4130,14 @@ There are three ways:
 
 **Measured** with `npm run bench:viewer` (in `js/`) on a 201 MB file of
 10,000,000 rows, in Chrome, Edge and Firefox on Windows 11 (i7-12700H). The
-three ways read and use the same; the ranges cover every browser and way:
+three ways read and use the same; the ranges cover every browser and way.
+Checked again in Chrome for 1.5.0: the same times, and a lookup reads 0.08 MB
+(0.15 MB before):
 
 | Step | Time | Read from disk | Extra memory |
 |---|---|---|---|
 | Open, first page of rows | 62–130 ms | 0.07 MB | |
-| Find one row by id | 67–81 ms | 0.15 MB | 19–30 MB after the lookup (once 92 MB, Firefox) |
+| Find one row by id | 59–81 ms | 0.08 MB | 19–35 MB after the lookup (once 92 MB, Firefox) |
 | A filter that reads every row | 8.3–11 s to count every match (the first page shows long before) | 166 MB, at most 69 KB at a time | peak 100–212 MB |
 
 The memory is the browser's processes, sampled a few times a second, above
