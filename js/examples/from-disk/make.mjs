@@ -30,7 +30,10 @@ if (!Number.isSafeInteger(rows) || rows < 0) throw new Error('--rows must be a w
 // (node_modules/@smithsoft-studios/jazmin/viewer and .../browser).
 fs.cpSync(path.join(here, 'pages'), site, { recursive: true });
 fs.mkdirSync(path.join(site, 'viewer'), { recursive: true });
-for (const file of ['index.html', 'viewer.js', 'viewer.css', 'sandbox.js']) fs.copyFileSync(path.join(js, 'viewer', file), path.join(site, 'viewer', file));
+for (const file of ['index.html', 'viewer.js', 'viewer.css', 'sandbox.js', 'icon-32.png']) fs.copyFileSync(path.join(js, 'viewer', file), path.join(site, 'viewer', file));
+// The JAZMIN logo: the start page's, and the pages' tab icon.
+fs.copyFileSync(path.join(js, '../docs/images/jazmin-logo.png'), path.join(site, 'logo.png'));
+fs.copyFileSync(path.join(js, 'viewer/icon-32.png'), path.join(site, 'favicon.png'));
 fs.mkdirSync(path.join(site, 'browser'), { recursive: true });
 fs.copyFileSync(path.join(js, 'browser/jazmin-browser.js'), path.join(site, 'browser/jazmin-browser.js'));
 fs.mkdirSync(path.join(site, 'data'), { recursive: true });

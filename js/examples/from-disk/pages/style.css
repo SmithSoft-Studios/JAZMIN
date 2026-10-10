@@ -42,6 +42,7 @@ button:disabled { opacity: 0.55; cursor: default; }
 
 /* index.html */
 .hero { text-align: center; padding: 1.5rem 0 2rem; }
+.hero-logo { display: block; margin: 0 auto 0.9rem; border-radius: 22px; box-shadow: 0 6px 20px rgb(5 7 13 / 0.18); }
 .hero p { max-width: 40rem; margin: 0.5rem auto 0; font-size: 1.05rem; }
 .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 1rem; }
 .choice { display: flex; flex-direction: column; gap: 0.6rem; }

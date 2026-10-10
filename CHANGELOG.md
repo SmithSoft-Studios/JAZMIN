@@ -43,6 +43,9 @@ disk, and show a filter's first rows at once.
   **one file, three people** (the same file opened with three access keys side by side). The statement and the
   1,000,000-row demo file carry saved shapes, which the viewer's Export menu lists. The several-tables demo also
   queries both tables in JavaScript, each query shown as it runs with the same query in C# LINQ.
+- **The JAZMIN logo in the viewer and the demo:** the viewer's header shows the JAZMIN mark (2 KB, in its stylesheet,
+  so saved copies of the viewer show it too); the from-disk demo's start page shows the logo, and its pages have the tab
+  icon.
 - **`JazminBrowser.scriptBytes(url)`:** the file inside a script (`portableScript`, `jazmin script`) as bytes, still
   locked, for example to hand it to the viewer in an iframe.
 - **Export shapes saved in the file** (spec 6.8, a new optional member). A file can carry export shapes under names,
