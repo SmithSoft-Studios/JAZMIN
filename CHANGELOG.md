@@ -103,6 +103,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 - **`write()` (JavaScript) leaves no file behind when it can't finish one.** A file refused when it was finished, for
   example for package settings naming a file it doesn't store, stayed on disk unfinished; now it is removed, as it
   already was when a row was refused.
+- **The viewer gives back an export's memory.** It kept the last file it saved (an export or a change file) until the
+  next one, so a large export's memory stayed in use while the file was open. Now nothing keeps it once the download
+  has had a minute to start: a minute after exporting 1,000,000 rows as JSON (121 MB) in Chrome, the browser used
+  63–70 MB more than before the file was opened, not 187–192 MB. Exports take as long as before.
 
 ## 1.4.0 - 2026-10-09 (file format 1.0)
 

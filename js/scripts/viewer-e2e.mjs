@@ -32,10 +32,11 @@ const removeProfile = (profile) => {
     fs.rmSync(profile, { recursive: true, force: true, maxRetries: 5 });
   } catch { /* still in use */ }
 };
-// The viewer saves files (change files, exports) through a link that downloads them. The checks read what it saved
-// from JazminViewer.state.lastSaved instead, so the page's download links are made to do nothing: nothing reaches the
-// Downloads folder of whoever runs the checks.
-const NO_DOWNLOADS = `(HTMLAnchorElement.prototype.click = ((click) => function () { return this.download ? undefined : click.call(this); })(HTMLAnchorElement.prototype.click), true)`;
+// The viewer saves files (change files, exports) through a link that downloads them. The page's download links are made
+// to do nothing, so nothing reaches the Downloads folder of whoever runs the checks: a click keeps the link's name and
+// address in window.jzSaved instead, and the checks read the file from that address (SAVED_TEXT).
+const NO_DOWNLOADS = `(HTMLAnchorElement.prototype.click = ((click) => function () { if (!this.download) return click.call(this); window.jzSaved = { name: this.download, href: this.href }; })(HTMLAnchorElement.prototype.click), true)`;
+const SAVED_TEXT = `window.jzSaved && fetch(window.jzSaved.href).then((r) => r.text()).then((text) => ({ name: window.jzSaved.name, text }))`;
 
 // What each key sees in the files fixtures (mirrors FILES_VIEWS in js/test/fixture-helpers.js).
 const FILES = {
@@ -592,7 +593,7 @@ for (const name of chosen) {
     await page.evaluate(`(document.getElementById('jz-changes-save').click(), true)`);
     const edited = await waitFor(page, 'JazminViewer.state.lastReady && JazminViewer.state.lastReady.info', 'the edit page to call jazmin.ready()');
     const changeFile = Buffer.from(await page.evaluate(`(async () => {
-      const bytes = new Uint8Array(await JazminViewer.state.lastSaved.blob.arrayBuffer());
+      const bytes = new Uint8Array(await (await fetch(window.jzSaved.href)).arrayBuffer());
       let binary = '';
       for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
       return btoa(binary);
@@ -764,8 +765,8 @@ for (const name of chosen) {
     await page.evaluate(NO_DOWNLOADS);
     const exported = {};
     for (const format of ['csv', 'xml']) {
-      await page.evaluate(`(JazminViewer.state.lastSaved = null, document.querySelector('#jz-export-menu [data-format="${format}"]').click(), true)`);
-      exported[format] = await waitFor(page, `JazminViewer.state.lastSaved && JazminViewer.state.lastSaved.name.endsWith('.${format}') && JazminViewer.state.lastSaved.blob.text().then((text) => ({ name: JazminViewer.state.lastSaved.name, text, note: document.getElementById('jz-export-note').textContent }))`, `the ${format} export`, 120000);
+      await page.evaluate(`(window.jzSaved = null, document.querySelector('#jz-export-menu [data-format="${format}"]').click(), true)`);
+      exported[format] = await waitFor(page, `window.jzSaved && window.jzSaved.name.endsWith('.${format}') && fetch(window.jzSaved.href).then((r) => r.text()).then((text) => ({ name: window.jzSaved.name, text, note: document.getElementById('jz-export-note').textContent }))`, `the ${format} export`, 120000);
     }
     const exportOk = ['csv', 'xml'].every((format) => exported[format].name === `busy-filtered.${format}` && exported[format].text === BUSY_EXPORT[format] && /^Saved busy-filtered\./.test(exported[format].note));
     results.push({ browser: name, label: `export: the filter's ${BUSY_TOTAL.toLocaleString('en-US')} rows saved as CSV and XML, the same text as the library's`, ok: exportOk, problems: exportOk ? [] : [JSON.stringify(Object.fromEntries(Object.entries(exported).map(([f, e]) => [f, { name: e.name, note: e.note, length: e.text.length, expected: BUSY_EXPORT[f].length }])))] });
@@ -787,8 +788,8 @@ for (const name of chosen) {
     await page.evaluate(`(document.getElementById('jz-shape-schema').click(), true)`);
     const schema = await waitFor(page, `/JSON Schema/.test(document.getElementById('jz-shape-note').textContent) && JSON.parse(document.getElementById('jz-shape-output').textContent).$schema`, 'the schema');
     await page.evaluate(NO_DOWNLOADS);
-    await page.evaluate(`(JazminViewer.state.lastSaved = null, document.getElementById('jz-shape-json').click(), true)`);
-    const shaped = await waitFor(page, `JazminViewer.state.lastSaved && JazminViewer.state.lastSaved.blob.text().then((text) => ({ name: JazminViewer.state.lastSaved.name, text }))`, 'the shaped export');
+    await page.evaluate(`(window.jzSaved = null, document.getElementById('jz-shape-json').click(), true)`);
+    const shaped = await waitFor(page, SAVED_TEXT, 'the shaped export');
     const byKey = {};
     for (const who of ['bob', 'sally']) {
       await page.navigate(`${base}/js/viewer/index.html`);
@@ -817,8 +818,8 @@ for (const name of chosen) {
       savedFor[who] = await page.evaluate(`[...document.querySelectorAll('#jz-saved-list .saved-shape .name')].map((e) => e.textContent)`);
     }
     await page.evaluate(NO_DOWNLOADS);
-    await page.evaluate(`(JazminViewer.state.lastSaved = null, document.querySelector('#jz-saved-list [aria-label="Export Countries as JSON"]').click(), true)`);
-    const savedExport = await waitFor(page, `JazminViewer.state.lastSaved && JazminViewer.state.lastSaved.blob.text().then((text) => ({ name: JazminViewer.state.lastSaved.name, text }))`, 'the saved shape export');
+    await page.evaluate(`(window.jzSaved = null, document.querySelector('#jz-saved-list [aria-label="Export Countries as JSON"]').click(), true)`);
+    const savedExport = await waitFor(page, SAVED_TEXT, 'the saved shape export');
     await page.evaluate(`(document.getElementById('jz-shape-open').click(), document.getElementById('jz-shape-saved').value = 'Balances', document.getElementById('jz-shape-saved').dispatchEvent(new Event('change')), true)`);
     const startedFrom = await waitFor(page, `document.getElementById('jz-shape-check').className.includes('ok') && { options: [...document.getElementById('jz-shape-saved').options].map((o) => o.value).filter(Boolean), shape: JSON.parse(document.getElementById('jz-shape-text').value) }`, 'the box started from a saved shape');
     const sallyReader = open(path.join(fixtures, 'js-shapes-access.jzm'), { key: keys.sally, accessState: false });

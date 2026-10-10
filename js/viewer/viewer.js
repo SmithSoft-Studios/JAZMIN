@@ -444,7 +444,6 @@
       const blob = await JazminBrowser.exportBlob(reader, format, { filter, shape, signal: job.signal, onProgress: busy.progress });
       const shaped = !shape ? '' : label ? `-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'shaped'}` : '-shaped';
       const name = `${state.name.replace(/\.jzm$/i, '')}${filter ? '-filtered' : ''}${shaped}.${format}`;
-      state.lastSaved = { name, blob };
       await save(name, blob);
       note.textContent = `Saved ${name} · ${(blob.size / 1048576).toFixed(blob.size < 10485760 ? 2 : 1)} MB in ${elapsed(performance.now() - started)}`;
     } catch (error) {
@@ -531,6 +530,10 @@
     }));
   }
 
+  /**
+   * Downloads a file the viewer made. Nothing else keeps it: the link's address lets it go after a minute, so a large
+   * export's memory is given back.
+   */
   async function save(filename, blobOrPromise) {
     const blob = await blobOrPromise;
     const a = document.createElement('a');
@@ -658,7 +661,6 @@
     if (!(await confirmChanges(changes, reader.package.edit, shared))) throw new Error('The changes were not saved');
     const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
     const name = `${state.name.replace(/\.jzm$/i, '')}-changes-${stamp}.jzm`;
-    state.lastSaved = { name, blob };
     await save(name, blob);
     const count = (list) => (list || []).length;
     return { saved: 'change-file', file: name, updated: count(changes.update), added: count(changes.add), deleted: count(changes.delete) };
