@@ -25,8 +25,10 @@
     </div>
     <input id="pick" type="file" accept=".jzm" hidden>
     <p id="error" class="error" role="alert"></p>
-    <p class="hint">Try <code>data/statement.jzm</code> in this folder (password "demo"). A locked file asks for its
-      password in the viewer.</p>
+    <div class="demo">
+      <strong>Try the demo:</strong> <code>data/transactions.jzm</code> in this folder, a year of card transactions
+      (password <code>demo</code>). Once it is open, buttons above the viewer try filters that answer at once.
+    </div>
   </section>
 </main>
 
@@ -34,14 +36,27 @@
 <section id="shown" class="shown" hidden>
   <header class="bar">
     <span id="status" role="status"></span>
+    <div id="tries" class="tries" hidden><span>Try:</span></div>
     <button id="another" type="button">Open another file</button>
   </header>
   <iframe id="viewer" src="viewer/index.html" title="JAZMIN viewer"></iframe>
 </section>
 
+<script src="data.js"></script>
 <script>
   const $ = (id) => document.getElementById(id);
   const viewer = $('viewer');
+
+  /** The demo's filters for this file (data.js), as buttons that send one to the viewer when the file is open. */
+  function offerFilters(name) {
+    const tries = $('tries');
+    tries.replaceChildren(tries.firstElementChild);
+    for (const { label, filter } of (window.demos && demos[name]) || []) {
+      const button = Object.assign(document.createElement('button'), { type: 'button', textContent: label, title: JSON.stringify(filter) });
+      button.addEventListener('click', () => viewer.contentWindow.postMessage({ type: 'jazmin:filter', filter }, '*'));
+      tries.append(button);
+    }
+  }
 
   // The viewer listens once it has loaded: until then there is nothing to pass a file to.
   viewer.addEventListener('load', () => { $('browse').disabled = false; });
@@ -52,6 +67,8 @@
     $('file-name').value = file.name;
     $('error').textContent = '';
     $('status').textContent = `Opening ${file.name}…`;
+    $('tries').hidden = true;
+    offerFilters(file.name);
     // A page opened from disk has no origin to name, so the message goes to '*'. On a web server, name the viewer's.
     viewer.contentWindow.postMessage({ type: 'jazmin:open', file, name: file.name }, '*');
     show('viewer');
@@ -103,6 +120,7 @@
       return;
     }
     $('status').textContent = state === 'locked' ? `${name} is locked: type its password in the viewer` : `${name} is open`;
+    $('tries').hidden = state !== 'opened' || $('tries').children.length < 2;
   });
 </script>
 </body>

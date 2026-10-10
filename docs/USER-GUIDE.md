@@ -3854,9 +3854,12 @@ file, or drops it, and the viewer reads only the parts it needs, straight from
 disk.
 
 > **A sample to try:** [js/examples/from-disk](../js/examples/from-disk)
-> builds a folder you can copy anywhere and double-click: a page that opens a
-> small file with no choosing, a page that asks for a file and opens it in the viewer,
-> and the viewer. Its README explains how both work.
+> builds a folder you can copy anywhere and double-click, with demo data
+> (`node examples/from-disk/make.mjs` in `js/`, about 7 seconds): a statement
+> that opens by itself, with totals and a search; a page that asks for a file
+> and opens it in the viewer; and 1,000,000 card transactions, indexed on the
+> columns people filter by, which answer the filters it suggests in 10–80 ms.
+> Its README explains how both ways work.
 
 There are three ways:
 
@@ -3889,6 +3892,10 @@ There are three ways:
 
 - **The file stays on disk.** Your page hands over a reference to the file,
   not its contents, and the viewer reads the slices it needs.
+- **Your page can also show a filter's rows:**
+  `postMessage({ type: 'jazmin:filter', filter }, '*')` (an object, or JSON
+  text) does what typing it in the viewer's Filter box and applying it does,
+  once a file is open. The sample's Try buttons use it.
 - **Send the message once the iframe has loaded** (its `load` event); a
   message sent earlier is lost.
 - **Where to send it:** `'*'` from a page on disk, whose origin is `null`;

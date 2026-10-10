@@ -7,55 +7,158 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<h1>Statement</h1>
-<p>This page opens <code id="file"></code> with no choosing. The file inside is still locked: type its password
-  ("demo" in this sample).</p>
-<form id="unlock">
-  <label>Password <input id="password" type="password" autocomplete="off"></label>
-  <button type="submit">Open</button>
-</form>
-<p id="status" role="status"></p>
-<table id="rows"><thead></thead><tbody></tbody></table>
+<main class="page">
+  <div class="head">
+    <div>
+      <h1>Statement</h1>
+      <p id="who">Opens <code id="file"></code>, named in <code>data.js</code>: nobody chooses a file.</p>
+    </div>
+    <span id="status" class="badge" role="status" hidden></span>
+  </div>
+
+  <section id="locked" class="panel unlock">
+    <h2>This statement is locked</h2>
+    <p>It stays encrypted until you type its password, here on this device (<code>demo</code> in this sample).</p>
+    <form id="unlock">
+      <input id="password" type="password" placeholder="Password" autocomplete="off" aria-label="Password">
+      <button class="primary" type="submit">Open</button>
+    </form>
+    <p id="error" class="error" role="alert"></p>
+  </section>
+
+  <section id="opened" hidden>
+    <div class="stats">
+      <div class="panel stat"><span>Opening balance</span><strong id="opening"></strong></div>
+      <div class="panel stat"><span>Money in</span><strong id="money-in" class="in"></strong></div>
+      <div class="panel stat"><span>Money out</span><strong id="money-out" class="out"></strong></div>
+      <div class="panel stat"><span>Closing balance</span><strong id="closing"></strong></div>
+    </div>
+    <div class="columns">
+      <section class="panel">
+        <h2>Spending by category</h2>
+        <div id="bars" class="bars"></div>
+        <p class="hint">Click a category to show its transactions.</p>
+      </section>
+      <section class="panel">
+        <div class="search">
+          <input id="search" type="search" placeholder="Search merchants, for example coffee" aria-label="Search merchants">
+          <span id="found" class="muted" role="status"></span>
+        </div>
+        <div class="table-scroll">
+          <table id="rows">
+            <thead><tr><th>Date</th><th>Merchant</th><th>Category</th><th class="number">Amount</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </section>
+</main>
 
 <script src="browser/jazmin-browser.js"></script>
 <script src="data.js"></script>
 <script>
   // data.js says which file to open: var data = { file: 'data/statement.jzm.js' };
-  const status = document.getElementById('status');
-  document.getElementById('file').textContent = data.file;
+  const $ = (id) => document.getElementById(id);
+  const rand = (n) => `${n < 0 ? '−' : ''}R ${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const since = (t) => `${Math.max(1, Math.round(performance.now() - t))} ms`;
+  let table = null;
+  let category = null;
+  $('file').textContent = data.file;
 
-  document.getElementById('unlock').addEventListener('submit', async (event) => {
+  $('unlock').addEventListener('submit', async (event) => {
     event.preventDefault();
-    status.textContent = 'Opening…';
+    const button = $('unlock').querySelector('button');
+    button.disabled = true;
+    button.textContent = 'Opening…';
+    $('error').textContent = '';
+    const started = performance.now();
     try {
-      // openScript loads the script, turns its text back into the file's bytes, and opens them.
-      const table = await JazminBrowser.openScript(data.file, { password: document.getElementById('password').value });
-      const { rows, total } = await table.query({}, { limit: 100 });
-      show(table.columns, rows);
-      status.textContent = `${total} rows`;
+      // openScript loads the script, turns its text back into the file's bytes, and opens them with the password.
+      table = await JazminBrowser.openScript(data.file, { password: $('password').value });
     } catch (error) {
-      status.textContent = error instanceof JazminBrowser.JazminKeyError ? 'Wrong password: try again' : error.message;
+      $('error').textContent = error instanceof JazminBrowser.JazminKeyError ? 'Wrong password: try again' : error.message;
+      return;
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Open';
     }
+    const opened = since(started);
+    const m = table.metadata || {};
+    $('who').textContent = [m.holder, m.account, m.period].filter(Boolean).join(' · ');
+    await summarize(Number(m.openingBalance || 0));
+    await show();
+    $('locked').hidden = true;
+    $('opened').hidden = false;
+    $('status').hidden = false;
+    $('status').textContent = `${table.rowCount} transactions · opened in ${opened}`;
   });
 
-  /** The rows as a table: dates as dates, amounts on the right. */
-  function show(columns, rows) {
-    const table = document.getElementById('rows');
-    const head = document.createElement('tr');
-    for (const c of columns) head.append(Object.assign(document.createElement('th'), { textContent: c.name }));
-    table.tHead.replaceChildren(head);
-    table.tBodies[0].replaceChildren(...rows.map((row) => {
-      const tr = document.createElement('tr');
-      for (const c of columns) {
-        const value = row[c.name];
-        const td = document.createElement('td');
-        td.textContent = value instanceof Date ? value.toISOString().slice(0, 10) : value ?? '';
-        if (c.type === 'decimal' || c.type === 'int' || c.type === 'float') td.className = 'number';
-        tr.append(td);
+  /** The totals and spending by category, from two columns read as arrays (no object per row). */
+  async function summarize(opening) {
+    const { values } = await table.columnArrays(null, { select: ['category', 'amount'] });
+    let moneyIn = 0;
+    let moneyOut = 0;
+    const spent = new Map();
+    values.amount.forEach((text, i) => {
+      const amount = Number(text);
+      if (amount >= 0) moneyIn += amount;
+      else {
+        moneyOut += amount;
+        spent.set(values.category[i], (spent.get(values.category[i]) || 0) - amount);
       }
-      return tr;
+    });
+    $('opening').textContent = rand(opening);
+    $('money-in').textContent = rand(moneyIn);
+    $('money-out').textContent = rand(moneyOut);
+    $('closing').textContent = rand(opening + moneyIn + moneyOut);
+    const most = Math.max(...spent.values());
+    $('bars').replaceChildren(...[...spent].sort((a, b) => b[1] - a[1]).map(([name, amount]) => {
+      const row = document.createElement('div');
+      row.className = 'bar-row';
+      row.tabIndex = 0;
+      row.innerHTML = '<span></span><span class="track"><span></span></span><strong></strong>';
+      row.children[0].textContent = name;
+      row.children[1].firstChild.style.width = `${(amount / most) * 100}%`;
+      row.children[2].textContent = rand(amount);
+      const pick = () => {
+        category = category === name ? null : name;
+        for (const r of $('bars').children) r.classList.toggle('on', r === row && category !== null);
+        show();
+      };
+      row.addEventListener('click', pick);
+      row.addEventListener('keydown', (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), pick()));
+      return row;
     }));
   }
+
+  /** The transactions matching the search and the chosen category, and how long finding them took. */
+  let asked = 0;
+  async function show() {
+    const ask = ++asked;
+    const text = $('search').value.trim();
+    const filter = {};
+    if (category) filter.category = category;
+    if (text) filter.merchant = { icontains: text };
+    const started = performance.now();
+    const { rows, total } = await table.query(Object.keys(filter).length ? filter : null, { limit: 1000 });
+    if (ask !== asked) return; // a newer search answered first
+    $('rows').tBodies[0].replaceChildren(...rows.map((row) => {
+      const tr = document.createElement('tr');
+      const amount = Number(row.amount);
+      for (const [value, className] of [
+        [row.date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }), ''],
+        [row.merchant, ''], [row.category, 'muted'], [rand(amount), `number ${amount < 0 ? 'out' : 'in'}`],
+      ]) tr.append(Object.assign(document.createElement('td'), { textContent: value, className }));
+      return tr;
+    }));
+    $('found').textContent = text || category ? `${total} of ${table.rowCount} · ${since(started)}` : '';
+  }
+  let typing;
+  $('search').addEventListener('input', () => {
+    clearTimeout(typing);
+    typing = setTimeout(show, 80);
+  });
 </script>
 </body>
 </html>

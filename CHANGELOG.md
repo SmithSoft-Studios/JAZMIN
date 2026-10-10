@@ -11,6 +11,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   amount) showed its rows after about 20 s; now they show after 0.4 s. While counting, the line above the rows gives the
   matches so far and how far it is, with Stop; then the total and how long the filter took. A page that takes a moment
   to find (few matches, or none) is searched under an overlay with the same progress and Stop (USER-GUIDE 24).
+- **The page around the viewer can show a filter's rows:** `postMessage({ type: 'jazmin:filter', filter })` does what
+  typing the filter in the viewer's Filter box does, once a file is open; only the page holding the viewer's iframe can
+  send it (USER-GUIDE 24.4).
+- **The from-disk sample is a demo** ([js/examples/from-disk](js/examples/from-disk)): realistic card transactions
+  (`demo-data.mjs`); a statement page that opens by itself, with totals, spending by category and a search that says
+  how long it took; a start page that asks for a file, then offers Try buttons for the demo file; and 1,000,000
+  transactions, sorted by date and indexed on account, merchant (with text search), category and amount, which answer
+  those filters in 10-80 ms, totals included, in the viewer (the text search 0.56 s). `make.mjs --rows` sets its size.
 - **The browser reader reports progress and stops on request:** `count()`, `query()` and `find()` take
   `{ onProgress, signal }`. `onProgress({ done, total, matches })` is called after each chunk read; aborting the
   `AbortSignal` stops the read between chunks, rejecting with the signal's reason (an `AbortError`).

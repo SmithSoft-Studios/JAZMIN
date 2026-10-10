@@ -644,9 +644,18 @@
   // postMessage({ type: 'jazmin:open', file, name }). Only that page: not a document's sandbox below the viewer, and
   // nothing when the viewer isn't in a frame. It hears { type: 'jazmin:status', state, name, message } and no more:
   // the key is typed here and the data stays here. A File stays on disk: the viewer reads the slices it needs.
+  // It can also show the rows matching a filter: { type: 'jazmin:filter', filter } (an object or JSON text), as typing
+  // it in the Filter box and applying it does.
   addEventListener('message', (event) => {
     const m = event.data;
-    if (window.parent === window || event.source !== window.parent || !m || m.type !== 'jazmin:open' || !(m.file instanceof Blob)) return;
+    if (window.parent === window || event.source !== window.parent || !m) return;
+    if (m.type === 'jazmin:filter' && state.reader) {
+      $('jz-filter').value = m.filter == null ? '' : typeof m.filter === 'string' ? m.filter : JSON.stringify(m.filter);
+      selectTab('data');
+      $('jz-filter-form').requestSubmit();
+      return;
+    }
+    if (m.type !== 'jazmin:open' || !(m.file instanceof Blob)) return;
     // A page opened from disk has the origin "null" (Chrome: "file://"), which postMessage can't address.
     const answerTo = /^(null|file:)/.test(event.origin) ? '*' : event.origin;
     choose(m.file, typeof m.name === 'string' && m.name ? m.name : m.file.name, answerTo);

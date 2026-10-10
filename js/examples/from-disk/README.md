@@ -5,18 +5,45 @@ nothing uploaded. See USER-GUIDE §24.4 for the details and measurements.
 
 | Page | What it shows |
 |---|---|
-| `small-file.html` | A small file that opens **with no choosing**: the statement, named in `data.js` |
-| `pick-file.html` | **Any file, any size**: a start page asks for the file (Browse, or drop it); once chosen, it opens in the viewer, which reads only what it needs. Nothing is named in advance |
+| `index.html` | Where to start: the two ways, and why they are fast |
+| `small-file.html` | **A statement that opens by itself,** with no choosing: the file is named in `data.js`. Totals, spending by category, and a merchant search that says how long it took |
+| `pick-file.html` | **Any file, any size:** a start page asks for the file (Browse, or drop it); once chosen, it opens in the viewer, which reads only what it needs. For the demo file, buttons above the viewer try filters |
 | `viewer/index.html` | The viewer on its own: choose or drop a file in it |
 
 ## Run it
 
 ```bash
-node examples/from-disk/make.mjs            # in js/; or: node examples/from-disk/make.mjs D:/somewhere
+node examples/from-disk/make.mjs                  # in js/: about 7 seconds
+node examples/from-disk/make.mjs D:/somewhere --rows 5000000    # another folder, a bigger demo file
 ```
 
-Then open `examples/from-disk/site/index.html` in Chrome, Edge or Firefox. The statement's password is `demo`. The
-`site` folder needs nothing else: copy it to a USB stick or a shared drive and it still works.
+Then open `examples/from-disk/site/index.html` in Chrome, Edge or Firefox. The password is `demo`. The `site` folder
+needs nothing else: copy it to a USB stick or a shared drive and it still works.
+
+## The demo data
+
+Card transactions that look like real ones (`demo-data.mjs`): merchants, categories and amounts that fit them, a
+salary on the 25th of each month. The same every time.
+
+| File | What it holds | How it is written |
+|---|---|---|
+| `data/statement.jzm` (2 KB) and `statement.jzm.js` | One account, January to March 2026: 138 transactions, with the holder, period and opening balance in its metadata | Locked with the password |
+| `data/transactions.jzm` (22 MB) | 1,000,000 transactions across 500 accounts, through 2026 (`--rows` for more or fewer) | Locked with the password, **sorted by date**, with **indexes on account, merchant (with text search), category and amount** |
+
+The indexes and the sort order are what make it fast: a filter on those columns reads only the rows it returns, and
+counts its matches without reading them. Measured in Chrome, on the 1,000,000 transactions:
+
+| Try button (pick-file.html) | Filter | Matches | Rows and total shown in |
+|---|---|---|---|
+| (opening the file) | password `demo` | 1,000,000 rows | 190 ms |
+| One account | `{ "account": "ACC-1042" }` | 2,053 | 32 ms |
+| Spends over R 20,000 | `{ "amount": { "lt": "-20000" } }` | 3,763 | 27 ms |
+| Travel in March | `{ "category": "Travel", "date": { "gte": "2026-03-01T00:00:00Z", "lt": "2026-04-01T00:00:00Z" } }` | 2,703 | 79 ms |
+| Salaries | `{ "category": "Income" }` | 6,000 | 10 ms |
+| Coffee shops | `{ "merchant": { "icontains": "coffee" } }` (text search) | 63,535 | 0.56 s |
+
+A filter on a column with no index, and outside the sort order (such as `city`), reads every row: the viewer shows its
+first page at once and counts the rest while the rows show, with progress and Stop.
 
 ## How it works
 
@@ -43,6 +70,13 @@ The viewer reads only the parts it needs, straight from disk. Opening a 201 MB f
 by id reads 0.15 MB more. The viewer tells the page how the file opened (`opened`, `locked` or `failed`) and nothing
 else: the password is typed in the viewer, and the data stays there. On `failed` (not a JAZMIN file, say), the page
 asks for a file again, with the reason; "Open another file" goes back to it too.
+
+The Try buttons are listed in `data.js` (`demos`) for the demo file's name. Each sends the viewer a filter, as typing it
+in its Filter box does:
+
+```js
+viewer.contentWindow.postMessage({ type: 'jazmin:filter', filter: { account: 'ACC-1042' } }, '*');
+```
 
 This way names nothing in advance, so it suits files that change or that people keep themselves. `small-file.html`
 below is the other way: the file is named in `data.js` and opens with no choosing.

@@ -7,14 +7,44 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<h1>JAZMIN from disk</h1>
-<p>These pages were opened straight from disk: no web server, no Node, nothing uploaded.</p>
-<ul>
-  <li><a href="small-file.html">A small file, with no choosing</a>: the statement opens by itself (password "demo").
-    It comes as a script, <code>data/statement.jzm.js</code>, which the page loads.</li>
-  <li><a href="pick-file.html">Any file, any size, chosen by you</a>: a page asks for the file, then opens it in the
-    viewer, which reads only the parts it needs.</li>
-  <li><a href="viewer/index.html">The viewer on its own</a>: choose or drop a file in it.</li>
-</ul>
+<main class="page">
+  <header class="hero">
+    <span class="badge">Opened straight from disk</span>
+    <h1>JAZMIN, in a browser, with no server</h1>
+    <p>These pages work from a folder on your computer, a USB stick or a shared drive. Files stay encrypted on disk,
+      are unlocked on this device, and only the parts a page needs are read. Nothing is uploaded.</p>
+  </header>
+
+  <section class="choices">
+    <article class="panel choice">
+      <h2>A statement that opens by itself</h2>
+      <p>A page that knows its file: three months of one account, with totals, spending by category and an instant
+        search. Nobody chooses a file.</p>
+      <ul>
+        <li>The file is named in <code>data.js</code>, as a script</li>
+        <li>Encrypted: the password is <code>demo</code></li>
+      </ul>
+      <a class="button" href="small-file.html">Open the statement →</a>
+    </article>
+    <article class="panel choice">
+      <h2>Any file, any size</h2>
+      <p>Choose a <code>.jzm</code> and it opens in the viewer, which reads only what it needs, however large the
+        file is.</p>
+      <ul>
+        <li>Try <code>data/transactions.jzm</code>: a year of card transactions (password <code>demo</code>)</li>
+        <li>Then the buttons above the viewer: filters that answer at once</li>
+      </ul>
+      <a class="button" href="pick-file.html">Choose a file →</a>
+    </article>
+  </section>
+
+  <section class="points">
+    <div><strong>Reads only what it needs</strong>Opening a 500 MB file reads well under 1 MB of it.</div>
+    <div><strong>Indexes answer filters</strong>One account among a million rows: milliseconds, totals included.</div>
+    <div><strong>Encrypted until you unlock it</strong>AES-256, unlocked in the browser; the password never leaves it.</div>
+  </section>
+
+  <p class="footer"><a href="viewer/index.html">The viewer on its own</a></p>
+</main>
 </body>
 </html>

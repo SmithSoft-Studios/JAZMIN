@@ -204,7 +204,21 @@ const BUSY_TOTAL = busyReader.count({ amount: { gt: 990 } });
 busyReader.close();
 
 // The from-disk sample (examples/from-disk), built as its README says: a folder opened by double-clicking its pages.
-execFileSync(process.execPath, [path.join(root, 'js/examples/from-disk/make.mjs'), path.join(temp, 'sample')], { stdio: 'ignore' });
+execFileSync(process.execPath, [path.join(root, 'js/examples/from-disk/make.mjs'), path.join(temp, 'sample'), '--rows', '20000'], { stdio: 'ignore' });
+// What its pages should show, from the library: the statement's rows, closing balance and coffee shops, and the demo
+// file's rows for one account.
+const SAMPLE = (() => {
+  const statement = open(path.join(temp, 'sample/data/statement.jzm'), { password: 'demo' });
+  const rows = [...statement.rows()];
+  const closing = Number(statement.metadata.openingBalance) + rows.reduce((sum, r) => sum + Number(r.amount), 0);
+  const demo = open(path.join(temp, 'sample/data/transactions.jzm'), { password: 'demo' });
+  return {
+    statementRows: rows.length,
+    closing: `R ${closing.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+    coffee: rows.filter((r) => /coffee/i.test(r.merchant)).length,
+    oneAccount: demo.count({ account: 'ACC-1042' }),
+  };
+})();
 
 // A shared file Bob may read, written now: a phone opens it to get the submission key it sends records back with.
 write(path.join(temp, 'shared.jzm'), [{ id: 0, person: 'P1' }], {
@@ -705,9 +719,12 @@ for (const name of chosen) {
     await page.navigate(sample('small-file.html'));
     await waitFor(page, `!!document.getElementById('unlock')`, 'the statement page');
     await page.evaluate(`(document.getElementById('password').value = 'wrong', document.getElementById('unlock').requestSubmit(), true)`);
-    const wrong = await waitFor(page, `/password/i.test(document.getElementById('status').textContent) && document.getElementById('status').textContent`, 'the wrong password');
+    const wrong = await waitFor(page, `/password/i.test(document.getElementById('error').textContent) && document.getElementById('error').textContent`, 'the wrong password');
     await page.evaluate(`(document.getElementById('password').value = 'demo', document.getElementById('unlock').requestSubmit(), true)`);
-    const statementShown = await waitFor(page, `/^\\d+ rows/.test(document.getElementById('status').textContent) && { status: document.getElementById('status').textContent, rows: document.querySelectorAll('#rows tbody tr').length }`, 'the statement');
+    const statementShown = await waitFor(page, `/^\\d+ transactions/.test(document.getElementById('status').textContent) && { status: document.getElementById('status').textContent, rows: document.querySelectorAll('#rows tbody tr').length, closing: document.getElementById('closing').textContent }`, 'the statement');
+    // A search narrows the rows, and says how long it took.
+    await page.evaluate(`(document.getElementById('search').value = 'coffee', document.getElementById('search').dispatchEvent(new Event('input')), true)`);
+    const searched = await waitFor(page, `/ of \\d+ · \\d+ ms$/.test(document.getElementById('found').textContent) && { found: document.getElementById('found').textContent, rows: document.querySelectorAll('#rows tbody tr').length }`, 'the search');
     // The start page asks for a file; a file that isn't one brings it back with the reason; a chosen statement opens in
     // the viewer, which says it is locked.
     await page.navigate(sample('pick-file.html'));
@@ -719,10 +736,26 @@ for (const name of chosen) {
     const statementBytes = fs.readFileSync(path.join(temp, 'sample/data/statement.jzm')).toString('base64');
     await page.evaluate(`(passFile(new File([Uint8Array.from(atob(${JSON.stringify(statementBytes)}), (ch) => ch.charCodeAt(0))], 'statement.jzm')), true)`);
     const picked = await waitFor(page, `/locked/.test(document.getElementById('status').textContent) && { status: document.getElementById('status').textContent, panel: ${panels}, name: document.getElementById('file-name').value }`, 'the locked status');
-    const sampleOk = statementShown.rows === 8 && statementShown.status.startsWith('8 rows') && asked === true
-      && notFile.panel === 'start' && notFile.error.startsWith("notes.jzm couldn't be opened: ")
+    const sampleOk = statementShown.rows === SAMPLE.statementRows && statementShown.status.startsWith(`${SAMPLE.statementRows} transactions · opened in `)
+      && statementShown.closing === SAMPLE.closing && searched.rows === SAMPLE.coffee && searched.found.startsWith(`${SAMPLE.coffee} of ${SAMPLE.statementRows} · `)
+      && asked === true && notFile.panel === 'start' && notFile.error.startsWith("notes.jzm couldn't be opened: ")
       && JSON.stringify(picked) === JSON.stringify({ status: 'statement.jzm is locked: type its password in the viewer', panel: 'viewer', name: 'statement.jzm' });
-    results.push({ browser: name, label: `the from-disk sample: the statement with no choosing (wrong password, then right); the start page asks for a file and opens it in the viewer${fromDisk ? '' : ' (over HTTP)'}`, ok: sampleOk, problems: sampleOk ? [] : [JSON.stringify({ wrong, statementShown, asked, notFile, picked })] });
+    results.push({ browser: name, label: `the from-disk sample: the statement with no choosing (wrong password, then right; totals, a search); the start page asks for a file and opens it in the viewer${fromDisk ? '' : ' (over HTTP)'}`, ok: sampleOk, problems: sampleOk ? [] : [JSON.stringify({ wrong, statementShown, searched, asked, notFile, picked, SAMPLE })] });
+
+    // The demo's Try buttons send filters to the viewer (jazmin:filter). Over HTTP, where the test can type the password
+    // into the viewer in the page's iframe (a page on disk can't reach into it in Chrome and Edge).
+    await page.navigate(`${base}/e2e/sample/pick-file.html`);
+    await waitFor(page, `!document.getElementById('browse').disabled`, 'the viewer in the page');
+    await page.evaluate(`fetch('data/transactions.jzm').then((r) => r.blob()).then((b) => (passFile(new File([b], 'transactions.jzm')), true))`);
+    await waitFor(page, `/locked/.test(document.getElementById('status').textContent)`, 'the demo file locked');
+    const inFrame = `document.getElementById('viewer').contentWindow`;
+    await page.evaluate(`(${inFrame}.document.getElementById('jz-key').value = 'demo', ${inFrame}.document.getElementById('jz-unlock').requestSubmit(), true)`);
+    const offered = await waitFor(page, `/is open/.test(document.getElementById('status').textContent) && !document.getElementById('tries').hidden && [...document.querySelectorAll('#tries button')].map((b) => b.textContent)`, 'the Try buttons');
+    await page.evaluate(`([...document.querySelectorAll('#tries button')].find((b) => b.textContent === 'One account').click(), true)`);
+    const tried = await waitFor(page, `/matching the filter/.test(${inFrame}.document.getElementById('jz-data-status').textContent) && { filter: ${inFrame}.document.getElementById('jz-filter').value, status: ${inFrame}.document.getElementById('jz-data-status').textContent }`, 'the tried filter');
+    const triedTotal = Number((/of ([\d\s.,  ]+) matching/.exec(tried.status)?.[1] ?? '').replace(/\D/g, ''));
+    const triesOk = offered.length === 5 && tried.filter === '{"account":"ACC-1042"}' && triedTotal === SAMPLE.oneAccount;
+    results.push({ browser: name, label: 'the from-disk sample: Try buttons send filters to the viewer (jazmin:filter), answered from the demo file\'s indexes', ok: triesOk, problems: triesOk ? [] : [JSON.stringify({ offered, tried, SAMPLE })] });
     if (page.problems.length) results.push({ browser: name, label: 'page errors', ok: false, problems: page.problems });
   } catch (error) {
     results.push({ browser: name, label: 'run', ok: false, problems: [error.message] });
