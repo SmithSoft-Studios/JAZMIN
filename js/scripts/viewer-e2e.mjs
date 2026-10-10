@@ -901,7 +901,7 @@ for (const name of chosen) {
     await page.navigate(sample('shared.html'));
     await waitFor(page, `!!document.getElementById('open')`, 'the shared page');
     await page.evaluate(`(document.getElementById('open').click(), true)`);
-    const people = await waitFor(page, `!document.getElementById('people').hidden && [...document.querySelectorAll('.person')].map((p) => ({ who: p.querySelector('h2').textContent, rows: p.querySelector('.rows').textContent, columns: [...p.querySelectorAll('.columns-chips .chip:not(.off)')].map((c) => c.textContent), shapes: [...p.querySelectorAll('.shape-chips .chip')].map((c) => c.textContent), files: p.querySelectorAll('.file-list li').length }))`, 'the three keys');
+    const people = await waitFor(page, `!document.getElementById('people').hidden && [...document.querySelectorAll('.person')].map((p) => ({ who: p.querySelector('h2').textContent, rows: p.querySelector('.rows').textContent, columns: [...p.querySelectorAll('.columns-chips .chip:not(.off)')].map((c) => c.textContent), shapes: [...p.querySelectorAll('.shape-chips .chip')].map((c) => c.textContent), files: p.querySelectorAll('.file-list li').length, table: [...p.querySelectorAll('.rows-table th')].map((th) => th.textContent), shown: p.querySelectorAll('.rows-table tbody tr').length, hint: p.querySelector('.rows-hint').textContent, branches: p.querySelector('.rows-table th').textContent === 'branch' ? [...new Set([...p.querySelectorAll('.rows-table tbody tr')].map((tr) => tr.cells[0].textContent))] : null }))`, 'the three keys');
     await page.navigate(sample('documents.html'));
     await waitFor(page, `!!document.getElementById('open-report')`, 'the documents page');
     await page.evaluate(`(window.statuses = [], addEventListener('message', (e) => e.data?.type === 'jazmin:status' && statuses.push(e.data.state + ' ' + e.data.name)), document.getElementById('open-report').click(), true)`);
@@ -913,9 +913,9 @@ for (const name of chosen) {
       && labMistake === "Shape at categories[].spent.$sum: unknown or hidden column 'amont'"
       && JSON.stringify(tablesShown) === JSON.stringify(SAMPLE.bank) && JSON.stringify(perSegment) === JSON.stringify(SAMPLE.perSegment)
       && JSON.stringify(people) === JSON.stringify([
-        { who: 'Cape Town manager', rows: '10 of 30', columns: ['branch', 'name', 'role', 'since', 'salary', 'bonus'], shapes: ['Cape Town pay', 'Headcount by role', 'Team list'], files: 2 },
-        { who: 'Johannesburg team lead', rows: '10 of 30', columns: ['branch', 'name', 'role', 'since'], shapes: ['Headcount by role', 'Team list'], files: 2 },
-        { who: 'HR', rows: '30 of 30', columns: ['branch', 'name', 'role', 'since', 'salary', 'bonus'], shapes: ['Cape Town pay', 'Headcount by role', 'Pay by branch', 'Team list'], files: 5 },
+        { who: 'Cape Town manager', rows: '10 of 30', columns: ['branch', 'name', 'role', 'since', 'salary', 'bonus'], shapes: ['Cape Town pay', 'Headcount by role', 'Team list'], files: 2, table: ['name', 'role', 'salary'], shown: 6, hint: '(the first 6)', branches: null },
+        { who: 'Johannesburg team lead', rows: '10 of 30', columns: ['branch', 'name', 'role', 'since'], shapes: ['Headcount by role', 'Team list'], files: 2, table: ['name', 'role'], shown: 6, hint: '(the first 6)', branches: null },
+        { who: 'HR', rows: '30 of 30', columns: ['branch', 'name', 'role', 'since', 'salary', 'bonus'], shapes: ['Cape Town pay', 'Headcount by role', 'Pay by branch', 'Team list'], files: 5, table: ['branch', 'name', 'role', 'salary'], shown: 6, hint: '(2 from each branch)', branches: ['Cape Town', 'Johannesburg', 'Durban'] },
       ])
       && JSON.stringify(documentStatuses) === JSON.stringify(['opened report.jzm', 'locked tasks.jzm']);
     results.push({ browser: name, label: `the demo gallery: export shapes, several tables, one file with three keys, documents in the viewer${fromDisk ? ', from disk' : ' (over HTTP)'}`, ok: galleryOk, problems: galleryOk ? [] : [JSON.stringify({ shapesShown, labMistake, tablesShown, perSegment, people, documentStatuses, SAMPLE })] });

@@ -56,6 +56,7 @@
 <script>
   const { $, since } = demo;
   const ALL_COLUMNS = ['branch', 'name', 'role', 'since', 'salary', 'bonus']; // what the file has (the page knows; a key may not)
+  const BRANCHES = ['Cape Town', 'Johannesburg', 'Durban']; // its branches, the partitions keys see
 
   $('open').addEventListener('click', async () => {
     $('open').disabled = true;
@@ -81,7 +82,13 @@
     const started = performance.now();
     const reader = await JazminBrowser.open(bytes, { key: person.key });
     const opened = since(started);
-    const [shapes, files, { rows }] = await Promise.all([reader.shapes(), reader.files(), reader.query(null, { limit: 6, total: false })]);
+    // A few rows of each branch the key sees: a query on the partition column reads only that branch, and finds nothing
+    // in a branch the key can't decrypt. (The first 6 rows of the file would all be Cape Town's.)
+    const [shapes, files, ...byBranch] = await Promise.all([reader.shapes(), reader.files(),
+      ...BRANCHES.map((branch) => reader.query({ branch }, { limit: 6, total: false }))]);
+    const seen = byBranch.map((r) => r.rows).filter((r) => r.length);
+    const each = Math.ceil(6 / seen.length);
+    const rows = seen.flatMap((r) => r.slice(0, each)).slice(0, 6);
     const visible = reader.columns.map((c) => c.name);
     const el = document.createElement('article');
     el.className = 'panel person';
@@ -92,7 +99,7 @@
         <div class="stat"><span>Opened in</span><strong class="opened"></strong></div>
       </div>
       <h3>Columns</h3><div class="chips columns-chips"></div>
-      <h3>Rows <span class="hint muted">(the first 6)</span></h3><div class="table-scroll rows-table"></div>
+      <h3>Rows <span class="hint muted rows-hint"></span></h3><div class="table-scroll rows-table"></div>
       <h3>Saved shapes</h3><div class="chips shape-chips"></div><pre class="output small-output shape-output" hidden></pre>
       <h3>Files</h3><ul class="file-list"></ul><pre class="output small-output file-output" hidden></pre>`;
     el.querySelector('h2').textContent = person.label;
@@ -105,7 +112,8 @@
       return chip;
     }));
     // The columns that tell people apart: the branch only when the key sees more than one; pay when it sees pay.
-    const oneBranch = new Set(rows.map((r) => r.branch)).size === 1;
+    const oneBranch = seen.length <= 1;
+    el.querySelector('.rows-hint').textContent = oneBranch ? `(the first ${rows.length})` : `(${each} from each branch)`;
     const shown = visible.filter((c) => !['since', 'bonus'].includes(c) && !(c === 'branch' && oneBranch));
     el.querySelector('.rows-table').replaceChildren(demo.table(rows, shown.map((c) => [c, c])));
     const output = el.querySelector('.shape-output');
