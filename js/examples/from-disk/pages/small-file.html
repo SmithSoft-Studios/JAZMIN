@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Statement</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>Statement</h1>
+<p>This page opens <code id="file"></code> with no choosing. The file inside is still locked: type its password
+  ("demo" in this sample).</p>
+<form id="unlock">
+  <label>Password <input id="password" type="password" autocomplete="off"></label>
+  <button type="submit">Open</button>
+</form>
+<p id="status" role="status"></p>
+<table id="rows"><thead></thead><tbody></tbody></table>
+
+<script src="browser/jazmin-browser.js"></script>
+<script src="data.js"></script>
+<script>
+  // data.js says which file to open: var data = { file: 'data/statement.jzm.js' };
+  const status = document.getElementById('status');
+  document.getElementById('file').textContent = data.file;
+
+  document.getElementById('unlock').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    status.textContent = 'Opening…';
+    try {
+      // openScript loads the script, turns its text back into the file's bytes, and opens them.
+      const table = await JazminBrowser.openScript(data.file, { password: document.getElementById('password').value });
+      const { rows, total } = await table.query({}, { limit: 100 });
+      show(table.columns, rows);
+      status.textContent = `${total} rows`;
+    } catch (error) {
+      status.textContent = error instanceof JazminBrowser.JazminKeyError ? 'Wrong password: try again' : error.message;
+    }
+  });
+
+  /** The rows as a table: dates as dates, amounts on the right. */
+  function show(columns, rows) {
+    const table = document.getElementById('rows');
+    const head = document.createElement('tr');
+    for (const c of columns) head.append(Object.assign(document.createElement('th'), { textContent: c.name }));
+    table.tHead.replaceChildren(head);
+    table.tBodies[0].replaceChildren(...rows.map((row) => {
+      const tr = document.createElement('tr');
+      for (const c of columns) {
+        const value = row[c.name];
+        const td = document.createElement('td');
+        td.textContent = value instanceof Date ? value.toISOString().slice(0, 10) : value ?? '';
+        if (c.type === 'decimal' || c.type === 'int' || c.type === 'float') td.className = 'number';
+        tr.append(td);
+      }
+      return tr;
+    }));
+  }
+</script>
+</body>
+</html>

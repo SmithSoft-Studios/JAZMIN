@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, compact, createFileHandler, exportFile, fromCSV, issueUnlockToken, open, openAsync,
-  applyChanges, portableHtml, rotateKey, toJSON, toXML, update, write, writeAsync, writeChanges,
+  applyChanges, portableHtml, portableScript, rotateKey, toJSON, toXML, update, write, writeAsync, writeChanges,
 } from '../src/index.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-examples-'));
@@ -241,5 +241,12 @@ update(tasksFile, { upsert: [{ id: 2, task: 'Send the quote', owner: 'Ben' }], k
 const applied = applyChanges(tasksFile, change);
 console.log('17.', applied.updated, 'updated;', applied.conflicts.map((c) => `task ${c.key.id} held: ${c.columns.map((x) => `${x.name} is now ${x.now}`).join(', ')}`).join('; '));
 // 17. 1 updated; task 2 held: owner is now Ben
+
+// 18. A small file a page opened from disk shows with no choosing (USER-GUIDE 24.4): the file made into a script, which
+// the page opens with JazminBrowser.openScript('statement.jzm.js', { password }). The file inside stays as it is, still
+// encrypted. A whole sample: examples/from-disk.
+const scriptFile = path.join(dir, 'statement.jzm.js');
+fs.writeFileSync(scriptFile, portableScript(statementFile)); // or, on the command line: jazmin script statement.jzm
+console.log('18.', `${path.basename(scriptFile)}: ${(fs.statSync(scriptFile).size / 1024).toFixed(1)} KB, for a ${(fs.statSync(statementFile).size / 1024).toFixed(1)} KB file`);
 
 fs.rmSync(dir, { recursive: true, force: true });

@@ -3831,7 +3831,14 @@ The viewer needs no web server and no Node. Pages opened from disk
 (`file://`) work as pages on a server do, with one difference: browsers don't
 let them read a file beside them by themselves. So the person chooses the
 file, or drops it, and the viewer reads only the parts it needs, straight from
-disk. There are three ways:
+disk.
+
+> **A sample to try:** [js/examples/from-disk](../js/examples/from-disk)
+> builds a folder you can copy anywhere and double-click: a page that opens a
+> small file with no choosing, a page that passes a chosen file to the viewer,
+> and the viewer. Its README explains how both work.
+
+There are three ways:
 
 1. **The viewer's folder.** Put the `viewer` and `browser` folders side by
    side (from the npm package, or `js/` in the repository) and double-click
@@ -3908,7 +3915,9 @@ jazmin script reports/statement.jzm      # writes reports/statement.jzm.js
 ```
 
 In code, `portableScript(file)` (Node) and `JazminFile.PortableScript(path)`
-(.NET) return the same text. Your page, with the browser reader:
+(.NET) return the same text (quickstart step 18, .NET sample step 20). Your
+page, with the browser reader (the sample's `small-file.html` is a whole
+one):
 
 ```html
 <script src="jazmin-browser.js"></script>

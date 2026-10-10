@@ -4,7 +4,7 @@
 // WebDriver BiDi and Safari (macOS) through WebDriver classic (Node 22+, no packages).
 //   node scripts/viewer-e2e.mjs [--browser chrome|edge|firefox|safari|ios ...]   (default: every browser found, except ios)
 // ios is Safari in the iPhone simulator (macOS with Xcode), driven by the same safaridriver.
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
@@ -192,6 +192,9 @@ fs.writeFileSync(path.join(disk, 'script.html'), `<!doctype html>
     .then(async (table) => ({ rows: table.rowCount, first: (await table.query({}, { limit: 1, total: false })).rows[0].id }));
 </script>
 `);
+
+// The from-disk sample (examples/from-disk), built as its README says: a folder opened by double-clicking its pages.
+execFileSync(process.execPath, [path.join(root, 'js/examples/from-disk/make.mjs'), path.join(temp, 'sample')], { stdio: 'ignore' });
 
 // A shared file Bob may read, written now: a phone opens it to get the submission key it sends records back with.
 write(path.join(temp, 'shared.jzm'), [{ id: 0, person: 'P1' }], {
@@ -661,6 +664,23 @@ for (const name of chosen) {
       opened('data/missing.jzm.js').catch((e) => e.message), Object.keys(window.JazminScripts).length])`);
     const scriptOk = JSON.stringify(scripted) === JSON.stringify([{ rows: keyRows, first: 0 }, { rows: plainRows, first: 0 }, 'Could not load data/missing.jzm.js', 0]);
     results.push({ browser: name, label: `files as scripts opened with openScript(), one from another folder${fromDisk ? ', from disk' : ' (over HTTP)'}`, ok: scriptOk, problems: scriptOk ? [] : [JSON.stringify(scripted)] });
+
+    // The from-disk sample's pages, as a person uses them: the statement opened with its password, with no choosing; and
+    // a chosen file passed to the viewer, which says it is locked.
+    const sample = (page_) => (fromDisk ? pathToFileURL(path.join(temp, 'sample', page_)).href : `${base}/e2e/sample/${page_}`);
+    await page.navigate(sample('small-file.html'));
+    await waitFor(page, `!!document.getElementById('unlock')`, 'the statement page');
+    await page.evaluate(`(document.getElementById('password').value = 'wrong', document.getElementById('unlock').requestSubmit(), true)`);
+    const wrong = await waitFor(page, `/password/i.test(document.getElementById('status').textContent) && document.getElementById('status').textContent`, 'the wrong password');
+    await page.evaluate(`(document.getElementById('password').value = 'demo', document.getElementById('unlock').requestSubmit(), true)`);
+    const statementShown = await waitFor(page, `/^\\d+ rows/.test(document.getElementById('status').textContent) && { status: document.getElementById('status').textContent, rows: document.querySelectorAll('#rows tbody tr').length }`, 'the statement');
+    await page.navigate(sample('pick-file.html'));
+    await waitFor(page, `!document.getElementById('pick').disabled`, 'the viewer in the page');
+    const statementBytes = fs.readFileSync(path.join(temp, 'sample/data/statement.jzm')).toString('base64');
+    await page.evaluate(`(passFile(new File([Uint8Array.from(atob(${JSON.stringify(statementBytes)}), (ch) => ch.charCodeAt(0))], 'statement.jzm')), true)`);
+    const picked = await waitFor(page, `/locked/.test(document.getElementById('status').textContent) && document.getElementById('status').textContent`, 'the locked status');
+    const sampleOk = statementShown.rows === 8 && statementShown.status.startsWith('8 rows') && picked === 'statement.jzm is locked: type its password in the viewer';
+    results.push({ browser: name, label: `the from-disk sample: the statement with no choosing (wrong password, then right), and a chosen file passed to the viewer${fromDisk ? '' : ' (over HTTP)'}`, ok: sampleOk, problems: sampleOk ? [] : [JSON.stringify({ wrong, statementShown, picked })] });
     if (page.problems.length) results.push({ browser: name, label: 'page errors', ok: false, problems: page.problems });
   } catch (error) {
     results.push({ browser: name, label: 'run', ok: false, problems: [error.message] });

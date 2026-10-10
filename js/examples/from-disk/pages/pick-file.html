@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Choose a file for the viewer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<h1>Choose a file for the viewer</h1>
+<p>Choose any <code>.jzm</code> file, of any size. This page passes it to the viewer below, which reads only the parts
+  it needs, straight from disk. Try <code>data/statement.jzm</code> (password "demo").</p>
+<div class="bar">
+  <input id="pick" type="file" accept=".jzm" disabled>
+  <span id="status" role="status"></span>
+</div>
+<iframe id="viewer" src="viewer/index.html" title="JAZMIN viewer"></iframe>
+
+<script>
+  const viewer = document.getElementById('viewer');
+  const pick = document.getElementById('pick');
+  const status = document.getElementById('status');
+
+  // The viewer listens once it has loaded.
+  viewer.addEventListener('load', () => { pick.disabled = false; });
+
+  /** Hands the viewer a file: a reference to it on disk, not its contents. */
+  function passFile(file) {
+    // A page opened from disk has no origin to name, so the message goes to '*'. On a web server, name the viewer's.
+    viewer.contentWindow.postMessage({ type: 'jazmin:open', file, name: file.name }, '*');
+  }
+
+  pick.addEventListener('change', () => {
+    if (pick.files[0]) passFile(pick.files[0]);
+  });
+
+  // The viewer says how the file opens: 'opened', 'locked' (the password is typed in the viewer) or 'failed'.
+  addEventListener('message', (event) => {
+    if (event.source !== viewer.contentWindow || !event.data || event.data.type !== 'jazmin:status') return;
+    const { name, state, message } = event.data;
+    status.textContent = state === 'locked' ? `${name} is locked: type its password in the viewer`
+      : state === 'opened' ? `${name} is open` : `${name}: ${message}`;
+  });
+</script>
+</body>
+</html>

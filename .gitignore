@@ -11,3 +11,5 @@ TestResults/
 # Profiling captures: large and regenerable (see dotnet/profiling/README.md)
 *.nettrace
 *.speedscope.json
+# The from-disk sample, built by js/examples/from-disk/make.mjs
+js/examples/from-disk/site/

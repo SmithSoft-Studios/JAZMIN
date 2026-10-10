@@ -40,7 +40,7 @@ Measured on 200,000 records (details and caveats in the user guide):
 | LINQ (.NET) | `reader.AsQueryable<T>()`: conditions, `Skip`/`Take`, counts and sort order run in the reader, reading only the columns a query uses |
 | On a server | Serve a file's embedded files from Node or ASP.NET Core (byte ranges, per key), and print a file's own document to PDF with the same template the viewer shows |
 | Several tables | One file can hold several tables, like workbook sheets: client details once, transactions by client. Access follows the link |
-| Viewer | Open `.jzm` files in a browser, as an installed app, a hosted page, a folder on disk, inside your own page (which can pass it the file) or one HTML file: the document, the data and the files, with any kind of key. Nothing is uploaded |
+| Viewer | Open `.jzm` files in a browser, as an installed app, a hosted page, a folder on disk, inside your own page (which can pass it the file) or one HTML file: the document, the data and the files, with any kind of key. Nothing is uploaded. Small files open from disk with no choosing, as scripts ([sample](js/examples/from-disk)) |
 | Documents | A file's own document prints as the file asks: page settings, a print mode, Save as PDF, and images, in the viewer or on a server. **Editable documents** let people change, add and delete rows; their changes travel as small change files the owner applies, with conflicts held back |
 | Platforms | Node.js 22+ and TypeScript; .NET 10 (no third-party dependencies) |
 

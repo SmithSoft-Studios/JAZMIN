@@ -355,6 +355,15 @@ JazminFile.Update(tasksPath, new JazminUpdate { Upsert = [new Dictionary<string,
 var taskResult = JazminFile.ApplyChanges(tasksPath, taskChanges, new JazminApplyChangesOptions());
 Console.WriteLine($"19. {taskResult.Updated} updated; " + string.Join("; ", taskResult.Conflicts.Select(c => $"task {c.Key["id"]} held: {string.Join(", ", c.Columns!.Select(x => $"{x.Name} is now {x.Now}"))}")));
 
+// --- 20. A small file a page opened from disk shows with no choosing (USER-GUIDE 24.4): the file made into a script,
+// which the page opens with JazminBrowser.openScript('statement.jzm.js', { password }). The file inside stays as it is,
+// still encrypted. A whole sample: js/examples/from-disk.
+var statementPath = Path.Combine(dir, "statement.jzm");
+File.WriteAllBytes(statementPath, statementBytes.ToArray());
+var scriptPath = Path.Combine(dir, "statement.jzm.js");
+File.WriteAllText(scriptPath, JazminFile.PortableScript(statementPath));
+Console.WriteLine($"20. {Path.GetFileName(scriptPath)}: {new FileInfo(scriptPath).Length / 1024.0:0.0} KB, for a {new FileInfo(statementPath).Length / 1024.0:0.0} KB file");
+
 Directory.Delete(dir, true);
 
 public readonly record struct Money(long Cents, string Currency);
