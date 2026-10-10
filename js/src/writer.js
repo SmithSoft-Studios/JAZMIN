@@ -378,23 +378,29 @@ export class JazminWriter {
     this.#passwordBased = Boolean(password);
     this.#deltas = [...(cont?.header.deltas ?? [])];
     this.#beginTable(this.#tableDefs[0], cont ? cont.tableIndex : 0);
-    if (cont) {
-      this.#out = new Output(target, cont.validEnd);
-      const flags = Buffer.alloc(2);
-      flags.writeUInt16LE(cont.flags | FLAG_APPENDED);
-      this.#out.patch(FLAGS_OFFSET, flags); // set before anything else is written (spec 11.2)
-    } else {
-      this.#out = new Output(target);
-      this.#out.write(this.#preamble());
+    this.#out = cont ? new Output(target, cont.validEnd) : new Output(target);
+    try {
+      if (cont) {
+        const flags = Buffer.alloc(2);
+        flags.writeUInt16LE(cont.flags | FLAG_APPENDED);
+        this.#out.patch(FLAGS_OFFSET, flags); // set before anything else is written (spec 11.2)
+      } else {
+        this.#out.write(this.#preamble());
+      }
+      if (cont?.files) {
+        // Files already in the file stay; their stored contents are reused by reference.
+        for (const e of cont.files.entries) this.#files.entries.set(e.path, e);
+        for (const c of cont.files.contents) this.#files.contents.set(c.sha256, c);
+        this.#files.nextId = cont.files.nextId;
+      }
+      this.#package = packageSettings !== undefined ? packageSettings : cont?.files?.package;
+      for (const f of files ?? []) this.addFile(f);
+    } catch (error) {
+      // Refused with the output open (a stored file given twice, say): no writer is returned to abort it, so it is
+      // aborted here. A new file is removed and closed; an appended one is cut back, its flags restored.
+      this.abort();
+      throw error;
     }
-    if (cont?.files) {
-      // Files already in the file stay; their stored contents are reused by reference.
-      for (const e of cont.files.entries) this.#files.entries.set(e.path, e);
-      for (const c of cont.files.contents) this.#files.contents.set(c.sha256, c);
-      this.#files.nextId = cont.files.nextId;
-    }
-    this.#package = packageSettings !== undefined ? packageSettings : cont?.files?.package;
-    for (const f of files ?? []) this.addFile(f);
   }
 
   /** The file's tables and their column groups, the first table first: what saved shapes are checked against. */

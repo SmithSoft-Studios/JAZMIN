@@ -57,6 +57,21 @@ test('identical content is stored once, whatever the paths; a path cannot be add
   assert.throws(() => write(null, rows, { columns, files: [{ path: 'x', content: 'a' }, { path: 'x', content: 'b' }] }), /added twice/);
 });
 
+test('a write refused for a stored file leaves no file behind; an append refused that way leaves the file as it was', () => {
+  const dir = tmpDir();
+  const twice = [{ path: 'x', content: 'a' }, { path: 'x', content: 'b' }];
+  const file = path.join(dir, 'f.jzm');
+  assert.throws(() => write(file, rows, { columns, files: twice }), /^JazminValidationError: File 'x' is added twice$/);
+  assert.deepEqual(fs.readdirSync(dir), []);
+
+  write(file, rows, { columns });
+  const before = fs.readFileSync(file);
+  assert.throws(() => append(file, { insert: [{ id: 999, group: 'Z' }], addFiles: twice }), /^JazminValidationError: File 'x' is added twice$/);
+  assert.ok(fs.readFileSync(file).equals(before)); // the flags too
+  assert.deepEqual(fs.readdirSync(dir), ['f.jzm']);
+  assert.equal(open(file).rowCount, rows.length);
+});
+
 test('files without embedded files are unchanged; paths and package settings are validated', () => {
   const plain = open(write(null, rows, { columns }));
   assert.deepEqual(plain.files, []);
