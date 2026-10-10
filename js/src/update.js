@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { JazminError, JazminKeyError, JazminValidationError } from './errors.js';
 import { growColumns } from './nested.js';
+import { keptShapes } from './saved-shapes.js';
 import { normalizeColumns } from './schema.js';
 import { compileFilter } from './filter.js';
 import { grantExpiry, toMs } from './expiry.js';
@@ -85,6 +86,7 @@ function compareTuples(a, b) {
  *   codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority   output settings (defaults as for a new file)
  *   compactIndexes      sorted indexes with keys as differences (default: as the file has them)
  *   addFiles, removeFiles, package        embedded files: add or replace, remove (by path), viewer settings
+ *   addShapes, removeShapes               saved export shapes: add or replace, remove (by name)
  *
  * Returns { rowCount, inserted, updated, deleted }.
  */
@@ -107,7 +109,7 @@ export function updateUnlocked(path, options = {}) {
   const {
     key, password, insert = [], upsert = [], keyColumns, delete: deleteWhere, metadata,
     grant = [], revoke = [], codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, compactIndexes, now, layout,
-    addFiles = [], removeFiles = [], package: packageSettings, table, regroup = false, columns: given,
+    addFiles = [], removeFiles = [], package: packageSettings, table, regroup = false, columns: given, addShapes = [], removeShapes = [],
   } = options;
   if (upsert.length && (!Array.isArray(keyColumns) || keyColumns.length === 0)) {
     throw new JazminValidationError('upsert needs keyColumns, e.g. { keyColumns: ["id"] }');
@@ -171,6 +173,7 @@ export function updateUnlocked(path, options = {}) {
       now, // expired grants are dropped, and the new version's fresh secrets lock them out
       files: [...carriedFiles(reader, addFiles, removeFiles), ...addFiles],
       package: packageSettings !== undefined ? packageSettings : reader.package,
+      shapes: [...keptShapes(reader[FILE_STATE]?.shapes ?? [], addShapes, removeShapes), ...addShapes],
     });
 
     const stats = { inserted: 0, updated: 0, deleted: 0 };

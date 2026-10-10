@@ -23,6 +23,7 @@ import { answeredExactly, evaluate, filterReads, indexPlan, mayMatch, mustMatch,
 import { CompositeIndex, LazyTrigramIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
 import { JazminAccessKey, JazminKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
 import { checkPriority, readThreads } from './priority.js';
+import { directoryShapes, shapeFits } from './saved-shapes.js';
 import { setField } from './schema.js';
 import { SectionPool } from './section-pool.js';
 import { decodeSection, sectionPayloadLength } from './section.js';
@@ -496,7 +497,8 @@ export class JazminReader {
   #closed = false;
   #readOptions;
   #makers = new Map(); // selected column indexes -> row-object builder
-  #fileIndex = null; // embedded files visible to this key: { entries: Map(path -> entry), contents: Map(id -> content) }
+  #shapeList = null; // saved shapes this key can use, worked out once
+  #fileIndex = null; // embedded files visible to this key: { entries: Map(path -> entry), contents: Map(id -> content), shapes }
   #scratch = Buffer.alloc(0); // file-read buffer reused across chunks (see #readChunk)
   #ahead = null; // priority 'speed': { pool, ordinals } - chunks being decoded on worker threads, in the order submitted
   #aheadBuffer = Buffer.alloc(0); // file-read buffer of chunks read ahead (the pool copies what it is given)
@@ -1330,7 +1332,7 @@ export class JazminReader {
   /** Loads the file directories this key can open, merged by path (once). */
   #files() {
     if (this.#fileIndex) return this.#fileIndex;
-    const index = { entries: new Map(), contents: new Map() };
+    const index = { entries: new Map(), contents: new Map(), shapes: new Map() };
     const member = this.#header.files;
     if (member) {
       const suffix = member.segment ? `/${member.segment}` : '';
@@ -1361,11 +1363,24 @@ export class JazminReader {
             index.entries.set(f.path, { path: f.path, type: f.type, content: f.content, ...(groups ? { groups } : {}), ...(actions ? { actions } : {}) });
           }
         }
+        for (const s of directoryShapes(directory)) {
+          const known = index.shapes.get(s.name);
+          const groups = s.groups ?? (ownerNames ? [ownerNames.get(dir.group)] : undefined);
+          if (known) {
+            if (known.groups && groups) known.groups = [...new Set([...known.groups, ...groups])].sort();
+          } else {
+            index.shapes.set(s.name, {
+              name: s.name, ...(s.description ? { description: s.description } : {}), ...(s.default ? { default: true } : {}),
+              ...(s.table === undefined ? {} : { table: s.table }), ...(groups ? { groups } : {}), shape: s.shape,
+            });
+          }
+        }
       }
       for (const e of index.entries.values()) {
         if (!index.contents.has(e.content)) throw new JazminFormatError(`Embedded file '${e.path}' refers to missing content`);
         if (e.groups?.includes(EVERYONE)) e.groups = [EVERYONE];
       }
+      for (const s of index.shapes.values()) if (s.groups?.includes(EVERYONE)) s.groups = [EVERYONE];
     }
     this.#fileIndex = index;
     return index;
@@ -1384,6 +1399,32 @@ export class JazminReader {
         ...(e.actions ? { actions: structuredClone(e.actions) } : {}),
       };
     });
+  }
+
+  /**
+   * Saved export shapes this key can use: [{ name, description?, default?, table?, shape, groups? }] (groups for the
+   * owner and single-key files). Shapes that use a column this key can't see are left out. Use one by name:
+   * toJSON(reader, { shape: name }).
+   */
+  get shapes() {
+    if (!this.#shapeList) {
+      const tables = new Map([[this.table, this.columns]]);
+      const columnsOf = (name) => {
+        if (!tables.has(name)) {
+          if (!this.tables.includes(name)) return undefined;
+          const table = this.openTable(name);
+          try {
+            tables.set(name, table.columns);
+          } finally {
+            table.close();
+          }
+        }
+        return tables.get(name);
+      };
+      this.#shapeList = [...this.#files().shapes.values()].filter((s) => shapeFits(s, this.tables[0], columnsOf))
+        .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    }
+    return structuredClone(this.#shapeList);
   }
 
   /** Package settings for viewers ({ entry, title, allowedOrigins, allowWasm }), or undefined. */
@@ -1459,6 +1500,7 @@ export class JazminReader {
       contents: [...contents.values()],
       nextId: this.#header.files.nextContent,
       package: this.package,
+      shapes: [...this.#files().shapes.values()].map((s) => ({ ...s, groups: s.groups ?? [EVERYONE] })),
     };
   }
 

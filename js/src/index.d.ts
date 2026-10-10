@@ -90,6 +90,33 @@ export interface FileInput {
 }
 
 /**
+ * An export shape saved in the file under a name (docs/design/saved-shapes.md). In a shared file, each key that sees it
+ * (its groups) must see every column it uses, or the write is refused; readers list only shapes their key can use.
+ */
+export interface SavedShapeInput {
+  /** 1 to 200 characters, unique in the file. */
+  name: string;
+  shape: ExportShape;
+  description?: string;
+  /** Offered first (at most one default for each group). */
+  default?: boolean;
+  /** The table the shape reads (default: the file's first). */
+  table?: string;
+  /** File groups whose keys see it: '*' (default: everyone) or partition / named file-group names. */
+  groups?: '*' | string[];
+}
+
+/** A saved shape this key can use. `groups` is given to the owner and in files that aren't shared. */
+export interface SavedShape {
+  name: string;
+  shape: ExportShape;
+  description?: string;
+  default?: true;
+  table?: string;
+  groups?: string[];
+}
+
+/**
  * What viewers may do with an embedded file (spec 6.8). These steer viewers (the JAZMIN viewer, editor extensions): a
  * key that sees a file can always read it with the library.
  */
@@ -292,6 +319,8 @@ export interface WriteOptions {
   /** Files to embed. Identical content is stored once. */
   files?: FileInput[];
   package?: PackageSettings;
+  /** Export shapes saved in the file, offered by name. */
+  shapes?: SavedShapeInput[];
   key?: KeyInput;
   password?: string;
   /** PBKDF2 iterations for password encryption (default 600000). */
@@ -370,8 +399,11 @@ export interface ExportOptions extends QueryOptions {
   omitNulls?: boolean;
   /** CSV only. */
   delimiter?: string;
-  /** JSON and XML: the structure of the output (docs/design/export-shapes.md). Use instead of select/limit/offset. */
-  shape?: ExportShape;
+  /**
+   * JSON and XML: the structure of the output (docs/design/export-shapes.md), or the name of a shape saved in the file
+   * (run on its table). Use instead of select/limit/offset.
+   */
+  shape?: ExportShape | string;
   /** XML with a shape: the root element (default 'export'). */
   root?: string;
 }
@@ -532,6 +564,10 @@ export interface UpdateOptions {
   /** Paths of embedded files to remove. */
   removeFiles?: string[];
   package?: PackageSettings;
+  /** Saved export shapes to add (a name that exists is replaced). */
+  addShapes?: SavedShapeInput[];
+  /** Names of saved export shapes to remove. */
+  removeShapes?: string[];
   /** The table the rows change in (default: the first). The file's other tables are kept. */
   table?: string;
 }
@@ -648,6 +684,8 @@ export class JazminReader implements Iterable<JazminRow> {
   /** Embedded files this key can see. */
   readonly files: FileInfo[];
   readonly package: PackageSettings | undefined;
+  /** Saved export shapes this key can use (by name); use one with toJSON(reader, { shape: name }). */
+  readonly shapes: SavedShape[];
   /** A whole embedded file (checked against its SHA-256). */
   readFile(path: string): Buffer;
   /** Bytes [start, end) of an embedded file; only the blocks involved are read. */
@@ -746,7 +784,7 @@ export function toJSON(reader: JazminReader, options?: ExportOptions): string;
  */
 export function compileShape(columns: JazminColumn[], shape: ExportShape, tables?: Record<string, JazminColumn[]>): unknown;
 /** JSON Schema (draft 2020-12) of a shape's JSON output. */
-export function shapeSchema(reader: JazminReader, shape: ExportShape): Record<string, JsonValue>;
+export function shapeSchema(reader: JazminReader, shape: ExportShape | string): Record<string, JsonValue>;
 export function toCSV(reader: JazminReader, options?: ExportOptions): string;
 export function toXML(reader: JazminReader, options?: ExportOptions): string;
 

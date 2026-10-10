@@ -106,11 +106,11 @@ function writeTables(target, rows, options) {
     for (const name of Object.keys(rows)) {
       if (!options.tables.some((t) => t.name === name)) throw new JazminValidationError(`rows: no table '${name}' in tables`);
     }
+    return writer.finish(); // a file refused when finished (a saved shape a key can't use) is not left behind
   } catch (error) {
     writer.abort();
     throw error;
   }
-  return writer.finish();
 }
 
 /** Applies the `indexes` shorthand ({ columnName: 'sorted' | 'trigram' | [...] }) to column definitions. */
@@ -132,11 +132,11 @@ function writeFrom(target, rows, options) {
   const writer = new JazminWriter(target, { ...options, columns });
   try {
     writer.writeRows(rows());
+    return writer.finish(); // a file refused when finished (a saved shape a key can't use) is not left behind
   } catch (error) {
     writer.abort();
     throw error;
   }
-  return writer.finish();
 }
 
 /**

@@ -22,6 +22,7 @@ import { JazminValidationError } from './errors.js';
 import { INDEX_BUILDERS, INDEX_PAGE_BYTES, encodePostingsSection } from './indexes.js';
 import { JazminKey, KeySchedule, deriveFromPassword, fingerprint, hkdf, parseAnyKey } from './keys.js';
 import { checkPriority, writeThreads } from './priority.js';
+import { checkShapeList, checkShapes, normalizeShapes } from './saved-shapes.js';
 import { normalizeColumns } from './schema.js';
 import { toMs } from './expiry.js';
 import { encodeSection } from './section.js';
@@ -232,6 +233,8 @@ function tableDefinition(t, { named, access, chunkRows, chunkBytes }) {
  *   access:   { partitionBy, columnGroups, grants }   access-controlled file (needs an owner `key`)
  *   tables:   [{ name, columns, sortedBy, partitionBy, columnGroups, chunkRows, chunkBytes }]   several tables
  *             (instead of columns, sortedBy and access.partitionBy / columnGroups); see startTable
+ *   shapes:   [{ name, shape, description, default, table, groups }]   saved export shapes; in shared files each key
+ *             that sees one (its groups) must see every column it uses
  */
 
 /** A nested column's leaf statistics over a segment's chunks (spec 6.4): every chunk of a writer has the same leaves. */
@@ -282,6 +285,7 @@ export class JazminWriter {
   #continue = null; // append mode: state of the file being continued
   #files = { entries: new Map(), contents: new Map(), nextId: 0 }; // embedded files (spec 6.8): path -> entry, sha256 -> stored content
   #package; // package settings for viewers (validated at finish)
+  #shapes = new Map(); // saved export shapes (spec 6.8): name -> entry
   #fileGroupNames = []; // access mode: names of the file groups written
   #parallelism; // threads encoding chunk sections (1 = this thread only)
   #indexDeltas = false; // sorted index pages with keys and first row ids as differences (reader feature 'index-deltas')
@@ -295,7 +299,7 @@ export class JazminWriter {
     const {
       columns, metadata = {}, codec = DEFAULTS.codec, level, chunkRows = DEFAULTS.chunkRows,
       chunkBytes = DEFAULTS.chunkBytes, key, password, kdfIterations = DEFAULTS.kdfIterations, sortedBy, access, now,
-      layout, files, package: packageSettings, tables, priority = 'balanced', compactIndexes = false,
+      layout, files, package: packageSettings, tables, priority = 'balanced', compactIndexes = false, shapes,
     } = options;
     const { maxDegreeOfParallelism = writeThreads(priority) } = options;
     checkPriority(priority);
@@ -381,7 +385,24 @@ export class JazminWriter {
       this.#files.nextId = cont.files.nextId;
     }
     this.#package = packageSettings !== undefined ? packageSettings : cont?.files?.package;
+    // Saved shapes: the file's own, replaced by name by those given. Checked against the tables now, and against the
+    // columns of every key that will see them when the file is finished.
+    for (const s of cont?.files?.shapes ?? []) this.#shapes.set(s.name, s);
+    for (const s of normalizeShapes(shapes)) this.#shapes.set(s.name, s);
+    if (this.#shapes.size) {
+      checkShapeList([...this.#shapes.values()]);
+      checkShapes([...this.#shapes.values()], this.#shapeTables());
+    }
     for (const f of files ?? []) this.addFile(f);
+  }
+
+  /** The file's tables and their column groups, the first table first: what saved shapes are checked against. */
+  #shapeTables() {
+    const declared = (t) => ({ name: t.name, groups: t.columnGroups.map((g) => ({ name: g.name, columns: g.cols.map((i) => t.columns[i]) })) });
+    const cont = this.#continue;
+    if (!cont) return this.#tableDefs.map(declared);
+    // An append writes one table: the others are as the file has them.
+    return cont.header.tables.map((t, i) => (i === cont.tableIndex ? declared(this.#tableDefs[0]) : cont.shapeTables?.[i] ?? { name: t.name, groups: [] }));
   }
 
   /**
@@ -765,6 +786,17 @@ export class JazminWriter {
       });
     }
     this.#closePool();
+    if (this.#access && this.#shapes.size) {
+      // Every key that sees a saved shape must see every column it uses: its text names them.
+      const viewers = this.#access.grants.map((g) => ({
+        get who() {
+          return `${g.key.id}${g.label ? ` (${g.label})` : ''}`;
+        },
+        columns: g.columns === '*' ? '*' : new Set(g.columns),
+        sees: (name) => this.#seesFileGroup(g, name),
+      }));
+      checkShapes([...this.#shapes.values()], this.#shapeTables(), viewers);
+    }
 
     const cont = this.#continue;
     const segment = cont ? cont.header.appendCount + 1 : 0;
@@ -783,7 +815,7 @@ export class JazminWriter {
       metadata: JSON.stringify(this.#options.metadata),
       tables,
       keyring: this.#keys ? this.#keys.keyring : null,
-      files: this.#files.entries.size > 0 ? this.#writeFileDirectories(segment) : null,
+      files: this.#files.entries.size > 0 || this.#shapes.size > 0 ? this.#writeFileDirectories(segment) : null,
       access: null,
       deltas,
     };
@@ -962,9 +994,17 @@ export class JazminWriter {
   #writeFileDirectories(segment) {
     const entries = [...this.#files.entries.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
     const byId = new Map([...this.#files.contents.values()].map((c) => [c.id, c]));
-    const directory = (list, withGroups) => ({
+    const shapes = [...this.#shapes.values()].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    const firstTable = this.#continue ? this.#continue.header.tables[0].name : this.#tableDefs[0].name;
+    const savedShape = (s, withGroups) => ({
+      name: s.name, ...(s.description ? { description: s.description } : {}), ...(s.default ? { default: true } : {}),
+      ...(s.table === undefined || s.table === firstTable ? {} : { table: s.table }), // none: the first table
+      ...(withGroups ? { groups: s.groups } : {}), shape: s.shape,
+    });
+    const directory = (list, withGroups, saved) => ({
       files: list.map((e) => ({ path: e.path, type: e.type, content: e.content, ...(withGroups ? { groups: e.groups } : {}), ...(e.actions ? { actions: e.actions } : {}) })),
       contents: [...new Set(list.map((e) => e.content))].sort((a, b) => a - b).map((id) => byId.get(id)),
+      ...(saved.length ? { shapes: saved.map((s) => savedShape(s, withGroups)) } : {}),
     });
     const settings = normalizePackage(this.#package, new Set(this.#files.entries.keys()));
     if (settings?.edit) checkEdit(settings.edit, this.#tableDefs, { partial: Boolean(this.#continue) });
@@ -977,14 +1017,14 @@ export class JazminWriter {
     if (!this.#access) {
       if (this.#keys && !this.#keys.keyring.files) this.#keys.keyring.files = crypto.randomBytes(32);
       const sectionId = `files/dir${suffix}`;
-      write(EVERYONE, sectionId, directory(entries, true), this.#keys?.sectionKey(KEYRING_GROUPS.files, sectionId));
+      write(EVERYONE, sectionId, directory(entries, true, shapes), this.#keys?.sectionKey(KEYRING_GROUPS.files, sectionId));
       return member;
     }
-    this.#fileGroupNames = [...new Set(entries.flatMap((e) => e.groups))].sort();
+    this.#fileGroupNames = [...new Set([...entries.flatMap((e) => e.groups), ...shapes.flatMap((s) => s.groups)])].sort();
     for (const name of this.#fileGroupNames) {
       const id = this.#secrets.partitionId(name); // same opaque HMAC id as partitions
       const sectionId = `files/dir/${id}${suffix}`;
-      write(id, sectionId, directory(entries.filter((e) => e.groups.includes(name)), false),
+      write(id, sectionId, directory(entries.filter((e) => e.groups.includes(name)), false, shapes.filter((s) => s.groups.includes(name))),
         hkdf(this.#secrets.fileGroupSecret(id), this.#salt, `JAZMIN/1/${sectionId}`));
     }
     return member;
@@ -1031,13 +1071,10 @@ export class JazminWriter {
         partitionNames[id] = name;
       }
       const columns = Object.fromEntries((g.columns === '*' ? allColumns : g.columns).map((n) => [n, b64(s.columnSecret(n))]));
-      // File groups this key sees: everyone's, its partitions', and the named ones it was granted.
       const files = {};
       for (const name of this.#fileGroupNames) {
         const id = s.partitionId(name);
-        const visible = name === EVERYONE || g.files === '*' || g.files.includes(name)
-          || (g.rows === '*' ? s.partitionNames.has(id) : g.rows.includes(name));
-        if (visible) files[id] = b64(s.fileGroupSecret(id));
+        if (this.#seesFileGroup(g, name, id)) files[id] = b64(s.fileGroupSecret(id));
       }
       const limits = {
         ...(g.expires === undefined ? {} : { expires: new Date(g.expires).toISOString() }),
@@ -1048,6 +1085,12 @@ export class JazminWriter {
       slots.push(sealSlot(g.key.secret, this.#salt, this.#fileId, { header, partitions, partitionNames, columns, submission, ...fileSecrets, ...limits }, g.share));
     }
     return slots;
+  }
+
+  /** File groups a grant's key sees: everyone's, its partitions', and the named ones it was granted. */
+  #seesFileGroup(g, name, id = this.#secrets.partitionId(name)) {
+    return name === EVERYONE || g.files === '*' || g.files.includes(name)
+      || (g.rows === '*' ? this.#secrets.partitionNames.has(id) : g.rows.includes(name));
   }
 
   /** Abandons the output: a new file is deleted; an appended file is cut back to its previous end. */

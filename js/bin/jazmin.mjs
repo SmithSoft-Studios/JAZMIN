@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { JazminError, JazminKey, exportFile, fromCSV, fromXML, importJSONFile, inspect, open, portableScript } from '../src/index.js';
+import { writeShape } from '../src/shape.js';
 
 const HELP = {
   main: `jazmin - inspect and query JAZMIN (.jzm) files
@@ -13,7 +14,7 @@ Usage: jazmin <command> [options]
 
 Commands:
   inspect <file>    What a file holds: format, encryption, tables, columns, rows, chunks, indexes
-  query <file>      Rows matching a filter, as JSON lines, JSON or CSV
+  query <file>      Rows matching a filter, as JSON lines, JSON or CSV, or in an export shape as JSON or XML
   explain <file>    How a query runs; with --analyze, what it read
   advise <file>     Layout advice: how many chunks a value spans, and a better sortedBy or chunkRows
   convert <in> <out>  JSON, JSON Lines, CSV or XML to .jzm, or .jzm to JSON, CSV or XML
@@ -26,10 +27,14 @@ Keys: set JAZMIN_KEY (key text), JAZMIN_PASSWORD or JAZMIN_UNLOCK_TOKEN, or pass
 Run "jazmin <command> --help" for a command's options.`,
   inspect: `Usage: jazmin inspect <file> [--table <name>]
 
-Prints a JSON description of the file. Without a key, an encrypted file shows only its format and flags.`,
+Prints a JSON description of the file, with the export shapes saved in it that the key can use. Without a key, an
+encrypted file shows only its format and flags.`,
   query: `Usage: jazmin query <file> [--filter <json>] [--select a,b] [--offset n] [--limit n] [--format jsonl|json|csv] [--table <name>]
+       jazmin query <file> --shape <name> | --shape-file <shape.json> [--filter <json>] [--format json|xml]
 
 Prints the matching rows: one JSON object per line (jsonl, the default), a JSON array, or CSV.
+With an export shape (one saved in the file, by name, or one in a JSON file), prints the shape's output as JSON (the
+default) or XML; the shape decides which rows and columns, so --select, --offset and --limit don't apply.
 Filter example: --filter '{"country":"ZA","balance":{"gt":100}}'`,
   explain: `Usage: jazmin explain <file> [--filter <json>] [--analyze] [--select a,b] [--offset n] [--limit n] [--table <name>]
 
@@ -118,6 +123,38 @@ const csvCell = (v) => {
 
 const out = (text) => process.stdout.write(`${text}\n`);
 
+/** query with an export shape: a saved shape's name (--shape) or a shape in a JSON file (--shape-file). */
+function queryShaped(values, positionals) {
+  if (values.shape !== undefined && values['shape-file'] !== undefined) throw new UsageError('Give --shape or --shape-file, not both');
+  if (values.select !== undefined || values.offset !== undefined || values.limit !== undefined) {
+    throw new UsageError("With a shape, --select, --offset and --limit don't apply: the shape decides ($rows, $limit)");
+  }
+  const format = values.format ?? 'json';
+  if (!['json', 'xml'].includes(format)) throw new UsageError('With a shape, --format must be json or xml');
+  let shape = values.shape;
+  if (values['shape-file'] !== undefined) {
+    const text = fs.readFileSync(values['shape-file'], 'utf8');
+    try {
+      shape = JSON.parse(text);
+    } catch {
+      throw new UsageError(`--shape-file is not valid JSON: ${values['shape-file']}`);
+    }
+  }
+  const file = fileArgument(positionals);
+  const reader = openReader(file, values);
+  try {
+    let last = '';
+    writeShape(reader, shape, format, { filter: filterOf(values.filter), pretty: format === 'json' }, (piece) => {
+      if (!piece) return;
+      process.stdout.write(piece);
+      last = piece.at(-1);
+    });
+    if (last !== '\n') out('');
+  } finally {
+    reader.close();
+  }
+}
+
 const commands = {
   inspect(args) {
     const { values, positionals } = parse(args, { ...KEY_OPTIONS, table: { type: 'string' } });
@@ -143,6 +180,7 @@ const commands = {
         indexes: reader.indexes,
         access: reader.access,
         files: reader.files.length,
+        shapes: reader.shapes.map((s) => ({ name: s.name, ...(s.description ? { description: s.description } : {}), ...(s.default ? { default: true } : {}), ...(s.table ? { table: s.table } : {}) })),
         metadata: reader.metadata,
       }, null, 2));
     } finally {
@@ -153,8 +191,11 @@ const commands = {
   query(args) {
     const { values, positionals } = parse(args, {
       ...KEY_OPTIONS, table: { type: 'string' }, filter: { type: 'string' }, select: { type: 'string' },
-      offset: { type: 'string' }, limit: { type: 'string' }, format: { type: 'string', default: 'jsonl' },
+      offset: { type: 'string' }, limit: { type: 'string' }, format: { type: 'string' }, shape: { type: 'string' }, 'shape-file': { type: 'string' },
     });
+    const shapeFile = values['shape-file'];
+    if (values.shape !== undefined || shapeFile !== undefined) return queryShaped(values, positionals);
+    values.format ??= 'jsonl';
     if (!['jsonl', 'json', 'csv'].includes(values.format)) throw new UsageError('--format must be jsonl, json or csv');
     const file = fileArgument(positionals);
     const reader = openReader(file, values);

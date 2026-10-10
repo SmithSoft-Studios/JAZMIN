@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { JazminAccessKey, JazminKey, open, portableScript } from '../src/index.js';
+import { JazminAccessKey, JazminKey, open, portableScript, toJSON, toXML, write } from '../src/index.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cli = path.join(here, '../bin/jazmin.mjs');
@@ -57,6 +57,26 @@ test('query prints the rows the library finds, as JSON lines, JSON or CSV', () =
   assert.deepEqual(csv, ['id,name,extra', '0,,', '1,Person 1 Smith,"{""i"":1,""tags"":[""x"",false]}"']);
   const refused = jazmin(['query', paged]);
   assert.deepEqual([refused.status, /encrypted/.test(refused.stderr)], [1, true]);
+});
+
+test('inspect lists the saved shapes, and query exports with one by name, or with a shape in a file', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-cli-shapes-'));
+  const file = path.join(dir, 'shapes.jzm');
+  const rows = Array.from({ length: 6 }, (_, i) => ({ id: i, kind: i % 2 ? 'odd' : 'even' }));
+  const totals = { $groupBy: 'kind', $sort: ['kind'], $rows: { kind: 'kind', count: { $count: true } } };
+  write(file, rows, { shapes: [{ name: 'By kind', shape: totals, default: true, description: 'Counts' }] });
+  assert.deepEqual(JSON.parse(jazmin(['inspect', file]).stdout).shapes, [{ name: 'By kind', description: 'Counts', default: true }]);
+  const reader = open(file);
+  const ended = (text) => (text.endsWith('\n') ? text : `${text}\n`); // the library's text, ending with a new line
+  const shaped = jazmin(['query', file, '--shape', 'By kind', '--filter', '{"id":{"gt":1}}']);
+  assert.equal(shaped.stdout, ended(toJSON(reader, { shape: totals, pretty: true, filter: { id: { gt: 1 } } })));
+  assert.equal(jazmin(['query', file, '--shape', 'By kind', '--format', 'xml']).stdout, ended(toXML(reader, { shape: totals })));
+  reader.close();
+  fs.writeFileSync(path.join(dir, 'ids.json'), JSON.stringify({ $rows: 'id', $limit: 2 }));
+  assert.deepEqual(JSON.parse(jazmin(['query', file, '--shape-file', path.join(dir, 'ids.json')]).stdout), [0, 1]);
+  const missing = jazmin(['query', file, '--shape', 'Nope']);
+  assert.deepEqual([missing.status, missing.stderr.trim()], [1, "No saved shape 'Nope' is visible with this key"]);
+  for (const extra of [['--limit', '2'], ['--format', 'csv'], ['--shape-file', 'x.json']]) assert.equal(jazmin(['query', file, '--shape', 'By kind', ...extra]).status, 2, extra.join(' '));
 });
 
 test('explain --analyze and advise report what queries read', () => {

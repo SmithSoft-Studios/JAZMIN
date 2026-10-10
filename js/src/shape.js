@@ -608,10 +608,34 @@ function deepColumns(node, columns, names = new Set()) {
 }
 
 /**
+ * A saved shape given by its name (reader.shapes): the shape, and the reader of the table it reads, opened when that is
+ * not this reader's (close it after). Any other value is a shape itself.
+ */
+function resolveShape(reader, shape) {
+  if (typeof shape !== 'string') return { reader, shape, opened: null };
+  const saved = reader.shapes.find((s) => s.name === shape);
+  if (!saved) throw new JazminValidationError(`No saved shape '${shape}' is visible with this key`);
+  const table = saved.table ?? reader.tables[0];
+  if (table === reader.table) return { reader, shape: saved.shape, opened: null };
+  const opened = reader.openTable(table);
+  return { reader: opened, shape: saved.shape, opened };
+}
+
+/**
  * Writes the shape's output for a reader (format 'json' or 'xml'), streaming: `write(text)` receives it in pieces of
- * about 64 KiB. Options: filter (applies to the whole export), pretty (JSON), root (XML root element, default 'export').
+ * about 64 KiB. `shape` is a shape, or the name of one saved in the file. Options: filter (applies to the whole export),
+ * pretty (JSON), root (XML root element, default 'export').
  */
 export function writeShape(reader, shape, format, options, write) {
+  const resolved = resolveShape(reader, shape);
+  try {
+    writeShapeOn(resolved.reader, resolved.shape, format, options, write);
+  } finally {
+    resolved.opened?.close();
+  }
+}
+
+function writeShapeOn(reader, shape, format, options, write) {
   options ??= {};
   const { filter = null, pretty = false, root = 'export' } = options;
   const priority = reader[READ_PRIORITY];
@@ -1218,8 +1242,17 @@ function nullable(schema) {
   return { ...schema, type: [schema.type, 'null'] };
 }
 
-/** A JSON Schema (draft 2020-12) describing the shape's JSON output for this reader. */
+/** A JSON Schema (draft 2020-12) describing the shape's JSON output for this reader (a shape, or a saved shape's name). */
 export function shapeSchema(reader, shape) {
+  const resolved = resolveShape(reader, shape);
+  try {
+    return schemaOf(resolved.reader, resolved.shape);
+  } finally {
+    resolved.opened?.close();
+  }
+}
+
+function schemaOf(reader, shape) {
   const opened = [];
   let compiled;
   try {

@@ -127,6 +127,13 @@ const shape: ExportShape = {
 const shaped = open('shared.jzm', { key: owner });
 console.log(toJSON(shaped, { shape, pretty: true }), shapeSchema(shaped, shape));
 shaped.close();
+// Saved in the file under a name, for the keys of the groups given (each must see every column the shape uses).
+import type { SavedShape } from '@smithsoft-studios/jazmin';
+update('shared.jzm', { key: owner, addShapes: [{ name: 'Sections', shape, description: 'Totals per section', default: true }] });
+const saved = open('shared.jzm', { key: owner });
+const offered: SavedShape[] = saved.shapes;
+console.log(offered.map((s) => s.name), toJSON(saved, { shape: 'Sections' }));
+saved.close();
 
 // 9. Async: non-blocking reads (a server keeps serving other requests during long scans) and async row sources.
 import { openAsync, writeAsync } from '@smithsoft-studios/jazmin';

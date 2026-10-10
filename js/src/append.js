@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { JazminKeyError, JazminValidationError } from './errors.js';
 import { growColumns } from './nested.js';
+import { keptShapes, tableColumns } from './saved-shapes.js';
 import { normalizeColumns } from './schema.js';
 import { withLock } from './lock.js';
 import { APPEND_STATE, JazminReader, OWNER_GRANTS, ROWS_WITH_IDS } from './reader.js';
@@ -32,6 +33,7 @@ function compareTuples(a, b) {
  * options: key | password, insert, upsert + keyColumns, delete (filter), metadata,
  *          grant (access-controlled files), codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority,
  *          addFiles (add or replace by path), removeFiles (paths), package (viewer settings),
+ *          addShapes (saved export shapes: add or replace by name), removeShapes (names),
  *          autoCompact: { deletedRatio?, appends? }   compact afterwards when either is reached
  *
  * In a file with sortedBy, appended rows must sort after the existing rows; use update() to
@@ -47,7 +49,7 @@ function appendUnlocked(path, options) {
   const {
     key, password, insert = [], upsert = [], keyColumns, delete: deleteWhere, metadata, grant = [], revoke = [],
     codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, autoCompact, now,
-    addFiles = [], removeFiles = [], package: packageSettings, table, columns: given,
+    addFiles = [], removeFiles = [], package: packageSettings, table, columns: given, addShapes = [], removeShapes = [],
   } = options;
   if (upsert.length && (!Array.isArray(keyColumns) || keyColumns.length === 0)) {
     throw new JazminValidationError('upsert needs keyColumns, e.g. { keyColumns: ["id"] }');
@@ -94,7 +96,7 @@ function appendUnlocked(path, options) {
     const deletedNow = removed.size - updated;
 
     const state = reader[APPEND_STATE];
-    if (state.files || addFiles.length) {
+    if (state.files || addFiles.length || addShapes.length) {
       // Kept files are referenced, not rewritten; replaced and removed ones are dropped from the directory.
       const entries = new Map((state.files?.entries ?? []).map((e) => [e.path, e]));
       for (const p of removeFiles) if (!entries.delete(p)) throw new JazminValidationError(`removeFiles: no file '${p}'`);
@@ -104,10 +106,25 @@ function appendUnlocked(path, options) {
         contents: state.files?.contents ?? [],
         nextId: state.files?.nextId ?? 0,
         package: state.files?.package,
+        shapes: keptShapes(state.files?.shapes ?? [], addShapes, removeShapes),
       };
     } else if (removeFiles.length) {
       throw new JazminValidationError(`removeFiles: no file '${removeFiles[0]}'`);
+    } else if (removeShapes.length) {
+      throw new JazminValidationError(`removeShapes: no saved shape '${removeShapes[0]}'`);
     }
+    // Saved shapes are checked against every table they read: the file's other tables are as it has them.
+    const shapeTables = state.files?.shapes.length && reader.tables.length > 1
+      ? reader.tables.map((name) => {
+        if (name === reader.table) return null;
+        const other = reader.openTable(name);
+        try {
+          return tableColumns(other);
+        } finally {
+          other.close();
+        }
+      })
+      : undefined;
     const allDeleted = Float64Array.from(new Set([...state.deleted, ...removed])).sort();
     const sortedBy = reader.sortedBy;
     const existingMetadata = reader.metadata;
@@ -128,7 +145,8 @@ function appendUnlocked(path, options) {
       now, // expired grants lose their key slots (full lock-out of old secrets needs compact/update)
       files: addFiles,
       ...(packageSettings !== undefined ? { package: packageSettings } : {}),
-      [CONTINUE]: { ...state, deleted: [...allDeleted], grown },
+      shapes: addShapes,
+      [CONTINUE]: { ...state, deleted: [...allDeleted], grown, shapeTables },
     });
     try {
       writer.writeRows(incoming);

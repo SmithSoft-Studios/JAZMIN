@@ -687,6 +687,29 @@ remaining file; files it keeps refer to their existing contents. A full
 rewrite stores the files again under fresh keys and keeps only referenced
 contents.
 
+**Saved export shapes.** A directory MAY also list named export shapes
+(`shapes`), which viewers and tools offer by name:
+
+```json
+"shapes": [ { "name": "Monthly totals", "description": "Per account", "default": true,
+              "table": "transactions", "groups": ["*"], "shape": { "$rows": "amount" } } ]
+```
+
+- `name` (1 to 200 characters) is unique within the file, and `shape` is
+  an export shape: a JSON object, as the reference implementations define
+  it. `description` (at most 2,000 characters), `default` (offered first;
+  at most one per group) and `table` (the table the shape reads; left out,
+  the file's first table) are optional. A file keeps at most 1,000 shapes.
+- A shape is listed in the directory of each group that sees it, with
+  `groups` as for files: written in files that are not access-controlled,
+  left out in access-controlled ones.
+- In access-controlled files, a shape's text names columns, whose names
+  are secret from keys that can't see them (7.6.5). Writers MUST NOT give
+  a key a group with a shape that uses a column, in any table it reads,
+  that the key can't see: they refuse the write or the grant. Readers
+  SHOULD list only the shapes that use columns their key can see, and
+  MUST ignore entries that are not well-formed.
+
 ## 7. Encryption and Keys
 
 ### 7.1. Algorithms
@@ -1597,6 +1620,10 @@ indexes, embedded files) written by both reference implementations.
   Readers that don't know them ignore them, as they do other members; the
   libraries of releases 1.0 to 1.3 also leave them out when they rewrite a
   file's directories (append, update, compaction).
+- **Since format 1.0, a new optional JSON member (6.8):** saved export
+  shapes, `shapes` in file directories. Readers that don't know it ignore
+  it, and the libraries of releases 1.0 to 1.4 leave it out when they
+  rewrite a file's directories, as above.
 
 ## Appendix C. Design Notes (informative)
 
