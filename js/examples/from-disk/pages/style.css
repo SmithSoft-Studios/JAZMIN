@@ -187,3 +187,7 @@ button.chip.action:hover { background: var(--accent); color: var(--on-accent); }
 @media (prefers-color-scheme: dark) { pre.code { background: #0b0f18; border: 1px solid var(--line); } }
 @media (max-width: 520px) { #transactions th:nth-child(3), #transactions td:nth-child(3) { display: none; } }
 #transactions td:first-child, #latest td:first-child { white-space: nowrap; }
+.query-tabs { margin: 0.5rem 0 1rem; }
+#query-js, #query-linq { font-size: 12px; }
+.query-code { display: grid; gap: 0.25rem; }
+.query-code > * { min-width: 0; }

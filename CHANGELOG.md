@@ -11,7 +11,8 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   XML and JSON Schema, a shape lab that checks as you type), **several tables** (clients and their transactions linked
   by a saved shape), **documents** (a print-ready report and a task list that saves changes, shown in the viewer) and
   **one file, three people** (the same file opened with three access keys side by side). The statement and the
-  1,000,000-row demo file carry saved shapes, which the viewer's Export menu lists.
+  1,000,000-row demo file carry saved shapes, which the viewer's Export menu lists. The several-tables demo also
+  queries both tables in JavaScript, each query shown as it runs with the same query in C# LINQ.
 - **`JazminBrowser.scriptBytes(url)`:** the file inside a script (`portableScript`, `jazmin script`) as bytes, still
   locked, for example to hand it to the viewer in an iframe.
 - **Export shapes saved in the file** (spec 6.8, a new optional member). A file can carry export shapes under names,

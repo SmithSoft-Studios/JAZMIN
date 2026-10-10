@@ -63,6 +63,26 @@
       </section>
     </div>
 
+    <section class="panel">
+      <h2>Query both tables</h2>
+      <p class="hint">Each query below is the JavaScript that runs (shown as written), with the same query in C# LINQ
+        under it. The filters (<code>{ city: 'Durban' }</code>) are what the reader answers from the file, with its
+        indexes and sort order; arrow functions then join, group and sort the rows that come back.</p>
+      <div id="queries" class="tabs query-tabs" role="tablist"></div>
+      <div class="query-code">
+        <div>
+          <h3>JavaScript</h3>
+          <pre id="query-js" class="code"></pre>
+        </div>
+        <div>
+          <h3>The same in C# LINQ</h3>
+          <pre id="query-linq" class="code"></pre>
+        </div>
+      </div>
+      <p id="query-note" class="hint muted" role="status"></p>
+      <div id="query-result" class="table-scroll short"></div>
+    </section>
+
     <section class="panel actions-panel">
       <div>
         <h2>The whole file</h2>
@@ -108,6 +128,7 @@
     await list();
     const first = $('clients').tBodies[0].rows[0];
     if (first) first.click();
+    runQuery(queries[0]);
   });
 
   /** The clients, or those whose name has the text in it (a text index on name answers that). */
@@ -179,6 +200,124 @@
     }
   });
   $('in-viewer').addEventListener('click', () => demo.inViewer(bytes, 'bank.jzm'));
+
+  // Queries across both tables: the reader answers the filters from the file; arrow functions do the rest. The page
+  // shows each run() as it is written here, so what you read is what runs.
+  const queries = [
+    {
+      title: 'Durban clients and their spending',
+      run: async () => {
+        const { rows: durban } = await clients.query({ city: 'Durban' }, { limit: 1000, total: false });
+        const spent = new Map(durban.map((c) => [c.id, 0]));
+        const theirs = { client: { in: [...spent.keys()] }, amount: { lt: '0' } };
+        for await (const t of transactions.find(theirs, { select: ['client', 'amount'] })) {
+          spent.set(t.client, spent.get(t.client) + Number(t.amount));
+        }
+        return durban
+          .map((c) => ({ name: c.name, segment: c.segment, spent: spent.get(c.id) }))
+          .sort((a, b) => a.spent - b.spent);
+      },
+      linq: `var spent = clients
+    .Where(c => c.City == "Durban")
+    .Select(c => new
+    {
+        c.Name, c.Segment,
+        Spent = transactions
+            .Where(t => t.Client == c.Id && t.Amount < 0)
+            .Sum(t => t.Amount),
+    })
+    .OrderBy(x => x.Spent)
+    .ToList();  // the sub-query is read once, as a lookup`,
+    },
+    {
+      title: 'Big travel spends, with the client',
+      run: async () => {
+        const travel = { category: 'Travel', amount: { lt: '-20000' } };
+        const { rows: big } = await transactions.query(travel, { limit: 1000, total: false });
+        const ids = [...new Set(big.map((t) => t.client))];
+        const { rows: who } = await clients.query({ id: { in: ids } }, { limit: ids.length, total: false });
+        const names = new Map(who.map((c) => [c.id, c.name]));
+        return big
+          .map((t) => ({ name: names.get(t.client), date: t.date, merchant: t.merchant, amount: t.amount }))
+          .sort((a, b) => a.amount - b.amount);
+      },
+      linq: `var big =
+    from t in transactions
+    where t.Category == "Travel" && t.Amount < -20000
+    join c in clients on t.Client equals c.Id
+    orderby t.Amount
+    select new { c.Name, t.Date, t.Merchant, t.Amount };`,
+    },
+    {
+      title: 'Spending per segment',
+      run: async () => {
+        const { rows: all } = await clients.query(null, { limit: 1000, select: ['id', 'segment'], total: false });
+        const segment = new Map(all.map((c) => [c.id, c.segment]));
+        const totals = new Map();
+        for await (const t of transactions.find({ amount: { lt: '0' } }, { select: ['client', 'amount'] })) {
+          const name = segment.get(t.client);
+          const s = totals.get(name) ?? { segment: name, spent: 0, payments: 0 };
+          s.spent += Number(t.amount);
+          s.payments++;
+          totals.set(s.segment, s);
+        }
+        return [...totals.values()].sort((a, b) => a.spent - b.spent);
+      },
+      linq: `var perSegment =
+    from t in transactions
+    where t.Amount < 0
+    join c in clients on t.Client equals c.Id
+    group t by c.Segment into g
+    orderby g.Sum(t => t.Amount)
+    select new { Segment = g.Key, Spent = g.Sum(t => t.Amount), Payments = g.Count() };`,
+    },
+    {
+      title: 'Who drinks the most coffee',
+      run: async () => {
+        const visits = new Map();
+        for await (const t of transactions.find({ merchant: { icontains: 'coffee' } }, { select: ['client'] })) {
+          visits.set(t.client, (visits.get(t.client) ?? 0) + 1);
+        }
+        const top = [...visits].sort((a, b) => b[1] - a[1]).slice(0, 10);
+        const { rows: who } = await clients.query({ id: { in: top.map(([id]) => id) } }, { limit: 10, total: false });
+        const names = new Map(who.map((c) => [c.id, c.name]));
+        return top.map(([id, coffees]) => ({ name: names.get(id), coffees }));
+      },
+      linq: `var coffee = transactions
+    .Where(t => t.Merchant.Contains("coffee", StringComparison.OrdinalIgnoreCase))
+    .GroupBy(t => t.Client)
+    .Select(g => new { Client = g.Key, Coffees = g.Count() })
+    .OrderByDescending(x => x.Coffees)
+    .Take(10)
+    .Join(clients, x => x.Client, c => c.Id, (x, c) => new { c.Name, x.Coffees });`,
+    },
+  ];
+
+  /** The function's own text, without the indentation it has in this page. */
+  const shown = (fn) => {
+    const lines = fn.toString().split('\n');
+    const indent = Math.min(...lines.slice(1).filter((l) => l.trim()).map((l) => l.match(/^ */)[0].length));
+    return [lines[0], ...lines.slice(1).map((l) => l.slice(indent))].join('\n');
+  };
+
+  async function runQuery(q) {
+    for (const tab of $('queries').children) tab.setAttribute('aria-selected', String(tab.textContent === q.title));
+    $('query-js').textContent = shown(q.run);
+    $('query-linq').textContent = q.linq;
+    $('query-note').textContent = 'Running…';
+    const started = performance.now();
+    const rows = await q.run();
+    $('query-note').textContent = `${rows.length} rows · ${since(started)}`;
+    const columns = Object.keys(rows[0] ?? {});
+    $('query-result').replaceChildren(demo.table(rows.map((r) => (r.date instanceof Date ? { ...r, date: dayMonth(r.date) } : r)), columns.map((c) => [c, c])));
+  }
+
+  $('queries').replaceChildren(...queries.map((q) => {
+    const tab = Object.assign(document.createElement('button'), { type: 'button', textContent: q.title });
+    tab.setAttribute('role', 'tab');
+    tab.addEventListener('click', () => runQuery(q));
+    return tab;
+  }));
 </script>
 </body>
 </html>

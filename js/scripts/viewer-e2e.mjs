@@ -233,6 +233,17 @@ const SAMPLE = (() => {
     clients: `${clients.rowCount} rows`, transactions: `${bankTransactions.rowCount.toLocaleString('en-US')} rows`, name: first.name,
     spent: rand(Math.abs(spending.reduce((sum, t) => sum + Number(t.amount), 0))), payments: String(spending.length),
   };
+  // The query panel's spending per segment: the payments (amount below 0) of each segment's clients, most spent first.
+  const segmentOf = new Map([...clients.rows()].map((c) => [c.id, c.segment]));
+  const segments = new Map();
+  for (const t of bankTransactions.find({ amount: { lt: '0' } })) {
+    const s = segments.get(segmentOf.get(t.client)) ?? { segment: segmentOf.get(t.client), spent: 0, payments: 0 };
+    s.spent += Number(t.amount);
+    s.payments++;
+    segments.set(s.segment, s);
+  }
+  const perSegment = [...segments.values()].sort((a, b) => a.spent - b.spent)
+    .map((s) => [s.segment, `−${rand(Math.abs(s.spent))}`, s.payments.toLocaleString('en-US')]); // the pages' minus sign
   bankTransactions.close();
   clients.close();
   return {
@@ -242,6 +253,7 @@ const SAMPLE = (() => {
     oneAccount: demo.count({ account: 'ACC-1042' }),
     categories: new Set(rows.filter((r) => Number(r.amount) < 0).map((r) => r.category)).size,
     bank,
+    perSegment,
   };
 })();
 
@@ -881,6 +893,10 @@ for (const name of chosen) {
     await waitFor(page, `!!document.getElementById('unlock')`, 'the tables page');
     await page.evaluate(`(document.getElementById('unlock').requestSubmit(), true)`);
     const tablesShown = await waitFor(page, `/·/.test(${text('tx-note')}) && { clients: ${text('client-count')}, transactions: ${text('tx-count')}, name: document.querySelector('#client h2').textContent, spent: ${text('spent')}, payments: ${text('payments')} }`, 'a client and their spending');
+    // A query across both tables, in its JavaScript: spending per segment.
+    await waitFor(page, `/rows ·/.test(${text('query-note')})`, 'the first query');
+    await page.evaluate(`([...document.querySelectorAll('#queries button')].find((b) => b.textContent === 'Spending per segment').click(), true)`);
+    const perSegment = await waitFor(page, `document.querySelector('#queries [aria-selected="true"]')?.textContent === 'Spending per segment' && /^3 rows ·/.test(${text('query-note')}) && [...document.querySelectorAll('#query-result tbody tr')].map((tr) => [...tr.cells].map((td) => td.textContent))`, 'spending per segment');
     await page.navigate(sample('shared.html'));
     await waitFor(page, `!!document.getElementById('open')`, 'the shared page');
     await page.evaluate(`(document.getElementById('open').click(), true)`);
@@ -894,14 +910,14 @@ for (const name of chosen) {
     const galleryOk = shapesShown.status.startsWith(`${SAMPLE.statementRows} transactions · 4 saved shapes · opened in `) && shapesShown.bars === SAMPLE.categories
       && JSON.stringify(shapesShown.saved) === JSON.stringify(['Chart data', 'Merchants', 'Spending by category', 'Statement']) && shapesShown.output === '['
       && labMistake === "Shape at categories[].spent.$sum: unknown or hidden column 'amont'"
-      && JSON.stringify(tablesShown) === JSON.stringify(SAMPLE.bank)
+      && JSON.stringify(tablesShown) === JSON.stringify(SAMPLE.bank) && JSON.stringify(perSegment) === JSON.stringify(SAMPLE.perSegment)
       && JSON.stringify(people) === JSON.stringify([
         { who: 'Cape Town manager', rows: '10 of 30', columns: ['branch', 'name', 'role', 'since', 'salary', 'bonus'], shapes: ['Cape Town pay', 'Headcount by role', 'Team list'], files: 2 },
         { who: 'Johannesburg team lead', rows: '10 of 30', columns: ['branch', 'name', 'role', 'since'], shapes: ['Headcount by role', 'Team list'], files: 2 },
         { who: 'HR', rows: '30 of 30', columns: ['branch', 'name', 'role', 'since', 'salary', 'bonus'], shapes: ['Cape Town pay', 'Headcount by role', 'Pay by branch', 'Team list'], files: 5 },
       ])
       && JSON.stringify(documentStatuses) === JSON.stringify(['opened report.jzm', 'locked tasks.jzm']);
-    results.push({ browser: name, label: `the demo gallery: export shapes, several tables, one file with three keys, documents in the viewer${fromDisk ? ', from disk' : ' (over HTTP)'}`, ok: galleryOk, problems: galleryOk ? [] : [JSON.stringify({ shapesShown, labMistake, tablesShown, people, documentStatuses, SAMPLE })] });
+    results.push({ browser: name, label: `the demo gallery: export shapes, several tables, one file with three keys, documents in the viewer${fromDisk ? ', from disk' : ' (over HTTP)'}`, ok: galleryOk, problems: galleryOk ? [] : [JSON.stringify({ shapesShown, labMistake, tablesShown, perSegment, people, documentStatuses, SAMPLE })] });
     if (page.problems.length) results.push({ browser: name, label: 'page errors', ok: false, problems: page.problems });
   } catch (error) {
     results.push({ browser: name, label: 'run', ok: false, problems: [error.message] });
