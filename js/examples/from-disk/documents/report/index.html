@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sales report</title>
+<link rel="stylesheet" href="report.css">
+</head>
+<body>
+<header class="top">
+  <div>
+    <p class="eyebrow" id="company"></p>
+    <h1 id="title">Sales report</h1>
+    <p id="period" class="muted"></p>
+  </div>
+  <div class="actions">
+    <button id="print" type="button" hidden>Print</button>
+    <button id="pdf" type="button" class="primary" hidden>Save as PDF</button>
+  </div>
+</header>
+
+<section class="kpis">
+  <div><span>Revenue</span><strong id="revenue"></strong></div>
+  <div><span>Orders</span><strong id="orders"></strong></div>
+  <div><span>Average order</span><strong id="average"></strong></div>
+  <div><span>Best branch</span><strong id="best"></strong></div>
+</section>
+
+<section class="two">
+  <div class="card">
+    <h2>Revenue by branch</h2>
+    <div id="branches" class="bars"></div>
+  </div>
+  <div class="card">
+    <h2>Revenue by month</h2>
+    <div id="months" class="columns-chart"></div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Branches and product lines</h2>
+  <table id="grid"><thead></thead><tbody></tbody><tfoot></tfoot></table>
+</section>
+
+<footer class="note">This report is a page stored inside <code>report.jzm</code>, with its data. The viewer shows it in a
+  sandbox: it reads the rows through <code>window.jazmin</code> and can't reach the network or the key.</footer>
+
+<script src="report.js"></script>
+</body>
+</html>

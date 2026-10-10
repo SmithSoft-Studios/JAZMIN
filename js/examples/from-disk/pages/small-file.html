@@ -179,7 +179,7 @@
       const link = Object.assign(document.createElement('a'), { href: URL.createObjectURL(blob), download: name });
       link.click();
       setTimeout(() => URL.revokeObjectURL(link.href), 60000);
-      $('found').textContent = `Saved ${name} · ${blob.size.toLocaleString()} bytes · ${since(started)}`;
+      $('found').textContent = `Saved ${name} · ${blob.size.toLocaleString('en-US')} bytes · ${since(started)}`;
     });
   }
 

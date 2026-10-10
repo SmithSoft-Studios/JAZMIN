@@ -3978,7 +3978,10 @@ disk.
 > that opens by itself, with totals and a search; a page that asks for a file
 > and opens it in the viewer; and 1,000,000 card transactions, indexed on the
 > columns people filter by, which answer the filters it suggests in 10–80 ms.
-> Its README explains how both ways work.
+> Its README explains how both ways work. Four demos (next release) show what a
+> file can do: export shapes (a chart's data in one call, saved shapes, a shape
+> lab), several tables linked by a saved shape, documents (a print-ready report
+> and a task list that saves changes) and one file opened with three keys.
 
 There are three ways:
 
@@ -4078,6 +4081,9 @@ one):
   slashes, `%20` for spaces). A page can open several such files.
 - **The file inside is the `.jzm` as it is,** still encrypted: the page still
   needs the key or password. Don't put it in the page.
+- **To show it in the viewer** (next release), take the file's bytes with
+  `await JazminBrowser.scriptBytes(url)` and hand them over:
+  `viewer.contentWindow.postMessage({ type: 'jazmin:open', file: new Blob([bytes]), name }, '*')`.
 - **The page holds the whole file in memory,** decoded once from the
   script's text, which is then let go. Make the script again whenever the
   `.jzm` changes.

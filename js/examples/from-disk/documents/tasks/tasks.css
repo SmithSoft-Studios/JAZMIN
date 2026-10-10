@@ -1,0 +1,32 @@
+:root { --ink: #1d2433; --muted: #5b6475; --line: #e1e5ec; --soft: #f4f6fa; --accent: #2456c9; --accent-soft: #e8efff; --ok: #157347; --warn: #9a6700; --bad: #b42318; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0 auto; max-width: 60rem; padding: 1.75rem 1.25rem 3rem; font: 14.5px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: #fff; }
+h1 { font-size: 1.6rem; margin: 0; }
+.muted, .note { color: var(--muted); }
+.top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 1rem; margin-bottom: 1rem; }
+.top p { margin: 0.2rem 0 0; }
+.save { display: flex; align-items: center; gap: 0.75rem; }
+input, select, button { font: inherit; padding: 0.35rem 0.55rem; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--ink); }
+button { cursor: pointer; font-weight: 600; }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; padding: 0.5rem 1rem; }
+button:disabled { opacity: 0.5; cursor: default; }
+.banner { padding: 0.65rem 0.9rem; border-radius: 9px; background: var(--soft); margin: 0 0 1rem; }
+.banner.ok { background: #e7f6ee; color: var(--ok); font-weight: 600; }
+.banner.bad { background: #fdecea; color: var(--bad); font-weight: 600; }
+.table-scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 0.45rem 0.4rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
+th { color: var(--muted); font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.03em; }
+td input, td select { width: 100%; min-width: 6.5rem; }
+td.task input { min-width: 14rem; }
+tr.changed td { background: #fff8e6; }
+tr.added td { background: #e7f6ee; }
+tr.removed td { opacity: 0.45; text-decoration: line-through; }
+.status-Done select { color: var(--ok); font-weight: 600; }
+.priority-High select { color: var(--bad); font-weight: 600; }
+td.remove button { border: 0; background: none; color: var(--muted); font-size: 1.1rem; padding: 0.2rem 0.5rem; }
+td.remove button:hover { color: var(--bad); }
+.add { display: grid; grid-template-columns: 2.4fr 1fr 1fr 0.9fr auto; gap: 0.5rem; margin-top: 1rem; }
+.note { font-size: 0.85rem; margin-top: 1.5rem; }
+@media (max-width: 640px) { .add { grid-template-columns: 1fr 1fr; } .add #new-task { grid-column: 1 / -1; } }

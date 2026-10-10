@@ -85,3 +85,88 @@ export function statement() {
   }
   return { rows, openingBalance: '24850.00' };
 }
+
+const FIRST_NAMES = ['Thandi', 'Johan', 'Aisha', 'Pieter', 'Lerato', 'Sipho', 'Megan', 'Ravi', 'Nomvula', 'David', 'Zanele', 'Michael',
+  'Fatima', 'Kagiso', 'Sarah', 'Andile', 'Chloe', 'Tshepo', 'Priya', 'Willem', 'Naledi', 'Ethan', 'Amahle', 'Ruan'];
+const LAST_NAMES = ['Nkosi', 'van der Merwe', 'Patel', 'Botha', 'Mokoena', 'Dlamini', 'Smith', 'Naidoo', 'Khumalo', 'Jacobs', 'Mahlangu',
+  'Pillay', 'le Roux', 'Ndlovu', 'Adams', 'Molefe', 'Fourie', 'Govender'];
+const pick = (rnd, list) => list[Math.floor(rnd() * list.length)];
+
+/**
+ * A bank's clients and their card transactions for 2026, for a file of two tables. Clients are in id order and
+ * transactions in client and date order, so a shape that nests each client's transactions reads both tables once.
+ */
+export function bank(clientCount = 250) {
+  const rnd = random(77);
+  const clients = [];
+  const transactions = [];
+  for (let id = 1; id <= clientCount; id++) {
+    const segment = rnd() < 0.68 ? 'Personal' : rnd() < 0.6 ? 'Business' : 'Private';
+    clients.push({
+      id, name: `${pick(rnd, FIRST_NAMES)} ${pick(rnd, LAST_NAMES)}`, city: pick(rnd, CITIES), segment,
+      since: new Date(Date.UTC(2009 + Math.floor(rnd() * 17), Math.floor(rnd() * 12), 1 + Math.floor(rnd() * 28))),
+    });
+    const salary = Math.round((segment === 'Private' ? 60000 : 16000) + rnd() * (segment === 'Private' ? 90000 : 50000));
+    const own = [];
+    for (let month = 0; month < 12; month++) own.push({ date: new Date(Date.UTC(2026, month, 25, 6)), merchant: 'Salary', category: 'Income', amount: money(salary) });
+    const purchases = Math.round(40 + rnd() * 110);
+    for (let k = 0; k < purchases; k++) {
+      const p = purchase(rnd);
+      own.push({ date: new Date(Date.UTC(2026, 0, 1) + Math.floor(rnd() * 365 * 24) * 3600000), merchant: p.merchant, category: p.category, amount: money(p.amount) });
+    }
+    own.sort((a, b) => a.date - b.date);
+    for (const t of own) transactions.push({ client: id, ...t });
+  }
+  return { clients, transactions };
+}
+
+/** A sales report's figures: each branch's revenue and orders by month and category, January to June 2026. */
+export function branchSales() {
+  const rnd = random(2606);
+  const branches = [['Cape Town', 1.15], ['Johannesburg', 1.35], ['Durban', 0.9], ['Pretoria', 1.0], ['Gqeberha', 0.6]];
+  const lines = [['Groceries', 420000], ['Home & Garden', 180000], ['Electronics', 260000], ['Clothing', 150000]];
+  const rows = [];
+  for (let month = 0; month < 6; month++) {
+    for (const [branch, size] of branches) {
+      for (const [category, base] of lines) {
+        const revenue = base * size * (0.85 + rnd() * 0.3) * (1 + month * 0.025);
+        rows.push({ month: `2026-${String(month + 1).padStart(2, '0')}`, branch, category, revenue: money(revenue), orders: Math.round(revenue / (180 + rnd() * 140)) });
+      }
+    }
+  }
+  return rows;
+}
+
+/** A team's task list, for a document that changes its own rows. */
+export function tasks() {
+  const due = (day) => new Date(Date.UTC(2026, 10, day, 15));
+  return [
+    { id: 'T-101', task: 'Send the quarterly report to the board', owner: 'Lerato', due: due(3), status: 'In progress', priority: 'High' },
+    { id: 'T-102', task: 'Renew the office lease', owner: 'Johan', due: due(14), status: 'Open', priority: 'High' },
+    { id: 'T-103', task: 'Plan the year-end function', owner: 'Aisha', due: due(28), status: 'Open', priority: 'Low' },
+    { id: 'T-104', task: 'Interview two developers', owner: 'Sipho', due: due(7), status: 'In progress', priority: 'Medium' },
+    { id: 'T-105', task: 'Update the price list', owner: 'Megan', due: due(5), status: 'Done', priority: 'Medium' },
+    { id: 'T-106', task: 'Move the website to the new host', owner: 'Ravi', due: due(19), status: 'Open', priority: 'Medium' },
+    { id: 'T-107', task: 'Check the fire extinguishers', owner: 'Johan', due: due(10), status: 'Done', priority: 'Low' },
+  ];
+}
+
+/** A company's staff in three branches, with pay: for one file several people open with keys that see different parts. */
+export function staff() {
+  const rnd = random(311);
+  const roles = [['Branch manager', 1, 68000], ['Team lead', 2, 42000], ['Consultant', 5, 27000], ['Administrator', 2, 19500]];
+  const rows = [];
+  for (const branch of ['Cape Town', 'Johannesburg', 'Durban']) {
+    for (const [role, count, pay] of roles) {
+      for (let n = 0; n < count; n++) {
+        const salary = Math.round(pay * (0.9 + rnd() * 0.25) / 100) * 100;
+        rows.push({
+          branch, name: `${pick(rnd, FIRST_NAMES)} ${pick(rnd, LAST_NAMES)}`, role,
+          since: new Date(Date.UTC(2012 + Math.floor(rnd() * 14), Math.floor(rnd() * 12), 1)),
+          salary: money(salary), bonus: money(Math.round(salary * rnd() * 0.15 / 100) * 100),
+        });
+      }
+    }
+  }
+  return rows;
+}

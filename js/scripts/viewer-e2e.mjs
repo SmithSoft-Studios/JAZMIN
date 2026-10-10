@@ -223,11 +223,25 @@ const SAMPLE = (() => {
   const rows = [...statement.rows()];
   const closing = Number(statement.metadata.openingBalance) + rows.reduce((sum, r) => sum + Number(r.amount), 0);
   const demo = open(path.join(temp, 'sample/data/transactions.jzm'), { password: 'demo' });
+  // The gallery's tables page shows the first client and their spending.
+  const rand = (n) => `R ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const clients = open(path.join(temp, 'sample/data/bank.jzm'), { password: 'demo' });
+  const bankTransactions = clients.openTable('transactions');
+  const [first] = [...clients.rows({ limit: 1 })];
+  const spending = [...bankTransactions.find({ client: first.id, amount: { lt: '0' } })];
+  const bank = {
+    clients: `${clients.rowCount} rows`, transactions: `${bankTransactions.rowCount.toLocaleString('en-US')} rows`, name: first.name,
+    spent: rand(Math.abs(spending.reduce((sum, t) => sum + Number(t.amount), 0))), payments: String(spending.length),
+  };
+  bankTransactions.close();
+  clients.close();
   return {
     statementRows: rows.length,
-    closing: `R ${closing.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+    closing: rand(closing),
     coffee: rows.filter((r) => /coffee/i.test(r.merchant)).length,
     oneAccount: demo.count({ account: 'ACC-1042' }),
+    categories: new Set(rows.filter((r) => Number(r.amount) < 0).map((r) => r.category)).size,
+    bank,
   };
 })();
 
@@ -852,6 +866,42 @@ for (const name of chosen) {
     const triedTotal = Number((/of ([\d\s.,  ]+) matching/.exec(tried.status)?.[1] ?? '').replace(/\D/g, ''));
     const triesOk = offered.length === 5 && tried.filter === '{"account":"ACC-1042"}' && triedTotal === SAMPLE.oneAccount;
     results.push({ browser: name, label: 'the from-disk sample: Try buttons send filters to the viewer (jazmin:filter), answered from the demo file\'s indexes', ok: triesOk, problems: triesOk ? [] : [JSON.stringify({ offered, tried, SAMPLE })] });
+
+    // The demo gallery, as a person uses it: export shapes (a chart from a saved shape, the saved list, the lab checking
+    // as typed), several tables (a client and their spending through the saved linked shape), one file with three
+    // keys, and documents handed to the viewer, which says how they open.
+    const text = (id) => `document.getElementById('${id}').textContent`;
+    await page.navigate(sample('shapes.html'));
+    await waitFor(page, `!!document.getElementById('unlock')`, 'the shapes page');
+    await page.evaluate(`(document.getElementById('unlock').requestSubmit(), true)`);
+    const shapesShown = await waitFor(page, `document.getElementById('lab-check').className.includes('ok') && { status: ${text('status')}, bars: document.querySelectorAll('#chart .bar-row').length, saved: [...document.querySelectorAll('#saved .shape-card strong')].map((e) => e.firstChild.textContent.trim()), output: ${text('saved-output')}.slice(0, 1) }`, 'the shapes page opened');
+    await page.evaluate(`(document.getElementById('lab').value = document.getElementById('lab').value.replace('"$sum": "amount"', '"$sum": "amont"'), document.getElementById('lab').dispatchEvent(new Event('input')), true)`);
+    const labMistake = await waitFor(page, `document.getElementById('lab-check').className.includes('bad') && ${text('lab-check')}`, 'the lab mistake');
+    await page.navigate(sample('tables.html'));
+    await waitFor(page, `!!document.getElementById('unlock')`, 'the tables page');
+    await page.evaluate(`(document.getElementById('unlock').requestSubmit(), true)`);
+    const tablesShown = await waitFor(page, `/·/.test(${text('tx-note')}) && { clients: ${text('client-count')}, transactions: ${text('tx-count')}, name: document.querySelector('#client h2').textContent, spent: ${text('spent')}, payments: ${text('payments')} }`, 'a client and their spending');
+    await page.navigate(sample('shared.html'));
+    await waitFor(page, `!!document.getElementById('open')`, 'the shared page');
+    await page.evaluate(`(document.getElementById('open').click(), true)`);
+    const people = await waitFor(page, `!document.getElementById('people').hidden && [...document.querySelectorAll('.person')].map((p) => ({ who: p.querySelector('h2').textContent, rows: p.querySelector('.rows').textContent, columns: [...p.querySelectorAll('.columns-chips .chip:not(.off)')].map((c) => c.textContent), shapes: [...p.querySelectorAll('.shape-chips .chip')].map((c) => c.textContent), files: p.querySelectorAll('.file-list li').length }))`, 'the three keys');
+    await page.navigate(sample('documents.html'));
+    await waitFor(page, `!!document.getElementById('open-report')`, 'the documents page');
+    await page.evaluate(`(window.statuses = [], addEventListener('message', (e) => e.data?.type === 'jazmin:status' && statuses.push(e.data.state + ' ' + e.data.name)), document.getElementById('open-report').click(), true)`);
+    await waitFor(page, `statuses.length > 0`, 'the report in the viewer', 30000);
+    await page.evaluate(`(document.getElementById('open-tasks').click(), true)`);
+    const documentStatuses = await waitFor(page, `statuses.length > 1 && statuses`, 'the task list in the viewer', 30000);
+    const galleryOk = shapesShown.status.startsWith(`${SAMPLE.statementRows} transactions · 4 saved shapes · opened in `) && shapesShown.bars === SAMPLE.categories
+      && JSON.stringify(shapesShown.saved) === JSON.stringify(['Chart data', 'Merchants', 'Spending by category', 'Statement']) && shapesShown.output === '['
+      && labMistake === "Shape at categories[].spent.$sum: unknown or hidden column 'amont'"
+      && JSON.stringify(tablesShown) === JSON.stringify(SAMPLE.bank)
+      && JSON.stringify(people) === JSON.stringify([
+        { who: 'Cape Town manager', rows: '10 of 30', columns: ['branch', 'name', 'role', 'since', 'salary', 'bonus'], shapes: ['Cape Town pay', 'Headcount by role', 'Team list'], files: 2 },
+        { who: 'Johannesburg team lead', rows: '10 of 30', columns: ['branch', 'name', 'role', 'since'], shapes: ['Headcount by role', 'Team list'], files: 2 },
+        { who: 'HR', rows: '30 of 30', columns: ['branch', 'name', 'role', 'since', 'salary', 'bonus'], shapes: ['Cape Town pay', 'Headcount by role', 'Pay by branch', 'Team list'], files: 5 },
+      ])
+      && JSON.stringify(documentStatuses) === JSON.stringify(['opened report.jzm', 'locked tasks.jzm']);
+    results.push({ browser: name, label: `the demo gallery: export shapes, several tables, one file with three keys, documents in the viewer${fromDisk ? ', from disk' : ' (over HTTP)'}`, ok: galleryOk, problems: galleryOk ? [] : [JSON.stringify({ shapesShown, labMistake, tablesShown, people, documentStatuses, SAMPLE })] });
     if (page.problems.length) results.push({ browser: name, label: 'page errors', ok: false, problems: page.problems });
   } catch (error) {
     results.push({ browser: name, label: 'run', ok: false, problems: [error.message] });

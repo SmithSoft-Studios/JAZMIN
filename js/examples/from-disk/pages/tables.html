@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Several tables</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="page">
+  <p class="crumbs"><a href="index.html">← All demos</a></p>
+  <div class="head">
+    <div>
+      <h1>Several tables in one file</h1>
+      <p>A bank's clients and their card transactions: two tables, each with its own columns, sort order and indexes,
+        linked by a <strong>shape saved in the file</strong> that nests each client's spending.</p>
+    </div>
+    <span id="status" class="badge" role="status" hidden></span>
+  </div>
+
+  <section id="locked" class="panel unlock">
+    <h2>Open the bank's file</h2>
+    <p><code id="file"></code>: 250 clients and a year of their transactions. Encrypted; the password is filled in
+      for this demo.</p>
+    <form id="unlock">
+      <input type="password" value="demo" autocomplete="off" aria-label="Password">
+      <button class="primary" type="submit">Open</button>
+    </form>
+    <p id="error" class="error" role="alert"></p>
+  </section>
+
+  <section id="opened" hidden>
+    <div class="stats">
+      <div class="panel stat"><span>Table <code>clients</code></span><strong id="client-count"></strong></div>
+      <div class="panel stat"><span>Table <code>transactions</code></span><strong id="tx-count"></strong></div>
+      <div class="panel stat"><span>Saved shapes</span><strong id="shape-count"></strong></div>
+      <div class="panel stat"><span>Whole file</span><strong id="size"></strong></div>
+    </div>
+
+    <div class="columns">
+      <section class="panel">
+        <h2>Clients</h2>
+        <input id="search" type="search" placeholder="Search by name, for example nkosi" aria-label="Search clients">
+        <p id="found" class="hint muted" role="status"></p>
+        <div class="table-scroll short"><table id="clients" class="pick"><tbody></tbody></table></div>
+      </section>
+      <section class="panel" aria-live="polite">
+        <div id="client"></div>
+        <div class="stats compact">
+          <div class="stat"><span>Spent in 2026</span><strong id="spent" class="out"></strong></div>
+          <div class="stat"><span>Payments</span><strong id="payments"></strong></div>
+          <div class="stat"><span>Largest</span><strong id="largest" class="out"></strong></div>
+        </div>
+        <p id="linked-note" class="hint muted"></p>
+        <h3>Latest three, from the shape</h3>
+        <div id="latest"></div>
+        <details>
+          <summary>The JSON the saved shape gives for this client</summary>
+          <pre id="linked-json" class="output small-output"></pre>
+        </details>
+        <h3>All their transactions <span id="tx-note" class="hint muted"></span></h3>
+        <div class="table-scroll short" id="transactions"></div>
+      </section>
+    </div>
+
+    <section class="panel actions-panel">
+      <div>
+        <h2>The whole file</h2>
+        <p class="hint">Every client with their spending and latest transactions: the saved shape over both tables,
+          which read each table once, in step (both are sorted by the client). Or both tables in the viewer, which
+          switches between them and lists the saved shapes under Export.</p>
+      </div>
+      <div class="toolbar">
+        <button id="export-all" type="button" class="primary">Export every client (JSON)</button>
+        <button id="in-viewer" type="button" class="soft">Open in the viewer</button>
+      </div>
+      <p id="export-note" class="hint muted" role="status"></p>
+    </section>
+  </section>
+</main>
+
+<script src="browser/jazmin-browser.js"></script>
+<script src="data.js"></script>
+<script src="demo.js"></script>
+<script>
+  const { $, rand, since } = demo;
+  const SHAPE = 'Clients and their spending';
+  const dayMonth = (d) => d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', timeZone: 'UTC' }); // all in 2026
+  let clients;
+  let transactions;
+  let bytes;
+  $('file').textContent = data.bank;
+
+  demo.unlock('unlock', 'error', async (password) => {
+    const started = performance.now();
+    bytes = await JazminBrowser.scriptBytes(data.bank);
+    clients = await JazminBrowser.open(bytes, { password }); // the first table
+    transactions = await clients.openTable('transactions'); // the same file, not read again
+    const opened = since(started);
+    $('client-count').textContent = `${clients.rowCount.toLocaleString('en-US')} rows`;
+    $('tx-count').textContent = `${transactions.rowCount.toLocaleString('en-US')} rows`;
+    $('shape-count').textContent = (await clients.shapes()).length;
+    $('size').textContent = `${(bytes.length / 1024).toFixed(0)} KB`;
+    $('locked').hidden = true;
+    $('opened').hidden = false;
+    $('status').hidden = false;
+    $('status').textContent = `2 tables · opened in ${opened}`;
+    await list();
+    const first = $('clients').tBodies[0].rows[0];
+    if (first) first.click();
+  });
+
+  /** The clients, or those whose name has the text in it (a text index on name answers that). */
+  let asked = 0;
+  async function list() {
+    const ask = ++asked;
+    const text = $('search').value.trim();
+    const started = performance.now();
+    const { rows, total } = await clients.query(text ? { name: { icontains: text } } : null, { limit: 250 });
+    if (ask !== asked) return;
+    $('found').textContent = text ? `${total} of ${clients.rowCount} · ${since(started)}` : `${clients.rowCount} clients`;
+    $('clients').tBodies[0].replaceChildren(...rows.map((c) => {
+      const tr = document.createElement('tr');
+      tr.tabIndex = 0;
+      tr.innerHTML = '<td><strong></strong><span class="muted"></span></td><td class="muted"></td>';
+      tr.cells[0].firstChild.textContent = c.name;
+      tr.cells[0].lastChild.textContent = ` · ${c.city}`;
+      tr.cells[1].textContent = c.segment;
+      const pick = () => {
+        for (const r of $('clients').tBodies[0].rows) r.classList.toggle('on', r === tr);
+        show(c);
+      };
+      tr.addEventListener('click', pick);
+      tr.addEventListener('keydown', (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), pick()));
+      return tr;
+    }));
+  }
+
+  /**
+   * One client: the saved shape, limited to them, gives their spending and latest transactions from the other table;
+   * then all their transactions, which are sorted by client, so finding them is a binary search.
+   */
+  async function show(c) {
+    $('client').innerHTML = '<h2></h2><p class="muted"></p>';
+    $('client').firstChild.textContent = c.name;
+    $('client').lastChild.textContent = `${c.segment} client in ${c.city}, since ${demo.day(c.since)}`;
+    let started = performance.now();
+    const text = await JazminBrowser.toJSON(clients, { shape: SHAPE, filter: { id: c.id }, pretty: true });
+    $('linked-note').textContent = `From the saved shape '${SHAPE}', for this client: ${since(started)}`;
+    const [linked] = JSON.parse(text);
+    $('spent').textContent = rand(Math.abs(linked.spending?.total ?? 0));
+    $('payments').textContent = linked.spending?.payments ?? 0;
+    $('largest').textContent = rand(Math.abs(linked.spending?.largest ?? 0));
+    $('latest').replaceChildren(demo.table(linked.latest.map((t) => ({ ...t, date: dayMonth(new Date(t.date)) })), [['date', 'Date'], ['merchant', 'Merchant'], ['amount', 'Amount']]));
+    $('linked-json').textContent = text;
+    started = performance.now();
+    const { rows } = await transactions.query({ client: c.id }, { limit: 500, total: false });
+    $('tx-note').textContent = `· ${rows.length} · ${since(started)}`;
+    $('transactions').replaceChildren(demo.table(rows.map((t) => ({ ...t, date: dayMonth(t.date) })), [['date', 'Date'], ['merchant', 'Merchant'], ['category', 'Category'], ['amount', 'Amount']]));
+  }
+
+  let typing;
+  $('search').addEventListener('input', () => {
+    clearTimeout(typing);
+    typing = setTimeout(list, 80);
+  });
+
+  $('export-all').addEventListener('click', async () => {
+    const button = $('export-all');
+    button.disabled = true;
+    $('export-note').textContent = 'Exporting…';
+    const started = performance.now();
+    try {
+      const blob = await JazminBrowser.exportBlob(clients, 'json', { shape: SHAPE, pretty: true });
+      demo.save(blob, 'clients-and-their-spending.json');
+      $('export-note').textContent = `Saved clients-and-their-spending.json · ${clients.rowCount} clients, ${(blob.size / 1024).toFixed(0)} KB · ${since(started)}`;
+    } finally {
+      button.disabled = false;
+    }
+  });
+  $('in-viewer').addEventListener('click', () => demo.inViewer(bytes, 'bank.jzm'));
+</script>
+</body>
+</html>

@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Documents</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="page">
+  <p class="crumbs"><a href="index.html">← All demos</a></p>
+  <div class="head">
+    <div>
+      <h1>Documents: pages that travel with their data</h1>
+      <p>A <code>.jzm</code> can carry a page, its styles and scripts next to the rows. The viewer shows the page in a
+        sandbox: it reads the data, prints, saves a PDF, and can even save changes, but never sees the key or the
+        network.</p>
+    </div>
+  </div>
+
+  <section class="choices">
+    <article class="panel choice">
+      <h2>A print-ready report</h2>
+      <p>Half a year of sales across five branches, drawn by the page inside <code>report.jzm</code>: totals, two
+        charts and a table. Print it, or save it as an A4 PDF: the file says how.</p>
+      <ul>
+        <li>Open to anyone: no password</li>
+        <li>Its saved shape <em>Revenue by branch</em> is under Export ▾ in the data tab</li>
+      </ul>
+      <button id="open-report" type="button" class="primary">Open the report</button>
+    </article>
+    <article class="panel choice">
+      <h2>A task list that saves changes</h2>
+      <p>The page inside <code>tasks.jzm</code> lets you edit, add and remove tasks. The file says which columns may
+        change; the viewer checks that, shows you the changes, and saves them as a small <strong>change
+        file</strong>.</p>
+      <ul>
+        <li>Encrypted: the password is <code>demo</code></li>
+        <li>The list's owner applies change files; rows changed by someone else meanwhile are held, not overwritten</li>
+      </ul>
+      <button id="open-tasks" type="button" class="primary">Open the task list</button>
+    </article>
+  </section>
+  <p id="note" class="error" role="alert"></p>
+
+  <section class="panel how">
+    <h2>How they are made</h2>
+    <div class="split">
+      <div>
+        <h3>The report</h3>
+        <pre class="code"><code>write('report.jzm', rows, {
+  columns,
+  files: [
+    { path: 'index.html', file: 'report/index.html' },
+    { path: 'report.css', file: 'report/report.css' },
+    { path: 'report.js', file: 'report/report.js' },
+  ],
+  package: { entry: 'index.html', pdf: { format: 'A4' } },
+});
+// report.js: const rows = jazmin.rows(); … jazmin.print();</code></pre>
+      </div>
+      <div>
+        <h3>The task list, and its owner</h3>
+        <pre class="code"><code>write('tasks.jzm', rows, { columns, files, password,
+  package: { entry: 'index.html',
+    edit: { key: ['id'], columns: ['task', 'owner', 'due',
+      'status', 'priority'], add: true, delete: true } } });
+// tasks.js: await jazmin.saveChanges({ update, add, delete });
+
+// The owner, with a change file someone sent back:
+applyChanges('tasks.jzm', changeFile, { password });
+// { updated: 2, added: 1, deleted: 0, conflicts: [], … }</code></pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<script src="browser/jazmin-browser.js"></script>
+<script src="data.js"></script>
+<script src="demo.js"></script>
+<script>
+  const { $ } = demo;
+  /** The file inside its script, handed to the viewer shown over the page; the viewer asks for a password if needed. */
+  async function show(script, name) {
+    $('note').textContent = '';
+    try {
+      demo.inViewer(await JazminBrowser.scriptBytes(script), name);
+    } catch (e) {
+      $('note').textContent = e.message || String(e);
+    }
+  }
+  $('open-report').addEventListener('click', () => show(data.report, 'report.jzm'));
+  $('open-tasks').addEventListener('click', () => show(data.tasks, 'tasks.jzm'));
+</script>
+</body>
+</html>

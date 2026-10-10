@@ -2228,6 +2228,14 @@
    * options: those of open().
    */
   async function openScript(url, options = {}) {
+    return open(await scriptBytes(url), options);
+  }
+
+  /**
+   * The bytes of a JAZMIN file made into a script, loaded as openScript() loads it: for example to hand the file to the
+   * viewer in an iframe (postMessage({ type: 'jazmin:open', file: new Blob([bytes]), name })). Still encrypted.
+   */
+  async function scriptBytes(url) {
     if (typeof document === 'undefined') throw new JazminError('openScript() loads a script into a page; elsewhere, open the .jzm with open()');
     const scripts = (global.JazminScripts = global.JazminScripts || {});
     const src = new URL(url, document.baseURI).href;
@@ -2251,7 +2259,7 @@
       document.head.append(script);
     });
     if (!entry || typeof entry.data !== 'string') throw new JazminFormatError(`${url} is not a JAZMIN file made into a script (portableScript, or "jazmin script")`);
-    return open(typeof Uint8Array.fromBase64 === 'function' ? Uint8Array.fromBase64(entry.data) : base64ToBytes(entry.data), options);
+    return typeof Uint8Array.fromBase64 === 'function' ? Uint8Array.fromBase64(entry.data) : base64ToBytes(entry.data);
   }
 
   // ---- the reader ---------------------------------------------------------------------------------
@@ -5622,6 +5630,7 @@
     open,
     openUrl,
     openScript,
+    scriptBytes,
     toJSON: (reader, options) => exportString(reader, 'json', options),
     toCSV: (reader, options) => exportString(reader, 'csv', options),
     toXML: (reader, options) => exportString(reader, 'xml', options),

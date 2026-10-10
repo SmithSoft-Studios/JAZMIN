@@ -59,6 +59,13 @@ test('openScript loads a file made into a script, by a path relative to the page
   assert.deepEqual(Object.keys(globalThis.JazminScripts), []);
 });
 
+test('scriptBytes gives the file inside a script as it is (still encrypted), to hand to the viewer', async () => {
+  page('file:///C:/pages/index.html', { 'file:///C:/data/js-key.jzm.js': portableScript(path.join(fixtures, 'js-key.jzm')) });
+  const bytes = await JazminBrowser.scriptBytes('../data/js-key.jzm.js');
+  assert.ok(bytes instanceof Uint8Array);
+  assert.ok(Buffer.from(bytes).equals(fs.readFileSync(path.join(fixtures, 'js-key.jzm'))));
+});
+
 test('openScript uses a script the page already loaded, and loads one again after it was opened', async () => {
   const script = portableScript(path.join(fixtures, 'js-plain.jzm'));
   const loaded = page('file:///C:/pages/index.html', { 'file:///C:/pages/js-plain.jzm.js': script });

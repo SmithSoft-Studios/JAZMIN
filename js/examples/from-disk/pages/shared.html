@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>One file, three people</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="page wide">
+  <p class="crumbs"><a href="index.html">← All demos</a></p>
+  <div class="head">
+    <div>
+      <h1>One file, three people</h1>
+      <p>The same <code>shared.jzm</code>, one copy, opened with three access keys. Each key unlocks only what its
+        grant allows: its branches' rows, the pay columns or not, and the <strong>files and saved shapes</strong> of
+        the groups it sees. What a key can't see isn't hidden by the page: it can't be decrypted at all.</p>
+    </div>
+    <span id="status" class="badge" role="status" hidden></span>
+  </div>
+
+  <section id="start" class="panel unlock">
+    <h2>Open it three times</h2>
+    <p>The three keys are in <code>data/shared-keys.js</code> for this demo only. A real key is like a password: it
+      never belongs in a page.</p>
+    <button id="open" type="button" class="primary">Open with the three keys</button>
+    <p id="error" class="error" role="alert"></p>
+  </section>
+
+  <section id="people" class="people" hidden></section>
+
+  <section id="explained" class="panel how" hidden>
+    <h2>How the file was written</h2>
+    <pre class="code"><code>write('shared.jzm', staff, { columns, key: ownerKey,
+  access: {
+    partitionBy: 'branch',                         // rows, by branch
+    columnGroups: { pay: ['salary', 'bonus'] },    // columns, by group
+    grants: [
+      { key: capeTownManager, rows: ['Cape Town'], columns: '*' },
+      { key: johannesburgLead, rows: ['Johannesburg'], columns: ['*'] },  // '*' alone: no pay
+      { key: hr, rows: '*', columns: '*', files: ['hr'] },
+    ],
+  },
+  files: [{ path: 'hr/pay-bands.html', content, groups: ['hr'] }, …],
+  shapes: [{ name: 'Pay by branch', groups: ['hr'], shape }, …],  // only for keys that see pay
+});</code></pre>
+    <p class="hint">A shape that uses <code>salary</code>, saved for a group whose keys can't all see that column, is
+      refused when the file is written, naming the key. So each list above is exactly what its key can use.</p>
+  </section>
+</main>
+
+<script src="browser/jazmin-browser.js"></script>
+<script src="data.js"></script>
+<script src="data/shared-keys.js"></script>
+<script src="demo.js"></script>
+<script>
+  const { $, since } = demo;
+  const ALL_COLUMNS = ['branch', 'name', 'role', 'since', 'salary', 'bonus']; // what the file has (the page knows; a key may not)
+
+  $('open').addEventListener('click', async () => {
+    $('open').disabled = true;
+    $('open').textContent = 'Opening…';
+    try {
+      const bytes = await JazminBrowser.scriptBytes(data.shared); // one copy of the file, opened with each key
+      const cards = await Promise.all(sharedKeys.map((person) => card(bytes, person)));
+      $('people').replaceChildren(...cards);
+      $('start').hidden = true;
+      $('people').hidden = false;
+      $('explained').hidden = false;
+      $('status').hidden = false;
+      $('status').textContent = `${(bytes.length / 1024).toFixed(1)} KB · one file, ${sharedKeys.length} keys`;
+    } catch (e) {
+      $('error').textContent = e.message || String(e);
+      $('open').disabled = false;
+      $('open').textContent = 'Open with the three keys';
+    }
+  });
+
+  /** What one key sees: rows, columns, saved shapes (run on a click) and files. */
+  async function card(bytes, person) {
+    const started = performance.now();
+    const reader = await JazminBrowser.open(bytes, { key: person.key });
+    const opened = since(started);
+    const [shapes, files, { rows }] = await Promise.all([reader.shapes(), reader.files(), reader.query(null, { limit: 6, total: false })]);
+    const visible = reader.columns.map((c) => c.name);
+    const el = document.createElement('article');
+    el.className = 'panel person';
+    el.innerHTML = `
+      <h2></h2><p class="muted sees"></p>
+      <div class="stats compact">
+        <div class="stat"><span>Staff it sees</span><strong class="rows"></strong></div>
+        <div class="stat"><span>Opened in</span><strong class="opened"></strong></div>
+      </div>
+      <h3>Columns</h3><div class="chips columns-chips"></div>
+      <h3>Rows <span class="hint muted">(the first 6)</span></h3><div class="table-scroll rows-table"></div>
+      <h3>Saved shapes</h3><div class="chips shape-chips"></div><pre class="output small-output shape-output" hidden></pre>
+      <h3>Files</h3><ul class="file-list"></ul><pre class="output small-output file-output" hidden></pre>`;
+    el.querySelector('h2').textContent = person.label;
+    el.querySelector('.sees').textContent = person.sees;
+    el.querySelector('.rows').textContent = `${reader.rowCount} of ${reader.rowCount + reader.hiddenRowCount}`;
+    el.querySelector('.opened').textContent = opened;
+    el.querySelector('.columns-chips').replaceChildren(...ALL_COLUMNS.map((name) => {
+      const chip = Object.assign(document.createElement('span'), { className: `chip${visible.includes(name) ? '' : ' off'}`, textContent: name });
+      if (!visible.includes(name)) chip.title = "This key can't decrypt this column, or learn its name";
+      return chip;
+    }));
+    // The columns that tell people apart: the branch only when the key sees more than one; pay when it sees pay.
+    const oneBranch = new Set(rows.map((r) => r.branch)).size === 1;
+    const shown = visible.filter((c) => !['since', 'bonus'].includes(c) && !(c === 'branch' && oneBranch));
+    el.querySelector('.rows-table').replaceChildren(demo.table(rows, shown.map((c) => [c, c])));
+    const output = el.querySelector('.shape-output');
+    el.querySelector('.shape-chips').replaceChildren(...shapes.map((s) => {
+      const chip = Object.assign(document.createElement('button'), { type: 'button', className: 'chip action', textContent: s.name, title: s.description || '' });
+      chip.addEventListener('click', async () => {
+        const t = performance.now();
+        const text = await JazminBrowser.toJSON(reader, { shape: s.name, pretty: true, maxLength: 4000 });
+        output.textContent = `${s.name} · ${since(t)}\n${text.length >= 4000 ? `${text}\n…` : text}`;
+        output.hidden = false;
+      });
+      return chip;
+    }));
+    el.querySelector('.file-list').replaceChildren(...files.map((f) => {
+      const li = document.createElement('li');
+      const link = Object.assign(document.createElement('a'), { href: '#', textContent: f.path });
+      link.addEventListener('click', async (e) => {
+        e.preventDefault();
+        // Its text only: a stored page is the file's content, not this page's, so it isn't run here (the viewer shows
+        // stored pages in a sandbox).
+        const page = new DOMParser().parseFromString(await (await reader.fileBlob(f.path)).text(), 'text/html');
+        const shown = el.querySelector('.file-output');
+        shown.textContent = `${f.path}\n${page.body.textContent.trim()}`;
+        shown.hidden = false;
+      });
+      li.append(link);
+      return li;
+    }));
+    return el;
+  }
+</script>
+</body>
+</html>

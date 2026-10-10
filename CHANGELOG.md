@@ -6,6 +6,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Added
+- **A demo gallery** in the from-disk sample ([js/examples/from-disk](js/examples/from-disk)), opened by double-click
+  with no server: **export shapes** (a chart's data from a saved shape in one call, the file's saved shapes as JSON,
+  XML and JSON Schema, a shape lab that checks as you type), **several tables** (clients and their transactions linked
+  by a saved shape), **documents** (a print-ready report and a task list that saves changes, shown in the viewer) and
+  **one file, three people** (the same file opened with three access keys side by side). The statement and the
+  1,000,000-row demo file carry saved shapes, which the viewer's Export menu lists.
+- **`JazminBrowser.scriptBytes(url)`:** the file inside a script (`portableScript`, `jazmin script`) as bytes, still
+  locked, for example to hand it to the viewer in an iframe.
 - **Export shapes saved in the file** (spec 6.8, a new optional member). A file can carry export shapes under names,
   with a description, the table each reads, and one marked as the default. Write them with `shapes` (JavaScript) or
   `JazminWriteOptions.Shapes` (.NET); change them with `addShapes` / `removeShapes` on update and append. Readers list

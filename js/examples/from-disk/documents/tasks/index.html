@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Team tasks</title>
+<link rel="stylesheet" href="tasks.css">
+</head>
+<body>
+<header class="top">
+  <div>
+    <h1 id="title">Team tasks</h1>
+    <p id="summary" class="muted"></p>
+  </div>
+  <div class="save">
+    <span id="pending" class="muted" role="status"></span>
+    <button id="save" type="button" class="primary" disabled>Save changes</button>
+  </div>
+</header>
+<p id="readonly" class="banner" hidden>This copy can't save changes here: it is shown read-only.</p>
+<p id="result" class="banner ok" role="status" hidden></p>
+
+<div class="table-scroll">
+  <table id="tasks">
+    <thead><tr><th>Task</th><th>Owner</th><th>Due</th><th>Priority</th><th>Status</th><th></th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<form id="add" class="add">
+  <input id="new-task" placeholder="A new task" aria-label="New task" required>
+  <input id="new-owner" placeholder="Owner" aria-label="Owner" required>
+  <input id="new-due" type="date" aria-label="Due">
+  <select id="new-priority" aria-label="Priority"><option>High</option><option selected>Medium</option><option>Low</option></select>
+  <button type="submit">Add</button>
+</form>
+
+<p class="note">This list is a page stored inside <code>tasks.jzm</code>. Changes made here are saved as a small
+  <strong>change file</strong>, encrypted with the list's password: the viewer can't change a file on disk, and the
+  list's owner applies change files with <code>applyChanges()</code>. A row someone else changed in the meantime is
+  held for the owner, not overwritten.</p>
+
+<script src="tasks.js"></script>
+</body>
+</html>

@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Export shapes</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="page">
+  <p class="crumbs"><a href="index.html">← All demos</a></p>
+  <div class="head">
+    <div>
+      <h1>Export shapes</h1>
+      <p>Rows in, the JSON or XML you need out: grouped, totalled, nested, for a chart or another system. Shapes can be
+        <strong>saved in the file</strong>, so whoever opens it exports them by name.</p>
+    </div>
+    <span id="status" class="badge" role="status" hidden></span>
+  </div>
+
+  <section id="locked" class="panel unlock">
+    <h2>Open the statement</h2>
+    <p><code id="file"></code>: three months of one account, with four shapes saved in it. It is encrypted; the
+      password is filled in for this demo.</p>
+    <form id="unlock">
+      <input id="password" type="password" value="demo" autocomplete="off" aria-label="Password">
+      <button class="primary" type="submit">Open</button>
+    </form>
+    <p id="error" class="error" role="alert"></p>
+  </section>
+
+  <section id="opened" hidden>
+    <section class="panel">
+      <div class="split">
+        <div>
+          <h2>A chart's data in one call</h2>
+          <div id="chart" class="bars"></div>
+        </div>
+        <div>
+          <pre class="code"><code>const chart = JSON.parse(await JazminBrowser.toJSON(reader,
+  { shape: 'Chart data' }));   // a shape saved in the file
+// → { labels: […], data: […] }, ready for Chart.js</code></pre>
+          <p id="chart-note" class="hint muted"></p>
+          <pre id="chart-json" class="output small-output"></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Shapes saved in this file</h2>
+      <p class="hint">Listed by the reader (<code>await reader.shapes()</code>) and run by name. The viewer lists
+        them under Export ▾ too.</p>
+      <div class="split shapes-split">
+        <div id="saved" class="shape-list" role="listbox" aria-label="Saved shapes"></div>
+        <div>
+          <div class="toolbar">
+            <div class="tabs" role="tablist">
+              <button type="button" role="tab" data-view="json" aria-selected="true">JSON</button>
+              <button type="button" role="tab" data-view="xml">XML</button>
+              <button type="button" role="tab" data-view="schema">JSON Schema</button>
+              <button type="button" role="tab" data-view="shape">The shape</button>
+            </div>
+            <span class="grow"></span>
+            <button id="save-json" type="button" class="soft">Save JSON</button>
+            <button id="save-xml" type="button" class="soft">Save XML</button>
+          </div>
+          <p id="saved-note" class="hint muted" role="status"></p>
+          <pre id="saved-output" class="output"></pre>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Shape lab</h2>
+      <p class="hint">Write a shape: it is checked as you type, against the file's columns, and its output shows at
+        once. Try a mistake, such as <code>amont</code> for <code>amount</code>.</p>
+      <div class="split">
+        <div>
+          <textarea id="lab" spellcheck="false" rows="16" aria-label="Shape (JSON)"></textarea>
+          <p id="lab-check" class="check" role="status"></p>
+          <div class="toolbar">
+            <button id="lab-json" type="button" class="soft">Save JSON</button>
+            <button id="lab-xml" type="button" class="soft">Save XML</button>
+            <span id="lab-note" class="hint muted"></span>
+          </div>
+        </div>
+        <pre id="lab-output" class="output"></pre>
+      </div>
+    </section>
+
+    <p class="hint more">With 1,000,000 rows: <a href="pick-file.html">choose <code>data/transactions.jzm</code></a>
+      (password <code>demo</code>). Its Export menu lists three shapes saved in that file, exported under the viewer's
+      progress overlay.</p>
+  </section>
+</main>
+
+<script src="browser/jazmin-browser.js"></script>
+<script src="data.js"></script>
+<script src="demo.js"></script>
+<script>
+  const { $, rand, since } = demo;
+  const PREVIEW = 12000; // characters shown of an output: enough to see its structure
+  let reader;
+  let shapes = [];
+  let chosen = null;
+  let view = 'json';
+  $('file').textContent = data.file;
+
+  demo.unlock('unlock', 'error', async (password) => {
+    const started = performance.now();
+    reader = await JazminBrowser.openScript(data.file, { password });
+    const opened = since(started);
+    shapes = await reader.shapes();
+    await drawChart();
+    drawSaved();
+    $('lab').value = JSON.stringify({
+      categories: {
+        $filter: { amount: { lt: '0' } }, $groupBy: 'category', $sort: ['category'],
+        $rows: { name: 'category', spent: { $sum: 'amount' }, biggest: { $min: 'amount' }, payments: { $count: true } },
+      },
+      transactions: { $count: true },
+    }, null, 2);
+    $('locked').hidden = true;
+    $('opened').hidden = false;
+    $('status').hidden = false;
+    $('status').textContent = `${reader.rowCount} transactions · ${shapes.length} saved shapes · opened in ${opened}`;
+    lab();
+  });
+
+  /** The bar chart, from the saved shape 'Chart data': its labels and values come out as the chart needs them. */
+  async function drawChart() {
+    const started = performance.now();
+    const text = await JazminBrowser.toJSON(reader, { shape: 'Chart data' });
+    const took = since(started);
+    const chart = JSON.parse(text);
+    const values = chart.data.map((v) => Math.abs(Number(v)));
+    const most = Math.max(...values);
+    $('chart').replaceChildren(...chart.labels.map((label, i) => {
+      const row = document.createElement('div');
+      row.className = 'bar-row';
+      row.innerHTML = '<span></span><span class="track"><span></span></span><strong></strong>';
+      row.children[0].textContent = label;
+      row.children[1].firstChild.style.width = `${(values[i] / most) * 100}%`;
+      row.children[2].textContent = rand(values[i]);
+      return row;
+    }));
+    $('chart-note').textContent = `${text.length.toLocaleString('en-US')} characters of JSON in ${took}:`;
+    $('chart-json').textContent = text.replace(/,"data"/, ',\n "data"');
+  }
+
+  function drawSaved() {
+    $('saved').replaceChildren(...shapes.map((s) => {
+      const card = document.createElement('button');
+      card.type = 'button';
+      card.className = 'shape-card';
+      card.setAttribute('role', 'option');
+      card.innerHTML = '<strong></strong><span></span>';
+      card.firstChild.textContent = s.name;
+      if (s.default) card.firstChild.insertAdjacentHTML('beforeend', ' <em class="badge">default</em>');
+      card.children[1].textContent = s.description || '';
+      card.addEventListener('click', () => choose(s));
+      return card;
+    }));
+    choose(shapes.find((s) => s.default) || shapes[0]);
+  }
+
+  async function choose(s) {
+    chosen = s;
+    for (const card of $('saved').children) card.setAttribute('aria-selected', String(card.firstChild.firstChild.textContent === s.name));
+    await output();
+  }
+
+  async function output() {
+    const s = chosen;
+    const started = performance.now();
+    let text;
+    if (view === 'schema') text = JSON.stringify(await JazminBrowser.shapeSchema(reader, s.name), null, 2);
+    else if (view === 'shape') text = JSON.stringify(s.shape, null, 2);
+    else text = view === 'xml' ? await JazminBrowser.toXML(reader, { shape: s.name, maxLength: PREVIEW }) : await JazminBrowser.toJSON(reader, { shape: s.name, pretty: true, maxLength: PREVIEW });
+    if (s !== chosen) return; // another shape was chosen meanwhile
+    const cut = text.length >= PREVIEW;
+    $('saved-output').textContent = cut ? `${text}\n…` : text;
+    $('saved-note').textContent = view === 'shape' ? `The shape '${s.name}', as saved in the file`
+      : `${view === 'schema' ? 'Its JSON Schema' : cut ? `The first ${PREVIEW.toLocaleString('en-US')} characters` : 'The whole output'} · ${since(started)}`;
+  }
+
+  for (const tab of document.querySelectorAll('[data-view]')) {
+    tab.addEventListener('click', () => {
+      view = tab.dataset.view;
+      for (const t of document.querySelectorAll('[data-view]')) t.setAttribute('aria-selected', String(t === tab));
+      output();
+    });
+  }
+
+  const slug = (name) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  async function saveShaped(shape, format, name, note) {
+    const started = performance.now();
+    const blob = await JazminBrowser.exportBlob(reader, format, { shape });
+    demo.save(blob, `statement-${slug(name)}.${format}`);
+    $(note).textContent = `Saved statement-${slug(name)}.${format} · ${blob.size.toLocaleString('en-US')} bytes · ${since(started)}`;
+  }
+  $('save-json').addEventListener('click', () => saveShaped(chosen.name, 'json', chosen.name, 'saved-note'));
+  $('save-xml').addEventListener('click', () => saveShaped(chosen.name, 'xml', chosen.name, 'saved-note'));
+
+  /** The lab: the shape checked as typed (shapeSchema throws where it doesn't fit), then its output. */
+  let asked = 0;
+  async function lab() {
+    const ask = ++asked;
+    const check = $('lab-check');
+    let shape;
+    try {
+      shape = JSON.parse($('lab').value);
+    } catch (e) {
+      check.className = 'check bad';
+      check.textContent = `Not JSON yet: ${e.message}`;
+      return null;
+    }
+    const started = performance.now();
+    try {
+      await JazminBrowser.shapeSchema(reader, shape);
+      const text = await JazminBrowser.toJSON(reader, { shape, pretty: true, maxLength: PREVIEW });
+      if (ask !== asked) return null;
+      check.className = 'check ok';
+      check.textContent = `✓ Fits the file's columns · output in ${since(started)}`;
+      $('lab-output').textContent = text.length >= PREVIEW ? `${text}\n…` : text;
+      return shape;
+    } catch (e) {
+      if (ask !== asked) return null;
+      check.className = 'check bad';
+      check.textContent = e.message;
+      return null;
+    }
+  }
+  let typing;
+  $('lab').addEventListener('input', () => {
+    $('lab-check').className = 'check';
+    $('lab-check').textContent = 'Checking…';
+    clearTimeout(typing);
+    typing = setTimeout(lab, 200);
+  });
+  for (const format of ['json', 'xml']) {
+    $(`lab-${format}`).addEventListener('click', async () => {
+      const shape = await lab();
+      if (shape) saveShaped(shape, format, 'lab', 'lab-note');
+    });
+  }
+</script>
+</body>
+</html>
