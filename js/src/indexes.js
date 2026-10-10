@@ -493,7 +493,8 @@ export class PagedSortedIndex {
   /** `directory` is a decoded IndexDirectory (catalog.js); `deltas`: the file has reader feature 'index-deltas'. */
   constructor(directory, type, load, deltas = false) {
     this.#deltas = deltas;
-    this.#pages = directory.pages.map((p) => ({ ...p, first: decodeBound(type, p.first) }));
+    // Every page has a first key: for text, no bytes are the empty text (in statistics they mean "no bound").
+    this.#pages = directory.pages.map((p) => ({ ...p, first: type === 'string' ? Buffer.from(p.first).toString('utf8') : decodeBound(type, p.first) }));
     for (const p of this.#pages) if (p.first === undefined) throw new JazminFormatError('Index page has no first key');
     this.#nullsAt = directory.nulls;
     this.#type = type;

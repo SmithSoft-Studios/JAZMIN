@@ -351,7 +351,9 @@ internal sealed class PagedSortedIndex : IIndex
     {
         _deltas = deltas;
         _pages = directory.Pages
-            .Select(p => (Bounds.Decode(type, p.First) ?? throw new JazminFormatException("Index page has no first key"), p.Count, p.At))
+            // Every page has a first key: for text, no bytes are the empty text (in statistics they mean "no bound").
+            .Select(p => ((type == JazminType.String ? System.Text.Encoding.UTF8.GetString(p.First) : Bounds.Decode(type, p.First))
+                ?? throw new JazminFormatException("Index page has no first key"), p.Count, p.At))
             .ToArray();
         _nulls = directory.Nulls;
         _type = type;

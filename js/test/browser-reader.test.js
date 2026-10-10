@@ -378,3 +378,12 @@ test('browser reader: filtered reads return what the library returns, when few r
     library.close();
   }
 });
+
+test("a sorted text index whose smallest key is the empty text answers lookups in the browser too", async () => {
+  const texts = ['', 'a', null, 'b', '', 'ab', 'z'];
+  const rows = Array.from({ length: 700 }, (_, i) => ({ seq: i, text: texts[i % texts.length] }));
+  const bytes = write(null, rows, { columns: [{ name: 'seq', type: 'int' }, { name: 'text', type: 'string', index: 'sorted' }], sortedBy: ['seq'] });
+  const reader = await globalThis.JazminBrowser.open(bytes);
+  assert.equal((await reader.query({ text: 'a' }, { limit: 1000 })).total, rows.filter((x) => x.text === 'a').length);
+  assert.equal(await reader.count({ text: '' }), rows.filter((x) => x.text === '').length);
+});

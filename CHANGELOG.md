@@ -82,6 +82,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   work. The viewer tests build it and use both pages. The quickstart (step 18) and the .NET sample (step 20) make a file into a script.
 
 ### Fixed
+- **A sorted index on text whose smallest value is the empty text (`''`) answers lookups.** Readers of every release
+  (both libraries and the browser reader) refused to use such an index ("Index page has no first key"): its first
+  page's first key, the empty text, is stored as no bytes, which they took for a missing key. The files were always
+  written correctly; the readers now read them, so nothing needs writing again.
 - **A file with one named table keeps the name when it is rewritten.** Update, compaction, a new owner key and
   `grantAccess` / `revokeAccess` wrote a file whose only table had a name (`tables: [{ name: 'clients', … }]`) back with
   an unnamed table, in both libraries: opening it with `{ table: 'clients' }` then failed. Its partition column and

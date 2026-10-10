@@ -1139,7 +1139,9 @@ section in front:
 - **Directory:** each page's `first_keys`, `entry_counts`, `page_offsets` (as
   differences), `page_lengths` and, in access-controlled files,
   `page_digests`; and `nulls`, a section holding the encoding byte and the
-  postings of null cells (absent when there are none).
+  postings of null cells (absent when there are none). A first key is in
+  key form (6.5); every page has one, so for a `string` index no bytes are
+  the empty text, not an absent key.
 
 **Page payload, encoding 1** (reader feature `index-deltas`, 12): as
 encoding 0, with keys and first row ids as differences from the previous

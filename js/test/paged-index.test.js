@@ -122,3 +122,19 @@ test('paged indexes: appended segments, compaction, encryption and owner signatu
   tampered[directory.offset - 10] ^= 1; // inside the last page written before the amount directory
   assert.throws(() => ids(open(tampered, { key: owner }), { amount: { gt: -9999 } }), JazminFormatError);
 });
+
+test("a sorted text index whose smallest key is the empty text answers lookups (its first page's key is '')", () => {
+  const texts = ['', 'a', null, 'b', '', 'ab', 'z'];
+  const rows = Array.from({ length: 700 }, (_, i) => ({ seq: i, text: texts[i % texts.length] }));
+  const columns = [{ name: 'seq', type: 'int' }, { name: 'text', type: 'string', index: 'sorted' }];
+  for (const options of [{}, { [PAGING]: { pageBytes: 64 } }]) { // one page, and many
+    const r = open(write(null, rows, { columns, sortedBy: ['seq'], ...options }));
+    const expect = (filter, keep) => assert.deepEqual([...r.find(filter)].map((x) => x.seq), rows.filter(keep).map((x) => x.seq), JSON.stringify(filter));
+    expect({ text: 'a' }, (x) => x.text === 'a');
+    expect({ text: '' }, (x) => x.text === '');
+    expect({ text: { in: ['', 'z'] } }, (x) => x.text === '' || x.text === 'z');
+    expect({ text: { lt: 'b' } }, (x) => x.text !== null && x.text < 'b');
+    expect({ text: { startsWith: 'a' } }, (x) => x.text?.startsWith('a'));
+    assert.equal(r.explain({ text: 'a' }).strategy, 'index');
+  }
+});

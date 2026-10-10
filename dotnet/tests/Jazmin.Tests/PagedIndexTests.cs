@@ -116,4 +116,25 @@ public class PagedIndexTests
         using var asOwner = JazminReader.Open(Write(3000, Small, owner, access), new JazminReadOptions { Key = owner });
         foreach (var filter in Filters) Assert.Equal(Ids(whole, filter), Ids(asOwner, filter));
     }
+
+    [Fact]
+    public void TextIndex_WhoseSmallestKeyIsTheEmptyText_AnswersLookups()
+    {
+        // The first page's first key is "": no bytes, which in statistics mean "no bound".
+        string?[] texts = ["", "a", null, "b", "", "ab", "z"];
+        var rows = Enumerable.Range(0, 700).Select(i => new object?[] { (long)i, texts[i % texts.Length] }).ToList();
+        JazminColumn[] columns = [new("seq", JazminType.Int), new("text", JazminType.String) { Indexes = [JazminIndexKind.Sorted] }];
+        foreach (var pageBytes in new int?[] { null, 64 })
+        {
+            var options = new JazminWriteOptions { SortedBy = ["seq"] };
+            if (pageBytes is { } p) options.IndexPageBytes = p;
+            using var r = JazminReader.Open(TestData.Write(columns, rows, options));
+            long[] Seqs(JazminFilter filter) => r.Find(filter).Select(x => (long)x["seq"]!).ToArray();
+            long[] Expected(Func<string?, bool> keep) => rows.Where(x => keep((string?)x[1])).Select(x => (long)x[0]!).ToArray();
+            Assert.Equal(Expected(t => t == "a"), Seqs(JazminFilter.Eq("text", "a")));
+            Assert.Equal(Expected(t => t == ""), Seqs(JazminFilter.Eq("text", "")));
+            Assert.Equal(Expected(t => t is not null && string.CompareOrdinal(t, "b") < 0), Seqs(JazminFilter.Lt("text", "b")));
+            Assert.Equal("index", r.Explain(JazminFilter.Eq("text", "a")).Strategy);
+        }
+    }
 }

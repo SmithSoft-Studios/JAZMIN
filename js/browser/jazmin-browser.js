@@ -1668,7 +1668,8 @@
     constructor(directory, type, load, deltas = false) {
       this.deltas = deltas;
       this.type = type;
-      this.pages = directory.pages.map((p) => ({ ...p, first: decodeBound(type, p.first) }));
+      // Every page has a first key: for text, no bytes are the empty text (in statistics they mean "no bound").
+      this.pages = directory.pages.map((p) => ({ ...p, first: type === 'string' ? fromUtf8.decode(p.first) : decodeBound(type, p.first) }));
       if (this.pages.some((p) => p.first === undefined)) throw new JazminFormatError('Index page has no first key');
       this.nullsAt = directory.nulls;
       this.load = load;
