@@ -39,7 +39,7 @@ disk, and show a filter's first rows at once.
 - **A demo gallery** in the from-disk sample ([js/examples/from-disk](js/examples/from-disk)), opened by double-click
   with no server: **export shapes** (a chart's data from a saved shape in one call, the file's saved shapes as JSON,
   XML and JSON Schema, a shape lab that checks as you type), **several tables** (clients and their transactions linked
-  by a saved shape), **documents** (a print-ready report and a task list that saves changes, shown in the viewer) and
+  by a saved shape), **documents** (a report that saves itself as a PDF in one click, with a small PDF writer stored in its file, and a task list that saves changes, shown in the viewer) and
   **one file, three people** (the same file opened with three access keys side by side). The statement and the
   1,000,000-row demo file carry saved shapes, which the viewer's Export menu lists. The several-tables demo also
   queries both tables in JavaScript, each query shown as it runs with the same query in C# LINQ.

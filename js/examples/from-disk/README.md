@@ -10,7 +10,7 @@ nothing uploaded. See USER-GUIDE §24.4 for the details and measurements.
 | `pick-file.html` | **Any file, any size:** a start page asks for the file (Browse, or drop it); once chosen, it opens in the viewer, which reads only what it needs. For the demo file, buttons above the viewer try filters |
 | `shapes.html` | **Export shapes:** a bar chart drawn from a shape saved in the file, in one call; the file's saved shapes with their JSON, XML, JSON Schema and the shape itself; a lab that checks a shape as you type and shows its output |
 | `tables.html` | **Several tables:** a bank's clients and their transactions in one file. Pick a client: their spending and latest transactions come from a saved shape that links the two tables; all their transactions from the second table. **Query both tables:** four queries in JavaScript with `JazminBrowser.from` (arrow functions whose filters the file answers; joins, groups and sorts in memory), each shown as it runs with the same query in C# LINQ. Export every client, or open both tables in the viewer |
-| `documents.html` | **Documents:** a print-ready report and a task list that saves changes, each a page stored in its file, shown by the viewer |
+| `documents.html` | **Documents:** a report that saves itself as a PDF in one click, and a task list that saves changes, each a page stored in its file, shown by the viewer |
 | `shared.html` | **One file, three people:** the same file opened with three access keys, side by side: each sees its own rows, columns, saved shapes and files |
 | `viewer/index.html` | The viewer on its own: choose or drop a file in it |
 
@@ -34,7 +34,7 @@ salary on the 25th of each month. The same every time.
 | `data/statement.jzm` (3 KB) and `statement.jzm.js` | One account, January to March 2026: 138 transactions, with the holder, period and opening balance in its metadata, and four saved shapes | Locked with the password |
 | `data/transactions.jzm` (22 MB) | 1,000,000 transactions across 500 accounts, through 2026 (`--rows` for more or fewer), and three saved shapes | Locked with the password, **sorted by date**, with **indexes on account, merchant (with text search), category and amount** |
 | `data/bank.jzm` (180 KB) and `.js` | Two tables: 250 clients (sorted by id, a text index on name) and their 26,328 transactions (sorted by client and date), with three saved shapes, one linking the tables | Locked with the password |
-| `data/report.jzm` (5 KB) and `.js` | Six months of sales for five branches, a page that draws the report (`documents/report`), A4 page settings, and a saved shape | Open to anyone |
+| `data/report.jzm` (10 KB) and `.js` | Six months of sales for five branches, a page that draws the report (`documents/report`) with a small PDF writer beside it (`pdf.js`), A4 page settings, and a saved shape | Open to anyone |
 | `data/tasks.jzm` (6 KB) and `.js` | Seven tasks, and a page that edits them (`documents/tasks`); the package says which columns may change | Locked with the password |
 | `data/shared.jzm` (10 KB) and `.js` | 30 staff in three branches: rows by branch, pay in a column group, files and saved shapes for groups, three access keys (`data/shared-keys.js`, for this demo only) | Access keys |
 
@@ -62,7 +62,7 @@ Measured in Chrome on an ordinary laptop, from disk:
 | Export shapes (`shapes.html`) | The chart's labels and values from the saved shape *Chart data*: `JSON.parse(await JazminBrowser.toJSON(reader, { shape: 'Chart data' }))`. The four saved shapes, each as JSON, XML, its JSON Schema, or the shape; the lab | The statement opens in 100-160 ms; each shape's output in 10-50 ms |
 | The same, with 1,000,000 rows (`pick-file.html`, `data/transactions.jzm`) | The viewer's Export ▾ lists the file's three saved shapes | *Accounts* 1.5 s, *Cities* and *Spending by category* 2.3 s, under the viewer's progress overlay |
 | Several tables (`tables.html`) | One client's spending and latest transactions through the saved linked shape (limited to them by a filter), then all their transactions from the second table; four queries across both tables, next to their LINQ | Opens in about 130 ms; a client's linked shape 100-150 ms, their transactions 3-10 ms (sorted by client: a binary search); each query 20-75 ms |
-| Documents (`documents.html`) | The report draws itself from `jazmin.rows()` and prints or saves an A4 PDF. The task list saves a change file through the viewer, which shows what will change first | Opens at once |
+| Documents (`documents.html`) | The report draws itself from `jazmin.rows()`. **Save as PDF** makes an A4 PDF in the report's page and downloads it, with no print dialog: `pdf.js`, stored in the file beside the page, draws the same report in the standard Helvetica fonts (text you can select and search, 3.8 KB), and `jazmin.download()` saves it. Print uses the browser's dialog. The task list saves a change file through the viewer, which shows what will change first | Opens at once; the PDF in 0.4 s |
 | One file, three people (`shared.html`) | Three access keys: the Cape Town manager sees Cape Town with pay; the Johannesburg team lead sees Johannesburg without pay (the pay columns can't be decrypted, and their names aren't known); HR sees everything, plus the HR files and the *Pay by branch* shape | Each key opens the file in 4-10 ms |
 
 ## How it works

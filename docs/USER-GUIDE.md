@@ -3879,6 +3879,13 @@ pdfButton.onclick = () => jazmin.savePdf({ format: 'A5' });
 - **`print()` and `savePdf()`** throw when the action isn't allowed. In the
   web viewer `savePdf` opens the print dialog (the page's CSS `@page` sets
   the paper); viewers that render PDFs themselves use the page settings.
+- **A PDF with no print dialog:** a page can make the PDF itself and save it
+  with `jazmin.download(name, blob)`. The from-disk sample's report does: a
+  small PDF writer (`examples/from-disk/documents/report/pdf.js`, about 5 KB,
+  no library) is stored in the file beside the page and draws the report in
+  the standard Helvetica fonts, so the PDF's text can be selected and
+  searched. The writer travels with the file, so it works in every viewer,
+  and the viewer needs nothing for it.
 
 **Documents that change their data** (the package's `edit`, section 19.5):
 
