@@ -286,23 +286,102 @@
     };
   }
 
+  // ---- export with a shape: written here, checked against the columns this key can see, previewed, exported -----------
+
+  const PREVIEW_CHARS = 20000;
+  const shapeLine = (ok, text) => {
+    $('jz-shape-check').className = `shape-check ${ok ? 'ok' : 'bad'}`;
+    $('jz-shape-check').textContent = text;
+  };
+
+  function openShape() {
+    $('jz-export-menu').open = false;
+    if (!$('jz-shape-text').value.trim() || state.shapeReader !== state.reader) {
+      // A first shape for this file: its first columns, one row each.
+      $('jz-shape-text').value = JSON.stringify({ $rows: Object.fromEntries(state.reader.columns.slice(0, 4).map((c) => [c.name, c.name])) }, null, 2);
+      state.shapeReader = state.reader;
+    }
+    $('jz-shape-output').hidden = true;
+    $('jz-shape-note').textContent = '';
+    $('jz-shape').showModal();
+    checkShape();
+  }
+
+  /** The shape, parsed and checked against this file's tables and the columns this key can see; null if it doesn't fit. */
+  async function checkShape() {
+    const text = $('jz-shape-text').value;
+    let shape;
+    try {
+      shape = JSON.parse(text);
+    } catch (error) {
+      shapeLine(false, `Not JSON: ${error.message}`);
+      return null;
+    }
+    try {
+      await JazminBrowser.shapeSchema(state.reader, shape);
+    } catch (error) {
+      if ($('jz-shape-text').value === text) shapeLine(false, error.message);
+      return null;
+    }
+    if ($('jz-shape-text').value === text) shapeLine(true, '✓ The shape fits the columns this key can see');
+    return shape;
+  }
+
+  const shapeFilter = () => ($('jz-shape-filtered').checked ? state.filter : null);
+
+  /** The beginning of the shape's output, pretty, for this file (and the filter): enough to see its structure. */
+  async function previewShape() {
+    const shape = await checkShape();
+    if (!shape) return;
+    const started = performance.now();
+    $('jz-shape-note').textContent = 'Making a preview…';
+    try {
+      const text = await JazminBrowser.toJSON(state.reader, { shape, pretty: true, filter: shapeFilter(), maxLength: PREVIEW_CHARS });
+      const cut = text.length >= PREVIEW_CHARS;
+      $('jz-shape-output').textContent = cut ? `${text}\n…` : text;
+      $('jz-shape-output').hidden = false;
+      $('jz-shape-note').textContent = `Preview: ${cut ? `the first ${PREVIEW_CHARS.toLocaleString()} characters` : 'the whole output'} · ${elapsed(performance.now() - started)}`;
+    } catch (error) {
+      $('jz-shape-note').textContent = `Preview: ${error.message || error}`;
+    }
+  }
+
+  async function shapeSchemaShown() {
+    const shape = await checkShape();
+    if (!shape) return;
+    $('jz-shape-output').textContent = JSON.stringify(await JazminBrowser.shapeSchema(state.reader, shape), null, 2);
+    $('jz-shape-output').hidden = false;
+    $('jz-shape-note').textContent = "The JSON Schema (draft 2020-12) of the shape's JSON output";
+  }
+
+  async function exportShaped(format) {
+    const shape = await checkShape();
+    if (!shape) return;
+    $('jz-shape').close();
+    exportRows(format, shape, { filtered: $('jz-shape-filtered').checked });
+  }
+
   // ---- export: the rows the filter matches, as CSV, JSON or XML -----------------------------------------------------
 
-  /** Saves the rows the filter matches (every row without one), with the browser reader's exports; Stop ends it. */
-  async function exportRows(format) {
+  /**
+   * Saves the rows the filter matches (every row without one; all rows with { filtered: false }), with the browser
+   * reader's exports, as they are or in a `shape`; Stop ends it.
+   */
+  async function exportRows(format, shape, { filtered = true } = {}) {
     $('jz-export-menu').open = false;
     work.export?.abort();
     const job = (work.export = new AbortController());
     const reader = state.reader;
-    const what = state.filter ? 'the matching rows' : `${reader.rowCount.toLocaleString()} rows`;
+    const filter = filtered ? state.filter : null;
+    const what = `${filter ? 'the matching rows' : `${reader.rowCount.toLocaleString()} rows`}${shape ? ', shaped,' : ''}`;
     const busy = busyWith(`Exporting ${what} as ${format.toUpperCase()}…`, ['row', 'rows'], () => job.abort());
     const note = $('jz-export-note');
     note.hidden = false;
     note.textContent = `Exporting ${what} as ${format.toUpperCase()}…`;
     const started = performance.now();
     try {
-      const blob = await JazminBrowser.exportBlob(reader, format, { filter: state.filter, signal: job.signal, onProgress: busy.progress });
-      const name = `${state.name.replace(/\.jzm$/i, '')}${state.filter ? '-filtered' : ''}.${format}`;
+      const blob = await JazminBrowser.exportBlob(reader, format, { filter, shape, signal: job.signal, onProgress: busy.progress });
+      const name = `${state.name.replace(/\.jzm$/i, '')}${filter ? '-filtered' : ''}${shape ? '-shaped' : ''}.${format}`;
       state.lastSaved = { name, blob };
       await save(name, blob);
       note.textContent = `Saved ${name} · ${(blob.size / 1048576).toFixed(blob.size < 10485760 ? 2 : 1)} MB in ${elapsed(performance.now() - started)}`;
@@ -655,6 +734,19 @@
   $('jz-filter-form').addEventListener('submit', applyFilter);
   $('jz-busy-stop').addEventListener('click', () => onBusyStop());
   for (const item of document.querySelectorAll('#jz-export-menu [data-format]')) item.addEventListener('click', () => exportRows(item.dataset.format));
+  $('jz-shape-open').addEventListener('click', openShape);
+  let shapeTyping;
+  $('jz-shape-text').addEventListener('input', () => {
+    $('jz-shape-output').hidden = true; // a preview or schema of the shape as it was
+    $('jz-shape-note').textContent = '';
+    clearTimeout(shapeTyping);
+    shapeTyping = setTimeout(checkShape, 250);
+  });
+  $('jz-shape-preview').addEventListener('click', previewShape);
+  $('jz-shape-schema').addEventListener('click', shapeSchemaShown);
+  $('jz-shape-json').addEventListener('click', () => exportShaped('json'));
+  $('jz-shape-xml').addEventListener('click', () => exportShaped('xml'));
+  $('jz-shape-close').addEventListener('click', () => $('jz-shape').close());
   $('jz-count-stop').addEventListener('click', () => work.count?.abort());
   $('jz-prev').addEventListener('click', () => { state.page--; showRows(); });
   $('jz-next').addEventListener('click', () => { state.page++; showRows(); });

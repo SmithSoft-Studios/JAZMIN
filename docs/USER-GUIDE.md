@@ -3038,7 +3038,28 @@ single steps.
 A JAZMIN file holds rows. Often you need something else: one entry per
 client, with that client's transactions and totals. An **export shape** is a
 small JSON template that describes the output you want. You can use the same
-shape in JavaScript and .NET, and get the same result.
+shape in JavaScript, .NET and the browser, and get the same result.
+
+**For a chart:** one call picks the columns and gives them the structure the
+chart expects. Two lists grouped and sorted alike give Chart.js its labels
+and values:
+
+```js
+const chart = JSON.parse(toJSON(reader, {
+  filter: { amount: { lt: '0' } },
+  shape: {
+    labels: { $rows: 'category', $groupBy: 'category', $sort: ['category'] },
+    data: { $rows: { $sum: 'amount' }, $groupBy: 'category', $sort: ['category'] },
+  },
+}));
+// {"labels":["Dining","Entertainment",…],"data":[-6960.40,-2078.60,…]}
+toJSON(reader, { shape: { $rows: { x: 'date', y: 'amount' } } }); // points: [{"x":"2026-01-01T11:00:00.000Z","y":-1115.81},…]
+```
+
+A shape sorts by columns, not by totals: sort a chart's bars by size in your
+page. **In the browser,** `JazminBrowser.toJSON(reader, { shape })` gives the
+same text, and the viewer's Export ▾ → With a shape… checks a shape as you
+type it, previews it and exports it (section 24).
 
 - **Checked up front.** A shape that names a column the file does not have,
   or that your key cannot see, is rejected before any data is read. The error
@@ -3635,6 +3656,16 @@ row without one) as CSV, JSON or XML: the same text the libraries' `toCSV`,
 the overlay, with Stop; the line below the filter then says what was saved, how
 large it is and how long it took.
 
+**Export ▾ → With a shape…** opens a box for an export shape (section 21):
+
+- **Checked as you type** against the file's tables and the columns your key
+  can see. A mistake shows where it is, for example
+  `Shape at shape[].balance: unknown or hidden column 'balance'` for a key
+  that can't see `balance`; a shape that fits says so.
+- **Preview** shows the start of its output, **JSON Schema** the schema of
+  its JSON output; **Export JSON** or **Export XML** saves it, for the rows
+  the filter matches or for every row.
+
 ### 24.1 Templates: the document API
 
 A package's entry page runs in a sandbox. It has no network access (except
@@ -3751,6 +3782,9 @@ await reader.count({ amount: 88 }, { signal: stop.signal, onProgress: ({ done, t
 // options (json: pretty, omitNulls; csv: delimiter, newline; xml: root, row), and signal / onProgress as above.
 const csv = await JazminBrowser.toCSV(reader, { filter: { country: 'ZA' } });
 const blob = await JazminBrowser.exportBlob(reader, 'json', { filter: { country: 'ZA' }, pretty: true });
+// Export shapes (section 21): the library's output, links between tables included; maxLength stops early (a preview).
+const shaped = await JazminBrowser.toJSON(reader, { shape: { $rows: { x: 'date', y: 'amount' } }, maxLength: 20000 });
+const schema = await JazminBrowser.shapeSchema(reader, shape); // also checks the shape: throws where it doesn't fit
 await reader.columnArrays(null, { select: ['at', 'amount'] }); // arrays for charts (section 9.11)
 reader.submissionKey;                                  // the key to send records back with (section 15.6)
 await reader.explain({ id: 7 }, { analyze: true });    // as in the library (section 9.6)

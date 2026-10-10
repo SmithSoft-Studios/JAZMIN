@@ -60,6 +60,15 @@ td.null { color: var(--muted); font-style: italic; }
 .menu-items button { border: 0; text-align: left; border-radius: 6px; }
 .menu-items button:hover, .menu-items button:focus-visible { background: var(--bg); }
 #jz-export-note { margin: 6px 0 0; }
+.menu-items hr { width: 100%; margin: 4px 0; border: 0; border-top: 1px solid var(--line); }
+dialog.shape { width: min(920px, calc(100% - 32px)); }
+dialog.shape textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; resize: vertical; }
+.shape-check { min-height: 1.4em; margin: 6px 0; font-weight: 600; }
+.shape-check.ok { color: #157347; }
+.shape-check.bad { color: var(--danger); }
+dialog.shape .check { display: flex; gap: 6px; align-items: center; font-size: 13px; }
+dialog.shape .buttons { align-items: center; flex-wrap: wrap; }
+dialog.shape pre { max-height: 40vh; overflow: auto; margin: 8px 0 0; padding: 10px 12px; border-radius: 8px; background: var(--bg); font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre-wrap; word-break: break-word; }
 button.small { padding: 3px 10px; font-size: 12.5px; }
 .results { position: relative; min-height: 220px; }
 .busy { position: absolute; inset: 0; display: flex; justify-content: center; align-items: flex-start; padding-top: 56px; border-radius: 8px; background: rgba(244, 245, 247, .72); backdrop-filter: blur(1.5px); }

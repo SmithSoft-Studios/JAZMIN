@@ -737,6 +737,40 @@ for (const name of chosen) {
     const exportOk = ['csv', 'xml'].every((format) => exported[format].name === `busy-filtered.${format}` && exported[format].text === BUSY_EXPORT[format] && /^Saved busy-filtered\./.test(exported[format].note));
     results.push({ browser: name, label: `export: the filter's ${BUSY_TOTAL.toLocaleString('en-US')} rows saved as CSV and XML, the same text as the library's`, ok: exportOk, problems: exportOk ? [] : [JSON.stringify(Object.fromEntries(Object.entries(exported).map(([f, e]) => [f, { name: e.name, note: e.note, length: e.text.length, expected: BUSY_EXPORT[f].length }])))] });
 
+    // Export with a shape: a shape linking a file's two tables, checked, previewed, its JSON Schema shown, exported; and
+    // checked against the columns each key can see (Bob's key hides balance, Sally's doesn't).
+    const shapeDialog = async (shape) => {
+      await page.evaluate(`(document.getElementById('jz-shape-open').click(), document.getElementById('jz-shape-text').value = ${JSON.stringify(JSON.stringify(shape, null, 2))}, document.getElementById('jz-shape-text').dispatchEvent(new Event('input')), true)`);
+      return waitFor(page, `(document.getElementById('jz-shape-check').className.includes('ok') || document.getElementById('jz-shape-check').className.includes('bad')) && document.getElementById('jz-shape-check').textContent`, 'the shape check');
+    };
+    await page.navigate(`${base}/js/viewer/index.html`);
+    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+    await page.evaluate(`fetch('/spec/fixtures/js-tables.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'js-tables.jzm')).then(() => true)`);
+    await waitFor(page, `/^Rows 1/.test(${dataStatus})`, 'js-tables.jzm');
+    const linkShape = JSON.parse(fs.readFileSync(path.join(fixtures, 'shape-links.json'), 'utf8'));
+    const fits = await shapeDialog(linkShape);
+    await page.evaluate(`(document.getElementById('jz-shape-preview').click(), true)`);
+    const preview = await waitFor(page, `/^Preview: /.test(document.getElementById('jz-shape-note').textContent) && document.getElementById('jz-shape-output').textContent.slice(0, 40)`, 'the preview');
+    await page.evaluate(`(document.getElementById('jz-shape-schema').click(), true)`);
+    const schema = await waitFor(page, `/JSON Schema/.test(document.getElementById('jz-shape-note').textContent) && JSON.parse(document.getElementById('jz-shape-output').textContent).$schema`, 'the schema');
+    await page.evaluate(NO_DOWNLOADS);
+    await page.evaluate(`(JazminViewer.state.lastSaved = null, document.getElementById('jz-shape-json').click(), true)`);
+    const shaped = await waitFor(page, `JazminViewer.state.lastSaved && JazminViewer.state.lastSaved.blob.text().then((text) => ({ name: JazminViewer.state.lastSaved.name, text }))`, 'the shaped export');
+    const byKey = {};
+    for (const who of ['bob', 'sally']) {
+      await page.navigate(`${base}/js/viewer/index.html`);
+      await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+      await page.evaluate(`fetch('/spec/fixtures/js-access.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'js-access.jzm')).then(() => true)`);
+      await waitFor(page, `document.getElementById('jz-unlock')?.hidden === false`, 'the unlock form');
+      await page.evaluate(`(document.getElementById('jz-key').value = ${JSON.stringify(keys[who])}, document.getElementById('jz-unlock').requestSubmit(), true)`);
+      await waitFor(page, `/^Rows 1/.test(${dataStatus})`, `js-access.jzm with ${who}'s key`);
+      byKey[who] = await shapeDialog({ $rows: { id: 'id', balance: 'balance' } });
+    }
+    const shapeOk = fits === '✓ The shape fits the columns this key can see' && preview.startsWith('{') && schema === 'https://json-schema.org/draft/2020-12/schema'
+      && shaped.name === 'js-tables-shaped.json' && JSON.stringify(JSON.parse(shaped.text)) === JSON.stringify(JSON.parse(fs.readFileSync(path.join(fixtures, 'shape-links-expected.json'), 'utf8')))
+      && byKey.bob === "Shape at shape[].balance: unknown or hidden column 'balance'" && byKey.sally === '✓ The shape fits the columns this key can see';
+    results.push({ browser: name, label: 'export with a shape: checked, previewed, its JSON Schema, exported across two tables; checked against the columns each key can see', ok: shapeOk, problems: shapeOk ? [] : [JSON.stringify({ fits, preview, schema, shaped: { name: shaped.name, text: shaped.text.slice(0, 200) }, byKey })] });
+
     // The from-disk sample's pages, as a person uses them: the statement opened with its password, with no choosing; and
     // a chosen file passed to the viewer, which says it is locked.
     const sample = (page_) => (fromDisk ? pathToFileURL(path.join(temp, 'sample', page_)).href : `${base}/e2e/sample/${page_}`);

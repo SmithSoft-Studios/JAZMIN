@@ -67,6 +67,8 @@
             <button type="button" role="menuitem" data-format="csv">CSV</button>
             <button type="button" role="menuitem" data-format="json">JSON</button>
             <button type="button" role="menuitem" data-format="xml">XML</button>
+            <hr>
+            <button type="button" role="menuitem" id="jz-shape-open">With a shape…</button>
           </div>
         </details>
       </form>
@@ -99,6 +101,25 @@
   </section>
   <p id="jz-status" class="status" role="status"></p>
 </main>
+
+<dialog id="jz-shape" class="changes shape" aria-labelledby="jz-shape-title">
+  <h2 id="jz-shape-title">Export with a shape</h2>
+  <p class="hint">A shape picks, renames, nests, groups and totals columns, and links tables: the output's structure, as
+    JSON (USER-GUIDE 21). It is checked against the columns this key can see.</p>
+  <textarea id="jz-shape-text" spellcheck="false" rows="12" aria-label="Shape (JSON)"></textarea>
+  <p id="jz-shape-check" class="shape-check" role="status"></p>
+  <label class="check"><input id="jz-shape-filtered" type="checkbox" checked> Only the rows the filter matches</label>
+  <div class="buttons">
+    <button type="button" id="jz-shape-preview">Preview</button>
+    <button type="button" id="jz-shape-schema">JSON Schema</button>
+    <span class="grow"></span>
+    <button type="button" id="jz-shape-close">Close</button>
+    <button type="button" id="jz-shape-xml">Export XML</button>
+    <button type="button" id="jz-shape-json" class="primary">Export JSON</button>
+  </div>
+  <p id="jz-shape-note" class="hint" role="status"></p>
+  <pre id="jz-shape-output" hidden></pre>
+</dialog>
 
 <dialog id="jz-changes" class="changes" aria-labelledby="jz-changes-title">
   <form method="dialog">

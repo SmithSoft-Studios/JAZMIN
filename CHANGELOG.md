@@ -11,7 +11,13 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   columns, several tables, filters, a selection of columns, offset and limit, and each format's options), and
   `exportBlob(reader, format, options)` gives it as a Blob to save, with `{ signal, onProgress }` for long exports. The
   viewer's Export ▾ saves the rows the filter matches as CSV, JSON or XML, with progress and Stop; the from-disk
-  sample's statement exports the transactions shown. Shaped exports stay with the libraries for now.
+  sample's statement exports the transactions shown.
+- **Export shapes in the browser and the viewer.** `JazminBrowser.toJSON` / `toXML` / `exportBlob` take `{ shape }` and
+  give the libraries' output byte for byte (the golden shape cases, links between tables including a linked table too
+  large to keep, the interop fixtures, the error messages), and `JazminBrowser.shapeSchema(reader, shape)` its JSON
+  Schema; `{ maxLength }` stops a text export early, for previews. The viewer's Export ▾ → With a shape… checks a shape
+  as it is typed, against the file's tables and the columns the key can see, previews it, shows its JSON Schema and
+  exports it as JSON or XML. USER-GUIDE 21 shows a chart's data set made in one call.
 - **The viewer shows a filter's first page at once, and counts the rest while the rows show.** Before, it showed
   nothing until it had counted every match: on a 500 MB file of 25,000,000 rows, `{ "amount": 88 }` (no index on
   amount) showed its rows after about 20 s; now they show after 0.4 s. While counting, the line above the rows gives the
