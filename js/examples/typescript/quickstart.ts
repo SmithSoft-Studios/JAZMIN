@@ -127,9 +127,10 @@ const shape: ExportShape = {
 const shaped = open('shared.jzm', { key: owner });
 console.log(toJSON(shaped, { shape, pretty: true }), shapeSchema(shaped, shape));
 shaped.close();
-// Saved in the file under a name, for the keys of the groups given (each must see every column the shape uses).
+// Saved in the file under a name, for the keys of the groups given: each must see every column the shape uses, so this
+// one is for section A's keys, not for everyone (Bob can't see amount; saving it for him would be refused).
 import type { SavedShape } from '@smithsoft-studios/jazmin';
-update('shared.jzm', { key: owner, addShapes: [{ name: 'Sections', shape, description: 'Totals per section', default: true }] });
+update('shared.jzm', { key: owner, addShapes: [{ name: 'Sections', shape, description: 'Totals per section', default: true, groups: ['A'] }] });
 const saved = open('shared.jzm', { key: owner });
 const offered: SavedShape[] = saved.shapes;
 console.log(offered.map((s) => s.name), toJSON(saved, { shape: 'Sections' }));
