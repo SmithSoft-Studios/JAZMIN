@@ -63,7 +63,7 @@ In the **file directory** (spec 6.8), as an optional member beside `files` and `
 |---|---|---|
 | Node | `write(…, { shapes: [{ name, shape, description, default, table, groups }] })`; `update` and `append` take `addShapes` (a name that exists is replaced) and `removeShapes` (names) | `reader.shapes` → `[{ name, description, default, table, groups, shape }]`; `toJSON(reader, { shape: 'name' })`, `shapeSchema(reader, 'name')` |
 | .NET | `JazminWriteOptions.Shapes`; `JazminUpdate` and `JazminAppend`: `AddShapes`, `RemoveShapes` | `reader.Shapes`; `JazminShape.FromFile(reader, "name")` |
-| Browser reader | | `reader.shapes`; `toJSON(reader, { shape: 'name' })` |
+| Browser reader | | `await reader.shapes()`; `toJSON(reader, { shape: 'name' })`, `exportBlob`, `shapeSchema` |
 | CLI | | `jazmin inspect` lists them; `jazmin query … --shape "name"` (or `--shape-file shape.json`), JSON or XML |
 | Viewer | | Export ▾ lists the file's shapes (the default first): "Export as …" JSON or XML; the shape box can start from one |
 

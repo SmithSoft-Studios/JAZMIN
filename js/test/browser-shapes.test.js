@@ -163,3 +163,30 @@ test('maxLength: an export stopped once it is long enough, as a preview', async 
   assert.equal(await JazminBrowser.toCSV(browser, { maxLength: 100 }), (await JazminBrowser.toCSV(browser)).slice(0, 100));
   assert.equal(await JazminBrowser.toJSON(browser, { maxLength: 1e9 }), await JazminBrowser.toJSON(browser));
 });
+
+test('saved shapes: listed for the keys that can use them and run by name, as in the library, in files of both libraries', async () => {
+  const { views } = fixture('saved-shapes.json');
+  for (const writer of ['js', 'dotnet']) {
+    // The browser refuses a shared file's owner key, so the shared file is read with access keys only.
+    for (const [file, keyNames] of [[`${writer}-shapes-key.jzm`, ['key']], [`${writer}-shapes-access.jzm`, Object.keys(views).filter((k) => k !== 'key')]]) {
+      const bytes = new Uint8Array(fs.readFileSync(path.join(fixtures, file)));
+      for (const keyName of keyNames) {
+        const reader = await JazminBrowser.open(bytes, { key: keys[keyName] });
+        const library = open(path.join(fixtures, file), { key: keys[keyName], accessState: false });
+        try {
+          const shapes = await reader.shapes();
+          assert.deepEqual(shapes.map((s) => s.name), views[keyName], `${file} ${keyName}`);
+          assert.deepEqual(shapes.map(({ groups, ...s }) => s), library.shapes.map(({ groups, ...s }) => s)); // groups: the owner's, known to the library
+          for (const s of shapes) {
+            assert.equal(await JazminBrowser.toJSON(reader, { shape: s.name, pretty: true }), toJSON(library, { shape: s.name, pretty: true }), `${file} ${keyName} ${s.name}`);
+            assert.equal(await JazminBrowser.toXML(reader, { shape: s.name }), toXML(library, { shape: s.name }));
+            assert.deepEqual(await JazminBrowser.shapeSchema(reader, s.name), shapeSchema(library, s.name));
+          }
+          await assert.rejects(JazminBrowser.toJSON(reader, { shape: 'Nope' }), { message: "No saved shape 'Nope' is visible with this key" });
+        } finally {
+          library.close();
+        }
+      }
+    }
+  }
+});

@@ -731,6 +731,16 @@
     return ids;
   }
 
+  /** A file directory's saved export shapes (spec 6.8): its well-formed entries; others are ignored, as other members. */
+  function directoryShapes(d) {
+    if (!Array.isArray(d.shapes)) return [];
+    return d.shapes.filter((s) => s !== null && typeof s === 'object' && typeof s.name === 'string' && s.name !== ''
+      && s.shape !== null && typeof s.shape === 'object' && !Array.isArray(s.shape)
+      && (s.description === undefined || typeof s.description === 'string') && (s.default === undefined || typeof s.default === 'boolean')
+      && (s.table === undefined || typeof s.table === 'string')
+      && (s.groups === undefined || (Array.isArray(s.groups) && s.groups.every((g) => typeof g === 'string'))));
+  }
+
   function checkFileDirectory(d) {
     const ok = (test) => {
       if (!test) throw new JazminFormatError('An embedded-file directory is malformed');
@@ -3011,10 +3021,12 @@
 
     // Embedded files this key can see (spec 6.8): directories merged by path.
     let fileIndex = null;
+    let shapeList = null; // saved shapes this key can use, worked out once
     async function files() {
       if (fileIndex) return fileIndex;
       const entries = new Map();
       const contents = new Map();
+      const shapes = new Map();
       const member = header.files;
       if (member) {
         const suffix = member.segment ? `/${member.segment}` : '';
@@ -3035,10 +3047,17 @@
           for (const f of directory.files) {
             if (!entries.has(f.path)) entries.set(f.path, { path: f.path, type: f.type, content: f.content, actions: fileActions(f.actions) });
           }
+          for (const s of directoryShapes(directory)) {
+            if (shapes.has(s.name)) continue;
+            shapes.set(s.name, {
+              name: s.name, ...(s.description ? { description: s.description } : {}), ...(s.default ? { default: true } : {}),
+              ...(s.table === undefined ? {} : { table: s.table }), ...(s.groups ? { groups: s.groups.includes('*') ? ['*'] : s.groups } : {}), shape: s.shape,
+            });
+          }
         }
         for (const e of entries.values()) if (!contents.has(e.content)) throw new JazminFormatError(`Embedded file '${e.path}' refers to missing content`);
       }
-      return (fileIndex = { entries, contents });
+      return (fileIndex = { entries, contents, shapes });
     }
 
     async function block(content, b) {
@@ -3182,6 +3201,34 @@
         }
         cost.ms = performance.now() - start;
         return { ...(await describe()), ...cost };
+      },
+      /**
+       * Saved export shapes this key can use, by name: [{ name, description?, default?, table?, shape }] (groups too in
+       * files that aren't shared), as the library's reader.shapes. Shapes that use a column this key can't see are left
+       * out. Use one by name: JazminBrowser.toJSON(reader, { shape: name }).
+       */
+      async shapes() {
+        if (!shapeList) {
+          const { shapes } = await files();
+          const first = header.tables[0].name;
+          const columns = new Map([[table.name, visibleColumns]]);
+          for (const s of shapes.values()) {
+            for (const name of [s.table ?? first, ...shapeTables(s.shape)]) {
+              if (!columns.has(name) && header.tables.some((t) => t.name === name)) columns.set(name, (await openTable(file, name)).columns);
+            }
+          }
+          shapeList = [...shapes.values()].filter((s) => {
+            const own = columns.get(s.table ?? first);
+            if (!own) return false;
+            try {
+              compileShape(own, s.shape, (name) => columns.get(name));
+              return true;
+            } catch {
+              return false;
+            }
+          }).sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+        }
+        return JSON.parse(JSON.stringify(shapeList));
       },
       /** Embedded files this key can see: [{ path, type, size, sha256 }]. */
       async files() {
@@ -3417,6 +3464,15 @@
       for (const value of Object.values(shape)) shapeTables(value, names);
     }
     return names;
+  }
+
+  /** A saved shape given by its name (reader.shapes()): the shape, and the reader of the table it reads. */
+  async function resolveShape(reader, shape) {
+    if (typeof shape !== 'string') return { reader, shape };
+    const saved = (await reader.shapes()).find((s) => s.name === shape);
+    if (!saved) throw new JazminValidationError(`No saved shape '${shape}' is visible with this key`);
+    const table = saved.table ?? reader.tables[0];
+    return { reader: table === reader.table ? reader : await reader.openTable(table), shape: saved.shape };
   }
 
   /** Readers of the tables a shape uses, by name: the reader's own, and those it links that the file has. */
@@ -3922,6 +3978,7 @@
   async function writeShape(reader, shape, format, options, write) {
     const { filter = null, pretty = false, root = 'export', signal, onProgress } = options ?? {};
     if (format !== 'json' && format !== 'xml') throw new JazminValidationError(`Shapes export JSON or XML, not '${format}'`);
+    ({ reader, shape } = await resolveShape(reader, shape));
     const readers = await shapeReaders(reader, shape);
     const compiled = shapeMarkLists(compileShape(reader.columns, shape, (name) => readers.get(name)?.columns));
     if (format === 'xml' && !XML_NAME.test(root)) throw new JazminValidationError(`'${root}' is not a valid XML element name`);
@@ -4368,6 +4425,7 @@
 
   /** A JSON Schema (draft 2020-12) describing the shape's JSON output for this reader: the library's shapeSchema. */
   async function shapeSchema(reader, shape) {
+    ({ reader, shape } = await resolveShape(reader, shape));
     const readers = await shapeReaders(reader, shape);
     const compiled = compileShape(reader.columns, shape, (name) => readers.get(name)?.columns);
     function schema(node, mayBeEmpty) {

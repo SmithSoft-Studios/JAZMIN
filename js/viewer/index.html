@@ -69,6 +69,11 @@
             <button type="button" role="menuitem" data-format="xml">XML</button>
             <hr>
             <button type="button" role="menuitem" id="jz-shape-open">With a shape…</button>
+            <div id="jz-saved-shapes" hidden>
+              <hr>
+              <p class="menu-label">Shapes saved in this file</p>
+              <div id="jz-saved-list"></div>
+            </div>
           </div>
         </details>
       </form>
@@ -106,6 +111,8 @@
   <h2 id="jz-shape-title">Export with a shape</h2>
   <p class="hint">A shape picks, renames, nests, groups and totals columns, and links tables: the output's structure, as
     JSON (USER-GUIDE 21). It is checked against the columns this key can see.</p>
+  <label id="jz-shape-start" class="shape-start" hidden>Start from
+    <select id="jz-shape-saved"><option value="">a shape saved in this file…</option></select></label>
   <textarea id="jz-shape-text" spellcheck="false" rows="12" aria-label="Shape (JSON)"></textarea>
   <p id="jz-shape-check" class="shape-check" role="status"></p>
   <label class="check"><input id="jz-shape-filtered" type="checkbox" checked> Only the rows the filter matches</label>

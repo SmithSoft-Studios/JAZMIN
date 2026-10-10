@@ -120,7 +120,7 @@
     state.filter = null;
     state.page = 0;
     $('jz-filter').value = '';
-    await Promise.all([showRows(), showFiles()]);
+    await Promise.all([showRows(), showFiles(), showSavedShapes(reader)]);
     selectTab(state.shown && (state.shown !== 'document' || hasDocument) ? state.shown : hasDocument ? 'document' : 'data');
     if (hasDocument) await showDocument(reader);
   }
@@ -299,8 +299,61 @@
     $('jz-shape-check').textContent = 'Checking…';
   };
 
+  /**
+   * The export shapes saved in the file that this key can use (the default first): each exports as JSON or XML from the
+   * Export menu, and can start the shape box.
+   */
+  async function showSavedShapes(reader) {
+    let shapes = [];
+    try {
+      shapes = await reader.shapes();
+    } catch {
+      // a file whose shapes can't be read still shows its rows
+    }
+    state.savedShapes = shapes.sort((a, b) => Number(Boolean(b.default)) - Number(Boolean(a.default)));
+    $('jz-saved-list').replaceChildren(...state.savedShapes.map((s) => {
+      const row = document.createElement('div');
+      row.className = 'saved-shape';
+      row.title = [s.description, s.table && `Reads the table ${s.table}`].filter(Boolean).join(' - ');
+      const name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = s.name;
+      row.append(name);
+      if (s.default) {
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.textContent = 'default';
+        row.append(badge);
+      }
+      for (const format of ['json', 'xml']) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.setAttribute('role', 'menuitem');
+        button.dataset.savedFormat = format;
+        button.textContent = format.toUpperCase();
+        button.setAttribute('aria-label', `Export ${s.name} as ${format.toUpperCase()}`);
+        button.addEventListener('click', () => exportSaved(s, format));
+        row.append(button);
+      }
+      return row;
+    }));
+    $('jz-saved-shapes').hidden = state.savedShapes.length === 0;
+  }
+
+  /** Does a saved shape read the table shown now (so the filter, on its columns, applies)? */
+  const readsShownTable = (s) => (s.table ?? state.reader.tables[0]) === state.reader.table;
+
+  /** Exports with a saved shape, by name: the filter's rows when it reads the table shown, else every row. */
+  function exportSaved(saved, format) {
+    exportRows(format, saved.name, { filtered: readsShownTable(saved), label: saved.name });
+  }
+
   function openShape() {
     $('jz-export-menu').open = false;
+    // Saved shapes of the table shown can start the box (the box checks against this table's columns).
+    const own = (state.savedShapes ?? []).filter(readsShownTable);
+    $('jz-shape-saved').replaceChildren(new Option('a shape saved in this file…', ''), ...own.map((s) => new Option(s.name, s.name)));
+    $('jz-shape-start').hidden = own.length === 0;
     if (!$('jz-shape-text').value.trim() || state.shapeReader !== state.reader) {
       // A first shape for this file: its first columns, one row each.
       $('jz-shape-text').value = JSON.stringify({ $rows: Object.fromEntries(state.reader.columns.slice(0, 4).map((c) => [c.name, c.name])) }, null, 2);
@@ -373,13 +426,15 @@
    * Saves the rows the filter matches (every row without one; all rows with { filtered: false }), with the browser
    * reader's exports, as they are or in a `shape`; Stop ends it.
    */
-  async function exportRows(format, shape, { filtered = true } = {}) {
+  async function exportRows(format, shape, { filtered = true, label } = {}) {
     $('jz-export-menu').open = false;
     work.export?.abort();
     const job = (work.export = new AbortController());
     const reader = state.reader;
     const filter = filtered ? state.filter : null;
-    const what = `${filter ? 'the matching rows' : `${reader.rowCount.toLocaleString()} rows`}${shape ? ', shaped,' : ''}`;
+    const what = label
+      ? `'${label}'${filter ? ' for the matching rows' : ''}` // a saved shape: it may read another table
+      : `${filter ? 'the matching rows' : `${reader.rowCount.toLocaleString()} rows`}${shape ? ', shaped,' : ''}`;
     const busy = busyWith(`Exporting ${what} as ${format.toUpperCase()}…`, ['row', 'rows'], () => job.abort());
     const note = $('jz-export-note');
     note.hidden = false;
@@ -387,7 +442,8 @@
     const started = performance.now();
     try {
       const blob = await JazminBrowser.exportBlob(reader, format, { filter, shape, signal: job.signal, onProgress: busy.progress });
-      const name = `${state.name.replace(/\.jzm$/i, '')}${filter ? '-filtered' : ''}${shape ? '-shaped' : ''}.${format}`;
+      const shaped = !shape ? '' : label ? `-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'shaped'}` : '-shaped';
+      const name = `${state.name.replace(/\.jzm$/i, '')}${filter ? '-filtered' : ''}${shaped}.${format}`;
       state.lastSaved = { name, blob };
       await save(name, blob);
       note.textContent = `Saved ${name} · ${(blob.size / 1048576).toFixed(blob.size < 10485760 ? 2 : 1)} MB in ${elapsed(performance.now() - started)}`;
@@ -741,6 +797,12 @@
   $('jz-busy-stop').addEventListener('click', () => onBusyStop());
   for (const item of document.querySelectorAll('#jz-export-menu [data-format]')) item.addEventListener('click', () => exportRows(item.dataset.format));
   $('jz-shape-open').addEventListener('click', openShape);
+  $('jz-shape-saved').addEventListener('change', () => {
+    const saved = state.savedShapes?.find((s) => s.name === $('jz-shape-saved').value);
+    if (!saved) return;
+    $('jz-shape-text').value = JSON.stringify(saved.shape, null, 2);
+    $('jz-shape-text').dispatchEvent(new Event('input'));
+  });
   let shapeTyping;
   $('jz-shape-text').addEventListener('input', () => {
     $('jz-shape-output').hidden = true; // a preview or schema of the shape as it was

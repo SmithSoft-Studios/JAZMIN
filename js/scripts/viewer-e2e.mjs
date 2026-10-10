@@ -778,6 +778,32 @@ for (const name of chosen) {
       && byKey.bob === "Shape at shape[].balance: unknown or hidden column 'balance'" && byKey.sally === '✓ The shape fits the columns this key can see';
     results.push({ browser: name, label: 'export with a shape: checked, previewed, its JSON Schema, exported across two tables; checked against the columns each key can see', ok: shapeOk, problems: shapeOk ? [] : [JSON.stringify({ fits, preview, schema, shaped: { name: shaped.name, text: shaped.text.slice(0, 200) }, byKey })] });
 
+    // Shapes saved in the file: each key's Export menu lists those it can use (the default first); one exports by name
+    // (a shape of the other table, the same text as the library's), and one starts the shape box.
+    const savedFor = {};
+    for (const who of ['bob', 'sally']) {
+      await page.navigate(`${base}/js/viewer/index.html?saved=${who}`);
+      await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+      await page.evaluate(`fetch('/spec/fixtures/js-shapes-access.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'js-shapes-access.jzm')).then(() => true)`);
+      await waitFor(page, `document.getElementById('jz-unlock')?.hidden === false`, 'the unlock form');
+      await page.evaluate(`(document.getElementById('jz-key').value = ${JSON.stringify(keys[who])}, document.getElementById('jz-unlock').requestSubmit(), true)`);
+      await waitFor(page, `/^Rows 1/.test(${dataStatus})`, `js-shapes-access.jzm with ${who}'s key`);
+      savedFor[who] = await page.evaluate(`[...document.querySelectorAll('#jz-saved-list .saved-shape .name')].map((e) => e.textContent)`);
+    }
+    await page.evaluate(NO_DOWNLOADS);
+    await page.evaluate(`(JazminViewer.state.lastSaved = null, document.querySelector('#jz-saved-list [aria-label="Export Countries as JSON"]').click(), true)`);
+    const savedExport = await waitFor(page, `JazminViewer.state.lastSaved && JazminViewer.state.lastSaved.blob.text().then((text) => ({ name: JazminViewer.state.lastSaved.name, text }))`, 'the saved shape export');
+    await page.evaluate(`(document.getElementById('jz-shape-open').click(), document.getElementById('jz-shape-saved').value = 'Balances', document.getElementById('jz-shape-saved').dispatchEvent(new Event('change')), true)`);
+    const startedFrom = await waitFor(page, `document.getElementById('jz-shape-check').className.includes('ok') && { options: [...document.getElementById('jz-shape-saved').options].map((o) => o.value).filter(Boolean), shape: JSON.parse(document.getElementById('jz-shape-text').value) }`, 'the box started from a saved shape');
+    const sallyReader = open(path.join(fixtures, 'js-shapes-access.jzm'), { key: keys.sally, accessState: false });
+    const expectedCountries = exportString(sallyReader, 'json', { shape: 'Countries' });
+    const balancesShape = sallyReader.shapes.find((s) => s.name === 'Balances').shape;
+    sallyReader.close();
+    const savedOk = JSON.stringify(savedFor) === JSON.stringify({ bob: ['People by country', 'Countries', 'People with country', 'South'], sally: ['People by country', 'Balances', 'Countries', 'People with country'] })
+      && savedExport.name === 'js-shapes-access-countries.json' && savedExport.text === expectedCountries
+      && JSON.stringify(startedFrom.options) === JSON.stringify(['People by country', 'Balances', 'People with country']) && JSON.stringify(startedFrom.shape) === JSON.stringify(balancesShape);
+    results.push({ browser: name, label: "shapes saved in the file: each key's Export menu lists those it can use, one exports by name (another table's), one starts the shape box", ok: savedOk, problems: savedOk ? [] : [JSON.stringify({ savedFor, savedExport: { name: savedExport.name, text: savedExport.text.slice(0, 200) }, startedFrom })] });
+
     // The from-disk sample's pages, as a person uses them: the statement opened with its password, with no choosing; and
     // a chosen file passed to the viewer, which says it is locked.
     const sample = (page_) => (fromDisk ? pathToFileURL(path.join(temp, 'sample', page_)).href : `${base}/e2e/sample/${page_}`);

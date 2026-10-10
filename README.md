@@ -29,7 +29,7 @@ Measured on 200,000 records (details and caveats in the user guide):
 | Read a whole file | **2.8× faster** than System.Text.Json, 6.6× faster than Newtonsoft and 2.4× faster than `JSON.parse` |
 | Memory per lookup | **327× less** than Newtonsoft (0.6 MB against 196 MB); under 0.1 MB in Node, against 42 MB for `JSON.parse` |
 | Encryption | AES-256-GCM on every section, with a typo-safe key format and tamper detection, at near-zero extra cost |
-| Conversion | Lossless JSON round trip, plus CSV and XML. **Export shapes** turn rows into nested JSON/XML (one entry per client with its transactions and totals), validated and streamed |
+| Conversion | Lossless JSON round trip, plus CSV and XML. **Export shapes** turn rows into nested JSON/XML (one entry per client with its transactions and totals), validated and streamed; a file can carry them by name, each key seeing only those it can use |
 | Lists and objects | Opt-in **nested columns**: a list or an object is stored as columns of its fields, smaller and faster to read than JSON text. Filters reach inside them (`any`, `all`, `match`), and .NET LINQ reads only the fields a query uses |
 | Access control | One file, many keys: each access key sees only its rows and columns. Files are signed by the owner, and only the owner can update them |
 | Records sent back | People in the field send records, photos and PDFs from a phone, written offline in the browser and locked with a key they get only by opening the shared file. The owner's service checks and files them, and a record sent again updates the filed one ([sample](js/examples/filing-service)) |

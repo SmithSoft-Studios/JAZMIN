@@ -6,6 +6,17 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Added
+- **Export shapes saved in the file** (spec 6.8, a new optional member). A file can carry export shapes under names,
+  with a description, the table each reads, and one marked as the default. Write them with `shapes` (JavaScript) or
+  `JazminWriteOptions.Shapes` (.NET); change them with `addShapes` / `removeShapes` on update and append. Readers list
+  them (`reader.shapes`, `reader.Shapes`, `await reader.shapes()` in the browser) and run one by name:
+  `toJSON(reader, { shape: 'Monthly totals' })`, `JazminShape.FromFile(reader, "Monthly totals")`. Append, update,
+  compaction and key rotation keep them. **In shared files each key sees only the shapes it can use:** a shape is saved
+  for file groups (`groups`, as for embedded files), and every key that would see it must see every column it uses,
+  or the write, or a later grant, is refused, naming the key and the column. The viewer lists a file's shapes under
+  Export ▾ (JSON or XML, the default first) and can start its shape box from one; `jazmin inspect` lists them and
+  `jazmin query --shape <name>` (or `--shape-file`) exports with one. Releases 1.0 to 1.4 read such files as before,
+  without the shapes, and leave the shapes out when they append to, update or compact them (USER-GUIDE 21.7).
 - **Exports in the browser and the viewer.** The browser reader writes JSON, CSV and XML: `JazminBrowser.toJSON` /
   `toCSV` / `toXML(reader, options)` give the same text as the libraries' exports (tested on every value type, nested
   columns, several tables, filters, a selection of columns, offset and limit, and each format's options), and
@@ -61,6 +72,9 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 - **The viewer no longer says "Opening…" while a locked file waits for its key.** The message stayed at the bottom of
   the window once the key was asked for; now it clears, and the unlock form's Open button says "Opening…" while the
   key is tried.
+- **`write()` (JavaScript) leaves no file behind when it can't finish one.** A file refused when it was finished, for
+  example for package settings naming a file it doesn't store, stayed on disk unfinished; now it is removed, as it
+  already was when a row was refused.
 
 ## 1.4.0 - 2026-10-09 (file format 1.0)
 

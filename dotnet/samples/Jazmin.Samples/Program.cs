@@ -364,6 +364,32 @@ var scriptPath = Path.Combine(dir, "statement.jzm.js");
 File.WriteAllText(scriptPath, JazminFile.PortableScript(statementPath));
 Console.WriteLine($"20. {Path.GetFileName(scriptPath)}: {new FileInfo(scriptPath).Length / 1024.0:0.0} KB, for a {new FileInfo(statementPath).Length / 1024.0:0.0} KB file");
 
+// --- 21. Export shapes saved in the file (USER-GUIDE 21.7), offered by name. In a shared file each key sees only the
+// shapes it can use: "Balances" is for the finance group, and every key that sees it must see the balance column.
+var bankOwner = JazminKey.Generate();
+var teller = bankOwner.CreateAccessKey();
+var branchesPath = Path.Combine(dir, "branches.jzm");
+using (var writer = JazminWriter.Create(branchesPath, [new("id", JazminType.Int), new("branch", JazminType.String), new("balance", JazminType.Decimal)], new JazminWriteOptions
+{
+    Key = bankOwner,
+    Access = new JazminAccessOptions { ColumnGroups = new() { ["money"] = ["balance"] }, Grants = [new JazminGrant(teller) { Columns = ["*"], Label = "Teller" }] },
+    Shapes =
+    [
+        new JazminSavedShape("Accounts per branch", JsonNode.Parse("""{ "$groupBy": "branch", "$sort": ["branch"], "$rows": { "branch": "branch", "accounts": { "$count": true } } }""")!.AsObject()) { IsDefault = true },
+        new JazminSavedShape("Balances", JsonNode.Parse("""{ "$rows": { "id": "id", "balance": "balance" } }""")!.AsObject()) { Groups = ["finance"] },
+    ],
+}))
+{
+    writer.WriteValues(1L, "CPT", 1520.75m);
+    writer.WriteValues(2L, "JHB", 99.10m);
+    writer.WriteValues(3L, "CPT", 0.00m);
+}
+using (var asTeller = JazminReader.Open(branchesPath, new JazminReadOptions { AccessKey = teller }))
+{
+    Console.WriteLine($"21. [{string.Join(", ", asTeller.Shapes.Select(s => s.Name))}] {JazminShape.FromFile(asTeller, "Accounts per branch").ToJson(asTeller)}");
+    // 21. [Accounts per branch] [{"branch":"CPT","accounts":2},{"branch":"JHB","accounts":1}]
+}
+
 Directory.Delete(dir, true);
 
 public readonly record struct Money(long Cents, string Currency);

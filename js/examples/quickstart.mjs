@@ -249,4 +249,23 @@ const scriptFile = path.join(dir, 'statement.jzm.js');
 fs.writeFileSync(scriptFile, portableScript(statementFile)); // or, on the command line: jazmin script statement.jzm
 console.log('18.', `${path.basename(scriptFile)}: ${(fs.statSync(scriptFile).size / 1024).toFixed(1)} KB, for a ${(fs.statSync(statementFile).size / 1024).toFixed(1)} KB file`);
 
+// 19. Export shapes saved in the file (USER-GUIDE 21.7), offered by name. In a shared file each key sees only the shapes
+// it can use: 'Balances' is for the finance group, and every key that sees it must see the balance column.
+const branchesFile = path.join(dir, 'branches.jzm');
+const bankOwner = JazminKey.generate();
+const teller = bankOwner.createAccessKey();
+write(branchesFile, [{ id: 1, branch: 'CPT', balance: '1520.75' }, { id: 2, branch: 'JHB', balance: '99.10' }, { id: 3, branch: 'CPT', balance: '0.00' }], {
+  columns: [{ name: 'id', type: 'int' }, { name: 'branch', type: 'string' }, { name: 'balance', type: 'decimal' }],
+  key: bankOwner,
+  access: { columnGroups: { money: ['balance'] }, grants: [{ key: teller, columns: ['*'], label: 'Teller' }] },
+  shapes: [
+    { name: 'Accounts per branch', default: true, shape: { $groupBy: 'branch', $sort: ['branch'], $rows: { branch: 'branch', accounts: { $count: true } } } },
+    { name: 'Balances', groups: ['finance'], shape: { $rows: { id: 'id', balance: 'balance' } } },
+  ],
+});
+const asTeller = open(branchesFile, { key: teller });
+console.log('19.', asTeller.shapes.map((s) => s.name), toJSON(asTeller, { shape: 'Accounts per branch' }));
+asTeller.close();
+// 19. [ 'Accounts per branch' ] [{"branch":"CPT","accounts":2},{"branch":"JHB","accounts":1}]
+
 fs.rmSync(dir, { recursive: true, force: true });

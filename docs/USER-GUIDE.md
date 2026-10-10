@@ -3071,6 +3071,8 @@ type it, previews it and exports it (section 24).
   the shape uses are decoded, and filters use indexes and statistics.
 
 The full reference is [docs/design/export-shapes.md](design/export-shapes.md).
+A file can also carry shapes under names, which the viewer and the tools
+offer: section 21.7.
 
 ### 21.1 From flat rows to clients with their transactions
 
@@ -3340,6 +3342,70 @@ Node.
 | The same, one customer / 1,000 customers | 0.17 s / 0.44 s | 0.08 s / 0.13 s |
 | Orders and lines in time order (batches), by default | 19 s, 238 MB | 27 s, 578 MB |
 | The same with priority `memory` | 37 s, 100 MB | 64 s, 364 MB |
+
+### 21.7 Save shapes in the file
+
+A file can carry its own export shapes, each under a name (coming in the
+next release). Whoever opens it can then export "Monthly totals" without
+writing the shape again: the viewer lists the shapes under Export ▾, the
+command-line tool takes `--shape "Monthly totals"`, and your code passes the
+name where it would pass a shape.
+
+```js
+write('statement.jzm', rows, {
+  columns, key,
+  shapes: [
+    { name: 'Monthly totals', description: 'Spending per category', default: true, shape: totals },
+    { name: 'Fees', table: 'fees', shape: { $rows: { date: 'date', fee: 'amount' } } },
+  ],
+});
+const reader = open('statement.jzm', { key });
+reader.shapes;                                  // [{ name: 'Fees', table: 'fees', … }, { name: 'Monthly totals', default: true, … }]
+toJSON(reader, { shape: 'Monthly totals' });   // the saved shape, run on its own table
+shapeSchema(reader, 'Monthly totals');
+update('statement.jzm', { key, addShapes: [{ name: 'Fees', table: 'fees', shape: fees }], removeShapes: ['Old'] }); // append() too
+```
+
+```csharp
+var totals = new JazminSavedShape("Monthly totals", JsonNode.Parse(totalsJson)!.AsObject()) { Description = "Spending per category", IsDefault = true };
+using (var writer = JazminWriter.Create("statement.jzm", columns, new JazminWriteOptions { Key = key, Shapes = [totals] })) { /* rows */ }
+using var reader = JazminReader.Open("statement.jzm", new JazminReadOptions { Key = key });
+var names = reader.Shapes.Select(s => s.Name);
+var json = JazminShape.FromFile(reader, "Monthly totals").ToJson(reader);
+JazminFile.Update("statement.jzm", new JazminUpdate { Key = key, AddShapes = [fees], RemoveShapes = ["Old"] }); // JazminAppend too
+```
+
+- **What a saved shape has:** a `name` (up to 200 characters, unique in the
+  file), the `shape`, and optionally a `description`, `default` (offered
+  first; one per group) and `table` (the table it reads; the first table
+  when left out). A saved shape runs on its own table whichever table your
+  reader reads; a filter applies to that table's rows.
+- **It stays with the file:** append, update, compaction and key rotation
+  keep it. `addShapes` replaces a shape of the same name; `removeShapes`
+  removes shapes by name. Saved shapes are encrypted with the file, like
+  embedded files.
+- **Checked when saved,** like any shape: a mistake is named before anything
+  is written, for example
+  `Saved shape 'Fees': Shape at shape[].fee: unknown or hidden column 'amont'`.
+
+**Shared files: each key sees only the shapes it can use.** A shape's text
+names columns, and a key isn't told the names of columns it can't see. So:
+
+- **`groups` says which keys see a shape,** as for embedded files
+  (section 19): `'*'` (everyone, the default), partition names, or named
+  file groups that grants list in `files`.
+- **Every key that would see a shape must see every column it uses,** in
+  every table it reads. Otherwise the file isn't written:
+  `Saved shape 'Balances' doesn't fit access key 3f2a9c… (Bob), which sees it (a shape for everyone): Shape at shape[].balance: unknown or hidden column 'balance'`.
+  A later grant that would show the shape to such a key is refused the same
+  way. Save such a shape for the keys that see the column, for example
+  `groups: ['finance']`, with `files: ['finance']` in their grants.
+- **Readers list only the shapes their key can use,** so different people
+  see different shapes in the same file.
+
+**Older versions** (1.0 to 1.4) read files with saved shapes as before; they
+don't list the shapes, and when they append to, update or compact such a
+file, the shapes are left out.
 
 ---
 
@@ -3666,6 +3732,13 @@ large it is and how long it took.
   its JSON output; **Export JSON** or **Export XML** saves it, for the rows
   the filter matches or for every row.
 
+**Shapes saved in the file** (section 21.7; next release) are listed under
+Export ▾, the default first, each with **JSON** and **XML**. A key sees only
+the shapes it can use, so people sharing a file may see different lists. A
+saved shape of the table shown exports the rows the filter matches; one of
+another table exports all of its rows. In the shape box, **Start from**
+fills in a saved shape of the table shown, to change before exporting.
+
 ### 24.1 Templates: the document API
 
 A package's entry page runs in a sandbox. It has no network access (except
@@ -3785,6 +3858,8 @@ const blob = await JazminBrowser.exportBlob(reader, 'json', { filter: { country:
 // Export shapes (section 21): the library's output, links between tables included; maxLength stops early (a preview).
 const shaped = await JazminBrowser.toJSON(reader, { shape: { $rows: { x: 'date', y: 'amount' } }, maxLength: 20000 });
 const schema = await JazminBrowser.shapeSchema(reader, shape); // also checks the shape: throws where it doesn't fit
+await reader.shapes();                                 // shapes saved in the file that this key can use (section 21.7)
+await JazminBrowser.toJSON(reader, { shape: 'Monthly totals' }); // one of them, by name
 await reader.columnArrays(null, { select: ['at', 'amount'] }); // arrays for charts (section 9.11)
 reader.submissionKey;                                  // the key to send records back with (section 15.6)
 await reader.explain({ id: 7 }, { analyze: true });    // as in the library (section 9.6)
@@ -4035,6 +4110,7 @@ npx @smithsoft-studios/jazmin --help          # or, installed in a project: npx 
 |---|---|
 | `jazmin inspect <file>` | What the file holds, as JSON: format, encryption, tables, rows, chunks, sort order, columns, indexes, access and embedded files |
 | `jazmin query <file> --filter '<json>' --select a,b --offset n --limit n --format jsonl\|json\|csv` | The matching rows, as JSON lines (the default), a JSON array or CSV |
+| `jazmin query <file> --shape '<name>' \| --shape-file <shape.json> --filter '<json>' --format json\|xml` | The output of an export shape saved in the file (by name) or in a JSON file (section 21), as JSON (the default) or XML; `inspect` lists the saved shapes |
 | `jazmin explain <file> --filter '<json>' --analyze` | How the query runs and, with `--analyze`, what it read (section 9.6) |
 | `jazmin advise <file> --column account` | Layout advice for lookups of a column (below) |
 | `jazmin convert <input> <output>` | JSON, JSON Lines, CSV or XML to `.jzm` (`--sorted-by a,b`), or `.jzm` to JSON, CSV or XML (`--filter`) |
