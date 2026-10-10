@@ -19,6 +19,8 @@ public class InteropTests
     /// Where the dotnet-*.jzm files are written. Only when JAZMIN_WRITE_FIXTURES=1 (as in CI, or when
     /// regenerating fixtures after a format change) do they replace the shared files that the
     /// JavaScript tests read; otherwise a temp folder is used, so local test runs leave the repo clean.
+    /// Other test classes run beside this one, so they must not read spec/fixtures/dotnet-*.jzm: the file
+    /// may be being rewritten (on Linux the writer's lock then fails, elsewhere a reader may see half a file).
     /// </summary>
     private static readonly string OutDir = Environment.GetEnvironmentVariable("JAZMIN_WRITE_FIXTURES") == "1"
         ? Dir

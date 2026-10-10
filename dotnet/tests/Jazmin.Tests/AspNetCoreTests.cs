@@ -51,7 +51,8 @@ public sealed class AspNetCoreTests : IAsyncLifetime
         _app.MapJazminFiles("/docs/{id}", context => ValueTask.FromResult<JazminFileSource?>(context.Request.RouteValues["id"] switch
         {
             "own" => new JazminFileSource(FilePath, new JazminReadOptions { Key = _key }),
-            "bob" => new JazminFileSource(Path.Combine(Fuzzing.Fixtures, "dotnet-files-access.jzm"), new JazminReadOptions { AccessKey = bob, CheckClockRollback = false }),
+            // The JavaScript-written fixture: InteropTests rewrites the dotnet-*.jzm ones while this class runs, in parallel.
+            "bob" => new JazminFileSource(Path.Combine(Fuzzing.Fixtures, "js-files-access.jzm"), new JazminReadOptions { AccessKey = bob, CheckClockRollback = false }),
             "wrong" => new JazminFileSource(FilePath, new JazminReadOptions { Key = JazminKey.Generate() }),
             "gone" => new JazminFileSource(Path.Combine(_dir, "missing.jzm"), new JazminReadOptions { Key = _key }),
             _ => null,
