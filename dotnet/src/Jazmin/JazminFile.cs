@@ -396,27 +396,28 @@ public static class JazminFile
             // The other tables of the file are copied as they are: a new version has fresh secrets throughout (spec 7.6.7).
             var access = ownerGrants is null ? null : AccessFor(reader, ownerGrants, update);
             if (access is not null && newOwner is { } change) access.Grants = change.Grants(access.Grants);
-            var several = readers.Count > 1;
+            // Named tables (several, or one with a name) are written as tables, which keeps their names.
+            var named = readers.Count > 1 || reader.TableName.Length > 0;
             var options = new JazminWriteOptions
             {
                 Key = newOwner?.Key ?? update.Key,
                 Password = update.Password,
                 KdfIterations = reader.KdfIterations ?? FormatConstants.DefaultKdfIterations,
                 Metadata = MergeMetadata(reader.Metadata, update.Metadata),
-                SortedBy = several ? null : sortedBy,
+                SortedBy = named ? null : sortedBy,
                 Codec = update.Codec,
                 CompressionLevel = update.CompressionLevel,
                 ChunkRows = update.ChunkRows,
                 Package = update.Package ?? reader.Package,
                 Shapes = SavedShapes.Kept(reader.FileState()?.Shapes ?? [], update.AddShapes, update.RemoveShapes)
                     .Select(s => s.ToPublic(withGroups: true)).Concat(update.AddShapes).ToList(),
-                Access = access is null ? null : several ? new JazminAccessOptions { Grants = access.Grants } : access,
+                Access = access is null ? null : named ? new JazminAccessOptions { Grants = access.Grants } : access,
                 Now = update.Now, // expired grants are dropped; the new version's fresh secrets lock them out
                 Priority = update.Priority,
                 CompactIndexes = update.CompactIndexes ?? reader.CompactIndexes,
-                Tables = several ? readers.Select(r => TableFor(r, ReferenceEquals(r, reader) ? columns : null)).ToList() : null,
+                Tables = named ? readers.Select(r => TableFor(r, ReferenceEquals(r, reader) ? columns : null)).ToList() : null,
             };
-            writer = several ? JazminWriter.Create(temp, options) : JazminWriter.Create(temp, columns, options);
+            writer = named ? JazminWriter.Create(temp, options) : JazminWriter.Create(temp, columns, options);
             foreach (var source in CarriedFiles(reader, update)) writer.AddSource(source);
             foreach (var file in update.AddFiles) writer.AddFile(file);
 

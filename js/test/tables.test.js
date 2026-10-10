@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { JazminKey, JazminValidationError, JazminWriter, append, compact, open, update, write } from '../src/index.js';
+import { JazminKey, JazminValidationError, JazminWriter, append, compact, open, rotateOwnerKey, update, write } from '../src/index.js';
 
 const tmp = (name) => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-tables-')), name);
 
@@ -198,6 +198,29 @@ test('append, update and compact change one table and keep the others', () => {
   });
   update(file, { key: owner, revoke: [bob] });
   assert.throws(() => open(file, { key: bob, table: 'transactions', accessState: false }), /not been granted/);
+});
+
+test('a file with one named table keeps its name through update, compaction and a new owner key', () => {
+  const tableNames = (file, options) => withReader(file, options, (r) => r.tables);
+  // Plain, and with a key: update and compact rewrite the file.
+  const plain = tmp('one.jzm');
+  write(plain, { clients }, { tables: [tables()[0]] });
+  update(plain, { insert: [{ clientId: 'C4', name: 'Client C4', address: null }] });
+  assert.deepEqual(tableNames(plain), ['clients']);
+  compact(plain);
+  assert.deepEqual([tableNames(plain), withReader(plain, { table: 'clients' }, (r) => r.rowCount)], [['clients'], 4]);
+  // Shared: the partition column and column groups of the named table stay too.
+  const owner = JazminKey.generate();
+  const reader = owner.createAccessKey();
+  const shared = tmp('one-shared.jzm');
+  write(shared, { clients }, {
+    tables: [{ ...tables()[0], partitionBy: 'clientId', columnGroups: { contact: ['address'] } }],
+    key: owner, access: { grants: [{ key: reader, rows: ['C1'], columns: ['*'] }] },
+  });
+  update(shared, { key: owner, grant: [{ key: reader, rows: ['C1', 'C2'], columns: ['*'] }] });
+  assert.deepEqual(withReader(shared, { key: reader }, (r) => [r.tables, r.rowCount, r.columns.map((c) => c.name)]), [['clients'], 2, ['clientId', 'name']]);
+  const { ownerKey } = rotateOwnerKey(shared, { key: owner });
+  assert.deepEqual(withReader(shared, { key: ownerKey }, (r) => [r.tables, r.access.partitionBy, Object.keys(r.access.groupColumns)]), [['clients'], 'clientId', ['*', 'contact']]);
 });
 
 test('a normalized file (clients once, transactions by id) is smaller than the flat one', () => {

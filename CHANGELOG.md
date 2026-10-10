@@ -77,6 +77,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   work. The viewer tests build it and use both pages. The quickstart (step 18) and the .NET sample (step 20) make a file into a script.
 
 ### Fixed
+- **A file with one named table keeps the name when it is rewritten.** Update, compaction, a new owner key and
+  `grantAccess` / `revokeAccess` wrote a file whose only table had a name (`tables: [{ name: 'clients', … }]`) back with
+  an unnamed table, in both libraries: opening it with `{ table: 'clients' }` then failed. Its partition column and
+  column groups were kept; now its name is too. Files already rewritten keep the unnamed table until written again
+  with a name.
 - **The viewer no longer says "Opening…" while a locked file waits for its key.** The message stayed at the bottom of
   the window once the key was asked for; now it clears, and the unlock form's Open button says "Opening…" while the
   key is tried.

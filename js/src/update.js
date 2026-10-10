@@ -160,16 +160,17 @@ export function updateUnlocked(path, options = {}) {
     // The other tables of the file are copied as they are: a new version has fresh secrets throughout (spec 7.6.7).
     let access = owner ? accessFor(owner, grant, revoke) : undefined;
     if (newOwner) access = { ...access, grants: newOwner.grants(access.grants) };
-    const several = readers.length > 1;
+    // Named tables (several, or one with a name) are written as tables, which keeps their names.
+    const named = readers.length > 1 || reader.table !== '';
     writer = new JazminWriter(temp, {
-      ...(several
+      ...(named
         ? { tables: readers.map((r) => ({ name: r.table, columns: r === reader ? columns : columnsWithIndexes(r), sortedBy: r.sortedBy, ...(owner ? tableLayout(r[OWNER_GRANTS]) : {}) })) }
         : { columns, sortedBy }),
       metadata: { ...reader.metadata, ...(metadata ?? {}) },
       codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, layout,
       compactIndexes: compactIndexes ?? reader[COMPACT_INDEXES],
       key: newOwner ? newOwner.key : key, password, kdfIterations: reader.kdfIterations,
-      access: access && several ? { grants: access.grants } : access,
+      access: access && named ? { grants: access.grants } : access,
       now, // expired grants are dropped, and the new version's fresh secrets lock them out
       files: [...carriedFiles(reader, addFiles, removeFiles), ...addFiles],
       package: packageSettings !== undefined ? packageSettings : reader.package,

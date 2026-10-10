@@ -273,4 +273,50 @@ public sealed class TablesTests : IDisposable
         // Dictionary encoding already stores a chunk's repeated values once, so the saving is modest.
         Assert.True(stream.Length < flat.Length * 0.99, $"normalized {stream.Length} bytes, flat {flat.Length}");
     }
+
+    [Fact]
+    public void OneNamedTable_KeepsItsName_ThroughUpdateCompactionAndANewOwnerKey()
+    {
+        static string[] TableNames(string path, JazminReadOptions? options = null)
+        {
+            using var r = JazminReader.Open(path, options);
+            return r.Tables.ToArray();
+        }
+        // Plain: update and compact rewrite the file.
+        var stream = new MemoryStream();
+        using (var writer = new JazminWriter(stream, new JazminWriteOptions { Tables = [Tables()[0]] }, leaveOpen: true))
+            foreach (var row in Clients) writer.WriteValues(row);
+        var plain = Save("one.jzm", stream.ToArray());
+        JazminFile.Update(plain, new JazminUpdate { Insert = [new Dictionary<string, object?> { ["clientId"] = "C4", ["name"] = "Client C4" }] });
+        Assert.Equal(["clients"], TableNames(plain));
+        JazminFile.Compact(plain);
+        Assert.Equal(["clients"], TableNames(plain));
+        using (var r = JazminReader.Open(plain, new JazminReadOptions { Table = "clients" })) Assert.Equal(4, r.RowCount);
+
+        // Shared: the partition column and column groups of the named table stay too.
+        var owner = JazminKey.Generate();
+        var reader = owner.CreateAccessKey();
+        var sharedStream = new MemoryStream();
+        var table = new JazminTable("clients", ClientColumns) { SortedBy = ["clientId"], PartitionBy = "clientId", ColumnGroups = new() { ["contact"] = ["address"] } };
+        using (var writer = new JazminWriter(sharedStream, new JazminWriteOptions
+        {
+            Tables = [table], Key = owner, Access = new JazminAccessOptions { Grants = [new JazminGrant(reader) { Rows = ["C1"], Columns = ["*"] }] },
+        }, leaveOpen: true))
+            foreach (var row in Clients) writer.WriteValues(row);
+        var shared = Save("one-shared.jzm", sharedStream.ToArray());
+        JazminFile.Update(shared, new JazminUpdate { Key = owner, Grant = [new JazminGrant(reader) { Rows = ["C1", "C2"], Columns = ["*"] }] });
+        using (var r = JazminReader.Open(shared, new JazminReadOptions { AccessKey = reader }))
+        {
+            Assert.Equal(["clients"], r.Tables);
+            Assert.Equal(2, r.RowCount);
+            Assert.Equal(["clientId", "name"], r.Columns.Select(c => c.Name));
+        }
+        var rotated = JazminFile.RotateOwnerKey(shared, owner);
+        using (var r = JazminReader.Open(shared, new JazminReadOptions { Key = rotated.OwnerKey }))
+        {
+            Assert.Equal(["clients"], r.Tables);
+            Assert.Equal("clientId", r.Access!.PartitionBy);
+            Assert.Equal(["*", "contact"], r.Access.GroupColumns!.Keys.Order(StringComparer.Ordinal));
+        }
+    }
 }
