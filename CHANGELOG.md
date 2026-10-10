@@ -6,6 +6,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Added
+- **The viewer shows a filter's first page at once, and counts the rest while the rows show.** Before, it showed
+  nothing until it had counted every match: on a 500 MB file of 25,000,000 rows, `{ "amount": 88 }` (no index on
+  amount) showed its rows after about 20 s; now they show after 0.4 s. While counting, the line above the rows gives the
+  matches so far and how far it is, with Stop; then the total and how long the filter took. A page that takes a moment
+  to find (few matches, or none) is searched under an overlay with the same progress and Stop (USER-GUIDE 24).
+- **The browser reader reports progress and stops on request:** `count()`, `query()` and `find()` take
+  `{ onProgress, signal }`. `onProgress({ done, total, matches })` is called after each chunk read; aborting the
+  `AbortSignal` stops the read between chunks, rejecting with the signal's reason (an `AbortError`).
 - **The viewer in your own page: your page can pass it the file.** A page that shows the viewer in an iframe, from a
   web server or from disk, can hand it a file the person chose there:
   `postMessage({ type: 'jazmin:open', file, name })`. The file stays on disk, and the viewer reads only the parts it
@@ -28,6 +36,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   and double-click, with a page that opens a small statement with no choosing (`data.js` names it), a start page that
   asks for a file (Browse, or drop it) and then opens it in the viewer, and the viewer; its README explains how both
   work. The viewer tests build it and use both pages. The quickstart (step 18) and the .NET sample (step 20) make a file into a script.
+
+### Fixed
+- **The viewer no longer says "Opening…" while a locked file waits for its key.** The message stayed at the bottom of
+  the window once the key was asked for; now it clears, and the unlock form's Open button says "Opening…" while the
+  key is tried.
 
 ## 1.4.0 - 2026-10-09 (file format 1.0)
 

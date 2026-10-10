@@ -52,6 +52,17 @@ th, td { padding: 6px 10px; border-bottom: 1px solid var(--line); text-align: le
 th { position: sticky; top: 0; background: #f8f9fb; }
 td.null { color: var(--muted); font-style: italic; }
 .pager { display: flex; gap: 8px; margin-top: 10px; }
+.data-status { display: flex; align-items: center; gap: 10px; min-height: 34px; }
+button.small { padding: 3px 10px; font-size: 12.5px; }
+.results { position: relative; min-height: 220px; }
+.busy { position: absolute; inset: 0; display: flex; justify-content: center; align-items: flex-start; padding-top: 56px; border-radius: 8px; background: rgba(244, 245, 247, .72); backdrop-filter: blur(1.5px); }
+.busy-box { display: grid; justify-items: center; gap: 8px; min-width: 280px; padding: 22px 28px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: 0 8px 30px rgba(0, 0, 0, .1); text-align: center; }
+.busy-box .hint { margin: 0; }
+.spinner { width: 26px; height: 26px; border: 3px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: jz-spin .8s linear infinite; }
+.progress { width: 100%; height: 6px; overflow: hidden; border-radius: 3px; background: var(--line); }
+.progress span { display: block; width: 0; height: 100%; background: var(--accent); transition: width .15s; }
+@keyframes jz-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } .progress span { transition: none; } }
 .files { list-style: none; margin: 0; padding: 0; }
 .files li { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
 .files .path { flex: 1; font-family: ui-monospace, monospace; }

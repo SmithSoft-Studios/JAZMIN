@@ -2841,19 +2841,24 @@
      * from..to-1 of a chunk, with its decoded columns by position, which is all columnArrays() needs. Without a filter,
      * no row object is built at all, unbroken runs of rows go to the sink together, and dates are milliseconds.
      */
-    async function* matches(filter, { offset = 0, limit = Infinity, select } = {}, sink = null) {
+    async function* matches(filter, { offset = 0, limit = Infinity, select, signal, onProgress } = {}, sink = null) {
+      signal?.throwIfAborted();
       const match = filter ? compileFilter(filter, visibleColumns) : null;
       if (select) for (const name of select) if (!visibleColumns.some((c) => c.name === name)) throw new JazminError(`Unknown column '${name}' in select`);
       const plan = planOf(filter, planColumnsList);
       const { runs, rowIds } = await route(plan);
       if (match) {
-        yield* filtered(match, plan, runs, rowIds, { offset, limit, select }, sink);
+        yield* filtered(match, plan, runs, rowIds, { offset, limit, select, signal, onProgress }, sink);
         return;
       }
       const wanted = wantedColumns(plan, select);
       let skipped = 0;
       let yielded = 0;
-      for (const { chunk, from, to } of runs) {
+      for (let i = 0; i < runs.length; i++) {
+        // Progress after each chunk (reported as the next one starts), and Stop between chunks.
+        if (i) onProgress?.({ done: i, total: runs.length, matches: skipped + yielded });
+        signal?.throwIfAborted();
+        const { chunk, from, to } = runs[i];
         if (yielded >= limit) return;
         // Chunks wholly before the offset whose every row matches are counted, not read.
         if (rowIds === null && skipped < offset && offset - skipped >= liveRows(chunk) && (!plan || mustMatch(plan, statsOf(chunk), chunk.rowCount))) {
@@ -2895,6 +2900,7 @@
           if (++yielded >= limit) return;
         }
       }
+      if (runs.length) onProgress?.({ done: runs.length, total: runs.length, matches: skipped + yielded });
     }
 
     /**
@@ -2928,13 +2934,16 @@
     }
 
     /** Rows matching a filter (see matches), decoded as filterDecoding says. */
-    async function* filtered(match, plan, runs, rowIds, { offset, limit, select }, sink) {
+    async function* filtered(match, plan, runs, rowIds, { offset, limit, select, signal, onProgress }, sink) {
       const returned = select ? select.map((name) => planColumnsList.find((c) => c.name === name).position) : planColumnsList.map((c) => c.position);
       const { filterCols, filterWanted, restWanted, anyRest, types } = filterDecoding(plan, returned);
       const probe = {};
       let skipped = 0;
       let yielded = 0;
-      for (const { chunk, from, to } of runs) {
+      for (let run = 0; run < runs.length; run++) {
+        if (run) onProgress?.({ done: run, total: runs.length, matches: skipped + yielded });
+        signal?.throwIfAborted();
+        const { chunk, from, to } = runs[run];
         if (yielded >= limit) return;
         // Chunks wholly before the offset whose every row matches are counted, not read.
         if (rowIds === null && skipped < offset && offset - skipped >= liveRows(chunk) && mustMatch(plan, statsOf(chunk), chunk.rowCount)) {
@@ -2997,6 +3006,7 @@
           if (yielded >= limit) return;
         }
       }
+      if (runs.length) onProgress?.({ done: runs.length, total: runs.length, matches: skipped + yielded });
     }
 
     // Embedded files this key can see (spec 6.8): directories merged by path.
@@ -3075,20 +3085,22 @@
       /** Another table of the same file (the file is not read again). */
       openTable: (tableName) => openTable(file, tableName),
       /**
-       * Rows matching a filter (spec 9), chunk by chunk. options: { offset, limit, select }. Chunk statistics, the
-       * sort order and indexes decide which chunks are read, as in the library.
+       * Rows matching a filter (spec 9), chunk by chunk. options: { offset, limit, select }, and for long reads
+       * { signal, onProgress } (see count). Chunk statistics, the sort order and indexes decide which chunks are read,
+       * as in the library.
        */
       find(filter, options) {
         return matches(filter, options);
       },
       /**
        * A page of rows as an array, in file order: { rows, total }. `total` counts every match (chunks whose every
-       * row matches are counted without reading them); pass { total: false } to read only the page.
+       * row matches are counted without reading them); pass { total: false } to read only the page. { signal,
+       * onProgress } as for count, for the search and then the count.
        */
-      async query(filter, { offset = 0, limit = 100, select, total = true } = {}) {
+      async query(filter, { offset = 0, limit = 100, select, total = true, signal, onProgress } = {}) {
         const rows = [];
-        for await (const row of matches(filter, { offset, limit, select })) rows.push(row);
-        return total ? { rows, total: await this.count(filter) } : { rows };
+        for await (const row of matches(filter, { offset, limit, select, signal, onProgress })) rows.push(row);
+        return total ? { rows, total: await this.count(filter, { signal, onProgress }) } : { rows };
       },
       /**
        * Column values as arrays, for charts and totals, as the library's columnArrays(): { rowCount, values, nulls }.
@@ -3118,9 +3130,12 @@
       },
       /**
        * Rows matching a filter. When sorted indexes answer it exactly, their row count is the answer; otherwise chunks
-       * whose every row matches are counted by their row count, without reading them.
+       * whose every row matches are counted by their row count, without reading them. For long counts:
+       * { onProgress(p) } is called after each chunk with p = { done, total, matches }: chunks done and to do, and
+       * matches so far; { signal } (an AbortSignal) stops it, rejecting with the signal's reason (an AbortError).
        */
-      async count(filter) {
+      async count(filter, { signal, onProgress } = {}) {
+        signal?.throwIfAborted();
         if (!filter) return visibleRows;
         const match = compileFilter(filter, visibleColumns);
         const plan = planOf(filter, planColumnsList);
@@ -3130,7 +3145,10 @@
         const { filterCols, filterWanted, types } = filterDecoding(plan, null);
         const probe = {};
         let n = 0;
-        for (const { chunk, from, to } of runs) {
+        for (let i = 0; i < runs.length; i++) {
+          if (i) onProgress?.({ done: i, total: runs.length, matches: n });
+          signal?.throwIfAborted();
+          const { chunk, from, to } = runs[i];
           if (rowIds === null && mustMatch(plan, statsOf(chunk), chunk.rowCount)) {
             n += liveRows(chunk);
             continue;
@@ -3138,6 +3156,7 @@
           const { values } = await chunkColumns(chunk, filterWanted, false, types);
           n += chunkHits(chunk, values, filterCols, match, probe, rowIds, from, to).length;
         }
+        if (runs.length) onProgress?.({ done: runs.length, total: runs.length, matches: n });
         return n;
       },
       /**

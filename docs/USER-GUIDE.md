@@ -3612,6 +3612,23 @@ It comes in these forms:
 Try it locally with `npm run viewer` (in `js/`). The saved HTML file still
 asks for the key: the data inside it stays encrypted.
 
+**Filtering a large file.** The viewer shows the first page of matches as
+soon as it has found them, then counts the rest while the rows show:
+
+- **While counting,** the line above the rows says how many matches it has
+  found so far and how far it is ("Rows 1–50 · 361 matches so far ·
+  counting 7%"), with a Stop button beside it. Then it gives the total and how
+  long the filter took ("Rows 1–50 of 4,777 matching the filter · 22.2 s").
+- **When the first page takes a moment** (few matches, far apart, or none),
+  an overlay covers the rows: "Searching 25,000,000 rows…", how far it is,
+  the matches so far, and Stop.
+- **Make filters fast where people use them:** index the columns people
+  filter by, or sort the file by one. A filter the file can't narrow down
+  reads every row. On a 500 MB file of 25,000,000 rows, `{ "amount": 88 }`
+  shows its first page in 0.4 s, and counting all 4,777 matches takes about
+  20 s in a browser. With an index on `amount`, counting takes a few
+  milliseconds (1 ms on 5,000,000 rows).
+
 ### 24.1 Templates: the document API
 
 A package's entry page runs in a sandbox. It has no network access (except
@@ -3721,6 +3738,9 @@ const reader = await JazminBrowser.open(file, { key });   // a File, Blob or byt
 for await (const row of reader.find({ country: 'ZA' })) console.log(row);
 const { rows } = await reader.query({ country: 'ZA' }, { offset: 50, limit: 50, total: false });
 await reader.count({ country: 'ZA' });
+// Long reads: progress after each chunk, and Stop (count, query and find take both).
+const stop = new AbortController();
+await reader.count({ amount: 88 }, { signal: stop.signal, onProgress: ({ done, total, matches }) => show(done / total, matches) });
 await reader.columnArrays(null, { select: ['at', 'amount'] }); // arrays for charts (section 9.11)
 reader.submissionKey;                                  // the key to send records back with (section 15.6)
 await reader.explain({ id: 7 }, { analyze: true });    // as in the library (section 9.6)
@@ -3898,7 +3918,7 @@ three ways read and use the same; the ranges cover every browser and way:
 |---|---|---|---|
 | Open, first page of rows | 62–130 ms | 0.07 MB | |
 | Find one row by id | 67–81 ms | 0.15 MB | 19–30 MB after the lookup (once 92 MB, Firefox) |
-| A filter that reads every row | 8.3–11 s | 166 MB, at most 69 KB at a time | peak 100–212 MB |
+| A filter that reads every row | 8.3–11 s to count every match (the first page shows long before) | 166 MB, at most 69 KB at a time | peak 100–212 MB |
 
 The memory is the browser's processes, sampled a few times a second, above
 what they used before the file was chosen. A larger file reads about as

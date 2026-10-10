@@ -62,8 +62,22 @@
         <input id="jz-filter" spellcheck="false" placeholder='{ "country": "ZA", "amount": { "gt": 100 } }'>
         <button type="submit">Apply</button>
       </form>
-      <p id="jz-data-status" class="hint" role="status"></p>
-      <div class="table-wrap"><table id="jz-rows"><thead></thead><tbody></tbody></table></div>
+      <div class="data-status">
+        <p id="jz-data-status" class="hint" role="status"></p>
+        <button id="jz-count-stop" type="button" class="small" hidden>Stop</button>
+      </div>
+      <div class="results">
+        <div class="table-wrap"><table id="jz-rows"><thead></thead><tbody></tbody></table></div>
+        <div id="jz-busy" class="busy" hidden>
+          <div class="busy-box" role="status" aria-live="polite">
+            <span class="spinner" aria-hidden="true"></span>
+            <strong id="jz-busy-title"></strong>
+            <span id="jz-busy-detail" class="hint"></span>
+            <span class="progress" aria-hidden="true"><span id="jz-busy-bar"></span></span>
+            <button id="jz-busy-stop" type="button">Stop</button>
+          </div>
+        </div>
+      </div>
       <div class="pager">
         <button id="jz-prev" type="button">Previous</button>
         <button id="jz-next" type="button">Next</button>

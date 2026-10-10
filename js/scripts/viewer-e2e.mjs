@@ -193,6 +193,16 @@ fs.writeFileSync(path.join(disk, 'script.html'), `<!doctype html>
 </script>
 `);
 
+// A larger file for the viewer's busy display: a filter matching 1 row in 100 shows its first page at once and counts the
+// rest while the rows show; one matching nothing searches the whole file under an overlay.
+const BUSY_ROWS = 1_000_000;
+write(path.join(temp, 'busy.jzm'), (function* rows() {
+  for (let i = 0; i < BUSY_ROWS; i++) yield { id: i, amount: ((i * 7919) % 100000) / 100, note: `row ${i}` };
+})(), { columns: [{ name: 'id', type: 'int' }, { name: 'amount', type: 'float' }, { name: 'note', type: 'string' }] });
+const busyReader = open(path.join(temp, 'busy.jzm'));
+const BUSY_TOTAL = busyReader.count({ amount: { gt: 990 } });
+busyReader.close();
+
 // The from-disk sample (examples/from-disk), built as its README says: a folder opened by double-clicking its pages.
 execFileSync(process.execPath, [path.join(root, 'js/examples/from-disk/make.mjs'), path.join(temp, 'sample')], { stdio: 'ignore' });
 
@@ -664,6 +674,30 @@ for (const name of chosen) {
       opened('data/missing.jzm.js').catch((e) => e.message), Object.keys(window.JazminScripts).length])`);
     const scriptOk = JSON.stringify(scripted) === JSON.stringify([{ rows: keyRows, first: 0 }, { rows: plainRows, first: 0 }, 'Could not load data/missing.jzm.js', 0]);
     results.push({ browser: name, label: `files as scripts opened with openScript(), one from another folder${fromDisk ? ', from disk' : ' (over HTTP)'}`, ok: scriptOk, problems: scriptOk ? [] : [JSON.stringify(scripted)] });
+
+    // The busy display: a filter's first page shows at once while the total is counted (with Stop beside it); Stop ends
+    // a count; a filter matching nothing searches under an overlay that says how far it is.
+    await page.navigate(`${base}/js/viewer/index.html`);
+    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+    await page.evaluate(`fetch('/e2e/busy.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'busy.jzm')).then(() => true)`);
+    await waitFor(page, `/of 1\\D?000\\D?000$/.test(document.getElementById('jz-data-status').textContent)`, 'busy.jzm');
+    const dataStatus = `document.getElementById('jz-data-status').textContent`;
+    const filterBy = (filter) => page.evaluate(`(document.getElementById('jz-filter').value = ${JSON.stringify(filter)}, document.getElementById('jz-filter-form').requestSubmit(), true)`);
+    await filterBy('{ "amount": { "gt": 990 } }');
+    const whileCounting = await waitFor(page, `/counting/.test(${dataStatus}) && { rows: document.querySelectorAll('#jz-rows tbody tr').length, stop: !document.getElementById('jz-count-stop').hidden }`, 'the count under way');
+    const counted = await waitFor(page, `/matching the filter/.test(${dataStatus}) && document.getElementById('jz-count-stop').hidden && ${dataStatus}`, 'the total', 120000);
+    await filterBy('{ "note": { "contains": "row 1" } }');
+    await waitFor(page, `/counting/.test(${dataStatus})`, 'the second count');
+    await page.evaluate(`(document.getElementById('jz-count-stop').click(), true)`);
+    const stoppedCount = await waitFor(page, `/stopped/.test(${dataStatus}) && ${dataStatus}`, 'the stopped count');
+    const overlaysBefore = await page.evaluate('JazminViewer.state.busyShown || 0');
+    await filterBy('{ "note": { "contains": "zzz" } }');
+    const nothing = await waitFor(page, `/matching the filter/.test(${dataStatus}) && ${dataStatus}`, 'no matches', 120000);
+    const overlay = await page.evaluate(`({ shown: (JazminViewer.state.busyShown || 0) > ${overlaysBefore}, hidden: document.getElementById('jz-busy').hidden, text: document.getElementById('jz-busy').textContent })`);
+    const totalShown = Number((/of ([\d\s.,  ]+) matching/.exec(counted)?.[1] ?? '').replace(/\D/g, ''));
+    const busyOk = whileCounting.rows === 50 && whileCounting.stop && totalShown === BUSY_TOTAL && /stopped/.test(stoppedCount)
+      && overlay.shown && overlay.hidden && /Searching 1\D?000\D?000 rows/.test(overlay.text) && /^Rows 0–0 of 0 matching the filter/.test(nothing);
+    results.push({ browser: name, label: `busy display: the first page at once, the total counted with Stop, an overlay while nothing is ready (${BUSY_ROWS.toLocaleString('en-US')} rows)`, ok: busyOk, problems: busyOk ? [] : [JSON.stringify({ whileCounting, counted, stoppedCount, overlay, nothing, BUSY_TOTAL })] });
 
     // The from-disk sample's pages, as a person uses them: the statement opened with its password, with no choosing; and
     // a chosen file passed to the viewer, which says it is locked.

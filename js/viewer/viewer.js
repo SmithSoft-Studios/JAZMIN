@@ -38,6 +38,7 @@
     } catch (error) {
       if (!(error instanceof JazminBrowser.JazminKeyError)) return fail(error);
       $('jz-unlock-title').textContent = `${state.name} is locked`;
+      status(''); // nothing is opening now: the file waits for its key
       show('jz-unlock');
       $('jz-key').focus();
       tell('locked');
@@ -75,6 +76,10 @@
     const options = /^jz[ka]1-/.test(secret) ? { key: secret } : { password: secret };
     if (token) options.unlockToken = token;
     $('jz-error').textContent = '';
+    // The Open button says it is opening, where the person is looking, until the file opens or the key is refused.
+    const button = $('jz-unlock').querySelector('button[type="submit"]');
+    button.disabled = true;
+    button.textContent = 'Opening…';
     try {
       await open(options);
     } catch (error) {
@@ -87,6 +92,9 @@
       if (error.masterKeyRefused) $('jz-key').value = ''; // don't leave a master key in the page
       $('jz-error').textContent = error.message || String(error);
       status('');
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Open';
     }
   }
 
@@ -143,10 +151,144 @@
     return c.type;
   };
 
+  // ---- searching: a page of rows at once, the total counted while they show -------------------------------------------
+
+  const work = { page: null, count: null }; // the page being read and the count running (AbortControllers)
+  const OVERLAY_AFTER_MS = 250; // a page found sooner shows without an overlay flashing up
+  const elapsed = (ms) => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`);
+  const percent = (p) => (p ? Math.floor((p.done / p.total) * 100) : 0);
+
+  /**
+   * Shows a page of the rows matching the filter. The page is read first and shown as soon as it is found; the total
+   * is counted after it, while the rows show, with its progress and Stop beside it. A page that takes a moment to find
+   * (few matches, far apart) is searched under an overlay that says how far it is, with Stop.
+   */
   async function showRows() {
+    work.page?.abort();
+    const page = (work.page = new AbortController());
     const reader = state.reader;
-    const { rows, total } = await reader.query(state.filter, { offset: state.page * PAGE_ROWS, limit: PAGE_ROWS });
-    state.total = total;
+    const filter = state.filter;
+    const key = JSON.stringify(filter);
+    const offset = state.page * PAGE_ROWS;
+    if (state.countReader !== reader || state.countKey !== key) {
+      // Another filter or file: a count still running for the last one is of no use.
+      work.count?.abort();
+      work.count = null;
+      Object.assign(state, { countReader: reader, countKey: key, total: null, counted: null, countStopped: false, countError: null, started: performance.now() });
+      // The last filter's result no longer applies.
+      $('jz-data-status').textContent = 'Searching…';
+      $('jz-count-stop').hidden = true;
+    }
+    let progress = null;
+    let painted = 0;
+    const overlay = setTimeout(() => {
+      $('jz-busy').hidden = false;
+      state.busyShown = (state.busyShown || 0) + 1;
+      paintBusy(reader, progress);
+    }, OVERLAY_AFTER_MS);
+    let rows;
+    try {
+      ({ rows } = await reader.query(filter, {
+        offset, limit: PAGE_ROWS, total: false, signal: page.signal,
+        onProgress: (p) => {
+          progress = p;
+          if (!$('jz-busy').hidden && performance.now() - painted > 50) {
+            painted = performance.now();
+            paintBusy(reader, p);
+          }
+        },
+      }));
+    } catch (error) {
+      if (page.signal.aborted) return; // a newer search, or Stop
+      throw error;
+    } finally {
+      clearTimeout(overlay);
+      if (work.page === page) {
+        work.page = null;
+        $('jz-busy').hidden = true;
+      }
+    }
+    showTable(reader, rows);
+    state.shownRows = rows.length;
+    // The total: every row without a filter; a page that isn't full ends the matches; otherwise it is counted.
+    if (state.total === null) {
+      if (!filter) state.total = reader.rowCount;
+      else if (rows.length < PAGE_ROWS && (rows.length || !offset)) state.total = offset + rows.length;
+      if (state.total !== null) state.elapsed = performance.now() - state.started;
+      else if (!work.count && !state.countStopped) countMatches(reader, filter, key);
+    }
+    showStatus();
+  }
+
+  /** Counts the filter's matches while its first page shows: progress a few times a second, Stop beside it. */
+  async function countMatches(reader, filter, key) {
+    const counting = (work.count = new AbortController());
+    const current = () => state.countReader === reader && state.countKey === key;
+    let painted = 0;
+    try {
+      const total = await reader.count(filter, {
+        signal: counting.signal,
+        onProgress: (p) => {
+          state.counted = p;
+          if (performance.now() - painted > 100) {
+            painted = performance.now();
+            showStatus();
+          }
+        },
+      });
+      if (current()) Object.assign(state, { total, elapsed: performance.now() - state.started });
+    } catch (error) {
+      if (current()) Object.assign(state, { countStopped: true, countError: counting.signal.aborted ? null : error.message || String(error) });
+    } finally {
+      if (work.count === counting) work.count = null;
+      if (current()) showStatus();
+    }
+  }
+
+  /** The line above the rows: which rows show, of how many - or how far counting them is. */
+  function showStatus() {
+    const shown = state.shownRows || 0;
+    const offset = state.page * PAGE_ROWS;
+    const range = `Rows ${(shown ? offset + 1 : 0).toLocaleString()}–${(offset + shown).toLocaleString()}`;
+    const atLeast = Math.max(state.counted?.matches ?? 0, offset + shown).toLocaleString();
+    let text;
+    if (state.total !== null) {
+      text = `${range} of ${state.total.toLocaleString()}${state.filter ? ` matching the filter · ${elapsed(state.elapsed)}` : ''}`;
+    } else if (state.countError) {
+      text = `${range} · at least ${atLeast} matches (counting failed: ${state.countError})`;
+    } else if (state.countStopped) {
+      text = `${range} · at least ${atLeast} matches (counting stopped)`;
+    } else {
+      text = `${range} · ${atLeast} matches so far · counting ${percent(state.counted)}%`;
+    }
+    $('jz-data-status').textContent = text;
+    $('jz-count-stop').hidden = !(work.count && state.total === null);
+    $('jz-prev').disabled = state.page === 0;
+    $('jz-next').disabled = state.total !== null ? offset + shown >= state.total : shown < PAGE_ROWS;
+  }
+
+  /** The overlay over the rows while a page is searched for: how many rows, how far, the matches so far, Stop. */
+  function paintBusy(reader, p) {
+    $('jz-busy-title').textContent = `Searching ${reader.rowCount.toLocaleString()} rows…`;
+    const matches = p?.matches ?? 0;
+    $('jz-busy-detail').textContent = p ? `${percent(p)}% · ${matches.toLocaleString()} ${matches === 1 ? 'match' : 'matches'} so far` : 'Starting…';
+    $('jz-busy-bar').style.width = `${percent(p)}%`;
+  }
+
+  /** Stop on the overlay: the search ends, and the rows it was looking for aren't shown. */
+  function stopSearch() {
+    work.page?.abort();
+    work.count?.abort();
+    work.count = null;
+    state.countKey = undefined; // applying the filter again searches again
+    $('jz-busy').hidden = true;
+    $('jz-rows').tBodies[0].replaceChildren();
+    $('jz-data-status').textContent = 'Search stopped. Apply the filter to search again.';
+    $('jz-prev').disabled = true;
+    $('jz-next').disabled = true;
+  }
+
+  function showTable(reader, rows) {
     const head = document.createElement('tr');
     for (const c of reader.columns) {
       const th = document.createElement('th');
@@ -171,11 +313,6 @@
       }
       return tr;
     }));
-    const first = total === 0 ? 0 : state.page * PAGE_ROWS + 1;
-    $('jz-data-status').textContent = `Rows ${first.toLocaleString()}–${(state.page * PAGE_ROWS + rows.length).toLocaleString()} of ${total.toLocaleString()}`
-      + (state.filter ? ' matching the filter' : '');
-    $('jz-prev').disabled = state.page === 0;
-    $('jz-next').disabled = (state.page + 1) * PAGE_ROWS >= total;
   }
 
   async function applyFilter(event) {
@@ -477,6 +614,8 @@
   });
   $('jz-unlock').addEventListener('submit', unlock);
   $('jz-filter-form').addEventListener('submit', applyFilter);
+  $('jz-busy-stop').addEventListener('click', stopSearch);
+  $('jz-count-stop').addEventListener('click', () => work.count?.abort());
   $('jz-prev').addEventListener('click', () => { state.page--; showRows(); });
   $('jz-next').addEventListener('click', () => { state.page++; showRows(); });
   $('jz-table').addEventListener('change', () => switchTable().catch((e) => status(e.message)));
