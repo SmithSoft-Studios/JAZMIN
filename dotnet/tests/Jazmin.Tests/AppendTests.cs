@@ -137,6 +137,55 @@ public sealed class AppendTests : IDisposable
         Assert.Equal(new[] { 19L, 20, 21 }, Ids(path, filter: JazminFilter.Gte("id", 19)));
     }
 
+    /// <summary>No handle is left open on the file: it can be opened with no sharing at all.</summary>
+    private static void AssertClosed(string path)
+    {
+        using (new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
+    }
+
+    [Fact]
+    public void Create_RefusedByAnOption_CreatesNoFile_AndLeavesAnExistingFileAsItWas()
+    {
+        var refused = new JazminWriteOptions { Key = JazminKey.Generate(), Password = "secret" };
+        var path = Path.Combine(_dir, "new.jzm");
+        Assert.Throws<JazminValidationException>(() => JazminWriter.Create(path, Columns, refused));
+        Assert.Throws<JazminValidationException>(() => JazminWriter.Create(path, new JazminWriteOptions { Tables = [] }));
+        Assert.False(File.Exists(path));
+
+        var existing = Write("old.jzm", Range(0, 20));
+        var before = File.ReadAllBytes(existing);
+        var error = Assert.Throws<JazminValidationException>(() => JazminWriter.Create(existing, Columns, refused));
+        Assert.Equal("Supply either Key or Password, not both", error.Message);
+        Assert.Equal(before, File.ReadAllBytes(existing));
+        AssertClosed(existing);
+        Assert.Equal(20, Ids(existing).Length);
+    }
+
+    [Fact]
+    public void Create_RefusedByAStoredFile_RemovesTheFileItStarted()
+    {
+        var path = Path.Combine(_dir, "files.jzm");
+        var twice = new JazminWriteOptions { Files = [new JazminFileInput("a.txt", [1]), new JazminFileInput("a.txt", [2])] };
+        var error = Assert.Throws<JazminValidationException>(() => JazminWriter.Create(path, Columns, twice));
+        Assert.Equal("File 'a.txt' is added twice", error.Message);
+        Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+    public void Append_RefusedByAStoredFile_LeavesFileByteIdentical_AndClosed()
+    {
+        var path = Write("a.jzm", Range(0, 20));
+        var before = File.ReadAllBytes(path);
+        Assert.Throws<JazminValidationException>(() => JazminFile.Append(path, new JazminAppend
+        {
+            Insert = [Row(20)],
+            AddFiles = [new JazminFileInput("a.txt", [1]), new JazminFileInput("a.txt", [2])],
+        }));
+        Assert.Equal(before, File.ReadAllBytes(path));
+        AssertClosed(path);
+        Assert.Equal(new[] { "a.jzm" }, Directory.GetFiles(_dir).Select(Path.GetFileName));
+    }
+
     [Fact]
     public void InterruptedAppend_IsIgnoredByReaders_AndCleanedUpByNextAppend()
     {

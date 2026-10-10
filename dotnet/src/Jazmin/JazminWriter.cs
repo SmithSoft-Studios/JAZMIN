@@ -218,10 +218,12 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     {
     }
 
-    private JazminWriter(Stream output, IEnumerable<JazminColumn>? columns, JazminWriteOptions? options, bool leaveOpen,
-        JazminReader.AppendStateInfo? cont)
+    // path: a file to write instead of output. It is opened (a new one emptied) only once the options are checked, so a
+    // refused option leaves it as it was; refused after that, it is closed, and removed if this writer created it.
+    private JazminWriter(Stream? output, IEnumerable<JazminColumn>? columns, JazminWriteOptions? options, bool leaveOpen,
+        JazminReader.AppendStateInfo? cont, string? path = null)
     {
-        _output = output ?? throw new ArgumentNullException(nameof(output));
+        _output = path is not null ? Stream.Null : output ?? throw new ArgumentNullException(nameof(output));
         _continue = cont;
         _leaveOpen = leaveOpen;
         _options = options ?? new JazminWriteOptions();
@@ -298,26 +300,42 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         }
         _deltas = new List<SectionRef>(cont?.Header.Deltas ?? []);
         BeginTable(_tables[0], cont?.TableIndex ?? 0);
-        if (cont is null)
+        if (path is not null)
         {
-            Write(Preamble());
+            _output = cont is null
+                ? new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16)
+                : new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete, 1 << 16);
         }
-        else
+        try
         {
-            _output.SetLength(cont.ValidEnd); // cut off anything left by an interrupted earlier append
-            WriteFlags((ushort)(cont.Flags | FormatConstants.FlagAppended)); // set before anything else is written (spec 11.2)
-            _output.Position = _position = cont.ValidEnd;
+            if (cont is null)
+            {
+                Write(Preamble());
+            }
+            else
+            {
+                _output.SetLength(cont.ValidEnd); // cut off anything left by an interrupted earlier append
+                WriteFlags((ushort)(cont.Flags | FormatConstants.FlagAppended)); // set before anything else is written (spec 11.2)
+                _output.Position = _position = cont.ValidEnd;
+            }
+            if (cont?.Files is { } carried)
+            {
+                // Files already in the file stay; their stored contents are reused by reference.
+                foreach (var e in carried.Entries) _fileEntries[e.Path] = e;
+                foreach (var c in carried.Contents) _contents[c.Sha256] = c;
+                _nextContent = carried.NextId;
+                _packageJson = carried.Package;
+            }
+            if (_options.Package is not null) _packageSet = true;
+            foreach (var file in _options.Files ?? []) AddFile(file);
         }
-        if (cont?.Files is { } carried)
+        catch when (path is not null)
         {
-            // Files already in the file stay; their stored contents are reused by reference.
-            foreach (var e in carried.Entries) _fileEntries[e.Path] = e;
-            foreach (var c in carried.Contents) _contents[c.Sha256] = c;
-            _nextContent = carried.NextId;
-            _packageJson = carried.Package;
+            // Refused with the file open (a stored file, say): no writer is returned to abort it, so it is aborted here.
+            Abort();
+            if (cont is null) File.Delete(path);
+            throw;
         }
-        if (_options.Package is not null) _packageSet = true;
-        foreach (var file in _options.Files ?? []) AddFile(file);
     }
 
     /// <summary>The file's tables and their column groups, the first table first: what saved shapes are checked against.</summary>
@@ -419,7 +437,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
 
     /// <summary>Continues an existing file at its end (used by <see cref="JazminFile.Append"/>).</summary>
     internal static JazminWriter Continue(string path, IEnumerable<JazminColumn> columns, JazminWriteOptions options, JazminReader.AppendStateInfo state) =>
-        new(new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete, 1 << 16), columns, options, false, state);
+        new(null, columns, options, false, state, path);
 
     private void WriteFlags(ushort flags)
     {
@@ -436,13 +454,13 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         else _output.Flush();
     }
 
-    /// <summary>Creates (overwrites) a file.</summary>
+    /// <summary>Creates (overwrites) a file. A refused option leaves the file as it was, or creates none.</summary>
     public static JazminWriter Create(string path, IEnumerable<JazminColumn> columns, JazminWriteOptions? options = null) =>
-        new(new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16), columns, options);
+        new(null, columns ?? throw new ArgumentNullException(nameof(columns)), options, false, null, path ?? throw new ArgumentNullException(nameof(path)));
 
     /// <summary>Creates (overwrites) a file with several tables (<see cref="JazminWriteOptions.Tables"/>).</summary>
     public static JazminWriter Create(string path, JazminWriteOptions options) =>
-        new(new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16), options);
+        new(null, null, options ?? throw new ArgumentNullException(nameof(options)), false, null, path ?? throw new ArgumentNullException(nameof(path)));
 
     /// <summary>Columns of the table rows go to.</summary>
     public IReadOnlyList<JazminColumn> Columns => _columns;
