@@ -219,6 +219,25 @@ public class InteropTests
     [Fact]
     public void ReadsADocumentsFileActionsWrittenByJavaScript() => AssertDocument(Path.Combine(Dir, "js-document-key.jzm"));
 
+    /// <summary>Every fixture's reader features (spec 3.2): compact indexes and nested columns, by both libraries; none for the rest.</summary>
+    [Fact]
+    public void ReaderFeatures_AreWhatEachFixtureNeeds()
+    {
+        var names = Directory.GetFiles(Dir, "*.jzm").Select(Path.GetFileName).ToList();
+        Assert.True(names.Count >= 40);
+        foreach (var name in names)
+        {
+            var path = Path.Combine(Dir, name!);
+            var info = JazminFile.Inspect(path);
+            var options = info.AccessControlled ? new JazminReadOptions { AccessKey = JazminAccessKey.Parse((string)Keys["bob"]!), CheckClockRollback = false }
+                : info.PasswordProtected ? new JazminReadOptions { Password = (string)Keys["password"]! }
+                : info.Encrypted ? new JazminReadOptions { Key = JazminKey.Parse((string)Keys["key"]!) } : null;
+            using var reader = JazminReader.Open(path, options);
+            string[] expected = [.. name!.Contains("paged-compact") ? ["index-deltas"] : Array.Empty<string>(), .. name.Contains("nested") ? ["nested-columns"] : Array.Empty<string>()];
+            Assert.True(expected.SequenceEqual(reader.ReaderFeatures), $"{name}: {string.Join(", ", reader.ReaderFeatures)}");
+        }
+    }
+
     // ---- change files (spec 7.9), mirrored from EDIT_* in js/test/fixture-helpers.js ------------------------------
 
     private static readonly JazminColumn[] EditColumns =

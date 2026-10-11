@@ -169,6 +169,7 @@ const commands = {
     try {
       out(JSON.stringify({
         ...facts,
+        readerFeatures: reader.readerFeatures,
         tables: reader.tables,
         table: reader.table,
         rows: reader.rowCount,

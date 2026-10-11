@@ -1203,6 +1203,12 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     public DateTimeOffset WrittenAt => DateTimeOffset.FromUnixTimeMilliseconds(_header.Modified != 0 ? _header.Modified : _header.Created);
 
     /// <summary>
+    /// The reader features the file needs (spec 3.2), such as <c>index-deltas</c> (compact indexes) or
+    /// <c>nested-columns</c>: a reader that doesn't know one refuses the file. Empty for files every 1.x release reads.
+    /// </summary>
+    public IReadOnlyList<string> ReaderFeatures => _header.ReaderFeatures.ToList();
+
+    /// <summary>
     /// The submission key (spec 7.8): lock the files you send back to the owner with it, such as records captured
     /// offline. Only an access key that opened this file has it (with its unlock token, for an online grant); the owner
     /// derives anyone's with <see cref="JazminKey.SubmissionKey(string)"/>. Null for the owner, and for files written

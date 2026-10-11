@@ -3,6 +3,13 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## Unreleased
+
+### Added
+- **`reader.readerFeatures`** (.NET `reader.ReaderFeatures`, the browser reader's `readerFeatures`): the reader
+  features a file needs (spec 3.2), such as `index-deltas` (compact indexes) or `nested-columns`, so a tool can say
+  which JAZMIN versions read it. `jazmin inspect` shows them too. Empty for files every 1.x release reads.
+
 ## 1.5.0 - 2026-10-11 (file format 1.0)
 
 A file can carry export shapes under names, and each key sees only the shapes it

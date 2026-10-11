@@ -1169,6 +1169,14 @@ export class JazminReader {
     return new Date(this.#header.modified || this.#header.created);
   }
 
+  /**
+   * The reader features the file needs (spec 3.2), such as 'index-deltas' (compact indexes) or 'nested-columns': a reader
+   * that doesn't know one refuses the file. Empty for files every 1.x release reads.
+   */
+  get readerFeatures() {
+    return [...this.#header.readerFeatures];
+  }
+
   /** True when the end of the file held an interrupted append, and the previous version was used. */
   get recovered() {
     return this.#recovered;

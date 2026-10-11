@@ -175,6 +175,11 @@ JazminFile.Update(path, new JazminUpdate { CompactIndexes = false });
   browser. Readers before 1.2 refuse such a file with a clear message that
   names the feature (`index-deltas`). Use them once every reader of your
   files is on 1.2.
+- **Which features a file needs:** `reader.readerFeatures` (.NET
+  `reader.ReaderFeatures`, the browser reader's `readerFeatures`, and
+  `jazmin inspect`) lists them: `index-deltas` for compact indexes,
+  `nested-columns` for nested columns (1.4 and later), and nothing for files
+  every 1.x release reads.
 - **Default:** off until 2.0, so new files stay readable by 1.0 and 1.1.
 - **Appends** keep the file's choice; `update()` and `compact()` keep it
   unless you pass the option.
@@ -2306,6 +2311,7 @@ const r = open('statements.jzm', { key: owner });
 r.appendCount;       // appends since the last full write
 r.deletedRowCount;   // rows waiting to be removed by compact()
 r.writtenAt;         // a Date: the last append, or when the file was written; by the writer's clock
+r.readerFeatures;    // the reader features it needs, e.g. ['index-deltas']: [] for files every 1.x release reads
 r.close();
 
 compact('statements.jzm', { key: owner });         // { rowCount, bytesBefore, bytesAfter }

@@ -3100,6 +3100,8 @@
       appendCount: header.appendCount,
       /** When the file was last written (its last append, or when it was created), by the writer's clock. */
       writtenAt: new Date(header.modified || header.created),
+      /** The reader features the file needs (spec 3.2), as the library's reader.readerFeatures. */
+      readerFeatures: [...header.readerFeatures],
       access: access ? {
         isOwner: access.isOwner, ...(access.isOwner ? {} : { keyId: access.keyId }), online: access.online, expires: access.expires, partitionBy: table.partitionBy || null,
       } : null,

@@ -670,6 +670,11 @@ export class JazminReader implements Iterable<JazminRow> {
   /** When the file was last written (its last append, or when it was created), by the writer's clock. */
   readonly writtenAt: Date;
   /**
+   * The reader features the file needs (spec 3.2), such as 'index-deltas' (compact indexes) or 'nested-columns': a reader
+   * that doesn't know one refuses the file. Empty for files every 1.x release reads.
+   */
+  readonly readerFeatures: string[];
+  /**
    * The submission key (spec 7.8): lock the files you send back to the owner with it. Only an access key that opened
    * this file has it; null for the owner and for files written before submission keys existed.
    */
