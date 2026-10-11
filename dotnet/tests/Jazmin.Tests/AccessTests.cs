@@ -130,4 +130,29 @@ public class AccessTests
         });
         Assert.Equal(256, ecdsa.KeySize);
     }
+
+    [Fact]
+    public void OwnersGrantList_GivesEachKeysExtraFileGroups()
+    {
+        var shared = TestData.Write(Columns, Rows, new JazminWriteOptions
+        {
+            Key = Owner,
+            Access = new JazminAccessOptions
+            {
+                PartitionBy = "country",
+                Grants =
+                [
+                    new JazminGrant(Bob) { Rows = ["ZA"], Files = ["hr"], Label = "Bob" },
+                    new JazminGrant(Sally) { Files = ["*"], Label = "Sally" },
+                    new JazminGrant(Carol) { Rows = ["NA"], Label = "Carol" },
+                ],
+            },
+            Files = [new JazminFileInput("hr/pay.txt", "pay"u8.ToArray()) { Groups = ["hr"] }],
+        });
+        using var r = JazminReader.Open(shared, new JazminReadOptions { Key = Owner });
+        var files = r.Access!.Grants!.ToDictionary(g => g.Label!, g => g.Files);
+        Assert.Equal(["hr"], files["Bob"]!);
+        Assert.Null(files["Sally"]);
+        Assert.Empty(files["Carol"]!);
+    }
 }

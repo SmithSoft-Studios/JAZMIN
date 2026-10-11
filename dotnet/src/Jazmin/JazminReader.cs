@@ -1352,6 +1352,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 {
                     Mode = (string?)g["mode"] == "online" ? JazminGrantMode.Online : JazminGrantMode.Offline,
                     Expires = g["expires"] is { } e ? DateTimeOffset.Parse((string)e!, CultureInfo.InvariantCulture) : null,
+                    Files = g["files"] is null ? [] : ListOrAll(g["files"]),
                 }).ToList())
             {
                 GroupColumns = _groups.ToDictionary(g => g.Name, g => (IReadOnlyList<string>)g.Cols.Select(i => _allColumns[i].Name).ToList()),

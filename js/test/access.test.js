@@ -106,3 +106,21 @@ test('without partitionBy, grants cover all rows; access keys round-trip as text
   assert.ok(!r.columns.some((c) => c.name === 'salary'));
   assert.equal(new JazminWriter(null, { columns, key: owner, access: {} }).rowCount, 0);
 });
+
+test("the owner's grant list gives each key's extra file groups, which a new grant for the key replaces", () => {
+  const shared = write(null, rows, {
+    columns, key: owner,
+    access: {
+      partitionBy: 'country',
+      grants: [
+        { key: bob, rows: ['ZA'], files: ['hr'], label: 'Bob' },
+        { key: sally, rows: '*', files: '*', label: 'Sally' },
+        { key: carol, rows: ['NA'], label: 'Carol' },
+      ],
+    },
+    files: [{ path: 'hr/pay.txt', content: 'pay', groups: ['hr'] }],
+  });
+  const r = open(shared, { key: owner });
+  assert.deepEqual(r.access.grants.map((g) => [g.label, g.files]), [['Bob', ['hr']], ['Sally', '*'], ['Carol', undefined]]);
+  r.close();
+});

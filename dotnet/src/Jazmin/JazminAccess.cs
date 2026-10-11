@@ -91,6 +91,12 @@ public sealed record JazminGrantInfo(string KeyId, IReadOnlyList<string>? Rows, 
     public JazminGrantMode Mode { get; init; }
 
     public DateTimeOffset? Expires { get; init; }
+
+    /// <summary>
+    /// Extra file groups this key sees (<see cref="JazminGrant.Files"/>): null for every group, empty for none. A new
+    /// grant for the key replaces them.
+    /// </summary>
+    public IReadOnlyList<string>? Files { get; init; } = [];
 }
 
 /// <summary>Access-control details of an open file.</summary>

@@ -266,7 +266,11 @@ export interface AccessInfo {
   online?: boolean;
   expires?: string;
   /** Owner only. */
-  grants?: { keyId: string; rows: '*' | string[]; columns: '*' | string[]; label?: string; mode: 'offline' | 'online'; expires?: string }[];
+  grants?: {
+    keyId: string; rows: '*' | string[]; columns: '*' | string[]; label?: string; mode: 'offline' | 'online'; expires?: string;
+    /** Extra file groups this key sees (Grant.files); absent when it has none. A new grant for the key replaces them. */
+    files?: '*' | string[];
+  }[];
   /** Owner only: the columns of each column group ('*' holds the columns of no named group). */
   groupColumns?: Record<string, string[]>;
 }

@@ -1329,6 +1329,7 @@ export class JazminReader {
         keyId: this.#grantKey(g.key).id, rows: g.rows, columns: g.columns, ...(g.label === undefined ? {} : { label: g.label }),
         mode: g.mode ?? 'offline',
         ...(g.expires ? { expires: g.expires } : {}),
+        ...(g.files === undefined ? {} : { files: g.files }), // extra file groups: re-granting without them removes them
       }));
       info.groupColumns = Object.fromEntries(this.#groups.map((g) => [g.name, g.cols.map((i) => this.#columns[i].name)]));
     }
