@@ -2106,6 +2106,7 @@ person sends their records back in a small file of their own:
   leaked, without the shared file, isn't enough to send anything.
 - **Filing:** the owner checks that the sender still has a grant, opens the
   file with the sender's submission key, and appends its rows.
+  `fileSubmission()` does all of this, with the rules below.
 - **Safety:** the submission key opens nothing in the shared file. Neither
   the owner key nor the access key can be worked out from it.
 
@@ -2125,6 +2126,42 @@ JazminFile.AccessKeyOf("shared.jzm", owner, keyId);                             
 using var sent = JazminReader.Open(upload, new JazminReadOptions { Key = owner.SubmissionKey(keyId) });
 ```
 
+**Filing with the library:** `fileSubmission()` applies every rule below in one
+call: one read of the shared file and one append.
+
+```js
+import { JazminSubmissionRejectedError, fileSubmission } from '@smithsoft-studios/jazmin';
+
+try {
+  const result = fileSubmission('shared.jzm', upload, { key: owner, keyId, receivedAt: Date.now() });
+  // { sender, filed, updated, duplicates, files, ignoredColumns }
+} catch (error) {
+  if (error instanceof JazminSubmissionRejectedError) { /* tell the sender error.message; keep the batch aside */ }
+  else throw error;                                     // the file busy, a full disk: try again later
+}
+fileSubmission('shared.jzm', upload, { key: owner, keyId, dryRun: true }); // what would be filed, writing nothing
+```
+
+```csharp
+try
+{
+    var result = JazminFile.FileSubmission("shared.jzm", upload, new JazminFileSubmissionOptions { Key = owner, KeyId = keyId, ReceivedAt = DateTimeOffset.UtcNow });
+}
+catch (JazminSubmissionRejectedException rejected) { /* tell the sender rejected.Message */ }
+```
+
+| Option | Default | |
+|---|---|---|
+| `keyId` | (required) | The sender's access key id, sent with the upload |
+| `receivedAt` | now | When the batch arrived, by your server's clock |
+| `idColumn` | `id` | The column that identifies a record |
+| `onDuplicate` | `replace` | `skip` keeps the filed version of a record sent again |
+| `filesColumn` | `attachments` | The `json` column listing each record's files |
+| `fileTypes` | PDF, JPEG, PNG, WebP | The kinds of file accepted (`SUBMISSION_FILE_TYPES`) |
+| `maxFileBytes` | 10 MB | Largest file |
+| `maxBatchFileBytes` | 50 MB | Largest total of a batch's files |
+| `dryRun` | false | Check everything, write nothing |
+
 When filing:
 - **Own rows only:** write each file's rows into the sender's own partition,
   whatever the file says, so a person can't file rows as someone else.
@@ -2141,7 +2178,7 @@ When filing:
     cover are ignored, in new records too. So are columns the shared file
     doesn't have; the result names them (`ignoredColumns`).
   - **A file sent twice** changes nothing.
-  - **The ready-made service** does this by default. Pass
+  - **`fileSubmission()`** does this by default. Pass
     `onDuplicate: 'skip'` to keep the first version instead.
 - **Revoked keys:** once a key is revoked, `accessKeyOf` no longer finds it,
   and its files are refused.
@@ -2160,7 +2197,7 @@ When filing:
 
 **Files with records** (photos, PDFs): a record can have several. The phone
 embeds them in the file it sends, and lists each record's files in a `json`
-column, `attachments` in the filing service:
+column, `attachments` by default:
 
 ```js
 await JazminBrowser.write([
@@ -2171,7 +2208,7 @@ await JazminBrowser.write([
 ] });
 ```
 
-The filing service then:
+`fileSubmission()` then:
 - **Checks the list:** every file a record lists must be in the batch, and
   every file in the batch must be listed.
 - **Checks the kind of file:** it reads each file's first bytes. Only PDF,
@@ -2198,9 +2235,9 @@ about as with 100. The filing-service
 README has the full figures.
 
 **A ready-made filing service** is in `js/examples/filing-service`. Its
-`fileBatch()` applies these rules, and `inbox.mjs` files every batch waiting in
-a folder, then compacts the shared file. Run it on a schedule where the owner
-key is kept. Writing these files in a browser is section 24.3.
+`fileBatch()` calls `fileSubmission()`, and `inbox.mjs` files every batch
+waiting in a folder, then compacts the shared file. Run it on a schedule where
+the owner key is kept. Writing these files in a browser is section 24.3.
 
 ## 16. Updating files
 

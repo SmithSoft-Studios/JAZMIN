@@ -572,6 +572,19 @@ public static class JazminFile
     public static JazminChangesResult ApplyChanges(string path, byte[] change, JazminApplyChangesOptions options) =>
         Changes.Apply(path, change, options);
 
+    /// <summary>The kinds of file <see cref="FileSubmission"/> accepts unless told otherwise: PDF, JPEG, PNG and WebP.</summary>
+    public static IReadOnlyList<string> SubmissionFileTypes => Submissions.FileTypes;
+
+    /// <summary>
+    /// Files a submission - records an access key holder sent back, locked with their submission key, with any files -
+    /// into the shared file at <paramref name="path"/>, with its owner key, by the filing rules (USER-GUIDE 15.6): the
+    /// sender's grant and expiry, partitions and columns; records sent again; files checked by their first bytes and
+    /// size. One append. Throws <see cref="JazminSubmissionRejectedException"/> for a batch that must not be filed;
+    /// other errors (the file busy, a full disk) mean try again later.
+    /// </summary>
+    public static JazminSubmissionResult FileSubmission(string path, byte[] batch, JazminFileSubmissionOptions options) =>
+        Submissions.File(path, batch, options);
+
     private static JazminAppendResult AppendUnlocked(string path, JazminAppend append)
     {
         ArgumentNullException.ThrowIfNull(append);

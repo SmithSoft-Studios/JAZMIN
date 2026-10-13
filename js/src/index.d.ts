@@ -242,6 +242,58 @@ export function writeChanges(source: JazminReader, changes: Changes, options?: {
  */
 export function applyChanges(path: string, change: string | Uint8Array, options?: ApplyChangesOptions): ApplyChangesResult;
 
+/** The kinds of file a submission may carry, told apart by their first bytes. */
+export type SubmissionFileType = 'application/pdf' | 'image/jpeg' | 'image/png' | 'image/webp';
+
+/** The kinds of file fileSubmission accepts unless told otherwise: PDF, JPEG, PNG and WebP. */
+export const SUBMISSION_FILE_TYPES: readonly SubmissionFileType[];
+
+export interface FileSubmissionOptions {
+  /** The shared file's owner key. */
+  key: string | JazminKey;
+  /** The sender's access key id (the filing layout names each batch <key id>.<anything>.jzm). */
+  keyId: string;
+  /** When the batch arrived (ms or Date; default now), by the server's clock: checked against the grant's expiry. */
+  receivedAt?: number | Date;
+  /** The column that identifies a record (default 'id'): a record sent again changes the filed one. */
+  idColumn?: string;
+  /** 'replace' (default): a record sent again changes the filed one; 'skip': filed records never change. */
+  onDuplicate?: 'replace' | 'skip';
+  /** The json column listing each record's files (default 'attachments'). */
+  filesColumn?: string;
+  /** The kinds of file accepted (default all of SUBMISSION_FILE_TYPES). */
+  fileTypes?: readonly SubmissionFileType[];
+  /** Largest file (default 10 MB). */
+  maxFileBytes?: number;
+  /** Largest total of a batch's files, identical files counted once (default 50 MB). */
+  maxBatchFileBytes?: number;
+  /** Check everything but the write: what would be filed. */
+  dryRun?: boolean;
+}
+
+export interface FileSubmissionResult {
+  /** The sender's access key id. */
+  sender: string;
+  /** New records. */
+  filed: number;
+  /** Filed records changed. */
+  updated: number;
+  /** Rows that changed nothing (a batch sent twice). */
+  duplicates: number;
+  /** Files stored or newly shared. */
+  files: number;
+  /** The batch's columns the sender may not write, or the shared file doesn't have: not filed. */
+  ignoredColumns: string[];
+}
+
+/**
+ * Files a submission - records an access key holder sent back, locked with their submission key, with any files - into
+ * the shared file at `path`, with its owner key, by the filing rules (USER-GUIDE 15.6): the sender's grant, expiry,
+ * partitions and columns; records sent again; files checked by their first bytes and size. One append.
+ * Throws JazminSubmissionRejectedError for a batch that must not be filed.
+ */
+export function fileSubmission(path: string, batch: string | Uint8Array, options: FileSubmissionOptions): FileSubmissionResult;
+
 /** Where readers keep each expiring key's last-seen time (to detect a clock being set back). */
 export type AccessState = false | { dir: string } | { read(name: string): string | undefined; write(name: string, text: string): void };
 
@@ -768,6 +820,8 @@ export class JazminUnlockRequiredError extends JazminKeyError {
 export class JazminFormatError extends JazminError {}
 export class JazminKeyError extends JazminError {}
 export class JazminValidationError extends JazminError {}
+/** A submission that must not be filed (fileSubmission): the message says why. */
+export class JazminSubmissionRejectedError extends JazminError {}
 
 export const TYPES: readonly JazminType[];
 

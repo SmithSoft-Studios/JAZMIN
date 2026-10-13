@@ -28,3 +28,9 @@ export class JazminUnlockRequiredError extends JazminKeyError {
     this.keyId = keyId;
   }
 }
+
+/**
+ * A submission that must not be filed (fileSubmission): the message says why, for the sender. Keep the batch aside;
+ * other errors (the shared file busy, a full disk) mean try again later.
+ */
+export class JazminSubmissionRejectedError extends JazminError {}
