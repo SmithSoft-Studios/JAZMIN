@@ -11,7 +11,7 @@ See USER-GUIDE §15.6 and `docs/design/browser-writer.md` for the design.
 
 | File | What it does |
 |---|---|
-| `filing.mjs` | `fileBatch()`: the rules for filing one batch |
+| `filing.mjs` | `fileBatch()`: files one batch, with the library's `fileSubmission()` (its rules, USER-GUIDE §15.6) |
 | `inbox.mjs` | `processInbox()`: files every batch waiting in an inbox folder, then compacts. Also a command line. |
 
 ## Run it
@@ -59,7 +59,7 @@ Run it often, or on a schedule: cron, a systemd timer, Task Scheduler, or a
 cloud timer function. Only one run at a time: a second run finds the shared
 file locked and stops, and the next run carries on.
 
-## The rules (`fileBatch`)
+## The rules (the library's `fileSubmission`)
 
 | Check | Rejected when |
 |---|---|
@@ -136,7 +136,7 @@ for the runner:
 | Option | Default | |
 |---|---|---|
 | `filesColumn` | `'attachments'` | The column that lists a row's files. Leave it out of the shared file to refuse every file. |
-| `fileTypes` | all of `FILE_KINDS` | The kinds accepted. Add a kind to `FILE_KINDS` in `filing.mjs`, with a test of its first bytes. |
+| `fileTypes` | all of `SUBMISSION_FILE_TYPES` | The kinds accepted: PDF, JPEG, PNG and WebP, each told apart by its first bytes. |
 | `maxFileBytes` | 10 MB | Per file |
 | `maxBatchFileBytes` | 50 MB | All of a batch's files |
 | `idColumn` | `'id'` | The column that tells records apart |

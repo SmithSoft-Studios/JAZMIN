@@ -6,6 +6,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Added
+- **`fileSubmission()`** (.NET `JazminFile.FileSubmission`): the filing rules for records people send back (USER-GUIDE
+  15.6) are now library API, in both libraries: the sender's grant and expiry, own partitions only, columns the
+  sender may write, records sent again, and files checked by their first bytes and size, in one read and one append.
+  A `dryRun` checks without writing; a batch that must not be filed throws `JazminSubmissionRejectedError` (.NET
+  `JazminSubmissionRejectedException`) with the reason. The reference filing service (`js/examples/filing-service`)
+  now calls it, with the same results; filing takes the same time and memory as before.
 - **`reader.readerFeatures`** (.NET `reader.ReaderFeatures`, the browser reader's `readerFeatures`): the reader
   features a file needs (spec 3.2), such as `index-deltas` (compact indexes) or `nested-columns`, so a tool can say
   which JAZMIN versions read it. `jazmin inspect` shows them too. Empty for files every 1.x release reads.

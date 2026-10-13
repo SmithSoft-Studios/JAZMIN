@@ -28,6 +28,15 @@ public class JazminValidationException : JazminException
     public JazminValidationException(string message, Exception inner) : base(message, inner) { }
 }
 
+/// <summary>
+/// A submission that must not be filed (<see cref="JazminFile.FileSubmission"/>): the message says why, for the sender.
+/// Keep the batch aside; other errors (the shared file busy, a full disk) mean try again later.
+/// </summary>
+public class JazminSubmissionRejectedException : JazminException
+{
+    public JazminSubmissionRejectedException(string message) : base(message) { }
+}
+
 /// <summary>The key's access period has ended, or the system clock appears to have been set back.</summary>
 public class JazminAccessExpiredException : JazminKeyException
 {
