@@ -10,6 +10,12 @@ import { RowSorter } from '../src/sort-rows.js';
 // file is kept; a new sort order is applied within a memory budget, through temporary files locked with a key of their
 // own when the rows don't fit.
 
+// A temp folder of this test file's own: other test files, run beside it, re-sort through jazmin-sort-* folders too, and
+// these tests count and open them (os.tmpdir() reads TMPDIR, TEMP and TMP each time).
+const ownTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-layout-tests-'));
+process.env.TMPDIR = ownTemp;
+process.env.TEMP = ownTemp;
+process.env.TMP = ownTemp;
 const temp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-layout-'));
 const columns = [
   { name: 'id', type: 'int', nullable: false, index: 'sorted' },

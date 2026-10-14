@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, compact, createFileHandler, exportFile, fromCSV, issueUnlockToken, open, openAsync,
-  applyChanges, from, portableHtml, portableScript, rotateKey, toJSON, toXML, update, write, writeAsync, writeChanges,
+  applyChanges, fileSubmission, from, portableHtml, portableScript, rotateKey, toJSON, toXML, update, write, writeAsync, writeChanges,
 } from '../src/index.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-examples-'));
@@ -340,5 +340,52 @@ console.log('25.', rekey.tables.clients.updated, 'client and', rekey.tables.orde
 orders25.close();
 after25.close();
 // 25. 1 client and 2 orders re-keyed; [ 'C2/2', 'C9/1', 'C9/3' ] missing: 0
+
+// 26. Which JAZMIN versions read a file (USER-GUIDE 3.2): the reader features it needs, here smaller indexes (opt-in).
+// Empty for files every 1.x release reads.
+const featured = path.join(dir, 'featured.jzm');
+write(featured, Array.from({ length: 50 }, (_, i) => ({ id: i, city: i % 2 ? 'CPT' : 'JHB' })), {
+  columns: [{ name: 'id', type: 'int' }, { name: 'city', type: 'string', index: 'sorted' }], compactIndexes: true,
+});
+const plain26 = open(ledger);
+const featured26 = open(featured);
+console.log('26.', plain26.readerFeatures, featured26.readerFeatures);
+plain26.close();
+featured26.close();
+// 26. [] [ 'index-deltas' ]
+
+// 27. Records sent back from the field, filed by the library's rules (USER-GUIDE 15.6): the phone locks its records
+// with Ann's submission key (she gets it by opening the shared file); the owner's service files them. A dry run first.
+const fieldOwner = JazminKey.generate();
+const ann = fieldOwner.createAccessKey();
+const field = path.join(dir, 'field.jzm');
+const fieldColumns = [{ name: 'id', type: 'string', nullable: false }, { name: 'inspector', type: 'string' }, { name: 'note', type: 'string' }];
+write(field, [{ id: 'r1', inspector: 'ann', note: 'roof ok' }], {
+  columns: fieldColumns, key: fieldOwner, access: { partitionBy: 'inspector', grants: [{ key: ann, rows: ['ann'], label: 'Ann' }] },
+});
+const annView = open(field, { key: ann });
+const batchFile = path.join(dir, 'batch.jzm');
+write(batchFile, [{ id: 'r1', note: 'roof leaks' }, { id: 'r2', note: 'gate broken' }], { columns: fieldColumns, key: annView.submissionKey });
+annView.close();
+const upload = fs.readFileSync(batchFile);
+const check27 = fileSubmission(field, upload, { key: fieldOwner, keyId: ann.id, dryRun: true });
+const filed27 = fileSubmission(field, upload, { key: fieldOwner, keyId: ann.id });
+console.log('27.', `dry run: ${check27.filed} new, ${check27.updated} changed;`, `filed: ${filed27.filed} new, ${filed27.updated} changed`);
+// 27. dry run: 1 new, 1 changed; filed: 1 new, 1 changed
+
+// 28. The owner's list of grants (USER-GUIDE 15.1), with each key's extra file groups, so a tool can change a grant
+// without losing them: a new grant for a key replaces the old one whole.
+const docsOwner = JazminKey.generate();
+const reviewer = docsOwner.createAccessKey();
+const contracts = path.join(dir, 'contracts.jzm');
+write(contracts, [{ id: 1 }], {
+  columns: [{ name: 'id', type: 'int' }], key: docsOwner,
+  files: [{ path: 'contracts/lease.txt', content: 'The lease', groups: ['legal'] }],
+  access: { grants: [{ key: reviewer, files: ['legal'], label: 'Reviewer' }] },
+});
+const asOwner = open(contracts, { key: docsOwner });
+console.log('28.', asOwner.access.grants.map((g) => `${g.label}: files ${JSON.stringify(g.files)}`));
+asOwner.close();
+// 28. [ 'Reviewer: files ["legal"]' ]
 
 fs.rmSync(dir, { recursive: true, force: true });

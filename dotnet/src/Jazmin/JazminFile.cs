@@ -643,6 +643,23 @@ public static class JazminFile
                     if (!_shape.Columns.Any(c => c.Name == column)) throw new JazminValidationException($"{name}: Set: unknown column '{column}'");
                     if (column == partitionBy)
                         throw new JazminValidationException($"{name}: Set changes the partition column '{partitionBy}': the rows would leave the partitions keys are granted");
+                    // Each value checked against its column before anything is read (nested values as they are written).
+                    var definition = _shape.Columns.First(c => c.Name == column);
+                    if (set[column] is null)
+                    {
+                        if (!definition.Nullable) throw new JazminValidationException($"{name}: Set: column '{column}' can't be empty");
+                    }
+                    else if (!TypeNames.IsNested(definition.Type))
+                    {
+                        try
+                        {
+                            Values.Normalize(definition.Type, set[column], column);
+                        }
+                        catch (JazminValidationException error)
+                        {
+                            throw new JazminValidationException($"{name}: Set: {error.Message}");
+                        }
+                    }
                 }
                 _setCols = set.Keys.Select(_shape.Ordinal).ToArray();
                 _setValues = _shape.ValuesOf(set);

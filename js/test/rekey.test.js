@@ -92,6 +92,9 @@ test('changes that would go wrong are refused before anything is written', () =>
   refused({ where: { clientId: 'C1' } }, /set and where go together/);
   refused({ set: {}, where: {} }, /set: \{ column: value, \.\.\. \}/);
   refused({ set: { nope: 1 }, where: {} }, /table 'clients': set: unknown column 'nope'/);
+  refused({ set: { clientId: 5 }, where: {} }, /table 'clients': set: Column 'clientId': expected a string, got number/);
+  refused({ set: { clientId: null }, where: {} }, /table 'clients': set: column 'clientId' can't be empty/);
+  refused({ set: { name: undefined }, where: {} }, /table 'clients': set: column 'name' has no value \(null empties it\)/);
   refused({ tables: { nope: { set: { x: 1 }, where: {} } } }, /tables: the file has no table 'nope'/);
   refused({ tables: [] }, /tables: \{ tableName:/);
   refused({ insert: [{ clientId: 'C4' }], tables: { clients: { delete: { clientId: 'C1' } } } }, /give table 'clients''s changes either in tables or with the other options/);

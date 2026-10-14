@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { JazminKey, JazminValidationError, open, update, write } from '../src/index.js';
+import { JazminKey, JazminValidationError, append, open, update, write } from '../src/index.js';
 
 // Links between a file's tables (docs/design/table-links.md): declared in the file (metadata 'jazmin.links'), checked
 // when written (tables, columns, types), kept through renames, and checked against the rows (missing, empty, repeated).
@@ -89,4 +89,40 @@ test('a link within one table (a manager), and a shared file: each key checks th
   const [check] = r.checkLinks();
   r.close();
   assert.deepEqual([check.rows, check.missing, check.examples], [3, 1, [['C3']]]); // Ann sees C1 and C3's transactions; C3 has no client
+});
+
+test('a table linked to itself, a link of two columns (sorted or not), and a check after an append', () => {
+  const check = (file) => {
+    const r = open(file);
+    try {
+      const c = r.checkLinks()[0];
+      return { rows: c.rows, empty: c.empty, missing: c.missing, examples: c.examples, method: c.method };
+    } finally {
+      r.close();
+    }
+  };
+  // Each employee's manager is another employee.
+  const staff = path.join(temp(), 'staff.jzm');
+  write(staff, { employees: [{ id: 1, managerId: null }, { id: 2, managerId: 1 }, { id: 3, managerId: 9 }] }, {
+    tables: [{ name: 'employees', columns: [{ name: 'id', type: 'int' }, { name: 'managerId', type: 'int' }], sortedBy: ['id'] }],
+    links: [{ name: 'manager', from: { table: 'employees', columns: ['managerId'] }, to: { table: 'employees', columns: ['id'] } }],
+  });
+  assert.deepEqual(check(staff), { rows: 3, empty: 1, missing: 1, examples: [[9]], method: 'hash' });
+  // Appended rows and deleted ones are checked as the file reads now: 2's manager (1) is gone.
+  append(staff, { table: 'employees', insert: [{ id: 4, managerId: 3 }], delete: { id: 1 } });
+  assert.deepEqual(check(staff), { rows: 3, empty: 0, missing: 2, examples: [[1], [9]], method: 'hash' });
+
+  // Two columns: region and code together find a place; side by side when both are sorted by them.
+  for (const [sortedBy, method] of [[['region', 'code'], 'merge'], [undefined, 'hash']]) {
+    const file = path.join(temp(), 'visits.jzm');
+    const columns = [{ name: 'region', type: 'string' }, { name: 'code', type: 'int' }];
+    write(file, {
+      places: [{ region: 'A', code: 1 }, { region: 'A', code: 2 }, { region: 'B', code: 1 }],
+      visits: [{ region: 'A', code: 1 }, { region: 'A', code: 3 }, { region: 'B', code: null }, { region: 'B', code: 1 }],
+    }, {
+      tables: [{ name: 'places', columns, sortedBy }, { name: 'visits', columns, sortedBy }],
+      links: [{ name: 'place', from: { table: 'visits', columns: ['region', 'code'] }, to: { table: 'places', columns: ['region', 'code'] } }],
+    });
+    assert.deepEqual(check(file), { rows: 4, empty: 1, missing: 1, examples: [['A', 3]], method });
+  }
 });

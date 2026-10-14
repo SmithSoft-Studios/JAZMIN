@@ -137,6 +137,14 @@ export function branchSales() {
   return rows;
 }
 
+/** Each branch's revenue target for the half-year: the report's second table, which its page reads by name. */
+export function branchTargets() {
+  const lines = 420000 + 180000 + 260000 + 150000;
+  const branches = [['Cape Town', 1.15, 1.02], ['Johannesburg', 1.35, 0.97], ['Durban', 0.9, 1.09], ['Pretoria', 1.0, 0.99], ['Gqeberha', 0.6, 1.06]];
+  return branches.map(([branch, size, stretch]) => ({ branch, target: money(lines * size * 6 * 1.0625 * stretch) }))
+    .sort((a, b) => (a.branch < b.branch ? -1 : 1)); // in branch order: the table is sorted by branch
+}
+
 /** A team's task list, for a document that changes its own rows. */
 export function tasks() {
   const due = (day) => new Date(Date.UTC(2026, 10, day, 15));

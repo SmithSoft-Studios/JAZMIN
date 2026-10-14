@@ -8,6 +8,7 @@ namespace Jazmin.Tests;
 /// everything else in the file is kept; a new sort order is applied within a memory budget, through temporary files
 /// locked with a key of their own when the rows don't fit. Mirrors js/test/layout-change.test.js.
 /// </summary>
+[Collection("Temporary sort folders")] // re-sorts make and delete jazmin-sort-* in the temp folder, which these tests count
 public sealed class LayoutChangeTests
 {
     private static readonly string[] Cities = ["Durban", "Cape Town", "Pretoria"];

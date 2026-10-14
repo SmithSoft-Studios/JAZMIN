@@ -329,4 +329,32 @@ public sealed class SubmissionsTests
         var row = reader.Find(JazminFilter.Eq("id", 9001L)).Single();
         Assert.Equal(("Filed by .NET", "ZA"), ((string?)row["name"], (string?)row["country"])); // Bob's one partition
     }
+
+    [Fact]
+    public void A_shared_file_with_no_files_column_files_new_and_changed_records()
+    {
+        var owner = JazminKey.Generate();
+        var ann = owner.CreateAccessKey();
+        var shared = Path.Combine(Directory.CreateTempSubdirectory("jazmin-submissions-").FullName, "field.jzm");
+        JazminColumn[] columns = [new("id", JazminType.String) { Nullable = false }, new("inspector", JazminType.String), new("note", JazminType.String)];
+        using (var writer = JazminWriter.Create(shared, columns, new JazminWriteOptions
+        {
+            Key = owner, Access = new JazminAccessOptions { PartitionBy = "inspector", Grants = [new JazminGrant(ann) { Rows = ["ann"] }] },
+        }))
+        {
+            writer.WriteValues("r1", "ann", "roof ok");
+        }
+        JazminKey submissionKey;
+        using (var view = JazminReader.Open(shared, new JazminReadOptions { AccessKey = ann })) submissionKey = view.SubmissionKey!;
+        var batch = Path.Combine(Path.GetDirectoryName(shared)!, "batch.jzm");
+        using (var writer = JazminWriter.Create(batch, columns, new JazminWriteOptions { Key = submissionKey }))
+        {
+            writer.WriteValues("r1", null, "roof leaks");
+            writer.WriteValues("r2", null, "gate broken");
+        }
+        var result = JazminFile.FileSubmission(shared, File.ReadAllBytes(batch), new JazminFileSubmissionOptions { Key = owner, KeyId = ann.Id });
+        Assert.Equal((1L, 1L), (result.Filed, result.Updated));
+        using var reader = JazminReader.Open(shared, new JazminReadOptions { Key = owner });
+        Assert.Equal(["r1: roof leaks", "r2: gate broken"], reader.Rows().Select(r => $"{r["id"]}: {r["note"]}").Order());
+    }
 }

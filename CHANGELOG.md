@@ -41,6 +41,7 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   `renderPdf` / `renderImage`. A key's view holds in every table. In `renderPdf`, `filter` also limits each other
   table it fits; a table it doesn't fit is refused unless `tableFilters` gives it a filter (`null` reads it whole),
   so one client's statement can't show another client's rows. Additive: pages written for one table work as before.
+  The from-disk demo's report reads each branch's target from its second table, on screen and in its PDF.
 - **`fileSubmission()`** (.NET `JazminFile.FileSubmission`): the filing rules for records people send back (USER-GUIDE
   15.6) are now library API, in both libraries: the sender's grant and expiry, own partitions only, columns the
   sender may write, records sent again, and files checked by their first bytes and size, in one read and one append.

@@ -477,6 +477,68 @@ using (var orderTable = reader.OpenTable("orders"))
     // 26. 1 client and 2 orders re-keyed; [C2/2, C9/1, C9/3] missing: 0
 }
 
+// --- 27. Which JAZMIN versions read a file (USER-GUIDE 3.2): the reader features it needs, here smaller indexes (opt-in).
+// Empty for files every 1.x release reads.
+var featuredPath = Path.Combine(dir, "featured.jzm");
+using (var writer = JazminWriter.Create(featuredPath, [new("id", JazminType.Int), new("city", JazminType.String) { Indexes = [JazminIndexKind.Sorted] }], new JazminWriteOptions { CompactIndexes = true }))
+{
+    for (var i = 0L; i < 50; i++) writer.WriteValues(i, i % 2 == 1 ? "CPT" : "JHB");
+}
+using (var plain = JazminReader.Open(ledgerPath))
+using (var featured = JazminReader.Open(featuredPath))
+{
+    Console.WriteLine($"27. [{string.Join(", ", plain.ReaderFeatures)}] [{string.Join(", ", featured.ReaderFeatures)}]");
+    // 27. [] [index-deltas]
+}
+
+// --- 28. Records sent back from the field, filed by the library's rules (USER-GUIDE 15.6): the phone locks its records
+// with Ann's submission key (she gets it by opening the shared file); the owner's service files them. A dry run first.
+var fieldOwner = JazminKey.Generate();
+var ann = fieldOwner.CreateAccessKey();
+var fieldPath = Path.Combine(dir, "field.jzm");
+JazminColumn[] fieldColumns = [new("id", JazminType.String) { Nullable = false }, new("inspector", JazminType.String), new("note", JazminType.String)];
+using (var writer = JazminWriter.Create(fieldPath, fieldColumns, new JazminWriteOptions
+{
+    Key = fieldOwner,
+    Access = new JazminAccessOptions { PartitionBy = "inspector", Grants = [new JazminGrant(ann) { Rows = ["ann"], Label = "Ann" }] },
+}))
+{
+    writer.WriteValues("r1", "ann", "roof ok");
+}
+JazminKey annSubmissionKey;
+using (var annView = JazminReader.Open(fieldPath, new JazminReadOptions { AccessKey = ann })) annSubmissionKey = annView.SubmissionKey!;
+var batchPath = Path.Combine(dir, "batch.jzm");
+using (var writer = JazminWriter.Create(batchPath, fieldColumns, new JazminWriteOptions { Key = annSubmissionKey }))
+{
+    writer.WriteValues("r1", null, "roof leaks");
+    writer.WriteValues("r2", null, "gate broken");
+}
+var upload = File.ReadAllBytes(batchPath);
+var dryRun = JazminFile.FileSubmission(fieldPath, upload, new JazminFileSubmissionOptions { Key = fieldOwner, KeyId = ann.Id, DryRun = true });
+var filedBatch = JazminFile.FileSubmission(fieldPath, upload, new JazminFileSubmissionOptions { Key = fieldOwner, KeyId = ann.Id });
+Console.WriteLine($"28. dry run: {dryRun.Filed} new, {dryRun.Updated} changed; filed: {filedBatch.Filed} new, {filedBatch.Updated} changed");
+// 28. dry run: 1 new, 1 changed; filed: 1 new, 1 changed
+
+// --- 29. The owner's list of grants (USER-GUIDE 15.1), with each key's extra file groups, so a tool can change a grant
+// without losing them: a new grant for a key replaces the old one whole.
+var docsOwner = JazminKey.Generate();
+var reviewer = docsOwner.CreateAccessKey();
+var contractsPath = Path.Combine(dir, "contracts.jzm");
+using (var writer = JazminWriter.Create(contractsPath, [new JazminColumn("id", JazminType.Int)], new JazminWriteOptions
+{
+    Key = docsOwner,
+    Files = [new JazminFileInput("contracts/lease.txt", "The lease"u8.ToArray()) { Groups = ["legal"] }],
+    Access = new JazminAccessOptions { Grants = [new JazminGrant(reviewer) { Files = ["legal"], Label = "Reviewer" }] },
+}))
+{
+    writer.WriteValues(1L);
+}
+using (var asOwner = JazminReader.Open(contractsPath, new JazminReadOptions { Key = docsOwner }))
+{
+    Console.WriteLine($"29. [{string.Join(", ", asOwner.Access!.Grants!.Select(g => $"{g.Label}: files [{string.Join(", ", g.Files ?? ["*"])}]"))}]");
+    // 29. [Reviewer: files [legal]]
+}
+
 Directory.Delete(dir, true);
 
 public readonly record struct Money(long Cents, string Currency);

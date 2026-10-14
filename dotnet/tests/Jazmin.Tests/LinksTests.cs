@@ -1,3 +1,4 @@
+using Jazmin.Query;
 using Xunit;
 
 namespace Jazmin.Tests;
@@ -69,6 +70,46 @@ public sealed class LinksTests
         {
             Assert.Empty(reader.Links);
             Assert.Null(reader.Metadata["jazmin.links"]);
+        }
+    }
+
+    [Fact]
+    public void A_table_linked_to_itself_a_link_of_two_columns_and_a_check_after_an_append()
+    {
+        static string Show(JazminLinkCheck c) => $"{c.Rows} {c.Empty} {c.Missing} [{string.Join("; ", c.Examples.Select(e => string.Join(",", e)))}] {c.Method}";
+        var dir = Directory.CreateTempSubdirectory("jazmin-links-").FullName;
+        var staff = Path.Combine(dir, "staff.jzm");
+        using (var w = JazminWriter.Create(staff, new JazminWriteOptions
+        {
+            Tables = [new JazminTable("employees", [new("id", JazminType.Int), new("managerId", JazminType.Int)]) { SortedBy = ["id"] }],
+            Links = [new JazminLink("manager", new JazminLinkSide("employees", ["managerId"]), new JazminLinkSide("employees", ["id"]))],
+        }))
+        {
+            w.WriteValues(1L, null);
+            w.WriteValues(2L, 1L);
+            w.WriteValues(3L, 9L);
+        }
+        using (var r = JazminReader.Open(staff)) Assert.Equal("3 1 1 [9] hash", Show(r.CheckLinks().Single()));
+        JazminFile.Append(staff, new JazminAppend { Table = "employees", Insert = [new Dictionary<string, object?> { ["id"] = 4L, ["managerId"] = 3L }], Delete = JazminFilter.Eq("id", 1L) });
+        using (var r = JazminReader.Open(staff)) Assert.Equal("3 0 2 [1; 9] hash", Show(r.CheckLinks().Single()));
+
+        foreach (var (sorted, method) in new[] { (true, "merge"), (false, "hash") })
+        {
+            var file = Path.Combine(dir, $"visits-{sorted}.jzm");
+            JazminColumn[] columns = [new("region", JazminType.String), new("code", JazminType.Int)];
+            IReadOnlyList<string>? order = sorted ? ["region", "code"] : null;
+            using (var w = JazminWriter.Create(file, new JazminWriteOptions
+            {
+                Tables = [new JazminTable("places", columns) { SortedBy = order }, new JazminTable("visits", columns) { SortedBy = order }],
+                Links = [new JazminLink("place", new JazminLinkSide("visits", ["region", "code"]), new JazminLinkSide("places", ["region", "code"]))],
+            }))
+            {
+                w.WriteValues("A", 1L); w.WriteValues("A", 2L); w.WriteValues("B", 1L);
+                w.StartTable("visits");
+                w.WriteValues("A", 1L); w.WriteValues("A", 3L); w.WriteValues("B", null); w.WriteValues("B", 1L);
+            }
+            using var r = JazminReader.Open(file);
+            Assert.Equal($"4 1 1 [A,3] {method}", Show(r.CheckLinks().Single()));
         }
     }
 }

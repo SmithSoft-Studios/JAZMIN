@@ -64,6 +64,11 @@ reader.close();
   stored, and each index's segments, reading only the file's directories.
 - **Documents read every table** of their file: `jazmin.tables`, and the `table` option of `jazmin.query` and
   `jazmin.count`.
+- **Change a file you already have,** in one rewrite that keeps the rest: `update({ indexes, sortedBy })` changes
+  indexes and the sort order; `addTables`, `renameTables`, `removeTables` change its tables; `links` declares how tables
+  refer to each other, and `reader.checkLinks()` checks them against the rows; `set` + `where`, and `tables` for the
+  others, change rows in several tables at once.
+- **Which versions read a file:** `reader.readerFeatures` lists the features a file needs (empty for every 1.x).
 
 Full documentation, the format specification and the .NET library:
 [github.com/SmithSoft-Studios/JAZMIN](https://github.com/SmithSoft-Studios/JAZMIN).
