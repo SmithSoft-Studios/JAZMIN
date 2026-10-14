@@ -361,6 +361,24 @@ internal static class AccessCrypto
         return (lo - 1, (long)offset, (int)length, list.Slice(at + SlotIdSize + 12, 32).ToArray());
     }
 
+    /// <summary>Every page a key-slot list names.</summary>
+    public static List<SectionRef> KeySlotPages(ReadOnlySpan<byte> list)
+    {
+        if (list.Length < 4) throw new JazminFormatException("Key-slot list is truncated");
+        var count = BinaryPrimitives.ReadUInt32LittleEndian(list);
+        if (list.Length != 4 + (long)count * PageEntrySize) throw new JazminFormatException("Key-slot list has the wrong length");
+        var pages = new List<SectionRef>((int)count);
+        for (var i = 0; i < (int)count; i++)
+        {
+            var at = 4 + i * PageEntrySize;
+            var offset = BinaryPrimitives.ReadUInt64LittleEndian(list[(at + SlotIdSize)..]);
+            var length = BinaryPrimitives.ReadUInt32LittleEndian(list[(at + SlotIdSize + 8)..]);
+            if (offset > long.MaxValue || length > int.MaxValue) throw new JazminFormatException("Key-slot page is out of range");
+            pages.Add(new SectionRef((long)offset, (int)length));
+        }
+        return pages;
+    }
+
     /// <summary>Parses a key-slot page (see <see cref="BuildKeySlotPages"/>).</summary>
     public static KeySlots ParseKeySlots(ArraySegment<byte> raw)
     {

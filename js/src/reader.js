@@ -3,8 +3,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import { Readable } from 'node:stream';
 import {
-  FileSecrets, digest, findKeySlotPage, headerKey, ownerDirectoryKey, parseKeySlots, partKey, partitionName, sectionKeyFrom, unsealSlot,
-  verifyOwner,
+  FileSecrets, digest, findKeySlotPage, headerKey, keySlotPages, ownerDirectoryKey, parseKeySlots, partKey, partitionName, sectionKeyFrom,
+  unsealSlot, verifyOwner,
 } from './access.js';
 import { crc32, parseJsonText } from './binary.js';
 import {
@@ -471,7 +471,11 @@ export class JazminReader {
   #chunkPartition;
   #partOffset; // ordinal * groups + group
   #partLength;
-  #partDigest = null; // access-controlled files
+  // Access-controlled files: each part's digest, as the directory section that holds it (#digestBlocks, by position
+  // + 1; 0 for none) and its place there. Typed arrays, not a view per part: a file can have a chunk per row.
+  #digestBlocks = [];
+  #partDigestBlock = null;
+  #partDigestAt = null;
   #visibleChunks = new Int32Array(0); // loaded, visible ordinals in order
   #colStats = []; // per column, once a query needs it: { nulls, min, max, has } by ordinal
   #statCols = new Set(); // columns whose statistics queries have needed (loaded for every loaded segment)
@@ -613,6 +617,7 @@ export class JazminReader {
     this.#source.refs = (this.#source.refs ?? 1) + 1;
     this.#readOptions = { ...from.#readOptions, table };
     this.#header = from.#header;
+    this.#headerRef = from.#headerRef;
     this.#metadata = from.#metadata;
     this.#fileId = from.#fileId;
     this.#salt = from.#salt;
@@ -723,6 +728,7 @@ export class JazminReader {
       keySecret: secret,
       directory: null,
       keySlots: { ...trailer.keySlots, section: slotsSection },
+      signature: trailer.signature,
     };
     return decodeSection(headerSection, { key: headerKey(b(bundle.header), this.#salt), fileId: this.#fileId, sectionId: 'header' });
   }
@@ -914,8 +920,15 @@ export class JazminReader {
             this.#partLength[o * g + k] = d.lengths[i * g + k];
           }
           if (d.digests) {
-            this.#partDigest ??= new Array(this.#loaded.length * g);
-            for (let k = 0; k < g; k++) this.#partDigest[o * g + k] = d.digests.subarray((i * g + k) * 32, (i * g + k + 1) * 32);
+            if (!this.#partDigestBlock) {
+              this.#partDigestBlock = new Uint32Array(this.#loaded.length * g);
+              this.#partDigestAt = new Uint32Array(this.#loaded.length * g);
+            }
+            if (this.#digestBlocks.at(-1) !== d.digests) this.#digestBlocks.push(d.digests);
+            for (let k = 0; k < g; k++) {
+              this.#partDigestBlock[o * g + k] = this.#digestBlocks.length;
+              this.#partDigestAt[o * g + k] = i * g + k;
+            }
           }
           if (this.#access) p.ordinals.push(o);
         }
@@ -939,7 +952,10 @@ export class JazminReader {
   /** A chunk part's reference ({ offset, length, digest? }). */
   #part(ordinal, group) {
     const k = ordinal * this.#groups.length + group;
-    return { offset: this.#partOffset[k], length: this.#partLength[k], ...(this.#partDigest ? { digest: this.#partDigest[k] } : {}) };
+    const block = this.#partDigestBlock?.[k];
+    if (!block) return { offset: this.#partOffset[k], length: this.#partLength[k] };
+    const at = this.#partDigestAt[k] * 32;
+    return { offset: this.#partOffset[k], length: this.#partLength[k], digest: this.#digestBlocks[block - 1].subarray(at, at + 32) };
   }
 
   /** Where a chunk's parts are in the file: { offset, length } of the span (for reading ahead). */
@@ -2399,12 +2415,19 @@ export class JazminReader {
     return { flags: this.#flags, fileId: this.#fileId, header: this.#header, headerRef: this.#headerRef, end: this.#validEnd, recovered: this.#recovered, sections };
   }
 
-  /** The sections of this reader's table, for KEY_ROTATION: `add(ref, sectionId, keyring group)`. */
-  #tableSections(add) {
+  /**
+   * The sections of this reader's table, for KEY_ROTATION: `add(ref, sectionId, keyring group)`. Without `chunks`,
+   * the chunk parts are left out (storage() sums them from the chunk directories).
+   */
+  #tableSections(add, { chunks = true } = {}) {
     const t = this.#tableIndex;
     const table = this.#table;
     const { data, index } = KEYRING_GROUPS;
-    if (table.columnGroups.some((g) => g.definitions)) throw new JazminFormatError('Catalog: only access-controlled files keep column definitions in their own section');
+    for (const g of table.columnGroups) {
+      if (!g.definitions) continue;
+      if (!this.#access) throw new JazminFormatError('Catalog: only access-controlled files keep column definitions in their own section');
+      add(g.definitions, `${t}/columns/${g.name}`, data);
+    }
     if (table.partitionTable) add(table.partitionTable, `${t}/partitions`, data);
     if (table.deletes) add(table.deletes, `${t}/deletes/${table.deletedCount}`, data);
     this.#ensureAllChunks();
@@ -2414,16 +2437,114 @@ export class JazminReader {
     }
     for (let o = 0; o < this.#loaded.length; o++) {
       if (!this.#loaded[o]) throw new JazminFormatError(`Chunk ${o} is in no chunk directory`);
-      this.#groups.forEach((group, g) => add(this.#part(o, g), `${t}/chunk/${o}/${group.name}`, data));
+      if (chunks) this.#groups.forEach((group, g) => add(this.#part(o, g), `${t}/chunk/${o}/${group.name}`, data));
     }
     for (const ix of this.#indexList()) {
       const base = `${t}/index/${ix.column}/${ix.kind}${ix.segment ? `/${ix.segment}` : ''}`;
       add(ix.section, base, index);
       if (ix.kind !== 'sorted') continue;
-      const directory = decodeIndexDirectory(this.#read(ix.section, base, this.#keys.sectionKey(index, base)));
+      const directory = decodeIndexDirectory(this.#read(ix.section, base, this.#catalogKey(base, this.#access?.secrets.owner, index)));
       directory.pages.forEach((page, n) => add(page, `${base}/page/${n}`, index));
       if (directory.nulls) add(directory.nulls, `${base}/nulls`, index);
     }
+  }
+
+  /**
+   * How the file's bytes are used, for deciding whether to compact it: the bytes the current version uses, those it
+   * no longer does (headers and sections that appends replaced, embedded files replaced or removed, an interrupted
+   * append), and per table the rows deleted but still stored (with an estimate of their bytes), its chunks and its
+   * index segments (one per index after a full write, and one more per append). compact() removes the unused bytes
+   * and the deleted rows, and merges the segments; compact({ regroup: true }) also merges the small chunks appends
+   * add. Reads directories, not rows. Needs the whole file: an owner key, or the key or password of a file that isn't
+   * shared.
+   */
+  storage() {
+    if (this.#closed) throw new JazminValidationError('This reader is closed');
+    if (this.#access && !this.#access.isOwner) throw new JazminValidationError("A shared file's storage is measured with its owner key");
+    const used = new Map(); // offset -> length: each section once, however often it is referenced
+    const add = (ref) => {
+      if (ref && ref.length) used.set(ref.offset, Math.max(used.get(ref.offset) ?? 0, ref.length));
+    };
+    add(this.#headerRef);
+    if (this.#access) {
+      add(this.#access.keySlots);
+      for (const page of keySlotPages(decodeSection(plainSection(this.#access.keySlots.section, 'keyslots'), { key: undefined, fileId: this.#fileId, sectionId: 'keyslots' }))) add(page);
+      add(this.#access.signature);
+      add(this.#header.access.ownerDirectory);
+      add(this.#header.access.ownerCatalog);
+    }
+    this.#header.deltas.forEach((ref) => add(ref));
+    if (this.#header.files) {
+      for (const dir of this.#header.files.directories) add(dir.section);
+      for (const content of this.#files().contents.values()) content.blocks.forEach((block) => add(block));
+    }
+    const tables = this.#header.tables.map((table, t) => { // chunkBytes: the table's chunk parts, each used once
+      const reader = t === this.#tableIndex ? this : new JazminReader(SHARED, { table: table.name, [SHARED]: this });
+      try {
+        return reader.#tableStorage(add);
+      } finally {
+        if (reader !== this) reader.close();
+      }
+    });
+    let usedBytes = PREAMBLE_SIZE + TRAILER_SIZE + tables.reduce((n, t) => n + t.chunkBytes, 0);
+    for (const length of used.values()) usedBytes += length;
+    const fileBytes = this.#source.size;
+    return {
+      fileBytes,
+      usedBytes,
+      unusedBytes: fileBytes - usedBytes,
+      deletedRows: tables.reduce((n, t) => n + t.deletedRows, 0),
+      deletedBytes: tables.reduce((n, t) => n + t.deletedBytes, 0),
+      appendCount: this.#header.appendCount ?? 0,
+      tables: tables.map(({ chunkBytes, ...t }) => t),
+    };
+  }
+
+  /** This table's sections (to `add`), and its rows, deleted rows, chunks and index segments, for storage(). */
+  #tableStorage(add) {
+    this.#tableSections((ref) => add(ref), { chunks: false });
+    // Chunk parts are many (one per chunk and column group) and each used once: summed, not listed.
+    let chunkBytes = 0;
+    for (let k = 0; k < this.#partLength.length; k++) chunkBytes += this.#partLength[k];
+    const t = this.#tableIndex;
+    if (this.#access) {
+      const entry = this.#ownerCatalog().find((e) => e.table === t);
+      add(entry?.chunkMap);
+      add(entry?.chunkMapAppended);
+    }
+    // Deleted rows' bytes, estimated: each chunk's bytes in proportion to the rows of it deleted.
+    let deletedBytes = 0;
+    let d = 0;
+    for (let o = 0; o < this.#loaded.length && d < this.#deleted.length; o++) {
+      const start = this.#rowStart[o];
+      const end = start + this.#rowCount[o];
+      let n = 0;
+      while (d < this.#deleted.length && this.#deleted[d] < end) {
+        if (this.#deleted[d] >= start) n++;
+        d++;
+      }
+      if (!n) continue;
+      let bytes = 0;
+      for (let k = o * this.#groups.length, end = k + this.#groups.length; k < end; k++) bytes += this.#partLength[k];
+      deletedBytes += Math.round((bytes * n) / this.#rowCount[o]);
+    }
+    const segments = new Map();
+    for (const ix of this.#indexList()) {
+      const name = `${ix.column}/${ix.kind}`;
+      segments.set(name, { column: ix.column, kind: ix.kind, segments: (segments.get(name)?.segments ?? 0) + 1 });
+    }
+    const stored = this.#table.rowCount;
+    const chunks = this.#table.chunkCount;
+    return {
+      chunkBytes,
+      name: this.#table.name,
+      rows: stored - this.#deleted.length,
+      deletedRows: this.#deleted.length,
+      deletedBytes,
+      chunks,
+      rowsPerChunk: chunks ? Math.round(stored / chunks) : 0,
+      indexes: [...segments.values()],
+    };
   }
 
   /** Internal: whether the file's sorted indexes may use keys as differences (reader feature 'index-deltas'). */
