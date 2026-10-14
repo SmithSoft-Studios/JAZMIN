@@ -99,6 +99,10 @@ globalThis.JazminSandbox = function () {
     get columns() { return pkg.columns; },
     get access() { return pkg.access; },
     get rowCount() { return pkg.rowCount; },
+    /** The document's own table: the one columns, rowCount and rows() describe. */
+    get table() { return pkg.table === undefined ? null : pkg.table; },
+    /** The file's tables, [{ name, columns, rowCount }]: query and count read any of them with { table }. */
+    get tables() { return JSON.parse(JSON.stringify(pkg.tables || [{ name: jazmin.table, columns: pkg.columns, rowCount: pkg.rowCount }])); },
     /** 'view' in a viewer; 'print' when it is rendered as a PDF or an image: show every row, hide the controls. */
     get mode() { return pkg.mode === 'print' ? 'print' : 'view'; },
     /**
@@ -143,10 +147,16 @@ globalThis.JazminSandbox = function () {
     },
     /** The filter the document's rows are limited to (renderPdf's filter: one account's statement), or null. */
     get filter() { return pkg.filter ? JSON.parse(JSON.stringify(pkg.filter)) : null; },
-    /** A page of rows: options { select, orderBy (a column, '-column' for descending), offset, limit (default 100) }. */
+    /**
+     * A page of rows: options { table (default the document's own), select, orderBy (a column, '-column' for
+     * descending), offset, limit (default 100) }.
+     */
     query(filter, options) { return call('jazmin:query', { filter: filter || null, options: options || {} }).then((r) => r.rows); },
-    /** How many rows match. */
-    count(filter) { return call('jazmin:count', { filter: filter || null }).then((r) => r.count); },
+    /** How many rows match: options { table }. */
+    count(filter, options) {
+      const table = options && options.table != null ? String(options.table) : null;
+      return call('jazmin:count', { filter: filter || null, table }).then((r) => r.count);
+    },
     /** Every row, for small data sets only (see query for large ones). Optional filter function. */
     rows(filter) {
       if (!pkg.rows) throw new Error(`This data set has ${pkg.rowCount} rows: use jazmin.query() to read it a page at a time`);

@@ -2755,6 +2755,17 @@ for (const account of ['A1', 'A2', 'A3']) {
 }
 ```
 
+- **Files with several tables** (section 23; next release): the filter also
+  limits every other table it fits, one that has the columns it names, so
+  a client's statement reads only that client's transactions. A table it
+  doesn't fit, such as a table of exchange rates, is refused, so no other
+  client's rows can reach the PDF by mistake. Give such a table a filter of
+  its own with `tableFilters` (`null` reads it whole):
+
+```js
+await renderPdf({ file: 'statements.jzm', key, browser, filter: { clientId }, tableFilters: { rates: null } });
+```
+
 - **Page settings,** each over the ones before: A4 with backgrounds;
   `pdfDefaults` (your paper size for documents that don't set one); the
   package's (`package.pdf`); the page's file's (`actions.pdf`); what the
@@ -3899,6 +3910,25 @@ jazmin.print(); jazmin.navigate('about.html'); jazmin.ready({ rows: page.length 
 
 Queries run in the viewer, which holds the reader and the key. Only the
 requested page of rows crosses into the sandbox.
+
+**Several tables** (section 23; next release): a document reads every table
+of its file. `jazmin.columns`, `rowCount` and `rows()` describe the
+document's own table (`jazmin.table`, the one the file was opened at);
+`query` and `count` read any table by its name:
+
+```js
+jazmin.table;                                    // 'clients'
+jazmin.tables;                                   // [{ name: 'clients', columns, rowCount }, { name: 'transactions', ... }]
+const lines = await jazmin.query({ clientId: 'C00042' }, { table: 'transactions', orderBy: 'date' });
+const due = await jazmin.count({ paid: false }, { table: 'transactions' });
+```
+
+- **A key's view holds in every table:** an access key reads only its own
+  partitions and column groups in each (section 23.3).
+- **Joins are the page's:** read each table with its own filter, and put
+  the results together in the page.
+- **Older viewers** have no `jazmin.tables`: check `if (jazmin.tables)`
+  before reading another table.
 
 **Print-ready documents.** A page learns how it is shown, and what it may
 offer, so one template works on screen and on paper:

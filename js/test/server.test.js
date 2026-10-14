@@ -280,4 +280,46 @@ for (const { name, browser } of drivers) {
     assert.deepEqual([...png.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     assert.equal(png.readUInt32BE(16), 640); // IHDR width
   });
+
+  test(`${name}: a document reads every table of its file, each limited by the filter where it fits, the others only when named`, async () => {
+    const file = path.join(temp, `tables-${name.split(' ')[0]}.jzm`);
+    const clients = [{ clientId: 'C1', name: 'Ann' }, { clientId: 'C2', name: 'Ben' }];
+    const lines = [{ clientId: 'C1', amount: '10.00' }, { clientId: 'C1', amount: '2.50' }, { clientId: 'C2', amount: '99.00' }];
+    write(file, { clients, transactions: lines, rates: [{ currency: 'USD', rate: '18.20' }] }, {
+      tables: [
+        { name: 'clients', columns: [{ name: 'clientId', type: 'string' }, { name: 'name', type: 'string' }] },
+        { name: 'transactions', columns: [{ name: 'clientId', type: 'string' }, { name: 'amount', type: 'decimal' }] },
+        { name: 'rates', columns: [{ name: 'currency', type: 'string' }, { name: 'rate', type: 'decimal' }] },
+      ],
+      files: [
+        { path: 'index.html', content: '<!doctype html><body><script src="app.js"></script></body>' },
+        {
+          path: 'app.js',
+          content: `(async () => {
+            const tables = jazmin.tables.map((t) => [t.name, t.columns.map((c) => c.name).join('+'), t.rowCount]);
+            const amounts = (await jazmin.query(null, { table: 'transactions', orderBy: '-amount' })).map((r) => typeof r.amount + ':' + r.amount);
+            const count = await jazmin.count({ amount: { gte: 5 } }, { table: 'transactions' });
+            const rates = await jazmin.query(null, { table: 'rates' }).then((r) => r.map((x) => x.rate), (e) => e.message);
+            const missing = await jazmin.query(null, { table: 'nope' }).catch((e) => e.message);
+            jazmin.ready({ table: jazmin.table, tables, own: jazmin.rows().map((r) => r.name), amounts, count, rates, missing });
+          })();`,
+        },
+      ],
+      package: { entry: 'index.html' },
+    });
+    // No filter: every table whole.
+    let info;
+    await renderPdf({ file, browser, onReady: (i) => { info = i; } });
+    assert.deepEqual(info.tables, [['clients', 'clientId+name', 2], ['transactions', 'clientId+amount', 3], ['rates', 'currency+rate', 1]]);
+    assert.deepEqual([info.table, info.own, info.amounts, info.count, info.rates], ['clients', ['Ann', 'Ben'], ['string:99.00', 'string:10.00', 'string:2.50'], 2, ['18.20']]);
+    assert.match(info.missing, /The file has no table 'nope'/);
+    // One client's statement: their transactions only; the rates table (no clientId) is refused until named.
+    await renderPdf({ file, browser, filter: { clientId: 'C1' }, onReady: (i) => { info = i; } });
+    assert.deepEqual(info.tables.map((t) => t[2]), [1, 2, null]);
+    assert.deepEqual([info.own, info.amounts, info.count], [['Ann'], ['string:10.00', 'string:2.50'], 1]);
+    assert.match(info.rates, /limited to \{"clientId":"C1"\}, which doesn't fit table 'rates'.*tableFilters/);
+    await renderPdf({ file, browser, filter: { clientId: 'C1' }, tableFilters: { rates: null }, onReady: (i) => { info = i; } });
+    assert.deepEqual([info.tables.map((t) => t[2]), info.rates], [[1, 2, 1], ['18.20']]);
+    await assert.rejects(renderPdf({ file, browser, tableFilters: { nope: null } }), /tableFilters: the file has no table 'nope'/);
+  });
 }

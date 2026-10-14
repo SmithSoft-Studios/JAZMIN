@@ -152,6 +152,36 @@ const EDIT_READY = {
   saved: ['change-file', 1, 1, 0],
 };
 
+// A document that reads every table of its file (jazmin.tables, the table option of query and count).
+write(path.join(temp, 'tables.jzm'), {
+  clients: [{ clientId: 'C1', name: 'Ann' }, { clientId: 'C2', name: 'Ben' }],
+  transactions: [{ clientId: 'C1', amount: 10 }, { clientId: 'C1', amount: 2.5 }, { clientId: 'C2', amount: 99 }],
+}, {
+  key: templateKey,
+  tables: [
+    { name: 'clients', columns: [{ name: 'clientId', type: 'string' }, { name: 'name', type: 'string' }] },
+    { name: 'transactions', columns: [{ name: 'clientId', type: 'string' }, { name: 'amount', type: 'float' }] },
+  ],
+  files: [
+    { path: 'index.html', content: '<!doctype html><title>Tables</title><body><p>Tables</p><script src="app.js"></script></body>' },
+    {
+      path: 'app.js',
+      content: `(async () => {
+        const tables = jazmin.tables.map((t) => [t.name, t.columns.length, t.rowCount]);
+        const amounts = (await jazmin.query({ clientId: 'C1' }, { table: 'transactions', orderBy: 'amount' })).map((r) => r.amount);
+        const count = await jazmin.count({ amount: { gt: 5 } }, { table: 'transactions' });
+        const own = await jazmin.count();
+        const missing = await jazmin.count(null, { table: 'nope' }).catch((e) => e.message);
+        jazmin.ready({ table: jazmin.table, tables, amounts, count, own, missing });
+      })();`,
+    },
+  ],
+  package: { entry: 'index.html', title: 'Tables' },
+});
+const TABLES_READY = {
+  table: 'clients', tables: [['clients', 2, 2], ['transactions', 2, 3]], amounts: [2.5, 10], count: 2, own: 2, missing: "The file has no table 'nope'",
+};
+
 // A document that tries to pass the viewer a file of its own: the viewer takes files only from the page around it.
 write(path.join(temp, 'post.jzm'), [{ n: 1 }], {
   files: [
@@ -613,6 +643,14 @@ for (const name of chosen) {
     await unlock(page, { file: 'actions.jzm', key: 'template' });
     const acted = JSON.stringify(await waitFor(page, 'JazminViewer.state.lastReady && JazminViewer.state.lastReady.info', 'the actions page to call jazmin.ready()'));
     results.push({ browser: name, label: 'page actions: the file refuses PDFs; the page turns Print off and on', ok: acted === JSON.stringify(ACTIONS_READY), problems: acted === JSON.stringify(ACTIONS_READY) ? [] : [acted] });
+
+    // A document that reads every table of its file.
+    await page.navigate(`${base}/js/viewer/index.html`);
+    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+    await page.evaluate(`fetch('/e2e/tables.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'tables.jzm')).then(() => true)`);
+    await unlock(page, { file: 'tables.jzm', key: 'template' });
+    const tabled = JSON.stringify(await waitFor(page, 'JazminViewer.state.lastReady && JazminViewer.state.lastReady.info', 'the tables page to call jazmin.ready()'));
+    results.push({ browser: name, label: "a document reads every table of its file (jazmin.tables, query and count's table)", ok: tabled === JSON.stringify(TABLES_READY), problems: tabled === JSON.stringify(TABLES_READY) ? [] : [tabled] });
 
     // The browser writer: a file sent back with the submission key, with two attachments (a File of three blocks and a
     // string), written in the page, read back here and by the library.

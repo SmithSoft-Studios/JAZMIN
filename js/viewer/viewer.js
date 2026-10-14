@@ -566,7 +566,20 @@
     ].join('; ');
   }
 
-  let frameReader = null; // the reader the document's queries go to
+  let frameReader = null; // the reader the document's queries go to (its own table)
+
+  /** The reader of a table the document names (its own when none), opened once and kept with the viewer's. */
+  async function documentTable(name) {
+    if (name === null || name === undefined) return frameReader;
+    if (!frameReader.tables.includes(name)) throw new Error(`The file has no table '${name}'`);
+    if (name === frameReader.table) return frameReader;
+    let reader = state.readers.get(name);
+    if (!reader) {
+      reader = await frameReader.openTable(name);
+      state.readers.set(name, reader);
+    }
+    return reader;
+  }
 
   async function showDocument(reader) {
     const settings = reader.package;
@@ -576,10 +589,15 @@
     const rows = [];
     if (reader.rowCount <= ROWS_FOR_TEMPLATES) for await (const row of reader.find(null)) rows.push(row);
     frameReader = reader;
+    const tables = [];
+    for (const name of reader.tables.length ? reader.tables : [reader.table]) {
+      const t = await documentTable(name);
+      tables.push({ name, columns: t.columns, rowCount: t.rowCount });
+    }
     const frame = $('jz-frame');
     const message = {
       type: 'jazmin:package', entry: settings.entry, files, policy: policy(settings), allowedOrigins: settings.allowedOrigins || [],
-      metadata: reader.metadata, columns: reader.columns, access: reader.access, rowCount: reader.rowCount,
+      metadata: reader.metadata, columns: reader.columns, access: reader.access, rowCount: reader.rowCount, table: reader.table, tables,
       rows: reader.rowCount <= ROWS_FOR_TEMPLATES ? rows : null,
       // Pages print with the browser's dialog, which also saves them as PDF. Changes are saved as change files.
       capabilities: ['print', 'pdf', 'edit'], renders: false, edit: settings.edit || null,
@@ -616,7 +634,8 @@
       }
     } else if (m.type === 'jazmin:query' || m.type === 'jazmin:count') {
       try {
-        const reply = m.type === 'jazmin:count' ? { count: await frameReader.count(m.filter) } : { rows: await queryPage(frameReader, m.filter, m.options) };
+        const table = await documentTable(m.type === 'jazmin:count' ? m.table : m.options && m.options.table);
+        const reply = m.type === 'jazmin:count' ? { count: await table.count(m.filter) } : { rows: await queryPage(table, m.filter, m.options) };
         frame.contentWindow.postMessage(Object.assign({ type: 'jazmin:result', id: m.id }, reply), '*');
       } catch (error) {
         frame.contentWindow.postMessage({ type: 'jazmin:failed', id: m.id, message: error.message || String(error) }, '*');
