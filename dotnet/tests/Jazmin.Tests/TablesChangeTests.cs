@@ -9,6 +9,7 @@ namespace Jazmin.Tests;
 /// <see cref="JazminUpdate.RenameTables"/>): one rewrite that keeps everything else; saved shapes and the document's
 /// edits follow a rename; nothing is left reading a table that is gone. Mirrors js/test/tables-change.test.js.
 /// </summary>
+[Collection("Temporary sort folders")] // re-sorts make and delete jazmin-sort-* in the temp folder, which these tests count
 public sealed class TablesChangeTests
 {
     private static readonly JazminColumn[] ClientColumns = [new("clientId", JazminType.String) { Nullable = false }, new("name", JazminType.String)];

@@ -8,6 +8,7 @@ namespace Jazmin.Tests;
 /// rewrite (<see cref="JazminUpdate.Tables"/>): a client's key changed in every table that refers to it, rows moved to
 /// their place when a sort column changes, a shared file's partitions kept. Mirrors js/test/rekey.test.js.
 /// </summary>
+[Collection("Temporary sort folders")] // re-sorts make and delete jazmin-sort-* in the temp folder, which these tests count
 public sealed class RekeyTests
 {
     private static readonly JazminColumn[] ClientColumns = [new("clientId", JazminType.String) { Nullable = false }, new("name", JazminType.String)];
