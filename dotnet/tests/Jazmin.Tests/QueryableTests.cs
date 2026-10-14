@@ -116,6 +116,21 @@ public sealed class QueryableTests
     }
 
     [Fact]
+    public void ArrayContains_AsOnAList()
+    {
+        // C# 14 (.NET 10's default) reads array.Contains(x) as MemoryExtensions.Contains over a span made from the array.
+        string?[] countries = ["NA", null];
+        int[] ids = [3, 42, 499];
+        SameRows(q => q.Where(CSharp14.Contains<Person, string?>(countries, p => p.Country)).Take(20));
+        SameRows(q => q.Where(CSharp14.Contains<Person, int>(ids, p => p.Id)));
+        SameRows(q => q.Where(CSharp14.Contains<Person, int>([7, 8], p => p.Id, CSharp14.Array.Literal)));
+        SameRows(q => q.Where(CSharp14.Contains<Person, int>(ids, p => p.Id % 50))); // not a column: checked on each object
+        SameRows(q => q.Where(p => p.Id > 2).Where(CSharp14.Contains<Person, int>(ids, p => p.Id)).OrderByDescending(p => p.Id)); // after another condition
+        SameValue(q => q.Count(CSharp14.Contains<Person, int>(ids, p => p.Id)));
+        SameValue(q => q.Any(CSharp14.Contains<Person, int>([1000], p => p.Id)));
+    }
+
+    [Fact]
     public void Ordering_GivesLinqToObjectsResults_SortedOrNot()
     {
         foreach (var file in new[] { Unsorted, Sorted })

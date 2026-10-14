@@ -184,6 +184,23 @@ public class LinqTests
     }
 
     [Fact]
+    public void ArrayContains_IsAnInFilter()
+    {
+        // C# 14 (.NET 10's default) reads array.Contains(x) as MemoryExtensions.Contains over a span made from the array.
+        string?[] wanted = ["NA", null];
+        int[] ids = [3, 42, 499];
+        Same(p => wanted.Contains(p.Country) && p.Id > 400); // as older C# binds it: Enumerable.Contains
+        Same(CSharp14.Contains<Person, string?>(wanted, p => p.Country));
+        Same(CSharp14.Contains<Person, int>(ids, p => p.Id));
+        Same(CSharp14.Contains<Person, string?>(["ZA"], p => p.Country, CSharp14.Array.Literal));
+        Same(CSharp14.Contains<Person, int>(ids, p => p.Id % 50)); // not a column: checked on each object
+        var translation = Query.ExpressionTranslator.Translate(CSharp14.Contains<Person, int>(ids, p => p.Id), TypeMapFor<Person>());
+        Assert.True(translation.Exact);
+        using var reader = JazminReader.Open(Bytes);
+        Assert.Equal("index", reader.Explain(translation.Filter).Strategy);
+    }
+
+    [Fact]
     public void Untranslatable_PartsStillApplied() => Same(p => p.Id % 7 == 0 && p.Country == "ZA");
 
     [Fact]
