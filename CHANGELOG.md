@@ -6,6 +6,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Added
+- **Links between tables** (`links` when writing or updating; `reader.links`, `reader.checkLinks()`; .NET
+  `JazminWriteOptions.Links`, `JazminUpdate.Links`, `reader.Links`, `reader.CheckLinks()`): declared once in the file's
+  metadata (`jazmin.links`, names only; spec 6.6), checked when written (tables, columns, equal types), renamed with
+  their tables, and checked against the rows: rows whose link finds nothing, rows with no value, and target values that
+  repeat. Tables sorted by the link are walked side by side; 1,000,000 rows check in about 0.1 to 0.3 s. USER-GUIDE 23.6.
 - **Add, remove and rename tables in an existing file** (`update()` / `compact()`: `addTables`, `removeTables`,
   `renameTables`; .NET `JazminUpdate.AddTables` with `JazminAddedTable`, `RemoveTables`, `RenameTables`): one rewrite
   that keeps everything else. An added table's rows are streamed (and sorted within the memory budget when it has

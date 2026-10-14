@@ -7,6 +7,7 @@ import {
   unsealSlot, verifyOwner,
 } from './access.js';
 import { crc32, parseJsonText } from './binary.js';
+import { checkLinks, readLinks } from './links.js';
 import {
   decodeChunkDirectoryLists, decodeChunkMap, decodeColumnDefinitions, decodeDelta, decodeHeader, decodeIndexDirectory, decodeOwnerCatalog, joinChunkMaps,
   decodePartitionTable, decodeStatistics, findPartitions,
@@ -1132,6 +1133,20 @@ export class JazminReader {
 
   get metadata() {
     return structuredClone(this.#metadata);
+  }
+
+  /** The links the file declares between its tables (metadata `jazmin.links`): [{ name, from, to }]. */
+  get links() {
+    return readLinks(this.#metadata);
+  }
+
+  /**
+   * Each declared link checked against the rows this key sees: rows whose link finds nothing, and target keys that
+   * repeat (see links.js checkLinks). Reads only the link columns.
+   */
+  checkLinks(options = {}) {
+    if (this.#closed) throw new JazminValidationError('This reader is closed');
+    return checkLinks(this, options);
   }
 
   /** Rows visible to this reader (excluding deleted rows, and rows an access key may not see). */

@@ -1292,6 +1292,15 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <summary>A copy of the user metadata.</summary>
     public JsonObject Metadata => (JsonObject)_metadata.DeepClone();
 
+    /// <summary>The links the file declares between its tables (metadata <c>jazmin.links</c>).</summary>
+    public IReadOnlyList<JazminLink> Links => Jazmin.Links.Read(_metadata);
+
+    /// <summary>
+    /// Each declared link checked against the rows this key sees: rows whose link finds nothing, and target keys that
+    /// repeat. Reads only the link columns; tables sorted by their link columns are walked side by side.
+    /// </summary>
+    public IReadOnlyList<JazminLinkCheck> CheckLinks(int limit = 10) => Jazmin.Links.Check(this, Links, limit);
+
     /// <summary>Rows visible to this reader (excluding deleted rows, and rows an access key may not see).</summary>
     public long RowCount =>
         (_access is null or { IsOwner: true } ? _table.RowCount : _visibleChunks.Sum(i => (long)_rowCount[i])) - DeletedRowCount;

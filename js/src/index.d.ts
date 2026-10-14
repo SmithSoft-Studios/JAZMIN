@@ -390,6 +390,8 @@ export interface WriteOptions {
   access?: AccessOptions;
   /** Clock used for expiry calculations and file dates (default: the system clock). */
   now?: Date | number;
+  /** Links between the tables, checked against them and kept in the metadata ('jazmin.links'). */
+  links?: JazminLink[];
 }
 
 export interface ReadOptions {
@@ -552,6 +554,33 @@ export interface StorageReport {
   }[];
 }
 
+/** A link between a file's tables: each row of `from` refers to the row of `to` with equal values in the columns. */
+export interface JazminLink {
+  name: string;
+  /** table: a table's name ('' for a file's single unnamed table). */
+  from: { table: string; columns: string[] };
+  to: { table: string; columns: string[] };
+}
+
+/** A link checked against the rows (reader.checkLinks()). */
+export interface LinkCheck {
+  name: string;
+  from: { table: string; columns: string[] };
+  to: { table: string; columns: string[] };
+  /** Rows of `from` checked. */
+  rows: number;
+  /** Rows with no value to link by. */
+  empty: number;
+  /** Rows whose link finds nothing; examples: the first few of their values. */
+  missing: number;
+  examples: unknown[][];
+  /** Target values that repeat (a link should find one row); duplicateExamples: the first few. */
+  duplicateTargets: number;
+  duplicateExamples: unknown[][];
+  /** 'merge': both tables sorted by the link columns, walked side by side; 'hash': the target's values held. */
+  method: 'merge' | 'hash';
+}
+
 export interface LayoutAdvice {
   rows: number;
   chunks: number;
@@ -670,6 +699,8 @@ export interface UpdateOptions {
   removeTables?: string[];
   /** Tables to rename, old name to new; saved shapes and package.edit follow. A file's single unnamed table is ''. */
   renameTables?: Record<string, string>;
+  /** The links between tables, replacing the file's ([] for none); without it the file's are kept, following renames. */
+  links?: JazminLink[];
 }
 
 export interface UpdateResult {
@@ -756,6 +787,10 @@ export class JazminReader implements Iterable<JazminRow> {
   openTable(name: string): JazminReader;
   readonly columns: JazminColumn[];
   readonly metadata: Record<string, JsonValue>;
+  /** The links the file declares between its tables (metadata 'jazmin.links'). */
+  readonly links: JazminLink[];
+  /** Each declared link checked against the rows this key sees; reads only the link columns. */
+  checkLinks(options?: { limit?: number; links?: JazminLink[] }): LinkCheck[];
   readonly rowCount: number;
   readonly chunkCount: number;
   readonly encrypted: boolean;

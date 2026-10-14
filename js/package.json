@@ -52,6 +52,7 @@
     "bench:filing": "node bench/filing.mjs",
     "bench:storage": "node bench/storage.mjs",
     "bench:layout": "node bench/layout.mjs",
+    "bench:links": "node bench/links.mjs",
     "bench:viewer": "node bench/viewer-disk.mjs",
     "fixtures": "node scripts/make-fixtures.js",
     "viewer": "node viewer/serve.mjs",
