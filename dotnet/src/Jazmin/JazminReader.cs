@@ -2444,6 +2444,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     public IEnumerable<T> Query<T>(Expression<Func<T, bool>>? predicate, JazminSerializerSettings? settings = null)
     {
         var map = TypeMap.For(typeof(T), settings);
+        if (predicate is not null) predicate = Jazmin.Query.SpanContains.Rewrite(predicate); // C# 14's array.Contains
         // Rows that refer to objects earlier rows define store no values of their own: every row is read, in order, and
         // checked as an object.
         var translation = predicate is null ? null : map.PreservesReferences ? new Translation(null, false) : Translate(predicate, map);

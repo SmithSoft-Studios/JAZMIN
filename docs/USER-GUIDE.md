@@ -840,7 +840,7 @@ row. Translation therefore affects only speed, never results.
 | `==`, `!=`, `<`, `<=`, `>`, `>=` against constants or captured variables (bool, numbers, strings, enums, dates) | ✔ |
 | `&&`, `\|\|`, `!` (on comparisons and the calls below) | ✔ |
 | `x.Name.Contains("a")`, `x.Name.StartsWith("a")` | ✔ |
-| `list.Contains(x.Country)` | ✔ |
+| `list.Contains(x.Country)` (a list, an array, any collection; arrays also as C# 14 compiles them) | ✔ |
 | `x.IsActive` (bool property) | ✔ |
 | Nested columns (6.2): `x.Lines.Any(l => ...)`, `x.Lines.All(l => ...)`, `x.Tags.Contains("vip")`, `x.Ship.City == "Durban"` | ✔ (as `any`, `all`, `match`: 8.1) |
 | `decimal` comparisons, method calls, arithmetic (`x.Id % 7 == 0`) | ✘ (scanned, still correct) |

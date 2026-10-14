@@ -201,6 +201,7 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
     private QueryPlan Plan(Expression expression, HashSet<string>? hint = null)
     {
         Plans++;
+        expression = SpanContains.Rewrite(expression); // C# 14's array.Contains: as Enumerable.Contains, here and in memory
         var calls = new List<MethodCallExpression>();
         var e = expression;
         while (e is MethodCallExpression call && call.Method.DeclaringType == typeof(Queryable))

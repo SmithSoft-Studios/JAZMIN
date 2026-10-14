@@ -28,6 +28,7 @@ internal static class ExpressionTranslator
     /// </summary>
     public static Translation Translate(LambdaExpression predicate, Func<MemberInfo, JazminColumn?> columnFor, Func<Type, MemberInfo, string?>? fieldName = null)
     {
+        predicate = SpanContains.Rewrite(predicate); // C# 14's array.Contains: as Enumerable.Contains
         var visitor = new Visitor(predicate.Parameters[0], [predicate.Parameters[0]], columnFor, fieldName ?? ((_, _) => null), null);
         var filter = visitor.Visit(predicate.Body);
         return new Translation(filter, filter is not null && visitor.Exact);

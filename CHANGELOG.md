@@ -63,6 +63,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   own process, against the published 1.5.0).
 
 ### Fixed
+- **.NET: `array.Contains(x.Column)` in LINQ on .NET 10.** C# 14, .NET 10's default, compiles it as
+  `MemoryExtensions.Contains` over a span, which `AsQueryable<T>()` and `Query<T>()` refused with
+  `NotSupportedException`. It is now read as `Enumerable.Contains` again: an `in` filter that indexes answer, for
+  captured arrays and arrays written in the lambda alike. Lists and older C# versions were not affected.
 - JavaScript: `update()` with `upsert` keyed on a decimal column failed ("Do not know how to serialize a BigInt").
 
 ## 1.5.0 - 2026-10-11 (file format 1.0)
