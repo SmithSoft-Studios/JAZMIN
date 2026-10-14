@@ -29,16 +29,36 @@
   $('average').textContent = kpis[2][1];
   $('best').textContent = kpis[3][1];
 
-  const top = branches[0].revenue;
-  $('branches').replaceChildren(...branches.map((b) => {
-    const row = document.createElement('div');
-    row.className = 'bar';
-    row.innerHTML = '<span></span><span class="track"><span></span></span><strong></strong>';
-    row.children[0].textContent = b.name;
-    row.children[1].firstChild.style.width = `${(b.revenue / top) * 100}%`;
-    row.children[2].textContent = millions(b.revenue);
-    return row;
-  }));
+  // Each branch's target is in the file's second table, read by name; a file without it shows the revenue alone.
+  const targets = new Map();
+  let top = branches[0].revenue;
+  const percent = (b) => `${Math.round((b.revenue / targets.get(b.name)) * 100)}%`;
+  function drawBranches() {
+    $('branches').replaceChildren(...branches.map((b) => {
+      const row = document.createElement('div');
+      row.className = 'bar';
+      row.innerHTML = '<span></span><span class="track"><span></span></span><strong></strong>';
+      row.children[0].textContent = b.name;
+      row.children[1].firstChild.style.width = `${(b.revenue / top) * 100}%`;
+      row.children[2].textContent = millions(b.revenue);
+      if (targets.has(b.name)) {
+        const mark = document.createElement('i');
+        mark.style.left = `${(targets.get(b.name) / top) * 100}%`;
+        mark.title = `Target ${millions(targets.get(b.name))}`;
+        row.children[1].append(mark);
+        row.children[2].append(Object.assign(document.createElement('small'), { textContent: `${percent(b)} of target` }));
+      }
+      return row;
+    }));
+  }
+  drawBranches();
+  if ((jazmin.tables || []).some((t) => t.name === 'targets')) {
+    jazmin.query({}, { table: 'targets' }).then((list) => {
+      for (const t of list) targets.set(t.branch, Number(t.target));
+      top = Math.max(top, ...targets.values());
+      drawBranches();
+    });
+  }
 
   const months = [...by('month')].sort().map(([month, list]) => ({ month, revenue: revenue(list) }));
   const peak = Math.max(...months.map((x) => x.revenue));
@@ -101,13 +121,19 @@
     pdf.text(M + 14, y + 24, 'Revenue by branch', { size: 10.5, bold: true, color: ink });
     const step = Math.min(26, (ch - 64) / branches.length);
     const tx = M + 100;
-    const tw = cw - 100 - 72;
+    const tw = cw - 100 - (targets.size ? 112 : 72);
     branches.forEach((b, i) => {
       const by = y + 54 + i * step;
       pdf.text(M + 14, by + 3, b.name, { size: 9, color: ink });
       pdf.rect(tx, by - 3.5, tw, 6.5, { fill: soft, radius: 3.25 });
       pdf.rect(tx, by - 3.5, Math.max(6.5, tw * (b.revenue / top)), 6.5, { fill: accent, radius: 3.25 });
-      pdf.text(M + cw - 14, by + 3, millions(b.revenue), { size: 9, bold: true, color: ink, align: 'right' });
+      if (targets.has(b.name)) {
+        pdf.rect(tx + tw * (targets.get(b.name) / top) - 0.75, by - 5, 1.5, 9.5, { fill: ink });
+        pdf.text(M + cw - 14, by + 3, `${percent(b)} of target`, { size: 8, color: muted, align: 'right' });
+        pdf.text(M + cw - 66, by + 3, millions(b.revenue), { size: 9, bold: true, color: ink, align: 'right' });
+      } else {
+        pdf.text(M + cw - 14, by + 3, millions(b.revenue), { size: 9, bold: true, color: ink, align: 'right' });
+      }
     });
 
     const mx = M + cw + 12;

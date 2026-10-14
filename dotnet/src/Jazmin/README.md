@@ -39,6 +39,11 @@ var page = reader.AsQueryable<Customer>().Where(c => c.Country == "ZA").Skip(20)
   sender's grant and expiry, their own rows only, records sent again, attached files checked by their first bytes.
 - **Is compacting worth it?** `reader.Storage()` reports the bytes in use and no longer used, deleted rows still stored,
   and each index's segments, reading only the file's directories.
+- **Change a file you already have,** in one rewrite that keeps the rest (`JazminFile.Update`): `Indexes` and `SortedBy`
+  change indexes and the sort order; `AddTables`, `RenameTables`, `RemoveTables` change its tables; `Links` declares how
+  tables refer to each other, and `reader.CheckLinks()` checks them against the rows; `Set` + `Where`, and `Tables`
+  (`JazminTableChanges`) for the others, change rows in several tables at once.
+- **Which versions read a file:** `reader.ReaderFeatures` lists the features a file needs (empty for every 1.x).
 - **Editable documents:** `JazminFile.WriteChanges` and `ApplyChanges` make and apply the change files a document's
   readers send, with conflicts held for the owner.
 - **Newtonsoft-style serializer:** attributes, converters, naming strategies, default values, polymorphism and

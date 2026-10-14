@@ -102,3 +102,21 @@ test('fileSubmission: files into a shared file the .NET library wrote', () => {
   reader.close();
   assert.deepEqual([row.name, row.country], ['Filed by JavaScript', 'ZA']); // Bob's one partition
 });
+
+test('a shared file with no files column files new and changed records', () => {
+  const owner = JazminKey.generate();
+  const ann = owner.createAccessKey();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-submissions-'));
+  const shared = path.join(dir, 'field.jzm');
+  const columns = [{ name: 'id', type: 'string', nullable: false }, { name: 'inspector', type: 'string' }, { name: 'note', type: 'string' }];
+  write(shared, [{ id: 'r1', inspector: 'ann', note: 'roof ok' }], { columns, key: owner, access: { partitionBy: 'inspector', grants: [{ key: ann, rows: ['ann'] }] } });
+  const view = open(shared, { key: ann });
+  const batch = path.join(dir, 'batch.jzm');
+  write(batch, [{ id: 'r1', note: 'roof leaks' }, { id: 'r2', note: 'gate broken' }], { columns, key: view.submissionKey });
+  view.close();
+  const result = fileSubmission(shared, fs.readFileSync(batch), { key: owner, keyId: ann.id });
+  assert.deepEqual([result.filed, result.updated], [1, 1]);
+  const reader = open(shared, { key: owner });
+  assert.deepEqual([...reader.rows()].map((r) => `${r.id}: ${r.note}`).sort(), ['r1: roof leaks', 'r2: gate broken']);
+  reader.close();
+});

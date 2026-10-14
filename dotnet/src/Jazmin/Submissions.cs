@@ -308,7 +308,8 @@ internal static class Submissions
         if (withFiles) foreach (var row in inserts) Attach(row, null);
 
         // Files a changed record no longer lists are removed, unless another record still lists them.
-        var dropped = updates.SelectMany(u => ListOf(u.Before[filesColumn]).Select(PathOf)).OfType<string>().ToHashSet(StringComparer.Ordinal);
+        // (A shared file with no files column has none to drop.)
+        var dropped = updates.SelectMany(u => ListOf(u.Before.GetValueOrDefault(filesColumn)).Select(PathOf)).OfType<string>().ToHashSet(StringComparer.Ordinal);
         foreach (var r in inserts.Concat(updates.Select(u => u.After)))
             foreach (var e in ListOf(r.GetValueOrDefault(filesColumn))) if (PathOf(e) is { } p) dropped.Remove(p);
         if (dropped.Count > 0)

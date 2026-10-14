@@ -1975,6 +1975,8 @@ view.hiddenRowCount;   // how many rows Bob may not see
 view.access;           // { isOwner: false, visiblePartitions: ['ACC000123'], visibleColumnGroups: ['*'], ... }
 // The owner's view also lists the grants and, in groupColumns, the columns of each column group:
 // { '*': ['section', 'name', ...], pii: ['salary', 'idNumber'] }
+// Each grant: { keyId, rows, columns, label, mode, expires, files } - files: the key's extra file groups (next
+// release; .NET JazminGrantInfo.Files), so a tool can change a grant without losing them: a new grant replaces it whole.
 
 grantAccess('statements.jzm', owner, carol, { rows: '*', columns: ['*', 'pii'], label: 'Auditor' });
 revokeAccess('statements.jzm', owner, bob);  // Bob cannot open the new version
@@ -3993,9 +3995,12 @@ var result = JazminFile.Update("statements.jzm", new JazminUpdate
 
 - **Each table** in `tables` takes `insert`, `upsert` with `keyColumns`, `delete`, `set` with `where`, `indexes` and
   `sortedBy`, as the main table does. A table not named is copied as it is. Name a table in one place only.
+- **Names:** `tables` names a table as the file has it now, even while `renameTables` renames it; the result's
+  `tables` uses the names afterwards, and lists the main table too. A table being added gets its rows in `addTables`.
 - **In one table:** deletes go first, upserted rows replace whole rows, then `set` changes the rest that `where`
-  matches. `where: {}` (.NET: `JazminFilter.And()`) matches every row. `updated` counts upserted rows that replaced one
-  and rows set.
+  matches; inserted rows are written as given. `where: {}` (.NET: `JazminFilter.And()`) matches every row. `updated`
+  counts upserted rows that replaced one and rows set. Each `set` value is checked against its column before the file
+  is read: a value of the wrong type, or empty for a column that can't be, is refused at once.
 - **Sorted tables stay sorted.** Rows whose sort column is set move to their new place. When few rows match (up to the
   sort budget: 10,000, 25,000 or 100,000 rows by `priority`), they are found by the file's indexes and merged in as the
   table streams, at about the cost of a rewrite. More go through the sort (16.1).

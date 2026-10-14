@@ -124,6 +124,9 @@ export function columnsWithIndexes(reader) {
 export const NEW_OWNER = Symbol('jazmin.newOwner');
 
 /** update() without taking the file lock (the caller holds it). */
+/** Column types whose values are single values (not nested lists or objects). */
+const SCALAR_TYPES = new Set(['bool', 'int', 'float', 'decimal', 'string', 'datetime', 'binary', 'json']);
+
 /** The changes a table can be given (the top-level options for the main table; `tables` for others). */
 const CHANGE_KEYS = ['insert', 'upsert', 'keyColumns', 'delete', 'set', 'where', 'indexes', 'sortedBy', 'columns'];
 const changesOf = (source) => Object.fromEntries(CHANGE_KEYS.filter((k) => source[k] !== undefined).map((k) => [k, source[k]]));
@@ -304,6 +307,21 @@ function planTableChanges(reader, changes, context) {
   // keys are granted).
   const setColumns = Object.keys(set ?? {});
   for (const c of setColumns) if (!byName.has(c)) throw new JazminValidationError(`${name}: set: unknown column '${c}'`);
+  // Each value checked against its column before anything is read (nested values are checked as they are written).
+  for (const c of setColumns) {
+    const column = byName.get(c);
+    const value = set[c];
+    if (value === undefined) throw new JazminValidationError(`${name}: set: column '${c}' has no value (null empties it)`);
+    if (value === null) {
+      if (column.nullable === false) throw new JazminValidationError(`${name}: set: column '${c}' can't be empty`);
+    } else if (SCALAR_TYPES.has(column.type)) {
+      try {
+        normalizeValue(column.type, value, c);
+      } catch (error) {
+        throw new JazminValidationError(`${name}: set: ${error.message}`);
+      }
+    }
+  }
   if (partitionBy && setColumns.includes(partitionBy)) {
     throw new JazminValidationError(`${name}: set changes the partition column '${partitionBy}': the rows would leave the partitions keys are granted`);
   }

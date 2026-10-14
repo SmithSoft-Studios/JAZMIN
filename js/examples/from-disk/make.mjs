@@ -17,7 +17,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { JazminKey, portableScript, write } from '../../src/index.js';
-import { bank, branchSales, staff, statement, tasks, transactions } from './demo-data.mjs';
+import { bank, branchSales, branchTargets, staff, statement, tasks, transactions } from './demo-data.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const js = path.resolve(here, '../..');
@@ -129,8 +129,13 @@ fs.writeFileSync(`${bankFile}.js`, portableScript(bankFile));
 const documents = path.join(here, 'documents');
 const pageFiles = (folder) => fs.readdirSync(path.join(documents, folder)).map((name) => ({ path: name, file: path.join(documents, folder, name) }));
 const reportFile = path.join(site, 'data/report.jzm');
-write(reportFile, branchSales(), {
-  columns: [{ name: 'month', type: 'string' }, { name: 'branch', type: 'string' }, { name: 'category', type: 'string' }, { name: 'revenue', type: 'decimal' }, { name: 'orders', type: 'int' }],
+// Two tables: the sales, and each branch's target, which the page reads by name (jazmin.query(..., { table: 'targets' })).
+write(reportFile, { sales: branchSales(), targets: branchTargets() }, {
+  tables: [
+    { name: 'sales', columns: [{ name: 'month', type: 'string' }, { name: 'branch', type: 'string' }, { name: 'category', type: 'string' }, { name: 'revenue', type: 'decimal' }, { name: 'orders', type: 'int' }] },
+    { name: 'targets', columns: [{ name: 'branch', type: 'string', nullable: false }, { name: 'target', type: 'decimal' }], sortedBy: ['branch'] },
+  ],
+  links: [{ name: 'target', from: { table: 'sales', columns: ['branch'] }, to: { table: 'targets', columns: ['branch'] } }],
   metadata: { company: 'Harbour & Co. Stores', title: 'Sales report', period: 'January to June 2026', currency: 'ZAR' },
   files: pageFiles('report'),
   package: { entry: 'index.html', title: 'Sales report, January to June 2026', pdf: { format: 'A4', printBackground: true } },

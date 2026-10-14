@@ -101,6 +101,8 @@ public sealed class RekeyTests
         Refused(new JazminUpdate { Where = JazminFilter.Eq("clientId", "C1") }, "Set and Where go together");
         Refused(new JazminUpdate { Set = new Dictionary<string, object?>(), Where = JazminFilter.And() }, "Set needs a column to set");
         Refused(new JazminUpdate { Set = Set("nope", 1), Where = JazminFilter.And() }, "Table 'clients': Set: unknown column 'nope'");
+        Refused(new JazminUpdate { Set = Set("clientId", 5), Where = JazminFilter.And() }, "Table 'clients': Set: Column 'clientId'");
+        Refused(new JazminUpdate { Set = Set("clientId", null), Where = JazminFilter.And() }, "Table 'clients': Set: column 'clientId' can't be empty");
         Refused(new JazminUpdate { Tables = new Dictionary<string, JazminTableChanges> { ["nope"] = new() } }, "Tables: the file has no table 'nope'");
         Refused(new JazminUpdate
         {

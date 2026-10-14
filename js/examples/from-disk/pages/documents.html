@@ -27,6 +27,7 @@
       <ul>
         <li>Open to anyone: no password</li>
         <li>Its saved shape <em>Revenue by branch</em> is under Export ▾ in the data tab</li>
+        <li>Two tables: the sales, and each branch's target, which the page reads by name</li>
       </ul>
       <button id="open-report" type="button" class="primary">Open the report</button>
     </article>
@@ -49,8 +50,8 @@
     <div class="split">
       <div>
         <h3>The report</h3>
-        <pre class="code"><code>write('report.jzm', rows, {
-  columns,
+        <pre class="code"><code>write('report.jzm', { sales, targets }, {   // two tables: the page reads both
+  tables: [{ name: 'sales', columns }, { name: 'targets', columns: targetColumns, sortedBy: ['branch'] }],
   files: [
     { path: 'index.html', file: 'report/index.html' },
     { path: 'report.css', file: 'report/report.css' },
@@ -58,7 +59,9 @@
   ],
   package: { entry: 'index.html', pdf: { format: 'A4' } },
 });
-// report.js: const rows = jazmin.rows(); … jazmin.print();</code></pre>
+// report.js: const rows = jazmin.rows();   // its own table, sales
+//            const targets = await jazmin.query({}, { table: 'targets' });   // another, by name
+//            … jazmin.print();</code></pre>
       </div>
       <div>
         <h3>The task list, and its owner</h3>
