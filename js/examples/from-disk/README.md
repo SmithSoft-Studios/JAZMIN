@@ -12,6 +12,7 @@ nothing uploaded. See USER-GUIDE §24.4 for the details and measurements.
 | `tables.html` | **Several tables:** a bank's clients and their transactions in one file. Pick a client: their spending and latest transactions come from a saved shape that links the two tables; all their transactions from the second table. **Query both tables:** four queries in JavaScript with `JazminBrowser.from` (arrow functions whose filters the file answers; joins, groups and sorts in memory), each shown as it runs with the same query in C# LINQ. Export every client, or open both tables in the viewer |
 | `documents.html` | **Documents:** a report that saves itself as a PDF in one click, and a task list that saves changes, each a page stored in its file, shown by the viewer |
 | `shared.html` | **One file, three people:** the same file opened with three access keys, side by side: each sees its own rows, columns, saved shapes and files |
+| `two-factor.html` | **A file that asks for a code:** an online access key, whose unlock token the sample key service (`dotnet/samples/Jazmin.KeyService`) gives out only after a code from an authenticator app. Set the app up by QR code, see the key alone refused, then open the file with a code. Needs the .NET 10 SDK to run the service |
 | `viewer/index.html` | The viewer on its own: choose or drop a file in it |
 
 ## Run it
@@ -37,6 +38,7 @@ salary on the 25th of each month. The same every time.
 | `data/report.jzm` (11 KB) and `.js` | Two tables: six months of sales for five branches, and each branch's target, which the page reads by name (`jazmin.query({}, { table: 'targets' })`) and links to the sales. A page that draws the report (`documents/report`) with a small PDF writer beside it (`pdf.js`), A4 page settings, and a saved shape | Open to anyone |
 | `data/tasks.jzm` (6 KB) and `.js` | Seven tasks, and a page that edits them (`documents/tasks`); the package says which columns may change | Locked with the password |
 | `data/shared.jzm` (10 KB) and `.js` | 30 staff in three branches: rows by branch, pay in a column group, files and saved shapes for groups, three access keys (`data/shared-keys.js`, for this demo only) | Access keys |
+| `data/remco.jzm` (3 KB) and `.js` | Eight executives' pay, for a remuneration committee. One **online** access key (`data/two-factor-keys.js`, for this demo only), and its unlock token in `key-service/tokens.json` for the sample key service, listed with the owner key (`listUnlockTokens`) so the service never holds it | An online access key |
 
 The indexes and the sort order are what make it fast: a filter on those columns reads only the rows it returns, and
 counts its matches without reading them. Measured in Chrome, on the 1,000,000 transactions:
@@ -63,6 +65,7 @@ Measured in Chrome on an ordinary laptop, from disk:
 | The same, with 1,000,000 rows (`pick-file.html`, `data/transactions.jzm`) | The viewer's Export ▾ lists the file's three saved shapes | *Accounts* 1.5 s, *Cities* and *Spending by category* 2.3 s, under the viewer's progress overlay |
 | Several tables (`tables.html`) | One client's spending and latest transactions through the saved linked shape (limited to them by a filter), then all their transactions from the second table; four queries across both tables, next to their LINQ | Opens in about 130 ms; a client's linked shape 100-150 ms, their transactions 3-10 ms (sorted by client: a binary search); each query 20-75 ms |
 | Documents (`documents.html`) | The report draws itself from `jazmin.rows()`, and each branch's target from its second table, with `jazmin.query({}, { table: 'targets' })`. **Save as PDF** makes an A4 PDF in the report's page and downloads it, with no print dialog: `pdf.js`, stored in the file beside the page, draws the same report in the standard Helvetica fonts (text you can select and search, 3.8 KB), and `jazmin.download()` saves it. Print uses the browser's dialog. The task list saves a change file through the viewer, which shows what will change first | Opens at once; the PDF in 57–70 ms (Chrome, three runs) |
+| A file that asks for a code (`two-factor.html`) | The key alone is refused (`JazminUnlockRequiredError`, with the file's and the key's ids); a wrong code, or a code used already, gets no token; a fresh code does | The key service checks the code and gives the token in about 15 ms; the file then opens in about 14 ms |
 | One file, three people (`shared.html`) | Three access keys: the Cape Town manager sees Cape Town with pay; the Johannesburg team lead sees Johannesburg without pay (the pay columns can't be decrypted, and their names aren't known); HR sees everything, plus the HR files and the *Pay by branch* shape | Each key opens the file in 4-10 ms |
 
 ## How it works

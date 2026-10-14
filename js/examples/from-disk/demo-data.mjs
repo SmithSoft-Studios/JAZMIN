@@ -160,6 +160,20 @@ export function tasks() {
 }
 
 /** A company's staff in three branches, with pay: for one file several people open with keys that see different parts. */
+/** The executives' pay for a remuneration committee: few rows, but the kind of file that should ask for a second factor. */
+export function executives() {
+  const rnd = random(907);
+  const roles = [['Chief executive', 4_200_000], ['Financial director', 3_100_000], ['Chief operating officer', 2_900_000],
+    ['Chief information officer', 2_400_000], ['HR executive', 2_100_000], ['Merchandise executive', 2_250_000],
+    ['Company secretary', 1_650_000], ['Supply chain executive', 2_000_000]];
+  return roles.map(([role, base]) => {
+    const salary = Math.round(base * (0.95 + rnd() * 0.1) / 1000) * 1000;
+    const bonus = Math.round(salary * (0.2 + rnd() * 0.35) / 1000) * 1000;
+    const shares = Math.round(salary * (0.3 + rnd() * 0.6) / 1000) * 1000;
+    return { name: `${pick(rnd, FIRST_NAMES)} ${pick(rnd, LAST_NAMES)}`, role, salary: money(salary), bonus: money(bonus), shares: money(shares), total: money(salary + bonus + shares) };
+  });
+}
+
 export function staff() {
   const rnd = random(311);
   const roles = [['Branch manager', 1, 68000], ['Team lead', 2, 42000], ['Consultant', 5, 27000], ['Administrator', 2, 19500]];

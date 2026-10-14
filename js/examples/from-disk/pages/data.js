@@ -7,6 +7,7 @@ var data = {
   report: 'data/report.jzm.js', // documents.html
   tasks: 'data/tasks.jzm.js', // documents.html
   shared: 'data/shared.jzm.js', // shared.html, with the keys in data/shared-keys.js
+  remco: 'data/remco.jzm.js', // two-factor.html, with the key in data/two-factor-keys.js
 };
 
 // Filters pick-file.html offers for a demo file, by its name: each button sends one to the viewer

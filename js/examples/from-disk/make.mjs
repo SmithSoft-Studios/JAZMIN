@@ -7,7 +7,9 @@
 // - data/bank.jzm: clients and their transactions, two tables linked by a saved shape (tables.html);
 // - data/report.jzm and data/tasks.jzm: documents, a print-ready report and a task list that saves changes
 //   (documents.html shows them in the viewer);
-// - data/shared.jzm: one file with access keys that see different rows, columns, files and shapes (shared.html).
+// - data/shared.jzm: one file with access keys that see different rows, columns, files and shapes (shared.html);
+// - data/remco.jzm: executives' pay, opened with an online access key: the sample key service gives its unlock token
+//   only after a code from an authenticator app (two-factor.html). key-service/tokens.json is what that service reads.
 // Every file is locked with the password "demo", except the report (open to anyone) and the shared file (access keys,
 // in data/shared-keys.js for this demo only: real keys never belong in a page).
 // Run: node examples/from-disk/make.mjs [folder] [--rows n]
@@ -16,8 +18,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { JazminKey, portableScript, write } from '../../src/index.js';
-import { bank, branchSales, branchTargets, staff, statement, tasks, transactions } from './demo-data.mjs';
+import { JazminKey, inspect, listUnlockTokens, portableScript, write } from '../../src/index.js';
+import { bank, branchSales, branchTargets, executives, staff, statement, tasks, transactions } from './demo-data.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const js = path.resolve(here, '../..');
@@ -192,6 +194,33 @@ fs.writeFileSync(path.join(site, 'data/shared-keys.js'), [
   '// The access keys shared.html opens data/shared.jzm with. FOR THIS DEMO ONLY: a real key is like a password, and never',
   '// belongs in a page or a file next to it. Made by make.mjs; each run makes new keys.',
   `var sharedKeys = ${JSON.stringify(people.map((p) => ({ label: p.label, sees: p.sees, key: p.key.export() })), null, 2)};`,
+  '',
+].join('\n'));
+
+// A file that asks for an authenticator code: its access key is an online one, so it opens only with an unlock token,
+// which the sample key service (dotnet/samples/Jazmin.KeyService) gives out after a code from the user's authenticator
+// app. The service reads the tokens, listed here with the owner key; it never holds the owner key itself.
+const remcoOwner = JazminKey.generate();
+const remcoKey = remcoOwner.createAccessKey();
+const remcoFile = path.join(site, 'data/remco.jzm');
+write(remcoFile, executives(), {
+  columns: [
+    { name: 'name', type: 'string' }, { name: 'role', type: 'string' }, { name: 'salary', type: 'decimal' },
+    { name: 'bonus', type: 'decimal' }, { name: 'shares', type: 'decimal' }, { name: 'total', type: 'decimal' },
+  ],
+  metadata: { title: 'Executive pay 2026, for the remuneration committee (demo data)', currency: 'ZAR' },
+  key: remcoOwner,
+  access: { grants: [{ key: remcoKey, label: 'Remuneration committee: Thandi Mokoena', rows: '*', columns: '*', mode: 'online', expiresIn: '30d' }] },
+});
+fs.writeFileSync(`${remcoFile}.js`, portableScript(remcoFile));
+fs.mkdirSync(path.join(site, 'key-service'), { recursive: true });
+const tokens = { files: [{ fileId: inspect(remcoFile).fileId, tokens: listUnlockTokens(remcoFile, remcoOwner) }] };
+fs.writeFileSync(path.join(site, 'key-service/tokens.json'), `${JSON.stringify(tokens, null, 2)}\n`);
+const twoFactor = { user: 'thandi', label: 'Thandi Mokoena, remuneration committee', keyId: remcoKey.id, key: remcoKey.export(), service: 'http://localhost:5080' };
+fs.writeFileSync(path.join(site, 'data/two-factor-keys.js'), [
+  '// The access key two-factor.html opens data/remco.jzm with, and who holds it. FOR THIS DEMO ONLY: a real key is like',
+  '// a password, and never belongs in a page or a file next to it. Made by make.mjs; each run makes new keys.',
+  `var twoFactor = ${JSON.stringify(twoFactor, null, 2)};`,
   '',
 ].join('\n'));
 

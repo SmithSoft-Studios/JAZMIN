@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A file that asks for a code</title>
+<link rel="icon" href="favicon.png" type="image/png">
+<link rel="stylesheet" href="style.css">
+<style>
+  .steps { display: grid; gap: 1rem; }
+  .step h2 { display: flex; align-items: center; gap: 0.6rem; }
+  .step h2 .n { display: inline-grid; place-items: center; width: 1.8rem; height: 1.8rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 0.95rem; }
+  .step.done h2 .n { background: var(--in); color: var(--paper); }
+  .step.done h2 .n::after { content: "✓"; }
+  .step.done h2 .n span { display: none; }
+  .step pre.code, .how pre.code { margin: 0.5rem 0; }
+  .qr { display: flex; flex-wrap: wrap; gap: 1.2rem; align-items: center; }
+  .qr img { width: 11rem; height: 11rem; background: #fff; padding: 0.4rem; border-radius: 10px; border: 1px solid var(--line); }
+  .code-form { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.6rem; }
+  .code-form input { width: 9rem; font-size: 1.3rem; letter-spacing: 0.25em; text-align: center; font-variant-numeric: tabular-nums; }
+  .ok { color: var(--in); font-weight: 600; }
+  .os-tabs { display: flex; gap: 0.3rem; margin-top: 0.4rem; }
+  .os-tabs button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
+  .locked { padding: 0.8rem 1rem; border-radius: 10px; background: var(--accent-soft); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line); }
+  th.number, td.number { text-align: right; font-variant-numeric: tabular-nums; }
+</style>
+</head>
+<body>
+<main class="page">
+  <p class="crumbs"><a href="index.html">← All demos</a></p>
+  <div class="head">
+    <div>
+      <h1>A file that asks for a code</h1>
+      <p><code>remco.jzm</code> holds the executives' pay for a remuneration committee. Its access key is an
+        <strong>online</strong> key: on its own it doesn't open the file. Each time, it also needs an unlock token, which a
+        key service gives out only after a code from the holder's authenticator app (Google Authenticator, Microsoft
+        Authenticator and others). A copied key, or a copied file, opens nothing.</p>
+    </div>
+    <span id="status" class="badge" role="status" hidden></span>
+  </div>
+
+  <div class="steps">
+    <section class="panel step" id="step-service">
+      <h2><span class="n"><span>1</span></span> Start the sample key service</h2>
+      <p>The service (<code>dotnet/samples/Jazmin.KeyService</code>, .NET 10) runs on this computer. It reads the file's
+        unlock tokens from <code>key-service/tokens.json</code>, made with the file: it never holds the owner key, so it
+        can't open the file itself. In a terminal, in the JAZMIN folder:</p>
+      <div class="os-tabs" role="group" aria-label="Your terminal"><button type="button" data-os="ps" aria-pressed="true">PowerShell</button><button type="button" data-os="sh" aria-pressed="false">bash or zsh</button></div>
+      <pre class="code"><code id="command"></code></pre>
+      <p class="hint">Allowing the origin <code>null</code> lets a page opened from disk call the service: only for a demo
+        on your own computer.</p>
+      <button type="button" class="primary" id="connect">Connect</button>
+      <p id="service-result" class="error" role="alert"></p>
+    </section>
+
+    <section class="panel step" id="step-enrol" hidden>
+      <h2><span class="n"><span>2</span></span> Set up the authenticator</h2>
+      <p>The file's owner gave this key to <strong id="holder"></strong>, and told the key service so. She sets up her
+        authenticator once: scan the code with the app (or type the key), then enter the 6 digits it shows.</p>
+      <div class="qr" id="qr"></div>
+      <div class="code-form"><input id="enrol-code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="123456" aria-label="Code from the app"><button type="button" class="primary" id="confirm">Confirm</button></div>
+      <p id="enrol-result" class="error" role="alert"></p>
+    </section>
+
+    <section class="panel step" id="step-open" hidden>
+      <h2><span class="n"><span>3</span></span> Open the file</h2>
+      <p>Try the key alone first: the file refuses it and names what the key service needs (the file's id and the key's
+        id). Then enter a fresh code from the app.</p>
+      <button type="button" class="primary" id="try">Open with the key alone</button>
+      <div id="needs" hidden>
+        <p class="locked" id="needs-text"></p>
+        <div class="code-form"><input id="open-code" inputmode="numeric" autocomplete="one-time-code" maxlength="7" placeholder="123456" aria-label="Code from the app"><button type="button" class="primary" id="unlock">Unlock</button></div>
+        <p class="hint">Each code works once, for about 30 seconds. Five wrong codes lock the key out for 5 minutes, then 10,
+          20 and so on.</p>
+      </div>
+      <p id="open-result" class="error" role="alert"></p>
+      <div id="opened" hidden>
+        <p class="ok" id="opened-text"></p>
+        <div class="table-scroll" id="pay"></div>
+        <p class="hint">The page keeps neither the code nor the token: open it again and it asks for a new code.</p>
+        <button type="button" id="again">Close it and open again</button>
+      </div>
+    </section>
+
+    <section class="panel how">
+      <h2>How it works</h2>
+      <pre class="code"><code>// When the file is written, the owner makes the key an online one:
+grants: [{ key: thandi, rows: '*', columns: '*', mode: 'online', expiresIn: '30d' }]
+
+// Opening it: the key alone isn't enough.
+try { await JazminBrowser.open(bytes, { key }); }
+catch (e) {   // JazminUnlockRequiredError: e.fileId, e.keyId
+  const { token } = await post('/unlock', { fileId: e.fileId, keyId: e.keyId, code });   // after the 2FA check
+  reader = await JazminBrowser.open(bytes, { key, unlockToken: token });
+}</code></pre>
+      <p>The key service checks, in this order: the code is right and hasn't been used; fewer than five wrong codes in a
+        row; the key belongs to this person; the file has an online grant for it; the grant hasn't expired. Only then does
+        it hand over the token. Stop the grant, or let it expire, and the key opens nothing, even on a copy of the file
+        made earlier.</p>
+      <p>In production: sign people in with your own login instead of the demo's <code>X-User-Id</code> header, keep the
+        tokens file encrypted, serve the service over HTTPS, and protect its admin endpoints. The service's README lists
+        these.</p>
+    </section>
+  </div>
+</main>
+
+<script src="browser/jazmin-browser.js"></script>
+<script src="data.js"></script>
+<script src="data/two-factor-keys.js"></script>
+<script src="demo.js"></script>
+<script>
+  const { $, since } = demo;
+  const service = twoFactor.service;
+  $('holder').textContent = twoFactor.label;
+
+  // ---- step 1: the command, with this site's tokens file ------------------------------------------------------
+  const tokensPath = decodeURIComponent(new URL('key-service/tokens.json', location.href).pathname).replace(/^\/([A-Za-z]:)/, '$1');
+  const windowsPath = /^[A-Za-z]:/.test(tokensPath) ? tokensPath.replace(/\//g, '\\') : tokensPath;
+  const commands = {
+    ps: `$env:Jazmin__TokensFile = "${windowsPath}"\n$env:Jazmin__AllowedOrigins = "null"\ndotnet run --project dotnet/samples/Jazmin.KeyService --urls ${service}`,
+    sh: `export Jazmin__TokensFile="${tokensPath}"\nexport Jazmin__AllowedOrigins="null"\ndotnet run --project dotnet/samples/Jazmin.KeyService --urls ${service}`,
+  };
+  const showCommand = (os) => {
+    $('command').textContent = commands[os];
+    for (const b of document.querySelectorAll('.os-tabs button')) b.setAttribute('aria-pressed', String(b.dataset.os === os));
+  };
+  for (const b of document.querySelectorAll('.os-tabs button')) b.addEventListener('click', () => showCommand(b.dataset.os));
+  showCommand(navigator.userAgent.includes('Windows') ? 'ps' : 'sh');
+
+  /** A call to the key service, as the person in twoFactor.user (the sample's stand-in for a real sign-in). */
+  async function call(pathname, body) {
+    let response;
+    try {
+      response = await fetch(`${service}${pathname}`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-User-Id': twoFactor.user }, body: JSON.stringify(body ?? {}) });
+    } catch {
+      throw new Error(`The key service at ${service} doesn't answer: start it (step 1), then try again.`);
+    }
+    const text = await response.text();
+    let json = null;
+    try { json = text ? JSON.parse(text) : null; } catch { /* plain text */ }
+    return { status: response.status, json, text: json?.detail ?? json?.title ?? (typeof json === 'string' ? json : text) };
+  }
+  const done = (id) => $(id).classList.add('done');
+
+  // ---- step 1: connect, and (as the file's owner would) record who holds the key ------------------------------------
+  $('connect').addEventListener('click', async () => {
+    $('service-result').textContent = '';
+    try {
+      const registered = await call('/admin/access-keys', { userId: twoFactor.user, keyId: twoFactor.keyId });
+      if (registered.status !== 204) throw new Error(`The key service answered ${registered.status}: ${registered.text}`);
+      done('step-service');
+      $('step-enrol').hidden = false;
+      await enrol();
+    } catch (e) {
+      $('service-result').textContent = e.message;
+    }
+  });
+
+  // ---- step 2: enrol the authenticator ----------------------------------------------------------------------------
+  async function enrol() {
+    const setup = await call('/2fa/setup');
+    if (setup.status === 409) { // set up earlier: a new device needs an administrator's reset
+      $('qr').replaceChildren(Object.assign(document.createElement('p'), { className: 'ok', textContent: 'The authenticator is set up already: go to step 3.' }));
+      $('enrol-code').closest('.code-form').hidden = true;
+      done('step-enrol');
+      $('step-open').hidden = false;
+      return;
+    }
+    if (setup.status !== 200) throw new Error(`The key service answered ${setup.status}: ${setup.text}`);
+    const img = Object.assign(document.createElement('img'), { src: setup.json.qrCodeImage, alt: 'QR code to scan with an authenticator app' });
+    const manual = document.createElement('div');
+    manual.innerHTML = '<p>Or type this key in the app:</p><p><code></code></p><p class="hint">The service runs in memory: restart it and you set up again.</p>';
+    manual.querySelector('code').textContent = setup.json.manualSetupKey;
+    $('qr').replaceChildren(img, manual);
+    $('enrol-code').focus();
+  }
+  $('confirm').addEventListener('click', async () => {
+    $('enrol-result').textContent = '';
+    try {
+      const confirmed = await call('/2fa/confirm', { code: $('enrol-code').value.trim() });
+      if (confirmed.status !== 204) { $('enrol-result').textContent = confirmed.text || "That code didn't match: check the phone's clock and try the next one."; return; }
+      done('step-enrol');
+      $('enrol-code').closest('.code-form').hidden = true;
+      $('step-open').hidden = false;
+    } catch (e) {
+      $('enrol-result').textContent = e.message;
+    }
+  });
+  $('enrol-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('confirm').click(); });
+
+  // ---- step 3: the key alone is refused; a code gets the token -----------------------------------------------------
+  let bytes = null;
+  let needed = null; // { fileId, keyId } from the refusal
+  $('try').addEventListener('click', async () => {
+    $('open-result').textContent = '';
+    bytes ??= await JazminBrowser.scriptBytes(data.remco);
+    try {
+      await JazminBrowser.open(bytes, { key: twoFactor.key });
+      $('open-result').textContent = 'It opened with the key alone: this file should have an online grant.';
+    } catch (e) {
+      if (!(e instanceof JazminBrowser.JazminUnlockRequiredError)) { $('open-result').textContent = e.message || String(e); return; }
+      needed = { fileId: e.fileId, keyId: e.keyId };
+      $('needs-text').textContent = `Refused: “${e.message}”. The key service needs file ${e.fileId} and key ${e.keyId}, and a code.`;
+      $('needs').hidden = false;
+      $('try').hidden = true;
+      $('open-code').focus();
+    }
+  });
+  $('unlock').addEventListener('click', async () => {
+    $('open-result').textContent = '';
+    try {
+      const started = performance.now();
+      const answer = await call('/unlock', { ...needed, code: $('open-code').value.trim() });
+      $('open-code').value = '';
+      const why = {
+        401: "That code isn't right, or was used already: wait for the next one.",
+        403: "This key isn't registered to this person.",
+        404: "The key service doesn't know this file or key: run make.mjs again and restart the service with the new tokens file.",
+        410: 'Access for this key has expired.',
+      };
+      if (answer.status === 429) { $('open-result').textContent = `Locked out after too many wrong codes. ${answer.text}`; return; }
+      if (answer.status !== 200) { $('open-result').textContent = why[answer.status] ?? `The key service answered ${answer.status}: ${answer.text}`; return; }
+      const asked = since(started);
+      const opening = performance.now();
+      const reader = await JazminBrowser.open(bytes, { key: twoFactor.key, unlockToken: answer.json.token });
+      const { rows } = await reader.query(null, { limit: 50 });
+      $('pay').replaceChildren(demo.table(rows, [['name', 'Name'], ['role', 'Role'], ['salary', 'Salary'], ['bonus', 'Bonus'], ['shares', 'Shares'], ['total', 'Total']]));
+      $('opened-text').textContent = `Opened: the key service checked the code and gave the token in ${asked}; the file opened in ${since(opening)}.`;
+      $('opened').hidden = false;
+      $('needs').hidden = true;
+      $('status').hidden = false;
+      $('status').textContent = `${reader.metadata.title}`;
+      done('step-open');
+    } catch (e) {
+      $('open-result').textContent = e.message || String(e);
+    }
+  });
+  $('open-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('unlock').click(); });
+  $('again').addEventListener('click', () => {
+    $('opened').hidden = true;
+    $('pay').replaceChildren();
+    $('try').hidden = false;
+    $('step-open').classList.remove('done');
+  });
+</script>
+</body>
+</html>
