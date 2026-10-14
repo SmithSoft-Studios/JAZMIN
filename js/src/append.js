@@ -190,8 +190,9 @@ function shouldCompact({ appendCount, deletedRowCount, rowCount }, { deletedRati
 
 /**
  * Rewrites the file in full: removes deleted rows and superseded headers, merges index segments,
- * and (for access-controlled files) re-locks it with fresh secrets. Same as update() with no changes.
- * Returns { rowCount, bytesBefore, bytesAfter }.
+ * and (for access-controlled files) re-locks it with fresh secrets. Same as update() with no changes; it takes
+ * update()'s options too (indexes, sortedBy, tables, ...), and `regroup` (shared files: each partition's rows together).
+ * Returns { rowCount, bytesBefore, bytesAfter, expiredGrantsRemoved }.
  */
 export function compact(path, options = {}) {
   return withLock(path, () => {

@@ -1,5 +1,5 @@
 // TypeScript quick start - type-checked by `npm run typecheck`, and run by CI (`node examples/typescript/quickstart.ts`).
-import { JAZMIN, JazminKey, JazminKeyError, accessKeyOf, append, compact, importJSONFile, open, toCSV, update, write, type Filter, type JazminColumnInput } from '@smithsoft-studios/jazmin';
+import { JAZMIN, JazminKey, JazminKeyError, accessKeyOf, append, compact, importJSONFile, open, toCSV, update, write, type Filter, type JazminColumnInput, type JazminLink, type LinkCheck, type StorageReport, type UpdateResult } from '@smithsoft-studios/jazmin';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -176,3 +176,13 @@ console.log(clientsOnly.tables, tableLines.table, tableLines.rowCount);
 tableLines.close();
 clientsOnly.close();
 
+// The next release's changes to a file you have, typed: links checked, tables changed in one rewrite, storage().
+const link: JazminLink = { name: 'client', from: { table: 'transactions', columns: ['clientId'] }, to: { table: 'clients', columns: ['clientId'] } };
+const changed: UpdateResult = update('tables.jzm', { links: [link], tables: { transactions: { set: { amount: 12 }, where: { clientId: 'C1' } } } });
+const perTable = changed.tables?.transactions?.updated;
+compact('tables.jzm', { renameTables: { transactions: 'payments' } });
+const linked = open('tables.jzm');
+const checks: LinkCheck[] = linked.checkLinks({ limit: 3, links: [{ ...link, from: { table: 'payments', columns: ['clientId'] } }] });
+const used: StorageReport = linked.storage();
+console.log(perTable, checks[0].missing, used.unusedBytes, linked.readerFeatures);
+linked.close();

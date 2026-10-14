@@ -45,6 +45,8 @@ public sealed class LinksTests
         Assert.Equal("""[{"name":"client","from":{"table":"transactions","columns":["clientId"]},"to":{"table":"clients","columns":["clientId"]}}]""",
             reader.Metadata["jazmin.links"]!.ToJsonString());
         var check = reader.CheckLinks(limit: 1).Single();
+        // Links not saved yet can be checked too: here the declared one, renamed.
+        Assert.Equal("renamed", reader.CheckLinks(links: [Client with { Name = "renamed" }]).Single().Name);
         Assert.Equal((method, 7L, 1L, 3L, 1L), (check.Method, check.Rows, check.Empty, check.Missing, check.DuplicateTargets));
         Assert.Equal("C3", check.Examples.Single()[0]);
         Assert.Equal("C2", check.DuplicateExamples.Single()[0]);
