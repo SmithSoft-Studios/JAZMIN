@@ -953,7 +953,7 @@ Measured on .NET 10 (200,000 rows x 300 columns, a type mapping 9 of them;
 
 ### 8.4 Queries with arrow functions (JavaScript)
 
-**Coming in the next release.** `from(reader)` queries a table with arrow
+`from(reader)` queries a table with arrow
 functions, LINQ-style, in Node and the browser. The reader still uses the
 file's indexes, statistics and sort order, and reads only the columns the
 functions use:
@@ -1082,6 +1082,13 @@ both took longer than the tables show): Node unchanged within noise; .NET
 lookups 2.6-2.7 ms (1.1.0) against 1.9 ms (1.2.0), the filter 15-17 ms
 against 12-14 ms, the rest unchanged; file sizes identical. The memory for one
 .NET lookup is 1.1 MB in both.
+
+**Checked again for 1.6.0** on 14 October, against the published 1.5.0
+side by side, each workload in its own process, alternating, medians of 5 to 7
+rounds (300,000 rows): the same within noise in time and in memory. Node:
+writing, a lookup, a query, reading every row, JSON and CSV exports, a
+grouped shape, update and append. .NET: writing, a lookup, a LINQ query,
+reading every row, a JSON export, update and append.
 
 **Checked again for 1.5.0** on 10 October, against the published 1.4.0 side
 by side, each workload in its own process, alternating (300,000 rows): Node,
@@ -2259,7 +2266,7 @@ took **3.0 s** with a **74 MB** process peak (Node.js).
 | Add rows | `insert: [rows]` | `Insert = [rows]` |
 | Replace rows with the same key (or add them) | `upsert: [rows], keyColumns: ['id']` | `Upsert = [rows], KeyColumns = ["id"]` |
 | Remove rows | `delete: { status: 'void' }` | `Delete = JazminFilter.Eq("status", "void")` |
-| Change columns on the rows a filter matches (next release) | `set: { status: 'paid' }, where: { id: 7 }` | `Set = new Dictionary<string, object?> { ["status"] = "paid" }, Where = JazminFilter.Eq("id", 7)` |
+| Change columns on the rows a filter matches | `set: { status: 'paid' }, where: { id: 7 }` | `Set = new Dictionary<string, object?> { ["status"] = "paid" }, Where = JazminFilter.Eq("id", 7)` |
 | Change metadata (merged) | `metadata: { ... }` | `Metadata = new JsonObject { ... }` |
 | Access-controlled files | `grant`, `revoke` (or `grantAccess` / `revokeAccess`) | `Grant`, `Revoke` (or `GrantAccess` / `RevokeAccess`) |
 
@@ -2310,7 +2317,7 @@ Rules:
     missing, so a program opening it at that moment may not find it. .NET
     replaces it in one step.
 
-### 16.1 Changing indexes and the sort order (next release)
+### 16.1 Changing indexes and the sort order
 
 The same rewrite changes an existing file's indexes and sort order; `compact()` takes the same options. Everything
 else is kept: the rows, keys and grants, embedded files, saved shapes, the document and metadata.
@@ -2490,7 +2497,7 @@ A simulated year of syncs, with 50 people, 3 syncs a day for 250 days, and
 
 ### 17.5 Does the file need compacting? `storage()`
 
-`reader.storage()` (.NET `reader.Storage()`; next release) shows how a file's
+`reader.storage()` (.NET `reader.Storage()`) shows how a file's
 bytes are used, so you can tell whether compacting would help, and by how
 much:
 
@@ -2864,7 +2871,7 @@ for (const account of ['A1', 'A2', 'A3']) {
 }
 ```
 
-- **Files with several tables** (section 23; next release): the filter also
+- **Files with several tables** (section 23): the filter also
   limits every other table it fits, one that has the columns it names, so
   a client's statement reads only that client's transactions. A table it
   doesn't fit, such as a table of exchange rates, is refused, so no other
@@ -3589,8 +3596,7 @@ Node.
 
 ### 21.7 Save shapes in the file
 
-A file can carry its own export shapes, each under a name (coming in the
-next release). Whoever opens it can then export "Monthly totals" without
+A file can carry its own export shapes, each under a name. Whoever opens it can then export "Monthly totals" without
 writing the shape again: the viewer lists the shapes under Export ▾, the
 command-line tool takes `--shape "Monthly totals"`, and your code passes the
 name where it would pass a shape.
@@ -3852,7 +3858,7 @@ output (each client with their transactions), use an export shape with
 `$from` (section 21.6): it reads each table once when they are sorted by the
 link.
 
-**In the browser** (next release): the .NET library runs in Blazor
+**In the browser:** the .NET library runs in Blazor
 WebAssembly, LINQ included, on unencrypted files ([dotnet/samples/Jazmin.Blazor](../dotnet/samples/Jazmin.Blazor)):
 .NET in the browser has no AES-GCM or ECDSA, which locked and shared files
 need. In JavaScript, the readers take filters, and arrow functions join and
@@ -3898,7 +3904,7 @@ append('statements.jzm', { key, table: 'transactions', insert: newLines });
 update('statements.jzm', { key, table: 'clients', upsert: [changedClient], keyColumns: ['clientId'] });
 ```
 
-### 23.5 Adding, removing and renaming tables (next release)
+### 23.5 Adding, removing and renaming tables
 
 `update()` (and `compact()`) changes the tables of an existing file in one rewrite that keeps everything else:
 
@@ -3932,7 +3938,7 @@ Measured on a 1,000,000-row file (`npm run bench:layout`, three runs each): addi
 in JavaScript and 2.1–2.5 s in .NET, against 1.8–1.9 s and 1.8–2.2 s for the same rewrite without it, with about the
 same peak memory (242–259 MB; 109–111 MB). Sorting its rows on the way in took 2.5–2.6 s and 2.6–2.7 s.
 
-### 23.6 Links between tables (next release)
+### 23.6 Links between tables
 
 Say once how the tables refer to each other, and every tool knows: a viewer can show a client's transactions from the
 client's row, queries can follow the link, and the file can check that every row finds what it refers to.
@@ -3968,7 +3974,7 @@ var checks = reader.CheckLinks();   // Rows, Empty, Missing, Examples, Duplicate
   customers (`npm run bench:links`, three runs each, each in its own process): side by side 0.13–0.14 s and 16 MB in
   JavaScript, 0.17–0.19 s in .NET; held 0.24–0.26 s and 19 MB in JavaScript, 0.15–0.17 s in .NET.
 
-### 23.7 Changing several tables at once (next release)
+### 23.7 Changing several tables at once
 
 One `update()` (or `compact()`) can change rows in several tables: the options you know change the main table
 (`table`), and `tables` gives the others theirs, in the same rewrite. With `set` and `where`, the rows a filter matches
@@ -4104,7 +4110,7 @@ large it is and how long it took.
   its JSON output; **Export JSON** or **Export XML** saves it, for the rows
   the filter matches or for every row.
 
-**Shapes saved in the file** (section 21.7; next release) are listed under
+**Shapes saved in the file** (section 21.7) are listed under
 Export ▾, the default first, each with **JSON** and **XML**. A key sees only
 the shapes it can use, so people sharing a file may see different lists. A
 saved shape of the table shown exports the rows the filter matches; one of
@@ -4141,7 +4147,7 @@ jazmin.print(); jazmin.navigate('about.html'); jazmin.ready({ rows: page.length 
 Queries run in the viewer, which holds the reader and the key. Only the
 requested page of rows crosses into the sandbox.
 
-**Several tables** (section 23; next release): a document reads every table
+**Several tables** (section 23): a document reads every table
 of its file. `jazmin.columns`, `rowCount` and `rows()` describe the
 document's own table (`jazmin.table`, the one the file was opened at);
 `query` and `count` read any table by its name:
@@ -4377,7 +4383,7 @@ disk.
 > that opens by itself, with totals and a search; a page that asks for a file
 > and opens it in the viewer; and 1,000,000 card transactions, indexed on the
 > columns people filter by, which answer the filters it suggests in 10–80 ms.
-> Its README explains how both ways work. Four demos (next release) show what a
+> Its README explains how both ways work. Four demos show what a
 > file can do: export shapes (a chart's data in one call, saved shapes, a shape
 > lab), several tables linked by a saved shape, documents (a print-ready report
 > and a task list that saves changes) and one file opened with three keys.
@@ -4482,7 +4488,7 @@ one):
   slashes, `%20` for spaces). A page can open several such files.
 - **The file inside is the `.jzm` as it is,** still encrypted: the page still
   needs the key or password. Don't put it in the page.
-- **To show it in the viewer** (next release), take the file's bytes with
+- **To show it in the viewer**, take the file's bytes with
   `await JazminBrowser.scriptBytes(url)` and hand them over:
   `viewer.contentWindow.postMessage({ type: 'jazmin:open', file: new Blob([bytes]), name }, '*')`.
 - **The page holds the whole file in memory,** decoded once from the

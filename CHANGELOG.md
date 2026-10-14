@@ -3,7 +3,20 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
-## Unreleased
+## 1.6.0 - 2026-10-14 (file format 1.0)
+A file you already have can be changed in one rewrite that keeps everything else: its tables added, renamed or
+removed, its indexes and sort order changed, links declared between its tables and checked against the rows, and a
+value changed in every table that refers to it. `reader.storage()` says whether compacting would help, documents read
+several tables, and the rules for filing records people send back are library API.
+
+- **Compatibility:** the same file format. Links are names in the file's metadata (`jazmin.links`, spec 6.6), which
+  1.0 to 1.5 read as metadata and keep when they append, update or compact. The published npm and NuGet 1.5.0 read
+  files with links, added, renamed and re-keyed tables and a changed sort order exactly as 1.6 does, and npm 1.5.0
+  reads all 46 interop fixtures as 1.6 does. 1.6 reads every earlier file.
+- **Speed and memory:** against the published 1.5.0 on 300,000 rows (each workload in its own process, alternating;
+  medians of 5 to 7 rounds), the same time and memory within noise: in Node writing, a lookup, a query, reading
+  every row, JSON and CSV exports, a grouped shape, update and append; in .NET writing, a lookup, a LINQ query,
+  reading every row, a JSON export, update and append.
 
 ### Added
 - **Change rows in several tables in one rewrite, and set columns on the rows a filter matches** (`update()` /

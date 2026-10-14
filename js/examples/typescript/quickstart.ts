@@ -176,7 +176,7 @@ console.log(clientsOnly.tables, tableLines.table, tableLines.rowCount);
 tableLines.close();
 clientsOnly.close();
 
-// The next release's changes to a file you have, typed: links checked, tables changed in one rewrite, storage().
+// Changes to a file you have, typed: links checked, tables changed in one rewrite, storage().
 const link: JazminLink = { name: 'client', from: { table: 'transactions', columns: ['clientId'] }, to: { table: 'clients', columns: ['clientId'] } };
 const changed: UpdateResult = update('tables.jzm', { links: [link], tables: { transactions: { set: { amount: 12 }, where: { clientId: 'C1' } } } });
 const perTable = changed.tables?.transactions?.updated;
