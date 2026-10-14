@@ -647,6 +647,18 @@ export class JazminAccessKey {
   toString(): string;
 }
 
+/** One table's row changes in update()'s `tables`: as update()'s own options change its main table. */
+export interface TableChanges {
+  insert?: Record<string, unknown>[];
+  upsert?: Record<string, unknown>[];
+  keyColumns?: string[];
+  delete?: Filter;
+  set?: Record<string, unknown>;
+  where?: Filter;
+  indexes?: Record<string, JazminIndexKind | JazminIndexKind[] | null>;
+  sortedBy?: string[] | null;
+}
+
 export interface UpdateOptions {
   /** Required for encrypted files; the OWNER key for access-controlled files. */
   key?: KeyInput;
@@ -701,6 +713,12 @@ export interface UpdateOptions {
   renameTables?: Record<string, string>;
   /** The links between tables, replacing the file's ([] for none); without it the file's are kept, following renames. */
   links?: JazminLink[];
+  /** Columns set on the rows `where` matches; rows whose sort columns change move to their place. They go together. */
+  set?: Record<string, unknown>;
+  /** The rows `set` changes ({} for every row). */
+  where?: Filter;
+  /** Other tables' changes, in the same rewrite (the options above change the main table, `table`). */
+  tables?: Record<string, TableChanges>;
 }
 
 export interface UpdateResult {

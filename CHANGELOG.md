@@ -6,6 +6,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Added
+- **Change rows in several tables in one rewrite, and set columns on the rows a filter matches** (`update()` /
+  `compact()` `tables: { name: { insert, upsert, keyColumns, delete, set, where, indexes, sortedBy } }`, `set` and
+  `where`; .NET `JazminUpdate.Tables` (`JazminTableChanges`), `Set`, `Where`, `JazminUpdateResult.Tables`): for example
+  a client's key changed in every table that refers to it. Sorted tables stay sorted: a few rows whose sort column is
+  set are found by the indexes and merged into place, with no slower than a rewrite; many are re-sorted within the memory
+  budget. A shared file's partition column can't be set. USER-GUIDE 23.7.
 - **Links between tables** (`links` when writing or updating; `reader.links`, `reader.checkLinks()`; .NET
   `JazminWriteOptions.Links`, `JazminUpdate.Links`, `reader.Links`, `reader.CheckLinks()`): declared once in the file's
   metadata (`jazmin.links`, names only; spec 6.6), checked when written (tables, columns, equal types), renamed with
@@ -51,6 +57,9 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   object of its own. A full count of a shared file with 250,000 chunks (every row a different partition) uses 152 MB
   instead of 234 MB, and is 8% faster; other reads are unchanged (median of 7 rounds, each in its own process,
   against the published 1.5.0).
+
+### Fixed
+- JavaScript: `update()` with `upsert` keyed on a decimal column failed ("Do not know how to serialize a BigInt").
 
 ## 1.5.0 - 2026-10-11 (file format 1.0)
 

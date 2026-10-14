@@ -9,7 +9,7 @@ import { grantExpiry, toMs } from './expiry.js';
 import { JazminAccessKey, parseAnyKey } from './keys.js';
 import { FILE_SOURCE } from './files.js';
 import { COMPACT_INDEXES, FILE_STATE, JazminReader, OWNER_GRANTS, ROWS_BY_PARTITION } from './reader.js';
-import { INDEX_KINDS, compareKeys, normalizeValue, toKey } from './types.js';
+import { INDEX_KINDS, compareKeys, keyId, normalizeValue, toKey } from './types.js';
 import { withLock } from './lock.js';
 import { RowSorter, SORT_RUN_ROWS } from './sort-rows.js';
 import { linksAfter } from './links.js';
@@ -101,7 +101,13 @@ function compareTuples(a, b) {
  *   links: [{ name, from: { table, columns }, to: { table, columns } }]   the links between tables (replaces the file's;
  *                       [] for none); without it the file's links are kept, following renames
  *
- * Returns { rowCount, inserted, updated, deleted }.
+ *   set: { column: value }, where: filter   those columns set on the rows the filter matches ({} for every row);
+ *                       rows whose sort columns change move to their place; a shared file's partition column stays
+ *   tables: { name: { insert, upsert, keyColumns, delete, set, where, indexes, sortedBy } }   other tables' changes, in
+ *                       the same rewrite (the options above change the main table, `table`)
+ *
+ * Returns { rowCount, inserted, updated (upserted rows that replaced one, and rows set), deleted }; with `tables`, also
+ * tables: { name: { rowCount, inserted, updated, deleted } }.
  */
 export function update(path, options = {}) {
   return withLock(path, () => updateUnlocked(path, options));
@@ -118,22 +124,28 @@ export function columnsWithIndexes(reader) {
 export const NEW_OWNER = Symbol('jazmin.newOwner');
 
 /** update() without taking the file lock (the caller holds it). */
+/** The changes a table can be given (the top-level options for the main table; `tables` for others). */
+const CHANGE_KEYS = ['insert', 'upsert', 'keyColumns', 'delete', 'set', 'where', 'indexes', 'sortedBy', 'columns'];
+const changesOf = (source) => Object.fromEntries(CHANGE_KEYS.filter((k) => source[k] !== undefined).map((k) => [k, source[k]]));
+/** Whether changes change anything (empty lists don't). */
+const anyChanges = (c) => Boolean(c.insert?.length || c.upsert?.length || c.delete || c.set || c.sortedBy !== undefined || c.indexes || c.columns);
+
 export function updateUnlocked(path, options = {}) {
   const {
-    key, password, insert = [], upsert = [], keyColumns, delete: deleteWhere, metadata,
+    key, password, metadata,
     grant = [], revoke = [], codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, compactIndexes, now, layout,
-    addFiles = [], removeFiles = [], package: packageSettings, table, regroup = false, columns: given, addShapes = [], removeShapes = [],
-    indexes, sortedBy: newSortedBy, sortRunRows, addTables = [], removeTables = [], renameTables = {}, links,
+    addFiles = [], removeFiles = [], package: packageSettings, table, regroup = false, addShapes = [], removeShapes = [],
+    sortRunRows, addTables = [], removeTables = [], renameTables = {}, links, tables: tableChanges,
   } = options;
-  if (upsert.length && (!Array.isArray(keyColumns) || keyColumns.length === 0)) {
-    throw new JazminValidationError('upsert needs keyColumns, e.g. { keyColumns: ["id"] }');
+  if (tableChanges !== undefined && (tableChanges === null || typeof tableChanges !== 'object' || Array.isArray(tableChanges))) {
+    throw new JazminValidationError('tables: { tableName: { insert, upsert, keyColumns, delete, set, where, indexes, sortedBy } }');
   }
 
   const reader = new JazminReader(path, { key, password, table });
   const readers = [reader]; // in a file with several tables, one per table, in file order
   const temp = `${path}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   let writer;
-  let sorter = null; // a new sort order's rows, sorted within a memory budget
+  const sorters = []; // rows put in a new sort order within a memory budget, closed at the end
   try {
     const owner = reader[OWNER_GRANTS];
     if (!owner && reader.access) throw new JazminKeyError("Only the file owner's master key can modify this file");
@@ -148,66 +160,46 @@ export function updateUnlocked(path, options = {}) {
     // The tables afterwards: those kept (renamed as asked), then those added.
     const tablePlan = planTables(reader.tables.length ? reader.tables : [reader.table], { addTables, removeTables, renameTables, owner: Boolean(owner) });
     const kept = readers.filter((r) => !tablePlan.removed.has(r.table));
-    const rowChanges = insert.length || upsert.length || deleteWhere || newSortedBy !== undefined || indexes || given;
-    if (tablePlan.removed.has(reader.table) && rowChanges) throw new JazminValidationError(`Table '${reader.table}' is being removed: its rows can't change too`);
     const finalName = (name) => tablePlan.names.get(name) ?? name;
 
-    // The sort order afterwards: the file's, or a new one (sortedBy; null or [] for none).
-    const target = targetSortedBy(newSortedBy, reader.sortedBy);
-    const resort = !sameNames(target, reader.sortedBy);
-    if (regroup && !owner?.partitionBy) throw new JazminValidationError('regroup applies to access-controlled files with partitionBy');
-    if (regroup && target && target[0] !== owner.partitionBy) {
-      throw new JazminValidationError(`regroup would break the sortedBy order [${target.join(', ')}]: `
-        + `it needs no sortedBy, or one that starts with the partition column '${owner.partitionBy}' (then rows are already grouped)`);
+    // Each table's changes: the main table's from the options, others' from `tables` (one rewrite for them all).
+    const changes = new Map([[reader.table, changesOf(options)]]);
+    for (const [name, given] of Object.entries(tableChanges ?? {})) {
+      if (!readers.some((r) => r.table === name)) throw new JazminValidationError(`tables: the file has no table '${name}'`);
+      if (name === reader.table && anyChanges(changes.get(name))) throw new JazminValidationError(`tables: give table '${name}''s changes either in tables or with the other options, not both`);
+      if (given === null || typeof given !== 'object') throw new JazminValidationError(`tables: '${name}' needs an object of changes`);
+      changes.set(name, changesOf(given));
     }
-
-    // Nested columns may gain fields at the end of their objects (spec 5.4): their new definitions are given; and
-    // columns may get, change or lose indexes.
-    // The old first sort column found its values by the order, with no index of its own: re-sorted away from it, it gets
-    // a sorted index, so lookups on it stay fast, unless `indexes` names it.
-    const current = columnsWithIndexes(reader);
-    const was = current.find((c) => c.name === reader.sortedBy?.[0]);
-    const keepLookup = resort && was && target?.[0] !== was.name && !(indexes && Object.hasOwn(indexes, was.name))
-      && INDEX_KINDS.sorted.has(was.type) && !was.index.includes('sorted');
-    const wanted = keepLookup ? { ...(indexes ?? {}), [was.name]: [...was.index, 'sorted'] } : indexes;
-    const { columns } = growColumns(withIndexes(current, wanted), given, normalizeColumns);
-    const byName = new Map(columns.map((c) => [c.name, c]));
-    for (const name of keyColumns ?? []) if (!byName.has(name)) throw new JazminValidationError(`keyColumns: unknown column '${name}'`);
-
-    const keyOf = (row) => JSON.stringify(keyColumns.map((name) => {
-      const c = byName.get(name);
-      const v = normalizeValue(c.type, row[name], name);
-      return v === null ? null : keyText(toKey(c.type, v));
-    }));
-    const sortedBy = reader.sortedBy;
-    const sortKeyOf = (row) => sortedBy.map((name) => {
-      const c = byName.get(name);
-      const v = normalizeValue(c.type, row[name], name);
-      return v === null ? null : toKey(c.type, v);
-    });
-
-    const pending = new Map(); // upsert key -> { row, matched }
-    for (const row of upsert) pending.set(keyOf(row), { row, matched: false });
-    const isDeleted = deleteWhere ? compileFilter(deleteWhere, columns) : null;
+    for (const [name, c] of changes) {
+      if (tablePlan.removed.has(name) && anyChanges(c)) throw new JazminValidationError(`Table '${name}' is being removed: its rows can't change too`);
+    }
+    const context = {
+      owner, sortRunRows, priority, codec, level, maxDegreeOfParallelism,
+      track: (sorter) => { sorters.push(sorter); return sorter; },
+    };
+    const plans = new Map(kept.filter((r) => changes.has(r.table)).map((r) => [r, planTableChanges(r, changes.get(r.table), { ...context, regroup: r === reader && regroup })]));
+    const mainPlan = plans.get(reader);
 
     // The other tables of the file are copied as they are: a new version has fresh secrets throughout (spec 7.6.7).
     let access = owner ? accessFor(owner, grant, revoke) : undefined;
     if (newOwner) access = { ...access, grants: newOwner.grants(access.grants) };
     // Named tables (several, or one with a name) are written as tables, which keeps their names.
     const named = kept.length + addTables.length > 1 || kept.some((r) => finalName(r.table) !== '') || addTables.length > 0;
-    const kinds = (r) => (r === reader ? columns : columnsWithIndexes(r));
     writer = new JazminWriter(temp, {
       ...(named
         ? {
           tables: [
-            ...kept.map((r) => ({ name: finalName(r.table), columns: kinds(r), sortedBy: r === reader ? target : r.sortedBy, ...(owner ? tableLayout(r[OWNER_GRANTS]) : {}) })),
+            ...kept.map((r) => ({
+              name: finalName(r.table), columns: plans.get(r)?.columns ?? columnsWithIndexes(r), sortedBy: plans.has(r) ? plans.get(r).sortedBy : r.sortedBy,
+              ...(owner ? tableLayout(r[OWNER_GRANTS]) : {}),
+            })),
             ...addTables.map((t) => ({
               name: t.name, columns: t.columns, sortedBy: t.sortedBy, chunkRows: t.chunkRows, chunkBytes: t.chunkBytes,
               ...(owner ? { partitionBy: t.partitionBy, columnGroups: t.columnGroups } : {}),
             })),
           ],
         }
-        : { columns, sortedBy: target }),
+        : { columns: mainPlan.columns, sortedBy: mainPlan.sortedBy }),
       metadata: { ...reader.metadata, ...(metadata ?? {}) },
       codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, layout,
       compactIndexes: compactIndexes ?? reader[COMPACT_INDEXES],
@@ -221,67 +213,19 @@ export function updateUnlocked(path, options = {}) {
       ...(links !== undefined || reader.links.length ? { links: links !== undefined ? links : linksAfter(reader.links, tablePlan) } : {}),
     });
 
-    const stats = { inserted: 0, updated: 0, deleted: 0 };
-    const writeChanged = () => {
-      // A new sort order: the changed rows go through the sorter, then to the writer in the new order.
-      if (resort && target) {
-        sorter = new RowSorter(columns, target, {
-          runRows: sortRunRows ?? SORT_RUN_ROWS[priority ?? 'balanced'] ?? SORT_RUN_ROWS.balanced,
-          writeOptions: { codec, level, maxDegreeOfParallelism, priority },
-        });
-      }
-      const emit = sorter ? (row) => sorter.add(row) : (row) => writer.writeRow(row);
-      if (sortedBy && !resort) {
-        // Upserted rows are re-inserted at their sorted position (their sort key may have changed),
-        // so the whole change set merges into the stream in one pass.
-        const incoming = [...insert, ...[...pending.values()].map((p) => p.row)].map((row) => ({ row, key: sortKeyOf(row) }));
-        incoming.sort((a, b) => compareTuples(a.key, b.key));
-        let next = 0;
-        for (const row of reader.rows()) {
-          const rowKey = sortKeyOf(row);
-          while (next < incoming.length && compareTuples(incoming[next].key, rowKey) < 0) writer.writeRow(incoming[next++].row);
-          const hit = pending.size ? pending.get(keyOf(row)) : undefined;
-          if (hit) {
-            if (hit.matched) stats.deleted++; // duplicate key rows collapse into the single upserted row
-            else stats.updated++;
-            hit.matched = true;
-          } else if (isDeleted?.(row)) {
-            stats.deleted++;
-          } else {
-            writer.writeRow(row);
-          }
-        }
-        while (next < incoming.length) writer.writeRow(incoming[next++].row);
-      } else {
-        for (const row of regroup ? reader[ROWS_BY_PARTITION]() : reader.rows()) {
-          const hit = pending.size ? pending.get(keyOf(row)) : undefined;
-          if (hit && !hit.matched) {
-            hit.matched = true;
-            stats.updated++;
-            emit(hit.row);
-          } else if (hit || isDeleted?.(row)) {
-            stats.deleted++;
-          } else {
-            emit(row);
-          }
-        }
-        for (const row of insert) emit(row);
-        for (const { row, matched } of pending.values()) if (!matched) emit(row);
-        if (sorter) for (const row of sorter.rows()) writer.writeRow(row);
-      }
-      stats.inserted = insert.length + [...pending.values()].filter((p) => !p.matched).length;
-    };
-
-    let rowCount = 0;
+    let stats = { rowCount: 0, inserted: 0, updated: 0, deleted: 0 };
+    const tableStats = {};
     let first = true;
     for (const r of kept) {
       if (!first) writer.startTable(finalName(r.table));
       first = false;
-      if (r !== reader) {
-        for (const row of r.rows()) writer.writeRow(row);
+      const plan = plans.get(r);
+      if (plan) {
+        const done = plan.write(writer);
+        tableStats[finalName(r.table)] = done;
+        if (r === reader) stats = done;
       } else {
-        writeChanged();
-        rowCount = writer.rowCount;
+        for (const row of r.rows()) writer.writeRow(row);
       }
     }
     // Added tables: their rows as given, or put in their sortedBy's order within the memory budget.
@@ -292,28 +236,168 @@ export function updateUnlocked(path, options = {}) {
         for (const row of t.rows ?? []) writer.writeRow(row);
         continue;
       }
-      sorter = new RowSorter(normalizeColumns(t.columns), t.sortedBy, {
-        runRows: sortRunRows ?? SORT_RUN_ROWS[priority ?? 'balanced'] ?? SORT_RUN_ROWS.balanced,
-        writeOptions: { codec, level, maxDegreeOfParallelism, priority },
-      });
+      const sorter = context.track(new RowSorter(normalizeColumns(t.columns), t.sortedBy, sorterOptions(context)));
       for (const row of t.rows ?? []) sorter.add(row);
       for (const row of sorter.rows()) writer.writeRow(row);
       sorter.close();
-      sorter = null;
     }
 
     for (const r of readers) r.close();
-    sorter?.close();
+    for (const s of sorters) s.close();
     writer.finish();
     replaceFile(temp, path);
-    return { rowCount, ...stats, expiredGrantsRemoved: writer.expiredGrants };
+    return { ...stats, expiredGrantsRemoved: writer.expiredGrants, ...(tableChanges !== undefined ? { tables: tableStats } : {}) };
   } catch (error) {
     writer?.abort();
     for (const r of readers) r.close();
-    sorter?.close();
+    for (const s of sorters) s.close();
     fs.rmSync(temp, { force: true });
     throw error;
   }
+}
+
+const sorterOptions = ({ sortRunRows, priority, codec, level, maxDegreeOfParallelism }) => ({
+  runRows: sortRunRows ?? SORT_RUN_ROWS[priority ?? 'balanced'] ?? SORT_RUN_ROWS.balanced,
+  writeOptions: { codec, level, maxDegreeOfParallelism, priority },
+});
+
+/**
+ * One table's changes, planned: its columns and sort order afterwards, and `write(writer)`, which writes its rows with
+ * the changes applied and returns { rowCount, inserted, updated, deleted }. Changes: insert, upsert + keyColumns,
+ * delete (a filter), set + where (columns set on the rows a filter matches), indexes, sortedBy, columns (nested fields).
+ */
+function planTableChanges(reader, changes, context) {
+  const { insert = [], upsert = [], keyColumns, delete: deleteWhere, set, where, indexes, sortedBy: newSortedBy, columns: given } = changes;
+  const { owner, regroup } = context;
+  const name = reader.table ? `table '${reader.table}'` : 'the table';
+  if (upsert.length && (!Array.isArray(keyColumns) || keyColumns.length === 0)) {
+    throw new JazminValidationError('upsert needs keyColumns, e.g. { keyColumns: ["id"] }');
+  }
+  if ((set === undefined) !== (where === undefined)) throw new JazminValidationError(`${name}: set and where go together: set: { column: value }, where: a filter ({} for every row)`);
+  if (set !== undefined && (set === null || typeof set !== 'object' || Array.isArray(set) || !Object.keys(set).length)) {
+    throw new JazminValidationError(`${name}: set: { column: value, ... }`);
+  }
+
+  // The sort order afterwards: the file's, or a new one (sortedBy; null or [] for none).
+  const target = targetSortedBy(newSortedBy, reader.sortedBy);
+  const partitionBy = owner ? reader[OWNER_GRANTS].partitionBy : null;
+  if (regroup && !partitionBy) throw new JazminValidationError('regroup applies to access-controlled files with partitionBy');
+  if (regroup && target && target[0] !== partitionBy) {
+    throw new JazminValidationError(`regroup would break the sortedBy order [${target.join(', ')}]: `
+      + `it needs no sortedBy, or one that starts with the partition column '${partitionBy}' (then rows are already grouped)`);
+  }
+
+  // Nested columns may gain fields at the end of their objects (spec 5.4): their new definitions are given; and
+  // columns may get, change or lose indexes. The old first sort column found its values by the order, with no index
+  // of its own: re-sorted away from it, it gets a sorted index, so lookups on it stay fast, unless `indexes` names it.
+  const resortAsked = !sameNames(target, reader.sortedBy);
+  const current = columnsWithIndexes(reader);
+  const was = current.find((c) => c.name === reader.sortedBy?.[0]);
+  const keepLookup = resortAsked && was && target?.[0] !== was.name && !(indexes && Object.hasOwn(indexes, was.name))
+    && INDEX_KINDS.sorted.has(was.type) && !was.index.includes('sorted');
+  const wanted = keepLookup ? { ...(indexes ?? {}), [was.name]: [...was.index, 'sorted'] } : indexes;
+  const { columns } = growColumns(withIndexes(current, wanted), given, normalizeColumns);
+  const byName = new Map(columns.map((c) => [c.name, c]));
+  for (const k of keyColumns ?? []) if (!byName.has(k)) throw new JazminValidationError(`keyColumns: unknown column '${k}'`);
+
+  // set: the columns it sets exist; in a shared file the partition column stays (its rows would leave the partitions
+  // keys are granted).
+  const setColumns = Object.keys(set ?? {});
+  for (const c of setColumns) if (!byName.has(c)) throw new JazminValidationError(`${name}: set: unknown column '${c}'`);
+  if (partitionBy && setColumns.includes(partitionBy)) {
+    throw new JazminValidationError(`${name}: set changes the partition column '${partitionBy}': the rows would leave the partitions keys are granted`);
+  }
+  const matches = set ? compileFilter(where, columns) : null;
+  // Rows whose sort columns are set move. When few match (up to the sort budget) they are found first, by the file's
+  // indexes, held, and merged in at their new place as the table streams; more go through the sorter.
+  const setsOrder = Boolean(target) && setColumns.some((c) => target.includes(c));
+  const { runRows } = sorterOptions(context);
+
+  const keyOf = (row) => JSON.stringify(keyColumns.map((k) => {
+    const c = byName.get(k);
+    const v = normalizeValue(c.type, row[k], k);
+    return v === null ? null : keyText(keyId(toKey(c.type, v)));
+  }));
+  const sortedBy = reader.sortedBy;
+  const sortKeyOf = (row) => sortedBy.map((k) => {
+    const c = byName.get(k);
+    const v = normalizeValue(c.type, row[k], k);
+    return v === null ? null : toKey(c.type, v);
+  });
+  const pending = new Map(); // upsert key -> { row, matched }
+  for (const row of upsert) pending.set(keyOf(row), { row, matched: false });
+  const isDeleted = deleteWhere ? compileFilter(deleteWhere, columns) : null;
+
+  const write = (writer) => {
+    const stats = { inserted: 0, updated: 0, deleted: 0 };
+    let moved = null; // the rows whose sort columns are set, changed, when few enough to hold
+    // Counted first (by the indexes, or the filter's columns only), so too many are never gathered.
+    if (setsOrder && !resortAsked && !regroup && reader.count(where) <= runRows) {
+      moved = [];
+      for (const row of reader.find(where)) {
+        if ((pending.size && pending.has(keyOf(row))) || isDeleted?.(row)) continue; // upserted or deleted instead
+        moved.push({ ...row, ...set });
+      }
+    }
+    const resort = resortAsked || (setsOrder && !moved);
+    const sorter = resort && target ? context.track(new RowSorter(columns, target, sorterOptions(context))) : null;
+    const emit = sorter ? (row) => sorter.add(row) : (row) => writer.writeRow(row);
+    const changed = (row) => {
+      if (!matches?.(row)) return row;
+      stats.updated++;
+      return { ...row, ...set };
+    };
+    if (sortedBy && !resort) {
+      // Upserted rows are re-inserted at their sorted position (their sort key may have changed),
+      // so the whole change set merges into the stream in one pass.
+      const incoming = [...insert, ...[...pending.values()].map((p) => p.row), ...(moved ?? [])].map((row) => ({ row, key: sortKeyOf(row) }));
+      incoming.sort((a, b) => compareTuples(a.key, b.key));
+      let next = 0;
+      let movedOut = 0;
+      for (const row of reader.rows()) {
+        const rowKey = sortKeyOf(row);
+        while (next < incoming.length && compareTuples(incoming[next].key, rowKey) < 0) writer.writeRow(incoming[next++].row);
+        const hit = pending.size ? pending.get(keyOf(row)) : undefined;
+        if (hit) {
+          if (hit.matched) stats.deleted++; // duplicate key rows collapse into the single upserted row
+          else stats.updated++;
+          hit.matched = true;
+        } else if (isDeleted?.(row)) {
+          stats.deleted++;
+        } else if (moved && matches(row)) {
+          stats.updated++; // written at its new place, from incoming
+          movedOut++;
+        } else {
+          writer.writeRow(changed(row));
+        }
+      }
+      while (next < incoming.length) writer.writeRow(incoming[next++].row);
+      // Every row taken out was one gathered, or a row would be lost or doubled (nothing is written then).
+      if (moved && movedOut !== moved.length) throw new Error(`${name}: ${moved.length} rows to move were found, but ${movedOut} were taken out`);
+    } else {
+      for (const row of regroup ? reader[ROWS_BY_PARTITION]() : reader.rows()) {
+        const hit = pending.size ? pending.get(keyOf(row)) : undefined;
+        if (hit && !hit.matched) {
+          hit.matched = true;
+          stats.updated++;
+          emit(hit.row);
+        } else if (hit || isDeleted?.(row)) {
+          stats.deleted++;
+        } else {
+          emit(changed(row));
+        }
+      }
+      for (const row of insert) emit(row);
+      for (const { row, matched } of pending.values()) if (!matched) emit(row);
+      if (sorter) {
+        for (const row of sorter.rows()) writer.writeRow(row);
+        sorter.close(); // its temporary files go now, not after every table
+      }
+    }
+    stats.inserted = insert.length + [...pending.values()].filter((p) => !p.matched).length;
+    return { rowCount: writer.rowCount, ...stats };
+  };
+  return { columns, sortedBy: target, write };
 }
 
 /**
