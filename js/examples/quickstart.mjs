@@ -276,7 +276,7 @@ console.log('20.', capeTown.toArray(), capeTown.explain().filter);
 accounts.close();
 // 20. [ 1, 3 ] { branch: { eq: 'CPT' } }
 
-// ---- The next release: changing a file you already have (sections 21-25) -------------------------------------------
+// ---- Changing a file you already have (sections 21-25) -----------------------------------------------------------------
 
 // 21. Does the file need compacting? (USER-GUIDE 17.5): storage() reads only the file's directories, never its rows.
 const ledger = path.join(dir, 'ledger.jzm');

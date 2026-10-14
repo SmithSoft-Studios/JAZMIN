@@ -390,7 +390,7 @@ using (var asTeller = JazminReader.Open(branchesPath, new JazminReadOptions { Ac
     // 21. [Accounts per branch] [{"branch":"CPT","accounts":2},{"branch":"JHB","accounts":1}]
 }
 
-// ---- The next release: changing a file you already have (sections 22-26) ---------------------------------------------
+// ---- Changing a file you already have (sections 22-26) -----------------------------------------------------------------
 
 // --- 22. Does the file need compacting? (USER-GUIDE 17.5): Storage() reads only the file's directories, never its rows.
 var ledgerPath = Path.Combine(dir, "ledger.jzm");
