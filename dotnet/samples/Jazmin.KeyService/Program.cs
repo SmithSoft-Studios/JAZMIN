@@ -1,9 +1,12 @@
 // Sample JAZMIN key service: issues unlock tokens for online grants, protected by 2FA (TotpAuthSharp).
 //
 // Configuration (environment variables or appsettings):
-//   Jazmin__OwnerKey   the owner's master key (jzk1-...) - load it from your secret store in production
-//   Jazmin__FilesDir   folder containing the .jzm files this service unlocks
-//   Jazmin__Issuer     name shown in the authenticator app (default "JAZMIN")
+//   Jazmin__TokensFile      the online grants' unlock tokens, listed on a trusted machine (JazminFile.ListUnlockTokens):
+//                           the service then never holds the owner key. Or, shorter to set up:
+//   Jazmin__OwnerKey        the owner's master key (jzk1-...) - load it from your secret store in production
+//   Jazmin__FilesDir        folder containing the .jzm files the owner key unlocks
+//   Jazmin__Issuer          name shown in the authenticator app (default "JAZMIN")
+//   Jazmin__AllowedOrigins  web pages that may call the service, comma separated (none by default)
 //
 // IMPORTANT: this sample identifies the user with the X-User-Id header to stay short. In production
 // take the user id from your authentication (for example a validated JWT) - never trust it from the client.
@@ -13,20 +16,32 @@ using TotpAuthSharp;
 using TotpAuthSharp.Interface;
 
 var builder = WebApplication.CreateBuilder(args);
-var ownerKeyText = builder.Configuration["Jazmin:OwnerKey"]
-    ?? throw new InvalidOperationException("Set Jazmin__OwnerKey to the owner's jzk1-... key");
-var filesDir = builder.Configuration["Jazmin:FilesDir"] ?? Directory.GetCurrentDirectory();
+var tokensFile = builder.Configuration["Jazmin:TokensFile"];
 var issuer = builder.Configuration["Jazmin:Issuer"] ?? "JAZMIN";
+var origins = (builder.Configuration["Jazmin:AllowedOrigins"] ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+IUnlockTokens tokens = tokensFile is not null
+    ? new StoredUnlockTokens(tokensFile)
+    : new OwnerKeyUnlockTokens(
+        new DirectoryFileCatalog(builder.Configuration["Jazmin:FilesDir"] ?? Directory.GetCurrentDirectory()),
+        JazminKey.Parse(builder.Configuration["Jazmin:OwnerKey"]
+            ?? throw new InvalidOperationException("Set Jazmin__TokensFile to the listed unlock tokens, or Jazmin__OwnerKey to the owner's jzk1-... key")));
 
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<IUserStore, InMemoryUserStore>();
-builder.Services.AddSingleton<IFileCatalog>(new DirectoryFileCatalog(filesDir));
+builder.Services.AddSingleton<IUnlockTokens>(tokens);
 builder.Services.AddSingleton<ITotpSetupGenerator, TotpSetupGenerator>();
 builder.Services.AddSingleton(sp => new KeyService(
-    sp.GetRequiredService<IUserStore>(), sp.GetRequiredService<IFileCatalog>(), JazminKey.Parse(ownerKeyText),
+    sp.GetRequiredService<IUserStore>(), sp.GetRequiredService<IUnlockTokens>(),
     sp.GetRequiredService<TimeProvider>(), sp.GetRequiredService<ITotpSetupGenerator>()));
+// A page that asks for the code calls the service from the browser: only the origins configured may. A page opened
+// from disk has the origin "null" - allow it only for a demo on your own computer.
+if (origins.Length > 0)
+{
+    builder.Services.AddCors(cors => cors.AddDefaultPolicy(policy => policy.WithOrigins(origins).WithHeaders("Content-Type", "X-User-Id").WithMethods("POST")));
+}
 
 var app = builder.Build();
+if (origins.Length > 0) app.UseCors();
 
 static string? UserId(HttpRequest request) => request.Headers["X-User-Id"].FirstOrDefault(); // replace with your authentication
 

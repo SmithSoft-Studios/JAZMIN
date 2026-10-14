@@ -2676,7 +2676,26 @@ so a stolen access key alone is not enough to open the file.
 The sample in `dotnet/samples/Jazmin.KeyService` does this with TotpAuthSharp:
 enrolment by QR code, replay protection (each code works once), and a lockout
 after repeated wrong codes. See its README for the endpoints and the
-production checklist.
+production checklist. The service can run **without the owner key**: list the
+online grants' tokens on a trusted machine (`listUnlockTokens` /
+`JazminFile.ListUnlockTokens`) and give it only that list
+(`Jazmin__TokensFile`). Broken into, it can't open or forge a file, because a
+token opens nothing without its access key.
+
+**Try it:** `js/examples/from-disk/two-factor.html` (built by `make.mjs`)
+walks through it in a browser, from disk: set up an authenticator app by QR
+code, see the access key alone refused (`JazminUnlockRequiredError`), then open
+the file with a code. On a laptop the service checks the code and gives the
+token in about 15 ms, and the file opens in about 14 ms.
+
+```js
+try { reader = await JazminBrowser.open(bytes, { key }); }
+catch (e) {
+  if (!(e instanceof JazminBrowser.JazminUnlockRequiredError)) throw e;
+  const { token } = await askKeyService({ fileId: e.fileId, keyId: e.keyId, code });  // after the 2FA check
+  reader = await JazminBrowser.open(bytes, { key, unlockToken: token });
+}
+```
 
 | Access type | Needs | Works offline |
 |---|---|---|

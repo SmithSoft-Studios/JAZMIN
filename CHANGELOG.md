@@ -3,6 +3,13 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## Unreleased
+- **Samples:** the sample key service (`dotnet/samples/Jazmin.KeyService`) can run without the owner key: it reads
+  the online grants' unlock tokens from a file listed on a trusted machine (`Jazmin__TokensFile`;
+  `listUnlockTokens` / `JazminFile.ListUnlockTokens`), and lets the web pages in `Jazmin__AllowedOrigins` call it. The
+  from-disk sample's new `two-factor.html` uses it: an authenticator app set up by QR code, the access key alone
+  refused, the file opened with a code. No library change.
+
 ## 1.6.0 - 2026-10-14 (file format 1.0)
 A file you already have can be changed in one rewrite that keeps everything else: its tables added, renamed or
 removed, its indexes and sort order changed, links declared between its tables and checked against the rows, and a

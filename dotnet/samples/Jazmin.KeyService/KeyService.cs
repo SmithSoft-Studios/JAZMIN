@@ -90,6 +90,83 @@ public sealed record UnlockResult(UnlockStatus Status, string? Token = null, Dat
 
 public sealed record EnrolmentResult(string QrCodeImage, string ManualSetupKey);
 
+/// <summary>How the service makes an online grant's unlock token, once the user's second factor has passed.</summary>
+public interface IUnlockTokens
+{
+    /// <summary>The token for the access key's online grant in the file: Issued, or FileNotFound, NotOnlineGrant or Expired.</summary>
+    UnlockResult Issue(string fileId, string keyId, DateTimeOffset now);
+}
+
+/// <summary>Makes tokens from the files with the owner key. Short to set up; a service holding the owner key can read every file if it is broken into.</summary>
+public sealed class OwnerKeyUnlockTokens(IFileCatalog files, JazminKey ownerKey) : IUnlockTokens
+{
+    public UnlockResult Issue(string fileId, string keyId, DateTimeOffset now)
+    {
+        var path = files.FindPath(fileId);
+        if (path is null) return new UnlockResult(UnlockStatus.FileNotFound);
+        try
+        {
+            return new UnlockResult(UnlockStatus.Issued, JazminFile.IssueUnlockToken(path, ownerKey, keyId, now));
+        }
+        catch (JazminAccessExpiredException)
+        {
+            return new UnlockResult(UnlockStatus.Expired);
+        }
+        catch (JazminValidationException)
+        {
+            // No grant for this key in this file, or the grant is offline (needs no token).
+            return new UnlockResult(UnlockStatus.NotOnlineGrant);
+        }
+        catch (Exception e) when (e is JazminFormatException or JazminKeyException)
+        {
+            return new UnlockResult(UnlockStatus.FileNotFound); // damaged, or not this owner's file
+        }
+    }
+}
+
+/// <summary>
+/// Tokens listed beforehand on a trusted machine with <see cref="JazminFile.ListUnlockTokens"/>, so this service never
+/// holds the owner key: <c>{ "files": [ { "fileId", "tokens": [ { "keyId", "label", "expires", "token" } ] } ] }</c>.
+/// A token alone opens nothing (it takes the access key as well), but keep the file encrypted at rest all the same.
+/// </summary>
+public sealed class StoredUnlockTokens : IUnlockTokens
+{
+    private readonly Dictionary<string, Dictionary<string, StoredToken>> _files = new(StringComparer.Ordinal);
+
+    /// <summary>Reads the tokens file; a missing or unreadable one fails here, when the service starts.</summary>
+    public StoredUnlockTokens(string path)
+    {
+        StoredTokensFile? stored;
+        try
+        {
+            stored = System.Text.Json.JsonSerializer.Deserialize<StoredTokensFile>(File.ReadAllText(path), new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web));
+        }
+        catch (System.Text.Json.JsonException e)
+        {
+            throw new InvalidOperationException($"The tokens file {path} isn't JSON in the form {{ \"files\": [{{ \"fileId\", \"tokens\": [...] }}] }}: {e.Message}", e);
+        }
+        foreach (var file in stored?.Files ?? [])
+        {
+            var tokens = _files.TryGetValue(file.FileId, out var known) ? known : _files[file.FileId] = new(StringComparer.Ordinal);
+            foreach (var token in file.Tokens ?? []) tokens[token.KeyId] = token;
+        }
+    }
+
+    public UnlockResult Issue(string fileId, string keyId, DateTimeOffset now)
+    {
+        if (!_files.TryGetValue(fileId, out var tokens)) return new UnlockResult(UnlockStatus.FileNotFound);
+        if (!tokens.TryGetValue(keyId, out var token)) return new UnlockResult(UnlockStatus.NotOnlineGrant);
+        if (token.Expires is { } expires && expires <= now) return new UnlockResult(UnlockStatus.Expired);
+        return new UnlockResult(UnlockStatus.Issued, token.Token);
+    }
+
+    private sealed record StoredTokensFile(IReadOnlyList<StoredFileTokens>? Files);
+
+    private sealed record StoredFileTokens(string FileId, IReadOnlyList<StoredToken>? Tokens);
+
+    private sealed record StoredToken(string KeyId, string Token, DateTimeOffset? Expires, string? Label);
+}
+
 /// <summary>
 /// Issues JAZMIN unlock tokens for online grants, gated by a second factor: a code from the user's
 /// authenticator app, checked with TotpAuthSharp. A token is issued only when the user has confirmed
@@ -97,8 +174,14 @@ public sealed record EnrolmentResult(string QrCodeImage, string ManualSetupKey);
 /// grant has not expired. Repeated wrong codes lock the user out, for longer each time, because a
 /// 6-digit code could otherwise be guessed.
 /// </summary>
-public sealed class KeyService(IUserStore users, IFileCatalog files, JazminKey ownerKey, TimeProvider clock, ITotpSetupGenerator setupGenerator)
+public sealed class KeyService(IUserStore users, IUnlockTokens tokens, TimeProvider clock, ITotpSetupGenerator setupGenerator)
 {
+    /// <summary>A service that makes tokens with the owner key from the files the catalog finds.</summary>
+    public KeyService(IUserStore users, IFileCatalog files, JazminKey ownerKey, TimeProvider clock, ITotpSetupGenerator setupGenerator)
+        : this(users, new OwnerKeyUnlockTokens(files, ownerKey), clock, setupGenerator)
+    {
+    }
+
     public const int MaxFailedAttempts = 5;
 
     /// <summary>The first lockout; each later one is twice as long, up to <see cref="MaxLockoutPeriod"/>.</summary>
@@ -195,25 +278,7 @@ public sealed class KeyService(IUserStore users, IFileCatalog files, JazminKey o
 
         // Only after the second factor passed: is this the user's key, and is the grant still valid?
         if (!user.AccessKeyIds.Contains(keyId)) return new UnlockResult(UnlockStatus.KeyNotOwnedByUser);
-        var path = files.FindPath(fileId);
-        if (path is null) return new UnlockResult(UnlockStatus.FileNotFound);
-        try
-        {
-            return new UnlockResult(UnlockStatus.Issued, JazminFile.IssueUnlockToken(path, ownerKey, keyId, now));
-        }
-        catch (JazminAccessExpiredException)
-        {
-            return new UnlockResult(UnlockStatus.Expired);
-        }
-        catch (JazminValidationException)
-        {
-            // No grant for this key in this file, or the grant is offline (needs no token).
-            return new UnlockResult(UnlockStatus.NotOnlineGrant);
-        }
-        catch (Exception e) when (e is JazminFormatException or JazminKeyException)
-        {
-            return new UnlockResult(UnlockStatus.FileNotFound); // damaged, or not this owner's file
-        }
+        return tokens.Issue(fileId, keyId, now);
     }
 
     /// <summary>Validates a code with replay protection, counting failures toward a lockout (call under the user's lock).</summary>

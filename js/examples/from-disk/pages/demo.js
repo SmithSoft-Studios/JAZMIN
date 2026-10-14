@@ -13,7 +13,7 @@ var demo = (function () {
   function show(value, column) {
     if (value === null || value === undefined) return '—';
     if (value instanceof Date) return day(value);
-    if (column && /amount|salary|bonus|revenue|total|spent|largest/.test(column) && !Number.isNaN(Number(value))) return rand(Number(value));
+    if (column && /amount|salary|bonus|shares|revenue|total|spent|largest/.test(column) && !Number.isNaN(Number(value))) return rand(Number(value));
     return typeof value === 'number' ? value.toLocaleString('en-US') : String(value);
   }
 
@@ -25,7 +25,7 @@ var demo = (function () {
     for (const [name, heading] of cols) {
       const th = document.createElement('th');
       th.textContent = heading;
-      if (rows.some((r) => typeof r[name] === 'number' || /amount|salary|bonus|revenue|total|spent/.test(name))) th.className = 'number';
+      if (rows.some((r) => typeof r[name] === 'number' || /amount|salary|bonus|shares|revenue|total|spent/.test(name))) th.className = 'number';
       head.append(th);
     }
     const body = el.createTBody();
@@ -34,7 +34,7 @@ var demo = (function () {
       for (const [name] of cols) {
         const td = tr.insertCell();
         td.textContent = show(row[name], name);
-        if (typeof row[name] === 'number' || /amount|salary|bonus|revenue|total|spent/.test(name)) td.className = `number${Number(row[name]) < 0 ? ' out' : ''}`;
+        if (typeof row[name] === 'number' || /amount|salary|bonus|shares|revenue|total|spent/.test(name)) td.className = `number${Number(row[name]) < 0 ? ' out' : ''}`;
       }
     }
     return el;

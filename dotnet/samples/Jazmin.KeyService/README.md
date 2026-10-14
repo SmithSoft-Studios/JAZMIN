@@ -33,11 +33,31 @@ Requires the .NET 10 SDK, like the JAZMIN library itself.
 
 ## Run it
 
+Without the owner key (better): on a trusted machine, list each file's unlock tokens with the owner key
+(`listUnlockTokens(path, ownerKey)` in JavaScript, `JazminFile.ListUnlockTokens` in .NET) into a tokens file, and give
+the service only that file. Broken into, it can't read or forge any file: a token opens nothing without its access key.
+
+```json
+{ "files": [ { "fileId": "961c…", "tokens": [ { "keyId": "18e4…", "label": "Thandi", "expires": "2026-11-13T22:24:46Z", "token": "jzu1-…" } ] } ] }
+```
+
+```bash
+export Jazmin__TokensFile="/secure/jazmin-tokens.json"
+dotnet run --project dotnet/samples/Jazmin.KeyService
+```
+
+With the owner key (shorter to set up):
+
 ```bash
 export Jazmin__OwnerKey="jzk1-..."      # from your secret store - never commit it
 export Jazmin__FilesDir="/data/statements"
 dotnet run --project dotnet/samples/Jazmin.KeyService
 ```
+
+A web page that asks for the code calls the service from the browser: list its origin in `Jazmin__AllowedOrigins`
+(comma separated; none by default). `js/examples/from-disk/two-factor.html` is such a page: `make.mjs` writes its file,
+its demo key and `site/key-service/tokens.json`, and the page shows the command to start the service. A page opened
+from disk has the origin `null`: allow that only for a demo on your own computer.
 
 ## Before using this in production
 
