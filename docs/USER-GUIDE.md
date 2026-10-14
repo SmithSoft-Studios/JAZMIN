@@ -2433,6 +2433,57 @@ A simulated year of syncs, with 50 people, 3 syncs a day for 250 days, and
   by the partition column first (then rows are already grouped). Otherwise
   it would break the sort order, and it refuses.
 
+### 17.5 Does the file need compacting? `storage()`
+
+`reader.storage()` (.NET `reader.Storage()`; next release) shows how a file's
+bytes are used, so you can tell whether compacting would help, and by how
+much:
+
+```js
+const r = open('statements.jzm', { key: owner });
+const s = r.storage();
+r.close();
+s.fileBytes;     // the file's size
+s.unusedBytes;   // bytes the current version no longer uses: compact() gives them back
+s.deletedRows;   // rows deleted or replaced by appends, still stored
+s.deletedBytes;  // their bytes, estimated from the chunks they are in
+s.appendCount;   // appends since the last full write
+s.tables;        // per table: rows, deletedRows, chunks, rowsPerChunk, indexes [{ column, kind, segments }]
+```
+
+```csharp
+using var r = JazminReader.Open("statements.jzm", new JazminReadOptions { Key = owner });
+var s = r.Storage();   // FileBytes, UsedBytes, UnusedBytes, DeletedRows, DeletedBytes, AppendCount, Tables
+```
+
+What the numbers mean:
+
+- **Unused bytes** are what appends leave behind: the header each append
+  replaces, embedded files replaced or removed, and an interrupted append. A
+  file written in full has none.
+- **Deleted rows** keep their space until a compaction.
+- **Index segments:** an index has one segment after a full write, and one
+  more per append. A lookup reads every segment, so many segments slow
+  lookups down. `compact()` merges them into one.
+- **Rows per chunk:** each append adds small chunks. In a shared file,
+  `compact({ regroup: true })` merges them (17.4).
+
+`storage()` reads only the file's directories, never its rows. Shared files
+need the owner key.
+
+Measured on a 12th-gen Intel i7 (Node 24, .NET 10), with `npm run
+bench:storage`:
+
+| File | `storage()` in JavaScript | `storage()` in .NET |
+|---|---:|---:|
+| 1,000,000 rows | 0.1 ms, nothing extra | 0.1 ms |
+| The same after 200 appends | 3 ms, 1.6 MB | 2 ms, 0.5 MB allocated |
+| Shared, 250,000 rows in 1,000 partitions | 31 ms, 15 MB | 14 ms, 5 MB allocated |
+| The same with the partitions' rows mixed (250,000 chunks) | 133 ms, 54 MB | 119 ms, 76 MB allocated |
+
+The last file is the worst case `storage()` is there to catch: about one row
+per chunk, which `compact({ regroup: true })` fixes.
+
 ## 18. Time-limited access
 
 Give each access key its own access period, and choose per key how strictly it

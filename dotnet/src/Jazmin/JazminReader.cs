@@ -76,6 +76,20 @@ public sealed class JazminQueryOptions
 }
 
 /// <summary>How a filter executes: via indexes (candidate rows) or a chunk scan (chunks skipped by statistics).</summary>
+/// <summary>An index's segments (<see cref="JazminReader.Storage"/>): 1 after a full write, one more per append.</summary>
+public sealed record JazminIndexSegments(string Column, string Kind, int Segments);
+
+/// <summary>A table's part of <see cref="JazminStorage"/>.</summary>
+public sealed record JazminTableStorage(
+    string Name, long Rows, long DeletedRows, long DeletedBytes, long Chunks, long RowsPerChunk, IReadOnlyList<JazminIndexSegments> Indexes);
+
+/// <summary>
+/// How a file's bytes are used (<see cref="JazminReader.Storage"/>): used and unused bytes, deleted rows still stored
+/// (their bytes estimated), appends since the last full write, and each table's chunks and index segments.
+/// </summary>
+public sealed record JazminStorage(
+    long FileBytes, long UsedBytes, long UnusedBytes, long DeletedRows, long DeletedBytes, int AppendCount, IReadOnlyList<JazminTableStorage> Tables);
+
 public sealed record JazminPlan(string Strategy, long CandidateRows, int Chunks, int ChunksSkipped)
 {
     /// <summary>What the query read, from <see cref="JazminReader.Explain(JazminFilter?, bool, JazminQueryOptions?)"/> with analyze; else null.</summary>
@@ -112,6 +126,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         public required byte[] HeaderSecret { get; init; }
         public required byte[] KeySecret { get; init; }
         public required (long Offset, int Length, byte[] Section) KeySlots { get; init; }
+        public SectionRef? Signature { get; init; }
         public DateTimeOffset? Expires { get; init; }
         public bool Online { get; init; }
         public byte[]? Submission { get; init; } // this access key's submission key (spec 7.8), when the file has one
@@ -390,13 +405,20 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         return new KeyRotationPlan(_flags, _fileId, _header, _headerRef, Recovered, sections);
     }
 
-    /// <summary>The sections of this reader's table, for <see cref="KeyRotation"/>.</summary>
-    private void TableSections(Action<SectionRef, string, string> add)
+    /// <summary>
+    /// The sections of this reader's table, for <see cref="KeyRotation"/>. Without <paramref name="chunks"/>, the chunk
+    /// parts are left out (<see cref="Storage"/> sums them from the chunk directories).
+    /// </summary>
+    private void TableSections(Action<SectionRef, string, string> add, bool chunks = true)
     {
         const string data = FormatConstants.KeyringData, index = FormatConstants.KeyringIndex;
         var t = _tableIndex;
-        if (_table.ColumnGroups.Any(g => g.Definitions is not null))
-            throw new JazminFormatException("Catalog: only access-controlled files keep column definitions in their own section");
+        foreach (var g in _table.ColumnGroups)
+        {
+            if (g.Definitions is null) continue;
+            if (_access is null) throw new JazminFormatException("Catalog: only access-controlled files keep column definitions in their own section");
+            add(g.Definitions, $"{t}/columns/{g.Name}", data);
+        }
         if (_table.PartitionTable is { } partitionTable) add(partitionTable, $"{t}/partitions", data);
         if (_table.Deletes is { } deletes) add(deletes, $"{t}/deletes/{_table.DeletedCount}", data);
         EnsureAllChunks();
@@ -407,17 +429,108 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         for (var o = 0; o < _loaded.Length; o++)
         {
             if (!_loaded[o]) throw new JazminFormatException($"Chunk {o} is in no chunk directory");
-            for (var g = 0; g < _groups.Length; g++) add(Part(o, g), $"{t}/chunk/{o}/{_groups[g].Name}", data);
+            if (chunks)
+                for (var g = 0; g < _groups.Length; g++) add(Part(o, g), $"{t}/chunk/{o}/{_groups[g].Name}", data);
         }
         foreach (var ix in IndexList())
         {
             var baseId = $"{t}/index/{ix.Column}/{ix.Kind}{(ix.Segment > 0 ? $"/{ix.Segment}" : "")}";
             add(ix.Section, baseId, index);
             if (ix.Kind != "sorted") continue;
-            var directory = Catalog.DecodeIndexDirectory(ReadSection(ix.Section, baseId, _keys!.SectionKey(index, baseId)));
+            var directory = Catalog.DecodeIndexDirectory(ReadSection(ix.Section, baseId, CatalogKey(baseId, _access?.Secrets?.Owner, index)));
             for (var n = 0; n < directory.Pages.Count; n++) add(directory.Pages[n].At, $"{baseId}/page/{n}", index);
             if (directory.Nulls is { } nulls) add(nulls, $"{baseId}/nulls", index);
         }
+    }
+
+    /// <summary>
+    /// How the file's bytes are used, for deciding whether to compact it: the bytes the current version uses, those it
+    /// no longer does (headers and sections that appends replaced, embedded files replaced or removed, an interrupted
+    /// append), and per table the rows deleted but still stored (with an estimate of their bytes), its chunks and its
+    /// index segments (one per index after a full write, and one more per append). <see cref="JazminFile.Compact(string, JazminKey?, string?, DateTimeOffset?)"/>
+    /// removes the unused bytes and the deleted rows, and merges the segments; regrouping also merges the small chunks
+    /// appends add. Reads directories, not rows. Needs the whole file: an owner key, or the key or password of a file
+    /// that isn't shared.
+    /// </summary>
+    public JazminStorage Storage()
+    {
+        if (_access is { IsOwner: false }) throw new JazminValidationException("A shared file's storage is measured with its owner key");
+        var used = new Dictionary<long, int>(); // offset -> length: each section once, however often it is referenced
+        void Add(SectionRef? at)
+        {
+            if (at is null || at.Length == 0) return;
+            used[at.Offset] = Math.Max(used.GetValueOrDefault(at.Offset), at.Length);
+        }
+        Add(_headerRef);
+        if (_access is not null)
+        {
+            Add(new SectionRef(_access.KeySlots.Offset, _access.KeySlots.Length));
+            var list = SectionCodec.DecodeSegment(PlainSection(_access.KeySlots.Section, "keyslots"), null, _fileId, "keyslots");
+            foreach (var page in AccessCrypto.KeySlotPages(list)) Add(page);
+            Add(_access.Signature);
+            Add(_header.Access?.OwnerDirectory);
+            Add(_header.Access?.OwnerCatalog);
+        }
+        foreach (var delta in _header.Deltas) Add(delta);
+        if (_header.Files is { } files)
+        {
+            foreach (var (_, section) in files.Directories) Add(section);
+            foreach (var content in FileIndex().Contents.Values)
+                foreach (var (offset, length, _) in content.Blocks) Add(new SectionRef(offset, length));
+        }
+        var tables = new List<JazminTableStorage>();
+        long chunkBytes = 0; // chunk parts: many (one per chunk and column group), each used once, so summed, not listed
+        for (var t = 0; t < _header.Tables.Count; t++)
+        {
+            var reader = t == _tableIndex ? this : OpenTable(_header.Tables[t].Name);
+            try
+            {
+                tables.Add(reader.TableStorage(Add, out var bytes));
+                chunkBytes += bytes;
+            }
+            finally
+            {
+                if (reader != this) reader.Dispose();
+            }
+        }
+        long usedBytes = FormatConstants.PreambleSize + FormatConstants.TrailerSize + chunkBytes;
+        foreach (var length in used.Values) usedBytes += length;
+        var fileBytes = _stream.Length;
+        return new JazminStorage(fileBytes, usedBytes, fileBytes - usedBytes, tables.Sum(t => t.DeletedRows), tables.Sum(t => t.DeletedBytes), _header.AppendCount, tables);
+    }
+
+    /// <summary>This table's sections (to <paramref name="add"/>), and its rows, deleted rows, chunks and index segments.</summary>
+    private JazminTableStorage TableStorage(Action<SectionRef?> add, out long chunkBytes)
+    {
+        TableSections((at, _, _) => add(at), chunks: false);
+        chunkBytes = 0;
+        foreach (var length in _partLength) chunkBytes += length;
+        if (_access is not null)
+        {
+            var entry = OwnerCatalog().FirstOrDefault(e => e.Table == _tableIndex);
+            add(entry?.ChunkMap);
+            add(entry?.ChunkMapAppended);
+        }
+        // Deleted rows' bytes, estimated: each chunk's bytes in proportion to the rows of it deleted.
+        long deletedBytes = 0;
+        var d = 0;
+        for (var o = 0; o < _loaded.Length && d < _deleted.Length; o++)
+        {
+            var start = _rowStart[o];
+            var end = start + _rowCount[o];
+            var n = 0;
+            for (; d < _deleted.Length && _deleted[d] < end; d++)
+                if (_deleted[d] >= start) n++;
+            if (n == 0) continue;
+            long bytes = 0;
+            for (int k = o * _groups.Length, last = k + _groups.Length; k < last; k++) bytes += _partLength[k];
+            deletedBytes += (long)Math.Round((double)bytes * n / _rowCount[o]);
+        }
+        var indexes = IndexList().GroupBy(ix => (ix.Column, ix.Kind)).Select(g => new JazminIndexSegments(g.Key.Column, g.Key.Kind, g.Count())).ToList();
+        var stored = _table.RowCount;
+        var chunks = _table.ChunkCount;
+        return new JazminTableStorage(_table.Name, stored - _deleted.Length, _deleted.Length, deletedBytes, chunks,
+            chunks > 0 ? (long)Math.Round((double)stored / chunks) : 0, indexes);
     }
 
     /// <summary>Whether the file's sorted indexes may hold keys as differences (reader feature 'index-deltas'); update keeps them.</summary>
@@ -564,6 +677,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             HeaderSecret = headerSecret,
             KeySecret = secret.ToArray(),
             KeySlots = (trailer.KeySlots.Offset, trailer.KeySlots.Length, slotsSection),
+            Signature = trailer.Signature,
             Expires = bundle["expires"] is { } expires ? DateTimeOffset.Parse((string)expires!, CultureInfo.InvariantCulture) : null,
             Online = (bool?)bundle["online"] ?? false,
             FileSecrets = Secrets(bundle["files"]),

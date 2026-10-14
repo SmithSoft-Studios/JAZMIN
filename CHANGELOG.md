@@ -6,6 +6,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Added
+- **`reader.storage()`** (.NET `reader.Storage()`): how a file's bytes are used, so a tool can tell whether compacting
+  would help. It reports used and unused bytes (headers that appends replaced, embedded files replaced or removed, an
+  interrupted append), deleted rows still stored (their bytes estimated), appends since the last full write, and per
+  table the chunks, rows per chunk and index segments. It reads directories, never rows; shared files need the owner
+  key. A file written in full measures 0 unused bytes, checked on every fixture of both libraries; the two libraries
+  report the same numbers. USER-GUIDE 17.5; `npm run bench:storage`.
 - **Documents read several tables:** a file's pages get `jazmin.tables` (each table's name, columns and row count) and
   `jazmin.table` (their own), and `jazmin.query` and `jazmin.count` take a `table` option, in the web viewer and in
   `renderPdf` / `renderImage`. A key's view holds in every table. In `renderPdf`, `filter` also limits each other
@@ -22,6 +28,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   which JAZMIN versions read it. `jazmin inspect` shows them too. Empty for files every 1.x release reads.
 - **The owner's grant list gives each key's extra file groups** (`grants[i].files`, .NET `JazminGrantInfo.Files`), so a
   tool can change someone's grant without losing them: a new grant for a key replaces the old one whole, files included.
+
+### Changed
+- **Less memory for shared files with many chunks (JavaScript):** each chunk part's digest is no longer kept as an
+  object of its own. A full count of a shared file with 250,000 chunks peaks at about 212 MB instead of 290 MB, and
+  runs about 7% faster.
 
 ## 1.5.0 - 2026-10-11 (file format 1.0)
 

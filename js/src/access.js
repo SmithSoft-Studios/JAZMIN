@@ -340,6 +340,17 @@ export function findKeySlotPage(list, id) {
   };
 }
 
+/** Every page a key-slot list names: [{ offset, length }]. */
+export function keySlotPages(list) {
+  if (list.length < 4) throw new JazminFormatError('Key-slot list is truncated');
+  const count = list.readUInt32LE(0);
+  if (list.length !== 4 + count * PAGE_ENTRY_SIZE) throw new JazminFormatError('Key-slot list has the wrong length');
+  return Array.from({ length: count }, (_, i) => {
+    const at = 4 + i * PAGE_ENTRY_SIZE;
+    return { offset: Number(list.readBigUInt64LE(at + SLOT_ID_SIZE)), length: list.readUInt32LE(at + SLOT_ID_SIZE + 8) };
+  });
+}
+
 /** Parses a key-slot page (see buildKeySlotPages). */
 export function parseKeySlots(raw) {
   if (raw.length < 4) throw new JazminFormatError('Key-slot page is truncated');

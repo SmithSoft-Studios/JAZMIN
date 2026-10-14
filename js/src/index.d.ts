@@ -524,6 +524,34 @@ export interface ColumnArrays {
   nulls: Record<string, Uint8Array>;
 }
 
+/** How a file's bytes are used (reader.storage()): what compact() would give back. */
+export interface StorageReport {
+  /** The file's size. */
+  fileBytes: number;
+  /** Bytes the current version uses. */
+  usedBytes: number;
+  /** Bytes it no longer uses: headers and sections appends replaced, embedded files replaced or removed, an interrupted append. */
+  unusedBytes: number;
+  /** Rows deleted (or replaced) by appends, still stored until compact(). */
+  deletedRows: number;
+  /** Their bytes, estimated from the chunks they are in. */
+  deletedBytes: number;
+  /** Appends since the file was last written in full. */
+  appendCount: number;
+  tables: {
+    name: string;
+    /** Live rows. */
+    rows: number;
+    deletedRows: number;
+    deletedBytes: number;
+    chunks: number;
+    /** Stored rows per chunk, on average: appends add small chunks, which compact({ regroup: true }) merges. */
+    rowsPerChunk: number;
+    /** Each index's segments: 1 after a full write, one more per append; compact() merges them. */
+    indexes: { column: string; kind: 'sorted' | 'trigram'; segments: number }[];
+  }[];
+}
+
 export interface LayoutAdvice {
   rows: number;
   chunks: number;
@@ -776,6 +804,11 @@ export class JazminReader implements Iterable<JazminRow> {
   columnArrays(filter?: Filter | null, options?: { select?: string[]; offset?: number; limit?: number }): ColumnArrays;
   /** Layout advice for lookups of these columns (chunk directories and statistics only). */
   advise(options?: { columns?: string[] }): LayoutAdvice;
+  /**
+   * How the file's bytes are used, for deciding whether to compact it: used and unused bytes, deleted rows still
+   * stored, chunks and index segments per table. Reads directories, not rows. Owner key for shared files.
+   */
+  storage(): StorageReport;
   explain(filter: Filter): QueryPlan;
   /**
    * Runs the query (with any find() options) and reports what it read. Indexes and the last chunk this reader
