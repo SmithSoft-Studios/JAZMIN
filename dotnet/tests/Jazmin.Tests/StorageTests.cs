@@ -10,6 +10,7 @@ namespace Jazmin.Tests;
 /// full uses every byte; an append leaves the replaced header behind; deleted rows stay stored until compaction.
 /// Mirrors js/test/storage.test.js.
 /// </summary>
+[Collection("Fixture files")] // reads every fixture, which InteropTests writes: not at the same time (Windows refuses)
 public sealed class StorageTests
 {
     private static readonly string Fixtures = FindFixtures();

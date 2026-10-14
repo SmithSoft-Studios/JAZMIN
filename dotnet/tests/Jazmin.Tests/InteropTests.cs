@@ -11,6 +11,7 @@ namespace Jazmin.Tests;
 /// Reads the files written by the JavaScript library (spec/fixtures/js-*.jzm) and writes
 /// dotnet-*.jzm for the JavaScript tests to read, all checked against spec/fixtures/dataset.json.
 /// </summary>
+[Collection("Fixture files")] // writes the dotnet-*.jzm fixtures that StorageTests reads: not at the same time (Windows refuses)
 public class InteropTests
 {
     private static readonly string Dir = FindFixtures();
