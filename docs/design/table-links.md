@@ -1,6 +1,7 @@
 # Tables in an existing file: adding them, and the links between them
 
-Status: **proposal, awaiting the owner's decisions** (2026-10-14). Nothing here is built yet. No change to the file
+Status: **decided** (owner, 2026-10-14): all five meanings, links stored in the file through the free library. Nothing
+here is built yet. No change to the file
 format is needed.
 
 ## What there is today

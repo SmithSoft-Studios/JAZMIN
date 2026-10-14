@@ -1,6 +1,7 @@
 # Locked embedded files: a second password or 2FA for stored files
 
-Status: **proposal, awaiting the owner's decisions** (2026-10-14). Nothing here is built yet. It changes the file
+Status: **decided** (owner, 2026-10-14): the owner key opens locked files without the password or 2FA (decision 1, yes);
+decisions 2 to 4 as recommended unless the owner says otherwise. Nothing here is built yet. It changes the file
 format (an addition older readers handle gracefully, see "Compatibility"), so it is explained in plain words first.
 
 ## The idea in plain words

@@ -1,6 +1,7 @@
 # Sort direction: descending, and other orders
 
-Status: **proposal, awaiting the owner's decisions** (2026-10-14). Option A needs no format change; options B and C do.
+Status: **the owner asked (2026-10-14) for new ways of sorting kept as backward compatible as possible**: see
+"A compatible design" at the end, which needs no new format version.
 
 ## Today
 
@@ -50,3 +51,28 @@ versions would refuse them. Recommendation: not needed if A is built.
 
 The sort editor (Details → Change Indexes & Sort Order) would show, for each sort column, **Ascending**, and with A,
 "readers can also read it newest first"; with B, **Descending**; with C, the comparison (exact, ignoring case, natural).
+
+## A compatible design (owner's answer, 2026-10-14)
+
+The format's rule for additions (spec 12) allows it without a new version:
+
+- **A new optional table field `sort`** describes the order, column by column: `descending`, empty values `first` or
+  `last`, and how text compares (`exact`, `nocase`: ignoring case and accents, `natural`: numbers inside text by value).
+  Readers ignore fields they do not know.
+- **Plain ascending order** (exact, empty values first) is also written as today's `sorted_by`, so older readers keep
+  using it.
+- **Any other order** leaves `sorted_by` empty. Older readers (1.0 to 1.5) then see an unsorted table: they read every
+  row correctly, only without the order's speed-ups. They never refuse the file and never misread it.
+- **Older writers** rebuild the header from what they understand, so an append or rewrite by 1.0 to 1.5 drops `sort`:
+  the table then counts as unsorted, which is still correct. (To be confirmed by a test with the published 1.5.0 of both
+  libraries.)
+- **New readers** use `sort`: rows in the declared order without sorting them, reading forwards or backwards (option A,
+  for every file), range searches on the first sort column in either direction, and merges on update in that order.
+- **New writers** check rows against the declared order, and the comparison is the same everywhere (indexes and
+  statistics keep comparing exactly, so filters mean what they mean today).
+- **Writer features:** the format says a writer MUST refuse to modify a file with a writer feature it does not know,
+  but 1.0 to 1.5 never checked. New writers will check, so a later feature can rely on it.
+
+What it costs: a `nocase` or `natural` comparison is slower than an exact one when rows are written or merged (a key
+is made per value); reading is unchanged.
+
