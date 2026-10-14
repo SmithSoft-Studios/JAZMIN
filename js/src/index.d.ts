@@ -654,6 +654,16 @@ export interface UpdateOptions {
   removeShapes?: string[];
   /** The table the rows change in (default: the first). The file's other tables are kept. */
   table?: string;
+  /**
+   * The indexes a column has afterwards ('sorted', 'trigram', both, or [] for none); columns not named keep theirs. The
+   * first sortedBy column keeps no sorted index (the sort order finds its values); re-sorted away from it, the old first
+   * sort column gets a sorted index unless named here.
+   */
+  indexes?: Record<string, JazminIndexKind | JazminIndexKind[] | null>;
+  /** A new sort order (null or [] for none): every row is put in it, within a memory budget. */
+  sortedBy?: string[] | null;
+  /** Rows sorted in memory at a time when re-sorting (default by priority: 10,000, 25,000 or 100,000); more go through temporary files locked with a key of their own. */
+  sortRunRows?: number;
 }
 
 export interface UpdateResult {
@@ -702,7 +712,7 @@ export function inspect(path: string): {
  * access-controlled file without sortedBy, or sorted by its partition column first), each partition's rows are
  * written together, in their file order: appends leave one chunk per append, and regrouping merges them.
  */
-export function compact(path: string, options?: { key?: KeyInput; password?: string; codec?: JazminCodec; chunkRows?: number; regroup?: boolean }):
+export function compact(path: string, options?: { key?: KeyInput; password?: string; codec?: JazminCodec; chunkRows?: number; regroup?: boolean; indexes?: UpdateOptions['indexes']; sortedBy?: string[] | null; sortRunRows?: number }):
   { rowCount: number; bytesBefore: number; bytesAfter: number; expiredGrantsRemoved: number };
 /**
  * Encrypts a file again under a new key or password, without decoding its rows: every section is decrypted and

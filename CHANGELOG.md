@@ -6,6 +6,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Added
+- **Change an existing file's indexes and sort order** (`update()` and `compact()`: `indexes`, `sortedBy`; .NET
+  `JazminUpdate.Indexes`, `SortedBy`): add, change or remove a column's sorted and text-search indexes, and give a
+  table a new sort order (or none), in one rewrite that keeps everything else. A new sort order is applied within a
+  memory budget (`sortRunRows`, by priority), through temporary files locked with a key made for them when the rows
+  don't fit; rows with equal sort values keep their order. A column the file stops being sorted by gets a sorted index,
+  so lookups on it stay fast. USER-GUIDE 16.1; `npm run bench:layout`.
 - **`reader.storage()`** (.NET `reader.Storage()`): how a file's bytes are used, so a tool can tell whether compacting
   would help. It reports used and unused bytes (headers that appends replaced, embedded files replaced or removed, an
   interrupted append), deleted rows still stored (their bytes estimated), appends since the last full write, and per
