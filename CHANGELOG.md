@@ -10,8 +10,9 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   `compact()` `tables: { name: { insert, upsert, keyColumns, delete, set, where, indexes, sortedBy } }`, `set` and
   `where`; .NET `JazminUpdate.Tables` (`JazminTableChanges`), `Set`, `Where`, `JazminUpdateResult.Tables`): for example
   a client's key changed in every table that refers to it. Sorted tables stay sorted: a few rows whose sort column is
-  set are found by the indexes and merged into place, with no slower than a rewrite; many are re-sorted within the memory
-  budget. A shared file's partition column can't be set. USER-GUIDE 23.7.
+  set are found by the indexes and merged into place, at about the cost of a rewrite (20 rows of 1,000,000: 2.1–2.2 s
+  and 241–249 MB, against 3.8–4.4 s and 322 MB through the full sort); many are re-sorted within the memory budget. A
+  shared file's partition column can't be set. USER-GUIDE 23.7.
 - **Links between tables** (`links` when writing or updating; `reader.links`, `reader.checkLinks()`; .NET
   `JazminWriteOptions.Links`, `JazminUpdate.Links`, `reader.Links`, `reader.CheckLinks()`): declared once in the file's
   metadata (`jazmin.links`, names only; spec 6.6), checked when written (tables, columns, equal types), renamed with
@@ -45,7 +46,8 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   sender may write, records sent again, and files checked by their first bytes and size, in one read and one append.
   A `dryRun` checks without writing; a batch that must not be filed throws `JazminSubmissionRejectedError` (.NET
   `JazminSubmissionRejectedException`) with the reason. The reference filing service (`js/examples/filing-service`)
-  now calls it, with the same results; filing takes the same time and memory as before.
+  now calls it, with the same results and the same memory (about 6 MB for a 50-record change on a 100,000-row shared
+  file); a filing takes 14–18 ms, as before, within about 1 ms.
 - **`reader.readerFeatures`** (.NET `reader.ReaderFeatures`, the browser reader's `readerFeatures`): the reader
   features a file needs (spec 3.2), such as `index-deltas` (compact indexes) or `nested-columns`, so a tool can say
   which JAZMIN versions read it. `jazmin inspect` shows them too. Empty for files every 1.x release reads.
@@ -54,9 +56,9 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ### Changed
 - **Less memory for shared files with many chunks (JavaScript):** each chunk part's digest is no longer kept as an
-  object of its own. A full count of a shared file with 250,000 chunks (every row a different partition) uses 152 MB
-  instead of 234 MB, and is 8% faster; other reads are unchanged (median of 7 rounds, each in its own process,
-  against the published 1.5.0).
+  object of its own. A full count of a shared file with 250,000 chunks (every row a different partition) uses 151 MB
+  instead of 233 MB, and takes 342 ms instead of 384 ms; other reads are within 4% (medians of 7 rounds, each in its
+  own process, against the published 1.5.0).
 
 ### Fixed
 - JavaScript: `update()` with `upsert` keyed on a decimal column failed ("Do not know how to serialize a BigInt").

@@ -2344,14 +2344,17 @@ JazminFile.Update("orders.jzm", new JazminUpdate
 - **In a file with several tables,** the options change the table named by `table` (the first by default).
 
 Measured on 1,000,000 rows (9.2 MB, sorted by id, two sorted indexes), each run in its own process
-(`npm run bench:layout`):
+(`npm run bench:layout`; Node 24 and .NET 10 on a 12th-gen Intel i7; the range of three runs):
 
 | Change | JavaScript | .NET |
 |---|---:|---:|
-| `compact()`: a rewrite that changes nothing | 1.8 s, 246 MB | 1.8 s, 108 MB |
-| Add a text-search index | 2.0 s, 285 MB | 2.4 s, 165 MB |
-| Remove an index | 1.4 s, 231 MB | 1.6 s, 72 MB |
-| A new sort order (customer, id) | 5.6 s, 401 MB | 5.8 s, 240 MB |
+| `compact()`: a rewrite that changes nothing | 1.7–1.8 s, 241–247 MB | 1.7–2.2 s, 104–107 MB |
+| Add a text-search index | 2.0–2.1 s, 264–285 MB | 2.3–2.5 s, 168–172 MB |
+| Remove an index | 1.4 s, 230 MB | 1.5–1.7 s, 68–69 MB |
+| A new sort order (customer, id) | 5.4–6.1 s, 386–411 MB | 6.6–6.9 s, 237–245 MB |
+
+With `priority: 'speed'` a new sort order took 5.8–5.9 s and 194–229 MB in .NET; in JavaScript 5.3–6.0 s, with the
+peak at 526–528 MB.
 
 Memory is each process's peak above where it started. A new sort order reads and writes every row twice, so it takes
 about three times as long as a plain rewrite. The rows it holds at once are few (about 8 MB in JavaScript after
@@ -2526,10 +2529,13 @@ bench:storage`:
 
 | File | `storage()` in JavaScript | `storage()` in .NET |
 |---|---:|---:|
-| 1,000,000 rows | 0.1 ms, nothing extra | 0.1 ms |
-| The same after 200 appends | 3 ms, 1.6 MB | 2 ms, 0.5 MB allocated |
-| Shared, 250,000 rows in 1,000 partitions | 31 ms, 15 MB | 14 ms, 5 MB allocated |
-| The same with the partitions' rows mixed (250,000 chunks) | 133 ms, 54 MB | 119 ms, 76 MB allocated |
+| 1,000,000 rows | under 1 ms, nothing extra | under 0.1 ms, nothing allocated |
+| The same after 200 appends | 2–4 ms, about 2 MB | 1.3–1.5 ms, 0.5 MB allocated |
+| Shared, 250,000 rows in 1,000 partitions | 28–30 ms, 13–14 MB | 11–13 ms, 5 MB allocated |
+| The same with the partitions' rows mixed (250,000 chunks) | 123–128 ms, about 50 MB | 104–139 ms, 76 MB allocated |
+
+Each figure is the range of several runs, each in its own process; JavaScript's memory is the peak above what
+opening the file takes.
 
 The last file is the worst case `storage()` is there to catch: about one row
 per chunk, which `compact({ regroup: true })` fixes.
@@ -3920,8 +3926,9 @@ JazminFile.Update("statements.jzm", new JazminUpdate
   error names them). Ones that read "the first table" keep reading the same table, named.
 - **A file's single unnamed table** (written without `tables`) is named first: `renameTables: { '': 'clients' }`.
 
-Measured on a 1,000,000-row file (`npm run bench:layout`): adding a 200,000-row table costs a rewrite plus 0.3 s in
-.NET and about 0.5 s in JavaScript, with the same peak memory; sorting its rows on the way in adds about 0.5 s.
+Measured on a 1,000,000-row file (`npm run bench:layout`, three runs each): adding a 200,000-row table took 2.0–2.2 s
+in JavaScript and 2.1–2.5 s in .NET, against 1.8–1.9 s and 1.8–2.2 s for the same rewrite without it, with about the
+same peak memory (242–259 MB; 109–111 MB). Sorting its rows on the way in took 2.5–2.6 s and 2.6–2.7 s.
 
 ### 23.6 Links between tables (next release)
 
@@ -3956,8 +3963,8 @@ var checks = reader.CheckLinks();   // Rows, Empty, Missing, Examples, Duplicate
   rows, so a shared file is checked as that key sees it.
 - **Speed:** when both tables are sorted by the link columns they are walked side by side (`method: 'merge'`), holding
   almost nothing; otherwise the target table's values are held (`'hash'`). For 1,000,000 orders linked to 50,000
-  customers (`npm run bench:links`): side by side 0.13 s and 16 MB in JavaScript, 0.06 to 0.3 s in .NET; held 0.27 s and
-  19 MB in JavaScript, 0.16 to 0.4 s in .NET.
+  customers (`npm run bench:links`, three runs each, each in its own process): side by side 0.13–0.14 s and 16 MB in
+  JavaScript, 0.17–0.19 s in .NET; held 0.24–0.26 s and 19 MB in JavaScript, 0.15–0.17 s in .NET.
 
 ### 23.7 Changing several tables at once (next release)
 
@@ -3991,18 +3998,21 @@ var result = JazminFile.Update("statements.jzm", new JazminUpdate
   and rows set.
 - **Sorted tables stay sorted.** Rows whose sort column is set move to their new place. When few rows match (up to the
   sort budget: 10,000, 25,000 or 100,000 rows by `priority`), they are found by the file's indexes and merged in as the
-  table streams: no slower than a rewrite. More go through the sort (16.1).
+  table streams, at about the cost of a rewrite. More go through the sort (16.1).
 - **Shared files:** the partition column can't be set, since the rows would leave the partitions keys are granted. The
   other columns can, and each key keeps seeing its own rows.
 
-Measured on a 1,000,000-row file sorted by `id` (`npm run bench:layout`; compact for comparison: 1.9 to 2.2 s, about 245
-MB in JavaScript; about 2 s, 107 MB in .NET):
+Measured on a 1,000,000-row file sorted by `id` (`npm run bench:layout`, three runs each, each in its own process):
 
 | Change | JavaScript | .NET |
 |---|---:|---:|
-| `set` a column on 200,000 rows | 2.2 s, 250 MB | 2.1 to 2.9 s, 109 MB |
-| `set` the sort column on 20 rows (a re-key) | 2.3 to 2.5 s, 242 MB | 2.2 to 3.2 s, 109 MB |
-| `set` the sort column on 200,000 rows (a re-sort) | 4.4 to 4.7 s, 323 MB | 5.4 to 7.6 s, 120 MB |
+| `compact()`, for comparison | 1.7–1.8 s, 241–247 MB | 1.7–2.2 s, 104–107 MB |
+| `set` a column on 200,000 rows | 2.0–2.2 s, 244–246 MB | 1.8 s, 105–112 MB |
+| `set` the sort column on 20 rows (a re-key) | 2.1–2.2 s, 241–249 MB | 1.9–2.4 s, 107–111 MB |
+| `set` the sort column on 200,000 rows (a re-sort) | 4.0–4.2 s, 313–314 MB | 5.0–5.3 s, 118–120 MB |
+
+The re-key's 20 rows, sent through the full sort instead (as before the rows were merged in), took 3.8–4.4 s and
+322 MB in JavaScript.
 
 ### 23.8 Is it worth it?
 

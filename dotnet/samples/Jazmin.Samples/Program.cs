@@ -390,6 +390,93 @@ using (var asTeller = JazminReader.Open(branchesPath, new JazminReadOptions { Ac
     // 21. [Accounts per branch] [{"branch":"CPT","accounts":2},{"branch":"JHB","accounts":1}]
 }
 
+// ---- The next release: changing a file you already have (sections 22-26) ---------------------------------------------
+
+// --- 22. Does the file need compacting? (USER-GUIDE 17.5): Storage() reads only the file's directories, never its rows.
+var ledgerPath = Path.Combine(dir, "ledger.jzm");
+JazminColumn[] ledgerColumns = [new("id", JazminType.Int), new("status", JazminType.String)];
+using (var writer = JazminWriter.Create(ledgerPath, ledgerColumns, new JazminWriteOptions { SortedBy = ["id"] }))
+{
+    for (var i = 0L; i < 1000; i++) writer.WriteValues(i, "open");
+}
+for (var i = 0; i < 3; i++)
+{
+    JazminFile.Append(ledgerPath, new JazminAppend
+    {
+        Delete = JazminFilter.Lt("id", (i + 1) * 100L),
+        Insert = [new Dictionary<string, object?> { ["id"] = 1000L + i, ["status"] = "new" }],
+    });
+}
+JazminStorage used;
+using (var reader = JazminReader.Open(ledgerPath)) used = reader.Storage();
+JazminFile.Compact(ledgerPath);
+using (var reader = JazminReader.Open(ledgerPath))
+{
+    Console.WriteLine($"22. {used.DeletedRows} deleted rows, {used.AppendCount} appends, {used.UnusedBytes / 1024.0:0.0} KB unused; compacted: {reader.Storage().DeletedRows} deleted rows");
+    // 22. 300 deleted rows, 3 appends, 0.7 KB unused; compacted: 0 deleted rows
+}
+
+// --- 23. Indexes and the sort order of an existing file (USER-GUIDE 16.1), in one rewrite that keeps everything else.
+// Rows are put in a new order within a memory budget; the old first sort column gets an index, so lookups stay fast.
+JazminFile.Update(ledgerPath, new JazminUpdate
+{
+    Indexes = new Dictionary<string, IReadOnlyList<JazminIndexKind>> { ["status"] = [JazminIndexKind.Sorted, JazminIndexKind.Trigram] },
+    SortedBy = ["status", "id"],
+});
+using (var reader = JazminReader.Open(ledgerPath))
+{
+    Console.WriteLine($"23. [{string.Join(", ", reader.SortedBy!)}] [{string.Join(", ", reader.Indexes.Select(ix => $"{ix.Column}:{ix.Kind}"))}]");
+    // 23. [status, id] [id:Sorted, status:Trigram]
+}
+
+// --- 24. Tables added, renamed and removed (USER-GUIDE 23.5): an added table's rows can be any sequence, read once.
+var shopPath = Path.Combine(dir, "shop.jzm");
+using (var writer = JazminWriter.Create(shopPath, [new("clientId", JazminType.String) { Nullable = false }, new("name", JazminType.String)], new JazminWriteOptions { SortedBy = ["clientId"] }))
+{
+    writer.WriteValues("C1", "Ann");
+    writer.WriteValues("C2", "Ben");
+}
+JazminColumn[] orderColumns = [new("orderId", JazminType.Int), new("clientId", JazminType.String), new("total", JazminType.Decimal)];
+IReadOnlyDictionary<string, object?> OrderRow(long id, string client, string total) => new Dictionary<string, object?> { ["orderId"] = id, ["clientId"] = client, ["total"] = total };
+JazminFile.Update(shopPath, new JazminUpdate
+{
+    RenameTables = new Dictionary<string, string> { [""] = "clients" }, // a file's single table has no name until it is given one
+    AddTables =
+    [
+        new JazminAddedTable(new JazminTable("orders", orderColumns) { SortedBy = ["clientId", "orderId"] }, [OrderRow(2, "C2", "15.00"), OrderRow(1, "C1", "40.50"), OrderRow(3, "C1", "9.99")]),
+        new JazminAddedTable(new JazminTable("scratch", [new JazminColumn("note", JazminType.String)]), [new Dictionary<string, object?> { ["note"] = "temporary" }]),
+    ],
+});
+JazminFile.Update(shopPath, new JazminUpdate { RemoveTables = ["scratch"] });
+using (var reader = JazminReader.Open(shopPath)) Console.WriteLine($"24. [{string.Join(", ", reader.Tables)}]");
+// 24. [clients, orders]
+
+// --- 25. Links between tables (USER-GUIDE 23.6): declared once, kept in the file (names only, never values), and
+// checked against the rows. Both tables are sorted by the link, so they are walked side by side.
+var orderClient = new JazminLink("client", new JazminLinkSide("orders", ["clientId"]), new JazminLinkSide("clients", ["clientId"]));
+JazminFile.Update(shopPath, new JazminUpdate { Links = [orderClient] });
+using (var reader = JazminReader.Open(shopPath))
+{
+    var check = reader.CheckLinks().Single();
+    Console.WriteLine($"25. [{string.Join(", ", reader.Links.Select(l => l.Name))}] {check.Rows} rows checked, {check.Missing} find nothing ({check.Method})");
+    // 25. [client] 3 rows checked, 0 find nothing (merge)
+}
+
+// --- 26. A client's key changed in every table, in one rewrite (USER-GUIDE 23.7): Set + Where on the main table, and
+// the same in Tables for the others. Rows whose sort column changes move to their place; the link still holds.
+var rekeyClient = new JazminTableChanges { Set = new Dictionary<string, object?> { ["clientId"] = "C9" }, Where = JazminFilter.Eq("clientId", "C1") };
+var rekeyResult = JazminFile.Update(shopPath, new JazminUpdate
+{
+    Tables = new Dictionary<string, JazminTableChanges> { ["clients"] = rekeyClient, ["orders"] = rekeyClient },
+});
+using (var reader = JazminReader.Open(shopPath))
+using (var orderTable = reader.OpenTable("orders"))
+{
+    Console.WriteLine($"26. {rekeyResult.Tables!["clients"].Updated} client and {rekeyResult.Tables["orders"].Updated} orders re-keyed; "
+        + $"[{string.Join(", ", orderTable.Rows().Select(o => $"{o["clientId"]}/{o["orderId"]}"))}] missing: {reader.CheckLinks().Single().Missing}");
+    // 26. 1 client and 2 orders re-keyed; [C2/2, C9/1, C9/3] missing: 0
+}
+
 Directory.Delete(dir, true);
 
 public readonly record struct Money(long Cents, string Currency);

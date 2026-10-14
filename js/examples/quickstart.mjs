@@ -276,4 +276,69 @@ console.log('20.', capeTown.toArray(), capeTown.explain().filter);
 accounts.close();
 // 20. [ 1, 3 ] { branch: { eq: 'CPT' } }
 
+// ---- The next release: changing a file you already have (sections 21-25) -------------------------------------------
+
+// 21. Does the file need compacting? (USER-GUIDE 17.5): storage() reads only the file's directories, never its rows.
+const ledger = path.join(dir, 'ledger.jzm');
+write(ledger, Array.from({ length: 1000 }, (_, i) => ({ id: i, status: 'open' })), { columns: [{ name: 'id', type: 'int' }, { name: 'status', type: 'string' }], sortedBy: ['id'] });
+for (let i = 0; i < 3; i++) append(ledger, { delete: { id: { lt: (i + 1) * 100 } }, insert: [{ id: 1000 + i, status: 'new' }] });
+const before21 = open(ledger);
+const used = before21.storage();
+before21.close();
+compact(ledger);
+const after21 = open(ledger);
+console.log('21.', `${used.deletedRows} deleted rows, ${used.appendCount} appends, ${(used.unusedBytes / 1024).toFixed(1)} KB unused;`, 'compacted:', after21.storage().deletedRows, 'deleted rows');
+after21.close();
+// 21. 300 deleted rows, 3 appends, 0.7 KB unused; compacted: 0 deleted rows
+
+// 22. Indexes and the sort order of an existing file (USER-GUIDE 16.1), in one rewrite that keeps everything else.
+// Rows are put in a new order within a memory budget; the old first sort column gets an index, so lookups stay fast.
+update(ledger, { indexes: { status: ['sorted', 'trigram'] }, sortedBy: ['status', 'id'] });
+const relaid = open(ledger);
+console.log('22.', relaid.sortedBy, relaid.indexes.map((ix) => `${ix.column}:${ix.kind}`));
+relaid.close();
+// 22. [ 'status', 'id' ] [ 'id:sorted', 'status:trigram' ]
+
+// 23. Tables added, renamed and removed (USER-GUIDE 23.5): an added table's rows can be any iterable, read once.
+const shop = path.join(dir, 'shop.jzm');
+write(shop, [{ clientId: 'C1', name: 'Ann' }, { clientId: 'C2', name: 'Ben' }], {
+  columns: [{ name: 'clientId', type: 'string', nullable: false }, { name: 'name', type: 'string' }], sortedBy: ['clientId'],
+});
+const orderColumns = [{ name: 'orderId', type: 'int' }, { name: 'clientId', type: 'string' }, { name: 'total', type: 'decimal' }];
+update(shop, {
+  renameTables: { '': 'clients' }, // a file's single table has no name until it is given one
+  addTables: [
+    { name: 'orders', columns: orderColumns, sortedBy: ['clientId', 'orderId'], rows: [{ orderId: 2, clientId: 'C2', total: '15.00' }, { orderId: 1, clientId: 'C1', total: '40.50' }, { orderId: 3, clientId: 'C1', total: '9.99' }] },
+    { name: 'scratch', columns: [{ name: 'note', type: 'string' }], rows: [{ note: 'temporary' }] },
+  ],
+});
+update(shop, { removeTables: ['scratch'] });
+const tables23 = open(shop);
+console.log('23.', tables23.tables);
+tables23.close();
+// 23. [ 'clients', 'orders' ]
+
+// 24. Links between tables (USER-GUIDE 23.6): declared once, kept in the file (names only, never values), and checked
+// against the rows. Both tables are sorted by the link, so they are walked side by side.
+const orderClient = { name: 'client', from: { table: 'orders', columns: ['clientId'] }, to: { table: 'clients', columns: ['clientId'] } };
+update(shop, { links: [orderClient] });
+const linked24 = open(shop);
+const [check24] = linked24.checkLinks();
+console.log('24.', linked24.links.map((l) => l.name), `${check24.rows} rows checked, ${check24.missing} find nothing (${check24.method})`);
+linked24.close();
+// 24. [ 'client' ] 3 rows checked, 0 find nothing (merge)
+
+// 25. A client's key changed in every table, in one rewrite (USER-GUIDE 23.7): set + where on the main table, and the
+// same in `tables` for the others. Rows whose sort column changes move to their place; the link still holds.
+const rekey = update(shop, {
+  table: 'clients', set: { clientId: 'C9' }, where: { clientId: 'C1' },
+  tables: { orders: { set: { clientId: 'C9' }, where: { clientId: 'C1' } } },
+});
+const after25 = open(shop);
+const orders25 = after25.openTable('orders');
+console.log('25.', rekey.tables.clients.updated, 'client and', rekey.tables.orders.updated, 'orders re-keyed;', [...orders25.rows()].map((o) => `${o.clientId}/${o.orderId}`), 'missing:', after25.checkLinks()[0].missing);
+orders25.close();
+after25.close();
+// 25. 1 client and 2 orders re-keyed; [ 'C2/2', 'C9/1', 'C9/3' ] missing: 0
+
 fs.rmSync(dir, { recursive: true, force: true });
