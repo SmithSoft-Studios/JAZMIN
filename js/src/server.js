@@ -210,8 +210,9 @@ function templateQuery(reader, filter, { select, orderBy, offset = 0, limit = 10
 
 /** window.jazmin in the page, before its scripts run: the viewer's API (version 1), answered by renderPdf. */
 function installApi(boot) {
-  const types = new Map(boot.columns.map((c) => [c.name, c.type]));
-  const decode = (row) => {
+  const typesOf = new Map(boot.tables.map((t) => [t.name, new Map(t.columns.map((c) => [c.name, c.type]))]));
+  const decoder = (table) => (row) => {
+    const types = typesOf.get(table ?? boot.table) ?? new Map();
     const out = {};
     for (const [name, v] of Object.entries(row)) {
       const type = types.get(name);
@@ -228,6 +229,7 @@ function installApi(boot) {
     if (answer.error) throw new Error(answer.error);
     return answer.result;
   });
+  const decode = decoder(null);
   let rows = null;
   window.jazmin = {
     version: 1,
@@ -236,10 +238,17 @@ function installApi(boot) {
     get columns() { return boot.columns; },
     get access() { return boot.access; },
     get rowCount() { return boot.rowCount; },
+    /** The document's own table (the one columns, rowCount and rows() describe). */
+    get table() { return boot.table; },
+    /** The file's tables: [{ name, columns, rowCount }] (rowCount null: this document can't read it here). */
+    get tables() { return JSON.parse(JSON.stringify(boot.tables)); },
     get mode() { return boot.mode; },
     get filter() { return boot.filter ? JSON.parse(JSON.stringify(boot.filter)) : null; },
-    query(filter, options) { return call('query', { filter: filter || null, options: options || {} }).then((list) => list.map(decode)); },
-    count(filter) { return call('count', { filter: filter || null }); },
+    query(filter, options) {
+      const table = options && options.table != null ? String(options.table) : null;
+      return call('query', { filter: filter || null, options: options || {} }).then((list) => list.map(decoder(table)));
+    },
+    count(filter, options) { return call('count', { filter: filter || null, table: options && options.table != null ? String(options.table) : null }); },
     rows(filter) {
       if (!boot.rows) throw new Error(`This data set has ${boot.rowCount} rows: use jazmin.query() to read it a page at a time`);
       rows ??= boot.rows.map(decode);
@@ -287,11 +296,12 @@ const within = (scope, filter) => (scope ? (filter ? { and: [scope, filter] } : 
  * here, limited to `filter` when one is given; only the package's files and its allowed origins are reachable
  * (everything else is refused), and it runs in a context of its own, closed afterwards.
  */
-async function renderDocument({ file, key, password, unlockToken, table, entry, browser, filter = null, viewport, waitFor = 'ready', timeout = 30000, onReady, onDownload, pdfDefaults } = {}, what, capture) {
+async function renderDocument({ file, key, password, unlockToken, table, entry, browser, filter = null, tableFilters = null, viewport, waitFor = 'ready', timeout = 30000, onReady, onDownload, pdfDefaults } = {}, what, capture) {
   if (!browser || typeof browser.newPage !== 'function') throw new JazminValidationError(`${what} needs a Puppeteer or Playwright browser`);
   const defaults = pdfDefaults == null ? {} : normalizePdf(pdfDefaults, 'pdfDefaults');
   const own = !(file instanceof JazminReader);
   const reader = own ? new JazminReader(file, { key, password, unlockToken, table }) : file;
+  const opened = []; // the other tables' readers, closed afterwards
   let context = null;
   let tab = null;
   try {
@@ -302,15 +312,29 @@ async function renderDocument({ file, key, password, unlockToken, table, entry, 
     const handle = createFileHandler(reader, { origin: ORIGIN, sandbox: false });
     if (handle(page, { method: 'HEAD' }).status !== 200) throw new JazminValidationError(`No page '${page}' is visible with this key`);
     const allowed = new Set(settings.allowedOrigins ?? []);
-    const types = new Map(reader.columns.map((c) => [c.name, c.type]));
-    const encode = (row) => Object.fromEntries(Object.entries(row).map(([n, v]) => [n, encodeValue(types.get(n), v)]));
-    const scope = filter ?? null;
-    const rowCount = scope ? reader.count(scope) : reader.rowCount; // checks the filter, before the browser starts
+    const tables = documentTables(reader, filter ?? null, tableFilters, opened); // checks the filters, before the browser starts
+    const main = tables.get(reader.table);
+    const encoder = (t) => {
+      const types = new Map(t.reader.columns.map((c) => [c.name, c.type]));
+      return (row) => Object.fromEntries(Object.entries(row).map(([n, v]) => [n, encodeValue(types.get(n), v)]));
+    };
+    const encode = encoder(main);
+    const scope = main.scope;
+    const rowCount = main.rowCount;
+    /** The table a request names (the document's own when none), and the filter it is limited to. */
+    const tableFor = (name) => {
+      const t = name == null ? main : tables.get(String(name));
+      if (!t) throw new JazminValidationError(`The file has no table '${name}'`);
+      if (t.refused) throw new JazminValidationError(t.refused);
+      return t;
+    };
     const boot = {
       origin: ORIGIN,
       mode: 'print',
       filter: scope,
       metadata: reader.metadata ?? null,
+      table: reader.table,
+      tables: [...tables.values()].map((t) => ({ name: t.name, columns: t.reader.columns, rowCount: t.refused ? null : t.rowCount })),
       columns: reader.columns,
       access: reader.access ? { isOwner: false, online: reader.access.online ?? false, expires: reader.access.expires ?? null } : null,
       rowCount,
@@ -334,8 +358,13 @@ async function renderDocument({ file, key, password, unlockToken, table, entry, 
       const { type, payload } = JSON.parse(text);
       try {
         let result;
-        if (type === 'query') result = templateQuery(reader, within(scope, payload.filter), payload.options).map(encode);
-        else if (type === 'count') result = reader.count(within(scope, payload.filter) ?? undefined);
+        if (type === 'query') {
+          const t = tableFor(payload.options?.table);
+          result = templateQuery(t.reader, within(t.scope, payload.filter), payload.options).map(t === main ? encode : encoder(t));
+        } else if (type === 'count') {
+          const t = tableFor(payload.table);
+          result = t.reader.count(within(t.scope, payload.filter) ?? undefined);
+        }
         else if (type === 'file') {
           const info = reader.files.find((f) => f.path === payload.path);
           result = { type: info?.type ?? '', bytes: reader.readFile(payload.path).toString('base64') };
@@ -404,8 +433,42 @@ async function renderDocument({ file, key, password, unlockToken, table, entry, 
   } finally {
     if (context) await context.close();
     else await tab?.close();
+    for (const r of opened) r.close();
     if (own) reader.close();
   }
+}
+
+/**
+ * The tables a document reads, by name: { name, reader, scope, rowCount, refused }. `filter` limits the document's
+ * own table, and every other table it fits (one that has the columns it names); `tableFilters` gives a table its own
+ * ({ rates: null } reads it whole). With a filter, a table it doesn't fit and tableFilters doesn't name is refused,
+ * so a document limited to one client's rows can't read anyone else's in another table.
+ */
+function documentTables(reader, filter, tableFilters, opened) {
+  const names = reader.tables.length ? reader.tables : [reader.table];
+  if (tableFilters != null && (typeof tableFilters !== 'object' || Array.isArray(tableFilters))) throw new JazminValidationError('tableFilters: { tableName: filter or null }');
+  for (const name of Object.keys(tableFilters ?? {})) if (!names.includes(name)) throw new JazminValidationError(`tableFilters: the file has no table '${name}'`);
+  const tables = new Map();
+  for (const name of names) {
+    const r = name === reader.table ? reader : reader.openTable(name);
+    if (r !== reader) opened.push(r);
+    const own = tableFilters != null && Object.hasOwn(tableFilters, name);
+    let scope = own ? tableFilters[name] ?? null : filter;
+    let refused = null;
+    let rowCount;
+    if (!scope) rowCount = r.rowCount;
+    else {
+      try {
+        rowCount = r.count(scope);
+      } catch (error) {
+        if (own || r === reader || !(error instanceof JazminValidationError)) throw error;
+        refused = `This document is limited to ${JSON.stringify(filter)}, which doesn't fit table '${name}' (${error.message}): give it a filter of its own (renderPdf tableFilters; null reads it whole)`;
+        scope = null;
+      }
+    }
+    tables.set(name, { name, reader: r, scope, rowCount, refused });
+  }
+  return tables;
 }
 
 /**
@@ -415,7 +478,9 @@ async function renderDocument({ file, key, password, unlockToken, table, entry, 
  * runs in a context of its own, closed afterwards. Resolves when the document calls jazmin.ready() (or, with
  * waitFor: 'load', when it has loaded), with the PDF as a Buffer.
  *   options: { file (a path, a Buffer or a JazminReader), key, password, unlockToken, table, entry, browser,
- *              filter (the document sees only these rows: jazmin.filter), pdfDefaults (page settings for documents
+ *              filter (the document sees only these rows: jazmin.filter; also in each other table it fits),
+ *              tableFilters ({ table: filter or null }: another table's own; with a filter, a table it doesn't fit is
+ *              refused unless named here), pdfDefaults (page settings for documents
  *              that don't set them: a viewer's paper size, say), pdf (the browser's PDF options), waitFor
  *              ('ready' | 'load'), timeout (ms), onReady(info), onDownload({ filename, type, bytes }) }
  * Page settings, each over the ones before: A4 with backgrounds; pdfDefaults; the package's (package.pdf); the page's

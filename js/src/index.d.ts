@@ -996,8 +996,14 @@ export interface RenderPdfOptions {
   entry?: string;
   /** A Puppeteer or Playwright Browser (Chromium), or a Playwright BrowserContext. */
   browser: unknown;
-  /** The document sees only these rows (jazmin.filter): one PDF per account, say. */
+  /**
+   * The document sees only these rows (jazmin.filter): one PDF per account, say. It limits the other tables of the
+   * file too, each one it fits (one that has the columns it names); a table it doesn't fit is refused unless
+   * tableFilters names it.
+   */
   filter?: Filter;
+  /** Another table's own filter, by table name (null reads it whole): { rates: null }. */
+  tableFilters?: Record<string, Filter | null>;
   /** Page settings for documents that don't set their own (a viewer's paper size, say): under the package's. */
   pdfDefaults?: PdfSettings;
   /**

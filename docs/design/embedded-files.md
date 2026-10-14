@@ -208,8 +208,9 @@ read from disk. That removes the self-contained HTML's memory and size limits.
 
 ```js
 jazmin.metadata; jazmin.columns; jazmin.access;           // what this key may see
-await jazmin.query(filter, { select, orderBy, offset, limit });  // a page of rows
-await jazmin.count(filter);
+await jazmin.query(filter, { select, orderBy, offset, limit, table });  // a page of rows
+await jazmin.count(filter, { table });
+jazmin.table; jazmin.tables;                                // the document's table; every table, { name, columns, rowCount }
 jazmin.asset(path); await jazmin.file(path);                // in-memory URL / Blob
 jazmin.download(name, content, type); jazmin.print(); jazmin.navigate(path);
 jazmin.online;                                              // true when allowed origins are reachable
