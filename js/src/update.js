@@ -12,6 +12,7 @@ import { COMPACT_INDEXES, FILE_STATE, JazminReader, OWNER_GRANTS, ROWS_BY_PARTIT
 import { INDEX_KINDS, compareKeys, normalizeValue, toKey } from './types.js';
 import { withLock } from './lock.js';
 import { RowSorter, SORT_RUN_ROWS } from './sort-rows.js';
+import { linksAfter } from './links.js';
 import { JazminWriter } from './writer.js';
 
 /**
@@ -96,7 +97,9 @@ function compareTuples(a, b) {
  *                       rows at a time, by priority; more go through temporary files locked with a key of their own)
  *   addTables: [{ name, columns, sortedBy, partitionBy, columnGroups, chunkRows, chunkBytes, rows }]   new tables,
  *                       written after the others; rows is any iterable (put in sortedBy's order within the budget)
- *   removeTables: [...] tables to leave out; renameTables: { old: new }   (saved shapes and package.edit follow)
+ *   removeTables: [...] tables to leave out; renameTables: { old: new }   (saved shapes, package.edit and links follow)
+ *   links: [{ name, from: { table, columns }, to: { table, columns } }]   the links between tables (replaces the file's;
+ *                       [] for none); without it the file's links are kept, following renames
  *
  * Returns { rowCount, inserted, updated, deleted }.
  */
@@ -120,7 +123,7 @@ export function updateUnlocked(path, options = {}) {
     key, password, insert = [], upsert = [], keyColumns, delete: deleteWhere, metadata,
     grant = [], revoke = [], codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, compactIndexes, now, layout,
     addFiles = [], removeFiles = [], package: packageSettings, table, regroup = false, columns: given, addShapes = [], removeShapes = [],
-    indexes, sortedBy: newSortedBy, sortRunRows, addTables = [], removeTables = [], renameTables = {},
+    indexes, sortedBy: newSortedBy, sortRunRows, addTables = [], removeTables = [], renameTables = {}, links,
   } = options;
   if (upsert.length && (!Array.isArray(keyColumns) || keyColumns.length === 0)) {
     throw new JazminValidationError('upsert needs keyColumns, e.g. { keyColumns: ["id"] }');
@@ -214,6 +217,8 @@ export function updateUnlocked(path, options = {}) {
       files: [...carriedFiles(reader, addFiles, removeFiles), ...addFiles],
       package: packageAfter(packageSettings !== undefined ? packageSettings : reader.package, tablePlan),
       shapes: [...keptShapes(reader[FILE_STATE]?.shapes ?? [], addShapes, removeShapes).map((shape) => shapeAfter(shape, tablePlan)), ...addShapes],
+      // The links: as given, or the file's, following renames (checked against the tables by the writer).
+      ...(links !== undefined || reader.links.length ? { links: links !== undefined ? links : linksAfter(reader.links, tablePlan) } : {}),
     });
 
     const stats = { inserted: 0, updated: 0, deleted: 0 };

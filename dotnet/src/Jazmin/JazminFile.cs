@@ -100,8 +100,11 @@ public sealed class JazminUpdate
     /// <summary>Tables to leave out. Saved shapes and the document's edits that read one are refused, unless removed too.</summary>
     public IReadOnlyList<string> RemoveTables { get; set; } = [];
 
-    /// <summary>Tables to rename, old name to new; saved shapes and the document's edits follow.</summary>
+    /// <summary>Tables to rename, old name to new; saved shapes, the document's edits and links follow.</summary>
     public IReadOnlyDictionary<string, string> RenameTables { get; set; } = new Dictionary<string, string>();
+
+    /// <summary>The links between tables, replacing the file's (an empty list for none); null keeps them, following renames.</summary>
+    public IReadOnlyList<JazminLink>? Links { get; set; }
 }
 
 /// <summary>A table added to an existing file (<see cref="JazminUpdate.AddTables"/>): its definition and its rows, read once.</summary>
@@ -454,6 +457,7 @@ public static class JazminFile
                 CompressionLevel = update.CompressionLevel,
                 ChunkRows = update.ChunkRows,
                 Package = PackageAfter(update.Package ?? reader.Package, plan),
+                Links = update.Links ?? (reader.Links.Count > 0 ? Links.After(reader.Links, plan.Removed, plan.Names) : null),
                 Shapes = SavedShapes.Kept(reader.FileState()?.Shapes ?? [], update.AddShapes, update.RemoveShapes)
                     .Select(s => ShapeAfter(s.ToPublic(withGroups: true), plan)).Concat(update.AddShapes).ToList(),
                 Access = access is null ? null : named ? new JazminAccessOptions { Grants = access.Grants } : access,

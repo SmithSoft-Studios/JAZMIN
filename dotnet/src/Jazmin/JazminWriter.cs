@@ -34,6 +34,9 @@ public sealed class JazminWriteOptions
 
     public JsonObject? Metadata { get; set; }
 
+    /// <summary>Links between the tables (docs/design/table-links.md), checked against them and kept in the metadata.</summary>
+    public IReadOnlyList<JazminLink>? Links { get; set; }
+
     /// <summary>Rows must arrive in this column order; recorded so updates can merge in place.</summary>
     public IReadOnlyList<string>? SortedBy { get; set; }
 
@@ -182,6 +185,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     private readonly TableSpec[] _tables; // the tables to write
     private readonly List<string> _allGroupNames; // column groups of every table (grants of all columns get them all)
     private readonly Dictionary<int, (TableDef Table, List<IndexRef> Indexes, OwnerTable? Map)> _written = new(); // by table number, once written
+    private JsonObject? _metadataOut; // the metadata with the links given (Links), when they are
     private readonly List<SectionRef> _deltas; // append deltas (spec 11.2)
     private TableSpec _current = null!; // the table rows go to
     private int _tableIndex; // its number in the file
@@ -247,6 +251,16 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         {
             if (columns is null) throw new JazminValidationException("Give the columns, or the Tables option");
             _tables = [Spec(cont?.Table.Name ?? "", columns, _options.SortedBy, access?.PartitionBy, access?.ColumnGroups, null, null, named: false)];
+        }
+        // Links between the tables: checked against them, kept in the metadata (names only).
+        if (_options.Links is { } links)
+        {
+            if (cont is not null) throw new JazminValidationException("An append keeps the links: change them with Update");
+            var list = Links.CheckDefinitions(Links.Normalize(links), _tables.ToDictionary(t => t.Name, t => t.Columns, StringComparer.Ordinal));
+            var metadata = (JsonObject?)_options.Metadata?.DeepClone() ?? new JsonObject();
+            metadata.Remove(Links.Key);
+            if (list.Count > 0) metadata[Links.Key] = Links.ToJson(list);
+            _metadataOut = metadata;
         }
         // Column groups a grant may name: those of every table (when appending, of the file's other tables too).
         _allGroupNames = _tables.SelectMany(t => t.ColumnGroups.Select(g => g.Name))
@@ -949,7 +963,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             Created = cont?.Header.Created ?? Now.ToUnixTimeMilliseconds(),
             Modified = cont is null ? 0 : Now.ToUnixTimeMilliseconds(),
             AppendCount = segment,
-            Metadata = (_options.Metadata ?? new JsonObject()).ToJsonString(),
+            Metadata = (_metadataOut ?? _options.Metadata ?? new JsonObject()).ToJsonString(),
             Tables = tables,
             Keyring = _keys?.Keyring,
             Files = _fileEntries.Count > 0 || _shapes.Count > 0 ? WriteFileDirectories(segment) : null,

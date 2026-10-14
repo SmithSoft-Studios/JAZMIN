@@ -19,6 +19,7 @@ import {
   KEYRING_GROUPS, MAGIC, MAX_KDF_ITERATIONS, MIN_KDF_ITERATIONS, PREAMBLE_SIZE, SALT_SIZE, TRAILER_SIZE, WHOLE_TABLE,
 } from './constants.js';
 import { JazminValidationError } from './errors.js';
+import { LINKS_KEY, checkLinkDefinitions, normalizeLinks } from './links.js';
 import { INDEX_BUILDERS, INDEX_PAGE_BYTES, encodePostingsSection } from './indexes.js';
 import { JazminKey, KeySchedule, deriveFromPassword, fingerprint, hkdf, parseAnyKey } from './keys.js';
 import { checkPriority, writeThreads } from './priority.js';
@@ -299,7 +300,7 @@ export class JazminWriter {
     const {
       columns, metadata = {}, codec = DEFAULTS.codec, level, chunkRows = DEFAULTS.chunkRows,
       chunkBytes = DEFAULTS.chunkBytes, key, password, kdfIterations = DEFAULTS.kdfIterations, sortedBy, access, now,
-      layout, files, package: packageSettings, tables, priority = 'balanced', compactIndexes = false, shapes,
+      layout, files, package: packageSettings, tables, priority = 'balanced', compactIndexes = false, shapes, links,
     } = options;
     const { maxDegreeOfParallelism = writeThreads(priority) } = options;
     checkPriority(priority);
@@ -339,6 +340,13 @@ export class JazminWriter {
     for (const t of tables ? this.#tableDefs : []) {
       if (names.has(t.name)) throw new JazminValidationError(`Table '${t.name}' is declared twice`);
       names.add(t.name);
+    }
+    // Links between the tables: checked against them, kept in the metadata (names only).
+    if (links !== undefined) {
+      if (cont) throw new JazminValidationError('An append keeps the links: change them with update()');
+      const list = checkLinkDefinitions(normalizeLinks(links), new Map(this.#tableDefs.map((t) => [t.name, t.columns])));
+      const { [LINKS_KEY]: _, ...rest } = this.#options.metadata;
+      this.#options.metadata = list.length ? { ...rest, [LINKS_KEY]: list } : rest;
     }
     // Column groups a grant may name: those of every table (when appending, of the file's other tables too).
     this.#allGroupNames = [...new Set([

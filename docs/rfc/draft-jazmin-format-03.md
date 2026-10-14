@@ -587,6 +587,17 @@ Statistics bounds and sorted-index keys store key forms as bytes:
 `metadata` is a free-form JSON object for application data (source system,
 export time, owner and so on).
 
+**Links between tables** (informative; no reader feature). The metadata member
+`jazmin.links`, when present, declares links between the file's tables: an
+array of `{ "name", "from": { "table", "columns" }, "to": { "table",
+"columns" } }`, where each row of `from` refers to the row of `to` whose
+columns hold equal values, column by column. Names are unique; `table` is a
+table's name (`""` for a file's single unnamed table); the two column lists
+have the same length and their columns the same types. Readers MAY use links
+to show related rows or check them; readers that do not know the member ignore
+it. Writers that rename or remove a table SHOULD rename it in the links, or
+refuse to remove a table a link uses.
+
 ### 6.7. Sort Order
 
 `sorted_by` lists column names. It declares that a table's rows are in

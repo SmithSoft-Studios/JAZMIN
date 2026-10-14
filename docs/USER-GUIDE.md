@@ -3922,7 +3922,43 @@ JazminFile.Update("statements.jzm", new JazminUpdate
 Measured on a 1,000,000-row file (`npm run bench:layout`): adding a 200,000-row table costs a rewrite plus 0.3 s in
 .NET and about 0.5 s in JavaScript, with the same peak memory; sorting its rows on the way in adds about 0.5 s.
 
-### 23.6 Is it worth it?
+### 23.6 Links between tables (next release)
+
+Say once how the tables refer to each other, and every tool knows: a viewer can show a client's transactions from the
+client's row, queries can follow the link, and the file can check that every row finds what it refers to.
+
+```js
+write('statements.jzm', { clients, transactions }, { tables, links: [
+  { name: 'client', from: { table: 'transactions', columns: ['clientId'] }, to: { table: 'clients', columns: ['clientId'] } },
+] });
+update('statements.jzm', { key, links: [...] });   // replace them ([] for none)
+
+const r = open('statements.jzm', { key });
+r.links;                                            // the declared links
+r.checkLinks();
+// [{ name: 'client', rows: 300000, empty: 0, missing: 2, examples: [['C0999'], ['C1203']], duplicateTargets: 0, method: 'merge' }]
+```
+
+```csharp
+var options = new JazminWriteOptions { Tables = tables, Links = [new JazminLink("client",
+    new JazminLinkSide("transactions", ["clientId"]), new JazminLinkSide("clients", ["clientId"]))] };
+var checks = reader.CheckLinks();   // Rows, Empty, Missing, Examples, DuplicateTargets, Method
+```
+
+- **Kept in the file's metadata** (`jazmin.links`): names, tables and columns only, never values. Every key can read
+  them. No format change: older readers ignore them.
+- **Checked when written:** the tables and columns exist and their types are equal. Whether a target value repeats (a
+  link should find one row) is what `checkLinks` reports.
+- **Renaming a table** renames it in the links; **removing** one that a link uses is refused unless the links change too.
+- **`checkLinks`** reads only the link columns. `missing` counts rows whose link finds nothing, `empty` rows with no
+  value to link by, `duplicateTargets` target values that repeat; `examples` shows the first few. A key sees only its own
+  rows, so a shared file is checked as that key sees it.
+- **Speed:** when both tables are sorted by the link columns they are walked side by side (`method: 'merge'`), holding
+  almost nothing; otherwise the target table's values are held (`'hash'`). For 1,000,000 orders linked to 50,000
+  customers (`npm run bench:links`): side by side 0.13 s and 16 MB in JavaScript, 0.06 to 0.3 s in .NET; held 0.27 s and
+  19 MB in JavaScript, 0.16 to 0.4 s in .NET.
+
+### 23.7 Is it worth it?
 
 Measured on 20,000 clients with 11 detail columns and 300,000 transactions
 (15 per client), on Node.js. Clients were in 256-row chunks and transactions
