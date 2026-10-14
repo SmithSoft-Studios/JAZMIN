@@ -516,7 +516,6 @@ export type QueryPlan =
   | { strategy: 'index'; candidateRows: number }
   | { strategy: 'scan'; chunks: number; chunksSkipped: number };
 
-/** reader.advise(): layout advice from chunk directories and statistics (no rows decoded). */
 /** Column values as arrays (JazminReader.columnArrays). */
 export interface ColumnArrays {
   rowCount: number;
@@ -581,6 +580,7 @@ export interface LinkCheck {
   method: 'merge' | 'hash';
 }
 
+/** reader.advise(): layout advice from chunk directories and statistics (no rows decoded). */
 export interface LayoutAdvice {
   rows: number;
   chunks: number;
