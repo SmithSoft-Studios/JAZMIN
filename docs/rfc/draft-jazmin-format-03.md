@@ -480,6 +480,18 @@ partitions (6.3), its indexes (8) and its deleted rows (11.2).
 A file MAY hold several tables. A reader that exposes one table at a time
 MUST let the caller choose the table by name and SHOULD default to the first.
 
+**Changing a file's tables** (adding, renaming or removing tables when a file
+is written again). Other parts of a file name tables: links (6.6), saved
+export shapes (6.8) and the document's `edit` (7.9). A writer that changes a
+file's tables:
+
+- SHOULD give a renamed table's new name wherever the file names it;
+- SHOULD refuse to remove a table that a link, a saved shape or `edit` still
+  uses, unless the same rewrite changes them too;
+- where a saved shape or `edit` leaves `table` out (the first table), and
+  the change makes another table the first, SHOULD name the table it read,
+  so that it keeps reading the same rows.
+
 ### 6.3. Partitions and Chunk Directories
 
 A table's **partitions** are listed in the header (`partitions`), in a
@@ -595,8 +607,7 @@ columns hold equal values, column by column. Names are unique; `table` is a
 table's name (`""` for a file's single unnamed table); the two column lists
 have the same length and their columns the same types. Readers MAY use links
 to show related rows or check them; readers that do not know the member ignore
-it. Writers that rename or remove a table SHOULD rename it in the links, or
-refuse to remove a table a link uses.
+it. Writers that rename or remove a table follow 6.2.
 
 ### 6.7. Sort Order
 
@@ -1735,6 +1746,15 @@ indexes, embedded files) written by both reference implementations.
   reference implementations have given it since release 1.0 (links between
   tables since 1.3), so that saved shapes mean the same in every reader. No
   change to files.
+- **Since format 1.0, an optional metadata member (6.6):** links between
+  tables, `jazmin.links`, names only. Readers that don't know it see
+  ordinary metadata: the published 1.5.0 libraries (npm and NuGet) read such
+  files as 1.6 does, and npm 1.5.0 keeps the member when it appends, updates
+  or compacts. No reader feature.
+- **Since format 1.0, rules for writers that change a file's tables (6.2):**
+  renamed tables renamed where links, saved shapes and `edit` name them,
+  tables still in use not removed, and "the first table" named when another
+  would become first. No change to files.
 - **Since format 1.0, a clarification (8.1):** a sorted index's page always
   has a first key, so for a `string` index no bytes are the empty text, not
   an absent key. The writers always wrote it so; the readers of releases
