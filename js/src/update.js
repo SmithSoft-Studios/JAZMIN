@@ -9,8 +9,9 @@ import { grantExpiry, toMs } from './expiry.js';
 import { JazminAccessKey, parseAnyKey } from './keys.js';
 import { FILE_SOURCE } from './files.js';
 import { COMPACT_INDEXES, FILE_STATE, JazminReader, OWNER_GRANTS, ROWS_BY_PARTITION } from './reader.js';
-import { compareKeys, normalizeValue, toKey } from './types.js';
+import { INDEX_KINDS, compareKeys, normalizeValue, toKey } from './types.js';
 import { withLock } from './lock.js';
+import { RowSorter, SORT_RUN_ROWS } from './sort-rows.js';
 import { JazminWriter } from './writer.js';
 
 /**
@@ -87,6 +88,12 @@ function compareTuples(a, b) {
  *   compactIndexes      sorted indexes with keys as differences (default: as the file has them)
  *   addFiles, removeFiles, package        embedded files: add or replace, remove (by path), viewer settings
  *   addShapes, removeShapes               saved export shapes: add or replace, remove (by name)
+ *   indexes: { column: kinds }  the indexes a column has afterwards ('sorted', 'trigram', both, or [] for none);
+ *                       columns not named keep theirs (the table being updated). The first sortedBy column keeps no
+ *                       sorted index: the sort order already finds its values. Re-sorted away from it, the old first
+ *                       sort column gets a sorted index, unless named here
+ *   sortedBy: [...]     a new sort order (null: none): every row is put in it, within a memory budget (sortRunRows
+ *                       rows at a time, by priority; more go through temporary files locked with a key of their own)
  *
  * Returns { rowCount, inserted, updated, deleted }.
  */
@@ -110,6 +117,7 @@ export function updateUnlocked(path, options = {}) {
     key, password, insert = [], upsert = [], keyColumns, delete: deleteWhere, metadata,
     grant = [], revoke = [], codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, compactIndexes, now, layout,
     addFiles = [], removeFiles = [], package: packageSettings, table, regroup = false, columns: given, addShapes = [], removeShapes = [],
+    indexes, sortedBy: newSortedBy, sortRunRows,
   } = options;
   if (upsert.length && (!Array.isArray(keyColumns) || keyColumns.length === 0)) {
     throw new JazminValidationError('upsert needs keyColumns, e.g. { keyColumns: ["id"] }');
@@ -119,6 +127,7 @@ export function updateUnlocked(path, options = {}) {
   const readers = [reader]; // in a file with several tables, one per table, in file order
   const temp = `${path}.${crypto.randomBytes(6).toString('hex')}.tmp`;
   let writer;
+  let sorter = null; // a new sort order's rows, sorted within a memory budget
   try {
     const owner = reader[OWNER_GRANTS];
     if (!owner && reader.access) throw new JazminKeyError("Only the file owner's master key can modify this file");
@@ -130,14 +139,25 @@ export function updateUnlocked(path, options = {}) {
       for (const name of reader.tables) readers.push(name === reader.table ? reader : new JazminReader(path, { key, password, table: name }));
     }
 
+    // The sort order afterwards: the file's, or a new one (sortedBy; null or [] for none).
+    const target = targetSortedBy(newSortedBy, reader.sortedBy);
+    const resort = !sameNames(target, reader.sortedBy);
     if (regroup && !owner?.partitionBy) throw new JazminValidationError('regroup applies to access-controlled files with partitionBy');
-    if (regroup && reader.sortedBy && reader.sortedBy[0] !== owner.partitionBy) {
-      throw new JazminValidationError(`regroup would break the file's sortedBy order [${reader.sortedBy.join(', ')}]: `
+    if (regroup && target && target[0] !== owner.partitionBy) {
+      throw new JazminValidationError(`regroup would break the sortedBy order [${target.join(', ')}]: `
         + `it needs no sortedBy, or one that starts with the partition column '${owner.partitionBy}' (then rows are already grouped)`);
     }
 
-    // Nested columns may gain fields at the end of their objects (spec 5.4): their new definitions are given.
-    const { columns } = growColumns(columnsWithIndexes(reader), given, normalizeColumns);
+    // Nested columns may gain fields at the end of their objects (spec 5.4): their new definitions are given; and
+    // columns may get, change or lose indexes.
+    // The old first sort column found its values by the order, with no index of its own: re-sorted away from it, it gets
+    // a sorted index, so lookups on it stay fast, unless `indexes` names it.
+    const current = columnsWithIndexes(reader);
+    const was = current.find((c) => c.name === reader.sortedBy?.[0]);
+    const keepLookup = resort && was && target?.[0] !== was.name && !(indexes && Object.hasOwn(indexes, was.name))
+      && INDEX_KINDS.sorted.has(was.type) && !was.index.includes('sorted');
+    const wanted = keepLookup ? { ...(indexes ?? {}), [was.name]: [...was.index, 'sorted'] } : indexes;
+    const { columns } = growColumns(withIndexes(current, wanted), given, normalizeColumns);
     const byName = new Map(columns.map((c) => [c.name, c]));
     for (const name of keyColumns ?? []) if (!byName.has(name)) throw new JazminValidationError(`keyColumns: unknown column '${name}'`);
 
@@ -164,8 +184,8 @@ export function updateUnlocked(path, options = {}) {
     const named = readers.length > 1 || reader.table !== '';
     writer = new JazminWriter(temp, {
       ...(named
-        ? { tables: readers.map((r) => ({ name: r.table, columns: r === reader ? columns : columnsWithIndexes(r), sortedBy: r.sortedBy, ...(owner ? tableLayout(r[OWNER_GRANTS]) : {}) })) }
-        : { columns, sortedBy }),
+        ? { tables: readers.map((r) => ({ name: r.table, columns: r === reader ? columns : columnsWithIndexes(r), sortedBy: r === reader ? target : r.sortedBy, ...(owner ? tableLayout(r[OWNER_GRANTS]) : {}) })) }
+        : { columns, sortedBy: target }),
       metadata: { ...reader.metadata, ...(metadata ?? {}) },
       codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, layout,
       compactIndexes: compactIndexes ?? reader[COMPACT_INDEXES],
@@ -179,7 +199,15 @@ export function updateUnlocked(path, options = {}) {
 
     const stats = { inserted: 0, updated: 0, deleted: 0 };
     const writeChanged = () => {
-      if (sortedBy) {
+      // A new sort order: the changed rows go through the sorter, then to the writer in the new order.
+      if (resort && target) {
+        sorter = new RowSorter(columns, target, {
+          runRows: sortRunRows ?? SORT_RUN_ROWS[priority ?? 'balanced'] ?? SORT_RUN_ROWS.balanced,
+          writeOptions: { codec, level, maxDegreeOfParallelism, priority },
+        });
+      }
+      const emit = sorter ? (row) => sorter.add(row) : (row) => writer.writeRow(row);
+      if (sortedBy && !resort) {
         // Upserted rows are re-inserted at their sorted position (their sort key may have changed),
         // so the whole change set merges into the stream in one pass.
         const incoming = [...insert, ...[...pending.values()].map((p) => p.row)].map((row) => ({ row, key: sortKeyOf(row) }));
@@ -206,15 +234,16 @@ export function updateUnlocked(path, options = {}) {
           if (hit && !hit.matched) {
             hit.matched = true;
             stats.updated++;
-            writer.writeRow(hit.row);
+            emit(hit.row);
           } else if (hit || isDeleted?.(row)) {
             stats.deleted++;
           } else {
-            writer.writeRow(row);
+            emit(row);
           }
         }
-        for (const row of insert) writer.writeRow(row);
-        for (const { row, matched } of pending.values()) if (!matched) writer.writeRow(row);
+        for (const row of insert) emit(row);
+        for (const { row, matched } of pending.values()) if (!matched) emit(row);
+        if (sorter) for (const row of sorter.rows()) writer.writeRow(row);
       }
       stats.inserted = insert.length + [...pending.values()].filter((p) => !p.matched).length;
     };
@@ -231,15 +260,41 @@ export function updateUnlocked(path, options = {}) {
     }
 
     for (const r of readers) r.close();
+    sorter?.close();
     writer.finish();
     replaceFile(temp, path);
     return { rowCount, ...stats, expiredGrantsRemoved: writer.expiredGrants };
   } catch (error) {
     writer?.abort();
     for (const r of readers) r.close();
+    sorter?.close();
     fs.rmSync(temp, { force: true });
     throw error;
   }
+}
+
+/** The sort order a rewrite gives a table: its own (`given` undefined), none (null or []), or the names given. */
+function targetSortedBy(given, current) {
+  if (given === undefined) return current;
+  if (given === null || (Array.isArray(given) && given.length === 0)) return undefined;
+  if (!Array.isArray(given) || given.some((n) => typeof n !== 'string' || !n)) throw new JazminValidationError('sortedBy must be an array of column names, or null for none');
+  return given;
+}
+
+const sameNames = (a, b) => (a?.length ?? 0) === (b?.length ?? 0) && (a ?? []).every((n, i) => n === b[i]);
+
+/** Columns with the indexes `indexes` gives them ({ column: kind | [kinds] | [] }); columns not named keep theirs. */
+function withIndexes(columns, indexes) {
+  if (indexes === undefined || indexes === null) return columns;
+  if (typeof indexes !== 'object' || Array.isArray(indexes)) throw new JazminValidationError("indexes: { column: ['sorted', 'trigram'] } (or [] for none)");
+  const names = new Set(columns.map((c) => c.name));
+  for (const name of Object.keys(indexes)) if (!names.has(name)) throw new JazminValidationError(`indexes: unknown column '${name}'`);
+  return columns.map((c) => {
+    if (!Object.hasOwn(indexes, c.name)) return c;
+    const kinds = indexes[c.name] === null ? [] : [].concat(indexes[c.name]);
+    if (kinds.some((k) => typeof k !== 'string')) throw new JazminValidationError(`indexes: column '${c.name}' takes 'sorted', 'trigram', both, or [] for none`);
+    return { ...c, index: kinds }; // the writer checks each kind fits the column's type
+  });
 }
 
 /** A table's partition column and named column groups as writer table options (owner of an access-controlled file). */

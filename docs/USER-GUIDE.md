@@ -2307,6 +2307,55 @@ Rules:
     missing, so a program opening it at that moment may not find it. .NET
     replaces it in one step.
 
+### 16.1 Changing indexes and the sort order (next release)
+
+The same rewrite changes an existing file's indexes and sort order; `compact()` takes the same options. Everything
+else is kept: the rows, keys and grants, embedded files, saved shapes, the document and metadata.
+
+```js
+update('orders.jzm', { key, indexes: {
+  customer: ['sorted', 'trigram'],   // add a text-search index beside the sorted one
+  note: 'trigram',                   // change: sorted becomes text search
+  city: [],                          // remove its indexes
+} });                                // columns not named keep theirs
+update('orders.jzm', { key, sortedBy: ['customer', 'date'] });   // a new sort order
+update('orders.jzm', { key, sortedBy: null });                   // no sort order
+```
+
+```csharp
+JazminFile.Update("orders.jzm", new JazminUpdate
+{
+    Key = key,
+    Indexes = new Dictionary<string, IReadOnlyList<JazminIndexKind>> { ["customer"] = [JazminIndexKind.Sorted, JazminIndexKind.Trigram], ["city"] = [] },
+    SortedBy = ["customer", "date"],   // [] for none; null keeps the file's
+});
+```
+
+- **Index kinds:** `sorted` finds values, lists of values and ranges, in text, number, decimal, date and true/false
+  columns. `trigram` finds text a value contains (`contains`, `icontains`), in text columns. A column can have both.
+- **The first sort column needs no sorted index:** the sort order already finds its values, so none is kept. When a
+  new sort order moves away from a column, that column gets a sorted index, so lookups on it stay fast, unless
+  `indexes` names it.
+- **A new sort order** puts every row in it, within a memory budget. Up to `sortRunRows` rows (by `priority`: 10,000,
+  25,000 or 100,000) are sorted in memory at a time. Larger tables go through temporary files in the system's temp
+  folder, each locked with a key made for it and never kept, so no row is written there readable. They are merged
+  into the new file and then deleted. Rows with the same sort values keep the order they had.
+- **In a file with several tables,** the options change the table named by `table` (the first by default).
+
+Measured on 1,000,000 rows (9.2 MB, sorted by id, two sorted indexes), each run in its own process
+(`npm run bench:layout`):
+
+| Change | JavaScript | .NET |
+|---|---:|---:|
+| `compact()`: a rewrite that changes nothing | 1.8 s, 246 MB | 1.8 s, 108 MB |
+| Add a text-search index | 2.0 s, 285 MB | 2.4 s, 165 MB |
+| Remove an index | 1.4 s, 231 MB | 1.6 s, 72 MB |
+| A new sort order (customer, id) | 5.6 s, 401 MB | 5.8 s, 240 MB |
+
+Memory is each process's peak above where it started. A new sort order reads and writes every row twice, so it takes
+about three times as long as a plain rewrite. The rows it holds at once are few (about 8 MB in JavaScript after
+garbage collection); most of the peak is garbage collected later.
+
 ## 17. Appending: fast, frequent changes
 
 `update()` rewrites the whole file (section 16). For frequent changes, use
