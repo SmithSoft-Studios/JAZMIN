@@ -516,7 +516,6 @@ export type QueryPlan =
   | { strategy: 'index'; candidateRows: number }
   | { strategy: 'scan'; chunks: number; chunksSkipped: number };
 
-/** reader.advise(): layout advice from chunk directories and statistics (no rows decoded). */
 /** Column values as arrays (JazminReader.columnArrays). */
 export interface ColumnArrays {
   rowCount: number;
@@ -581,6 +580,7 @@ export interface LinkCheck {
   method: 'merge' | 'hash';
 }
 
+/** reader.advise(): layout advice from chunk directories and statistics (no rows decoded). */
 export interface LayoutAdvice {
   rows: number;
   chunks: number;
@@ -657,6 +657,8 @@ export interface TableChanges {
   where?: Filter;
   indexes?: Record<string, JazminIndexKind | JazminIndexKind[] | null>;
   sortedBy?: string[] | null;
+  /** Nested columns given fields at the end of their objects: their new definitions (USER-GUIDE 4.2). */
+  columns?: JazminColumnInput[];
 }
 
 export interface UpdateOptions {
@@ -719,6 +721,8 @@ export interface UpdateOptions {
   where?: Filter;
   /** Other tables' changes, in the same rewrite (the options above change the main table, `table`). */
   tables?: Record<string, TableChanges>;
+  /** Nested columns given fields at the end of their objects: their new definitions (USER-GUIDE 4.2). */
+  columns?: JazminColumnInput[];
 }
 
 export interface UpdateResult {
@@ -728,6 +732,8 @@ export interface UpdateResult {
   deleted: number;
   /** Grants dropped because they had expired. */
   expiredGrantsRemoved: number;
+  /** With `tables`: the main table's and each named table's counts, by the table's name afterwards. */
+  tables?: Record<string, { rowCount: number; inserted: number; updated: number; deleted: number }>;
 }
 
 /** Streams the file into a new version with the changes applied, then atomically replaces it. */
@@ -767,7 +773,7 @@ export function inspect(path: string): {
  * access-controlled file without sortedBy, or sorted by its partition column first), each partition's rows are
  * written together, in their file order: appends leave one chunk per append, and regrouping merges them.
  */
-export function compact(path: string, options?: { key?: KeyInput; password?: string; codec?: JazminCodec; chunkRows?: number; regroup?: boolean; indexes?: UpdateOptions['indexes']; sortedBy?: string[] | null; sortRunRows?: number }):
+export function compact(path: string, options?: UpdateOptions & { regroup?: boolean }):
   { rowCount: number; bytesBefore: number; bytesAfter: number; expiredGrantsRemoved: number };
 /**
  * Encrypts a file again under a new key or password, without decoding its rows: every section is decrypted and

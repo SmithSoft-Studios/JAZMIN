@@ -1298,8 +1298,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <summary>
     /// Each declared link checked against the rows this key sees: rows whose link finds nothing, and target keys that
     /// repeat. Reads only the link columns; tables sorted by their link columns are walked side by side.
+    /// <paramref name="links"/>: other links to check instead (for example ones not saved yet); null checks the file's.
     /// </summary>
-    public IReadOnlyList<JazminLinkCheck> CheckLinks(int limit = 10) => Jazmin.Links.Check(this, Links, limit);
+    public IReadOnlyList<JazminLinkCheck> CheckLinks(int limit = 10, IReadOnlyList<JazminLink>? links = null) => Jazmin.Links.Check(this, links ?? Links, limit);
 
     /// <summary>Rows visible to this reader (excluding deleted rows, and rows an access key may not see).</summary>
     public long RowCount =>
