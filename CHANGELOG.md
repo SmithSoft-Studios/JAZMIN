@@ -31,8 +31,9 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ### Changed
 - **Less memory for shared files with many chunks (JavaScript):** each chunk part's digest is no longer kept as an
-  object of its own. A full count of a shared file with 250,000 chunks peaks at about 212 MB instead of 290 MB, and
-  runs about 7% faster.
+  object of its own. A full count of a shared file with 250,000 chunks (every row a different partition) uses 152 MB
+  instead of 234 MB, and is 8% faster; other reads are unchanged (median of 7 rounds, each in its own process,
+  against the published 1.5.0).
 
 ## 1.5.0 - 2026-10-11 (file format 1.0)
 

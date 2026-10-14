@@ -58,8 +58,12 @@ reader.close();
   password or none, with embedded files (photos, PDFs). Pages opened from disk open small files made into scripts
   (`portableScript()`, `jazmin script`) with `openScript()`.
 - **Sending records back:** people in the field send records from a phone, often offline, in a small file locked with
-  their submission key, which they get only by opening the shared file. The owner files them; a ready-made filing
-  service is in the repository.
+  their submission key, which they get only by opening the shared file. The owner files them with `fileSubmission()`:
+  the sender's grant and expiry, their own rows only, records sent again, attached files checked by their first bytes.
+- **Is compacting worth it?** `reader.storage()` reports the bytes in use and no longer used, deleted rows still
+  stored, and each index's segments, reading only the file's directories.
+- **Documents read every table** of their file: `jazmin.tables`, and the `table` option of `jazmin.query` and
+  `jazmin.count`.
 
 Full documentation, the format specification and the .NET library:
 [github.com/SmithSoft-Studios/JAZMIN](https://github.com/SmithSoft-Studios/JAZMIN).
