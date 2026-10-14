@@ -3889,7 +3889,40 @@ append('statements.jzm', { key, table: 'transactions', insert: newLines });
 update('statements.jzm', { key, table: 'clients', upsert: [changedClient], keyColumns: ['clientId'] });
 ```
 
-### 23.5 Is it worth it?
+### 23.5 Adding, removing and renaming tables (next release)
+
+`update()` (and `compact()`) changes the tables of an existing file in one rewrite that keeps everything else:
+
+```js
+update('statements.jzm', { key,
+  addTables: [{ name: 'payments', columns: paymentColumns, sortedBy: ['clientId', 'date'], partitionBy: 'clientId', rows: payments }],
+  removeTables: ['old'],
+  renameTables: { tx: 'transactions' },
+});
+```
+
+```csharp
+JazminFile.Update("statements.jzm", new JazminUpdate
+{
+    Key = owner,
+    AddTables = [new JazminAddedTable(new JazminTable("payments", paymentColumns) { SortedBy = ["clientId", "date"], PartitionBy = "clientId" }, payments)],
+    RemoveTables = ["old"],
+    RenameTables = new Dictionary<string, string> { ["tx"] = "transactions" },
+});
+```
+
+- **Rows** of an added table can be any iterable (an array, or a generator reading another file); they are read once
+  and never all held. With `sortedBy`, they are put in that order within the memory budget (16.1).
+- **Shared files:** a table partitioned by the same column uses the same partition names, so access follows: a key
+  granted client `C1` sees `C1`'s rows in the new table with no change to its grant (23.3).
+- **Saved shapes and the document's edits** follow a rename. A table they read can't be removed until they go too (the
+  error names them). Ones that read "the first table" keep reading the same table, named.
+- **A file's single unnamed table** (written without `tables`) is named first: `renameTables: { '': 'clients' }`.
+
+Measured on a 1,000,000-row file (`npm run bench:layout`): adding a 200,000-row table costs a rewrite plus 0.3 s in
+.NET and about 0.5 s in JavaScript, with the same peak memory; sorting its rows on the way in adds about 0.5 s.
+
+### 23.6 Is it worth it?
 
 Measured on 20,000 clients with 11 detail columns and 300,000 transactions
 (15 per client), on Node.js. Clients were in 256-row chunks and transactions

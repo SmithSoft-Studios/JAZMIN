@@ -15,6 +15,12 @@ const here = fileURLToPath(import.meta.url);
 const dir = path.join(os.tmpdir(), 'jazmin-layout-bench');
 const median = (values) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 
+const PAYMENT_COLUMNS = [{ name: 'customer', type: 'string', index: 'sorted' }, { name: 'amount', type: 'decimal' }, { name: 'at', type: 'datetime' }];
+/** 200,000 payments, made as they are read: the rows are never all in memory. */
+function* payments() {
+  for (let i = 0; i < 200_000; i++) yield { customer: `C${String((i * 7919) % 50_000).padStart(5, '0')}`, amount: `${i % 5000}.00`, at: new Date(Date.UTC(2026, 0, 1) + i * 60_000) };
+}
+
 const SCENARIOS = {
   compact: { label: 'compact() (rewrite, nothing changed)', run: (file, key) => compact(file, { key }) },
   'add-trigram': { label: 'Add a text-search index on customer', run: (file, key) => update(file, { key, indexes: { customer: ['sorted', 'trigram'] } }) },
@@ -22,6 +28,9 @@ const SCENARIOS = {
   'sort-memory': { label: "Re-sort by customer, id (priority 'memory')", run: (file, key) => update(file, { key, sortedBy: ['customer', 'id'], priority: 'memory' }) },
   'sort-balanced': { label: 'Re-sort by customer, id (balanced)', run: (file, key) => update(file, { key, sortedBy: ['customer', 'id'] }) },
   'sort-speed': { label: "Re-sort by customer, id (priority 'speed')", run: (file, key) => update(file, { key, sortedBy: ['customer', 'id'], priority: 'speed' }) },
+  'rename-table': { label: 'Name the table (a rewrite)', run: (file, key) => update(file, { key, renameTables: { '': 'orders' } }) },
+  'add-table': { label: 'Add a 200,000-row table, rows streamed', run: (file, key) => update(file, { key, renameTables: { '': 'orders' }, addTables: [{ name: 'payments', columns: PAYMENT_COLUMNS, rows: payments() }] }) },
+  'add-table-sorted': { label: 'Add a 200,000-row table, sorted on the way in', run: (file, key) => update(file, { key, renameTables: { '': 'orders' }, addTables: [{ name: 'payments', columns: PAYMENT_COLUMNS, sortedBy: ['customer', 'at'], rows: payments() }] }) },
 };
 
 if (process.argv[2] === '--run') {

@@ -93,6 +93,23 @@ public sealed class JazminUpdate
 
     /// <summary>Rows sorted in memory at a time when re-sorting (default by <see cref="Priority"/>: 10,000, 25,000 or 100,000).</summary>
     public int? SortRunRows { get; set; }
+
+    /// <summary>New tables, written after the others; a table with SortedBy gets its rows in that order (within the budget).</summary>
+    public IReadOnlyList<JazminAddedTable> AddTables { get; set; } = [];
+
+    /// <summary>Tables to leave out. Saved shapes and the document's edits that read one are refused, unless removed too.</summary>
+    public IReadOnlyList<string> RemoveTables { get; set; } = [];
+
+    /// <summary>Tables to rename, old name to new; saved shapes and the document's edits follow.</summary>
+    public IReadOnlyDictionary<string, string> RenameTables { get; set; } = new Dictionary<string, string>();
+}
+
+/// <summary>A table added to an existing file (<see cref="JazminUpdate.AddTables"/>): its definition and its rows, read once.</summary>
+public sealed class JazminAddedTable(JazminTable table, IEnumerable<IReadOnlyDictionary<string, object?>> rows)
+{
+    public JazminTable Table { get; } = table ?? throw new ArgumentNullException(nameof(table));
+
+    public IEnumerable<IReadOnlyDictionary<string, object?>> Rows { get; } = rows ?? [];
 }
 
 /// <summary>The keys for <see cref="JazminFile.RotateKey"/>: the file's key or password now, and the new one.</summary>
@@ -386,6 +403,13 @@ public static class JazminFile
                     readers.Add(name == reader.TableName ? reader : reader.OpenTable(name));
             }
 
+            // The tables afterwards: those kept (renamed as asked), then those added.
+            var plan = PlanTables(reader.Tables, update, ownerGrants is not null);
+            var kept = readers.Where(r => !plan.Removed.Contains(r.TableName)).ToList();
+            var rowChanges = update.Insert.Count > 0 || update.Upsert.Count > 0 || update.Delete is not null || update.SortedBy is not null || update.Indexes is not null || update.Columns is not null;
+            if (plan.Removed.Contains(reader.TableName) && rowChanges) throw new JazminValidationException($"Table '{reader.TableName}' is being removed: its rows can't change too");
+            string FinalName(string name) => plan.Names.TryGetValue(name, out var to) ? to : name;
+
             // The sort order afterwards: the table's, or a new one (SortedBy; empty for none).
             var target = update.SortedBy is null ? reader.SortedBy : update.SortedBy.Count == 0 ? null : update.SortedBy;
             var resort = !(target ?? []).SequenceEqual(reader.SortedBy ?? [], StringComparer.Ordinal);
@@ -418,7 +442,7 @@ public static class JazminFile
             var access = ownerGrants is null ? null : AccessFor(reader, ownerGrants, update);
             if (access is not null && newOwner is { } change) access.Grants = change.Grants(access.Grants);
             // Named tables (several, or one with a name) are written as tables, which keeps their names.
-            var named = readers.Count > 1 || reader.TableName.Length > 0;
+            var named = kept.Count + update.AddTables.Count > 1 || kept.Any(r => FinalName(r.TableName).Length > 0) || update.AddTables.Count > 0;
             var options = new JazminWriteOptions
             {
                 Key = newOwner?.Key ?? update.Key,
@@ -429,23 +453,28 @@ public static class JazminFile
                 Codec = update.Codec,
                 CompressionLevel = update.CompressionLevel,
                 ChunkRows = update.ChunkRows,
-                Package = update.Package ?? reader.Package,
+                Package = PackageAfter(update.Package ?? reader.Package, plan),
                 Shapes = SavedShapes.Kept(reader.FileState()?.Shapes ?? [], update.AddShapes, update.RemoveShapes)
-                    .Select(s => s.ToPublic(withGroups: true)).Concat(update.AddShapes).ToList(),
+                    .Select(s => ShapeAfter(s.ToPublic(withGroups: true), plan)).Concat(update.AddShapes).ToList(),
                 Access = access is null ? null : named ? new JazminAccessOptions { Grants = access.Grants } : access,
                 Now = update.Now, // expired grants are dropped; the new version's fresh secrets lock them out
                 Priority = update.Priority,
                 CompactIndexes = update.CompactIndexes ?? reader.CompactIndexes,
-                Tables = named ? readers.Select(r => ReferenceEquals(r, reader) ? TableFor(r, columns, target) : TableFor(r, null)).ToList() : null,
+                Tables = named
+                    ? kept.Select(r => ReferenceEquals(r, reader) ? TableFor(r, columns, target, FinalName(r.TableName)) : TableFor(r, null, r.SortedBy, FinalName(r.TableName)))
+                        .Concat(update.AddTables.Select(a => a.Table)).ToList()
+                    : null,
             };
             writer = named ? JazminWriter.Create(temp, options) : JazminWriter.Create(temp, columns, options);
             foreach (var source in CarriedFiles(reader, update)) writer.AddSource(source);
             foreach (var file in update.AddFiles) writer.AddFile(file);
 
             long inserted = 0, updated = 0, deleted = 0, rowCount = 0;
-            foreach (var r in readers)
+            var first = true;
+            foreach (var r in kept)
             {
-                if (r != readers[0]) writer.StartTable(r.TableName);
+                if (!first) writer.StartTable(FinalName(r.TableName));
+                first = false;
                 if (r == reader)
                 {
                     WriteChanged();
@@ -455,6 +484,24 @@ public static class JazminFile
                 {
                     foreach (var row in r.Rows()) writer.WriteValues(row.RawValues);
                 }
+            }
+            // Added tables: their rows as given, or put in their SortedBy's order within the memory budget.
+            foreach (var added in update.AddTables)
+            {
+                if (!first) writer.StartTable(added.Table.Name);
+                first = false;
+                var addedShape = new RowShape(added.Table.Columns.ToList());
+                if (added.Table.SortedBy is not { Count: > 0 } addedOrder)
+                {
+                    foreach (var row in added.Rows) writer.WriteValues(addedShape.ValuesOf(row));
+                    continue;
+                }
+                var orderCols = addedOrder.Select(addedShape.Ordinal).ToArray();
+                sorter = new RowSorter(added.Table.Columns, values => addedShape.KeyTuple(values, orderCols), update.SortRunRows ?? RowSorter.RunRows(update.Priority), update.Codec);
+                foreach (var row in added.Rows) sorter.Add(addedShape.ValuesOf(row));
+                foreach (var values in sorter.Rows()) writer.WriteValues(values);
+                sorter.Dispose();
+                sorter = null;
             }
 
             foreach (var r in readers) r.Dispose();
@@ -541,6 +588,93 @@ public static class JazminFile
         }
     }
 
+    /// <summary>Which tables a rewrite keeps, removes, renames and adds, checked; the file's first table by name.</summary>
+    private sealed record TablePlan(HashSet<string> Removed, Dictionary<string, string> Names, string First)
+    {
+        public bool Changed => Removed.Count > 0 || Names.Count > 0;
+    }
+
+    private static TablePlan PlanTables(IReadOnlyList<string> existing, JazminUpdate update, bool shared)
+    {
+        var removed = new HashSet<string>(update.RemoveTables, StringComparer.Ordinal);
+        foreach (var name in removed)
+            if (!existing.Contains(name)) throw new JazminValidationException($"RemoveTables: the file has no table '{name}'");
+        var names = new Dictionary<string, string>(update.RenameTables, StringComparer.Ordinal);
+        foreach (var (from, to) in names)
+        {
+            if (!existing.Contains(from)) throw new JazminValidationException($"RenameTables: the file has no table '{from}'");
+            if (removed.Contains(from)) throw new JazminValidationException($"RenameTables: table '{from}' is being removed");
+            if (string.IsNullOrEmpty(to)) throw new JazminValidationException($"RenameTables: '{from}' needs a non-empty new name");
+        }
+        var after = existing.Where(n => !removed.Contains(n)).Select(n => names.TryGetValue(n, out var to) ? to : n).ToList();
+        foreach (var added in update.AddTables)
+        {
+            if (string.IsNullOrEmpty(added.Table.Name)) throw new JazminValidationException("AddTables: each table needs a name");
+            if (!shared && (added.Table.PartitionBy is not null || added.Table.ColumnGroups.Count > 0))
+                throw new JazminValidationException($"AddTables: '{added.Table.Name}': PartitionBy and ColumnGroups apply to shared files");
+            after.Add(added.Table.Name);
+        }
+        if (after.Count == 0) throw new JazminValidationException("A file needs at least one table: add one, or keep one");
+        if (update.AddTables.Count > 0 && after.Contains(""))
+            throw new JazminValidationException("The file's table has no name: name it first (RenameTables = { [\"\"] = \"clients\" })");
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var n in after)
+            if (!seen.Add(n)) throw new JazminValidationException($"Table '{n}' would be in the file twice");
+        return new TablePlan(removed, names, existing[0]);
+    }
+
+    /// <summary>A shape's tables: its own (none named: the file's first) and every <c>$from</c>.</summary>
+    private static HashSet<string> ShapeTables(JazminSavedShape shape, string first)
+    {
+        var names = new HashSet<string>(StringComparer.Ordinal) { shape.Table ?? first };
+        void Walk(JsonNode? node)
+        {
+            if (node is JsonArray array) foreach (var item in array) Walk(item);
+            else if (node is JsonObject obj)
+                foreach (var (key, value) in obj)
+                {
+                    if (key == "$from" && value is JsonValue v && v.TryGetValue<string>(out var table)) names.Add(table);
+                    else Walk(value);
+                }
+        }
+        Walk(shape.Shape);
+        return names;
+    }
+
+    /// <summary>A saved shape after tables are renamed (named explicitly: the first table may change); refused when it reads a removed one.</summary>
+    private static JazminSavedShape ShapeAfter(JazminSavedShape shape, TablePlan plan)
+    {
+        if (!plan.Changed) return shape;
+        foreach (var table in ShapeTables(shape, plan.First))
+            if (plan.Removed.Contains(table))
+                throw new JazminValidationException($"Saved shape '{shape.Name}' reads table '{table}', which is being removed: remove the shape too (RemoveShapes)");
+        string Rename(string n) => plan.Names.TryGetValue(n, out var to) ? to : n;
+        JsonNode? Renamed(JsonNode? node) => node switch
+        {
+            JsonArray array => new JsonArray(array.Select(Renamed).ToArray()),
+            JsonObject obj => new JsonObject(obj.Select(p => KeyValuePair.Create(p.Key,
+                p.Key == "$from" && p.Value is JsonValue v && v.TryGetValue<string>(out var t) ? (JsonNode?)Rename(t) : Renamed(p.Value)))),
+            _ => node?.DeepClone(),
+        };
+        return new JazminSavedShape(shape.Name, (JsonObject)Renamed(shape.Shape)!)
+        {
+            Description = shape.Description, IsDefault = shape.IsDefault, Table = Rename(shape.Table ?? plan.First), Groups = shape.Groups,
+        };
+    }
+
+    /// <summary>The package after tables are renamed or removed: its edit table follows a rename, and can't be removed.</summary>
+    private static JazminPackage? PackageAfter(JazminPackage? package, TablePlan plan)
+    {
+        if (!plan.Changed || package?.Edit is not { } edit) return package;
+        var table = edit.Table ?? plan.First; // none named: the file's first, which may be another table afterwards
+        if (plan.Removed.Contains(table)) throw new JazminValidationException($"The document's edits change table '{table}', which is being removed: change Package.Edit first");
+        return new JazminPackage
+        {
+            Entry = package.Entry, Title = package.Title, AllowedOrigins = package.AllowedOrigins, AllowWasm = package.AllowWasm, Pdf = package.Pdf,
+            Edit = edit with { Table = plan.Names.TryGetValue(table, out var to) ? to : table },
+        };
+    }
+
     /// <summary>
     /// Columns with the indexes <paramref name="indexes"/> gives them; columns not named keep theirs. The old first sort
     /// column found its values by the order, with no index of its own: re-sorted away from it, it gets a sorted index,
@@ -596,12 +730,12 @@ public static class JazminFile
     /// <summary>A table of the file as writer options for a rewrite: its columns with their indexes, sort order and layout.</summary>
     private static JazminTable TableFor(JazminReader reader) => TableFor(reader, null);
 
-    private static JazminTable TableFor(JazminReader reader, IReadOnlyList<JazminColumn>? columns) => TableFor(reader, columns, reader.SortedBy);
+    private static JazminTable TableFor(JazminReader reader, IReadOnlyList<JazminColumn>? columns) => TableFor(reader, columns, reader.SortedBy, reader.TableName);
 
-    private static JazminTable TableFor(JazminReader reader, IReadOnlyList<JazminColumn>? columns, IReadOnlyList<string>? sortedBy)
+    private static JazminTable TableFor(JazminReader reader, IReadOnlyList<JazminColumn>? columns, IReadOnlyList<string>? sortedBy, string name)
     {
         var (partitionBy, groups) = reader.AccessLayout;
-        return new JazminTable(reader.TableName, columns ?? ColumnsWithIndexes(reader))
+        return new JazminTable(name, columns ?? ColumnsWithIndexes(reader))
         {
             SortedBy = sortedBy,
             PartitionBy = partitionBy,
