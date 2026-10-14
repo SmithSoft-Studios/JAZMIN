@@ -2257,6 +2257,7 @@ took **3.0 s** with a **74 MB** process peak (Node.js).
 | Add rows | `insert: [rows]` | `Insert = [rows]` |
 | Replace rows with the same key (or add them) | `upsert: [rows], keyColumns: ['id']` | `Upsert = [rows], KeyColumns = ["id"]` |
 | Remove rows | `delete: { status: 'void' }` | `Delete = JazminFilter.Eq("status", "void")` |
+| Change columns on the rows a filter matches (next release) | `set: { status: 'paid' }, where: { id: 7 }` | `Set = new Dictionary<string, object?> { ["status"] = "paid" }, Where = JazminFilter.Eq("id", 7)` |
 | Change metadata (merged) | `metadata: { ... }` | `Metadata = new JsonObject { ... }` |
 | Access-controlled files | `grant`, `revoke` (or `grantAccess` / `revokeAccess`) | `Grant`, `Revoke` (or `GrantAccess` / `RevokeAccess`) |
 
@@ -3958,7 +3959,52 @@ var checks = reader.CheckLinks();   // Rows, Empty, Missing, Examples, Duplicate
   customers (`npm run bench:links`): side by side 0.13 s and 16 MB in JavaScript, 0.06 to 0.3 s in .NET; held 0.27 s and
   19 MB in JavaScript, 0.16 to 0.4 s in .NET.
 
-### 23.7 Is it worth it?
+### 23.7 Changing several tables at once (next release)
+
+One `update()` (or `compact()`) can change rows in several tables: the options you know change the main table
+(`table`), and `tables` gives the others theirs, in the same rewrite. With `set` and `where`, the rows a filter matches
+get new column values. Together they re-key across tables: a client's number changed in every table that refers to it.
+
+```js
+const result = update('statements.jzm', { key,
+  table: 'clients', set: { clientId: 'C0999' }, where: { clientId: 'C0123' },
+  tables: { transactions: { set: { clientId: 'C0999' }, where: { clientId: 'C0123' } } },
+});
+// { rowCount: 50000, inserted: 0, updated: 1, deleted: 0,
+//   tables: { clients: { rowCount: 50000, updated: 1, ... }, transactions: { rowCount: 1000000, updated: 20, ... } } }
+reader.checkLinks(); // missing: 0 - the link still holds (23.6)
+```
+
+```csharp
+var change = new JazminTableChanges { Set = new Dictionary<string, object?> { ["clientId"] = "C0999" }, Where = JazminFilter.Eq("clientId", "C0123") };
+var result = JazminFile.Update("statements.jzm", new JazminUpdate
+{
+    Key = key, Tables = new Dictionary<string, JazminTableChanges> { ["clients"] = change, ["transactions"] = change },
+});
+// result.Tables["transactions"].Updated == 20
+```
+
+- **Each table** in `tables` takes `insert`, `upsert` with `keyColumns`, `delete`, `set` with `where`, `indexes` and
+  `sortedBy`, as the main table does. A table not named is copied as it is. Name a table in one place only.
+- **In one table:** deletes go first, upserted rows replace whole rows, then `set` changes the rest that `where`
+  matches. `where: {}` (.NET: `JazminFilter.And()`) matches every row. `updated` counts upserted rows that replaced one
+  and rows set.
+- **Sorted tables stay sorted.** Rows whose sort column is set move to their new place. When few rows match (up to the
+  sort budget: 10,000, 25,000 or 100,000 rows by `priority`), they are found by the file's indexes and merged in as the
+  table streams: no slower than a rewrite. More go through the sort (16.1).
+- **Shared files:** the partition column can't be set, since the rows would leave the partitions keys are granted. The
+  other columns can, and each key keeps seeing its own rows.
+
+Measured on a 1,000,000-row file sorted by `id` (`npm run bench:layout`; compact for comparison: 1.9 to 2.2 s, about 245
+MB in JavaScript; about 2 s, 107 MB in .NET):
+
+| Change | JavaScript | .NET |
+|---|---:|---:|
+| `set` a column on 200,000 rows | 2.2 s, 250 MB | 2.1 to 2.9 s, 109 MB |
+| `set` the sort column on 20 rows (a re-key) | 2.3 to 2.5 s, 242 MB | 2.2 to 3.2 s, 109 MB |
+| `set` the sort column on 200,000 rows (a re-sort) | 4.4 to 4.7 s, 323 MB | 5.4 to 7.6 s, 120 MB |
+
+### 23.8 Is it worth it?
 
 Measured on 20,000 clients with 11 detail columns and 300,000 transactions
 (15 per client), on Node.js. Clients were in 256-row chunks and transactions

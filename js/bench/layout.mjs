@@ -30,8 +30,13 @@ const SCENARIOS = {
   'sort-speed': { label: "Re-sort by customer, id (priority 'speed')", run: (file, key) => update(file, { key, sortedBy: ['customer', 'id'], priority: 'speed' }) },
   'rename-table': { label: 'Name the table (a rewrite)', run: (file, key) => update(file, { key, renameTables: { '': 'orders' } }) },
   'add-table': { label: 'Add a 200,000-row table, rows streamed', run: (file, key) => update(file, { key, renameTables: { '': 'orders' }, addTables: [{ name: 'payments', columns: PAYMENT_COLUMNS, rows: payments() }] }) },
+  'set-column': { label: "set a column on 200,000 rows (note, where city is Durban)", run: (file, key) => update(file, { key, set: { note: 'moved' }, where: { city: 'Durban' } }) },
+  'set-sort-few': { label: 'set the sort column on 20 rows (id, where customer is C00001)', run: (file, key) => update(file, { key, set: { id: 2_000_000 }, where: { customer: 'C00001' } }) },
+  'set-sort-many': { label: 'set the sort column on 200,000 rows (id, where city is Durban)', run: (file, key) => update(file, { key, set: { id: -1 }, where: { city: 'Durban' } }) },
   'add-table-sorted': { label: 'Add a 200,000-row table, sorted on the way in', run: (file, key) => update(file, { key, renameTables: { '': 'orders' }, addTables: [{ name: 'payments', columns: PAYMENT_COLUMNS, sortedBy: ['customer', 'at'], rows: payments() }] }) },
 };
+
+const only = process.argv[2] === '--only' ? process.argv[3].split(',') : null;
 
 if (process.argv[2] === '--run') {
   const { source, keyText, scenario } = JSON.parse(process.argv[3]);
@@ -71,7 +76,7 @@ if (!fs.existsSync(source)) {
 console.log(`Layout benchmark - Node ${process.version}, ${os.cpus()[0].model}; 1,000,000 rows, ${(fs.statSync(source).size / 1048576).toFixed(1)} MB\n`);
 console.log('| Change | Time | Peak memory | File after |');
 console.log('|---|---:|---:|---:|');
-for (const [scenario, { label }] of Object.entries(SCENARIOS)) {
+for (const [scenario, { label }] of Object.entries(SCENARIOS).filter(([name]) => !only || only.includes(name))) {
   const runs = Array.from({ length: RUNS }, () => JSON.parse(execFileSync(process.execPath, [here, '--run', JSON.stringify({ source, keyText, scenario })], { encoding: 'utf8' })));
   console.log(`| ${label} | ${(median(runs.map((r) => r.ms)) / 1000).toFixed(2)} s | ${median(runs.map((r) => r.peakMb)).toFixed(0)} MB | ${(runs[0].bytes / 1048576).toFixed(1)} MB |`);
 }

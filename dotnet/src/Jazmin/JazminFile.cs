@@ -105,6 +105,60 @@ public sealed class JazminUpdate
 
     /// <summary>The links between tables, replacing the file's (an empty list for none); null keeps them, following renames.</summary>
     public IReadOnlyList<JazminLink>? Links { get; set; }
+
+    /// <summary>
+    /// Columns set on the rows <see cref="Where"/> matches, by column name. Rows whose sort columns change move to their
+    /// place; a shared file's partition column can't be set (its rows would leave the partitions keys are granted).
+    /// </summary>
+    public IReadOnlyDictionary<string, object?>? Set { get; set; }
+
+    /// <summary>The rows <see cref="Set"/> changes (<c>JazminFilter.And()</c> for every row); they go together.</summary>
+    public JazminFilter? Where { get; set; }
+
+    /// <summary>
+    /// Other tables' changes, by table name, in the same rewrite (the options above change the main table,
+    /// <see cref="Table"/>): for example a client's key changed in every table that refers to it.
+    /// </summary>
+    public IReadOnlyDictionary<string, JazminTableChanges>? Tables { get; set; }
+}
+
+/// <summary>One table's row changes in an update (<see cref="JazminUpdate.Tables"/>): as the update's own options change its main table.</summary>
+public sealed class JazminTableChanges
+{
+    /// <summary>New rows.</summary>
+    public IReadOnlyList<IReadOnlyDictionary<string, object?>> Insert { get; set; } = Array.Empty<IReadOnlyDictionary<string, object?>>();
+
+    /// <summary>Rows that replace existing rows with the same <see cref="KeyColumns"/>; unmatched rows are inserted.</summary>
+    public IReadOnlyList<IReadOnlyDictionary<string, object?>> Upsert { get; set; } = Array.Empty<IReadOnlyDictionary<string, object?>>();
+
+    public IReadOnlyList<string>? KeyColumns { get; set; }
+
+    /// <summary>Removes matching rows.</summary>
+    public JazminFilter? Delete { get; set; }
+
+    /// <summary>Columns set on the rows <see cref="Where"/> matches (see <see cref="JazminUpdate.Set"/>).</summary>
+    public IReadOnlyDictionary<string, object?>? Set { get; set; }
+
+    public JazminFilter? Where { get; set; }
+
+    /// <summary>The indexes a column has afterwards (see <see cref="JazminUpdate.Indexes"/>).</summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<JazminIndexKind>>? Indexes { get; set; }
+
+    /// <summary>A new sort order (an empty list for none; null keeps the table's).</summary>
+    public IReadOnlyList<string>? SortedBy { get; set; }
+
+    /// <summary>Nested columns given fields at the end of their objects (see <see cref="JazminUpdate.Columns"/>).</summary>
+    public IReadOnlyList<JazminColumn>? Columns { get; set; }
+
+    /// <summary>Whether anything changes (empty lists don't).</summary>
+    internal bool Any => Insert.Count > 0 || Upsert.Count > 0 || Delete is not null || Set is not null || Indexes is not null || SortedBy is not null || Columns is not null;
+
+    /// <summary>The main table's changes, from the update's own options.</summary>
+    internal static JazminTableChanges Of(JazminUpdate u) => new()
+    {
+        Insert = u.Insert, Upsert = u.Upsert, KeyColumns = u.KeyColumns, Delete = u.Delete, Set = u.Set, Where = u.Where,
+        Indexes = u.Indexes, SortedBy = u.SortedBy, Columns = u.Columns,
+    };
 }
 
 /// <summary>A table added to an existing file (<see cref="JazminUpdate.AddTables"/>): its definition and its rows, read once.</summary>
@@ -148,6 +202,9 @@ public sealed record JazminUpdateResult(long RowCount, long Inserted, long Updat
 {
     /// <summary>Grants dropped because they had expired.</summary>
     public int ExpiredGrantsRemoved { get; init; }
+
+    /// <summary>With <see cref="JazminUpdate.Tables"/>: each changed table's counts, by its name afterwards.</summary>
+    public IReadOnlyDictionary<string, JazminUpdateResult>? Tables { get; init; }
 }
 
 /// <summary>Changes to apply with <see cref="JazminFile.Append"/> (written at the end of the file).</summary>
@@ -383,14 +440,12 @@ public static class JazminFile
         (JazminKey Key, Func<List<JazminGrant>, List<JazminGrant>> Grants)? newOwner = null)
     {
         ArgumentNullException.ThrowIfNull(update);
-        if (update.Upsert.Count > 0 && (update.KeyColumns is null || update.KeyColumns.Count == 0))
-            throw new JazminValidationException("Upsert needs KeyColumns, e.g. KeyColumns = [\"id\"]");
 
         var temp = $"{path}.{Convert.ToHexString(RandomNumberGenerator.GetBytes(6)).ToLowerInvariant()}.tmp";
         var reader = JazminReader.Open(path, new JazminReadOptions { Key = update.Key, Password = update.Password, Table = update.Table, Priority = update.Priority });
         var readers = new List<JazminReader> { reader }; // in a file with several tables, one per table, in file order
         JazminWriter? writer = null;
-        RowSorter? sorter = null; // a new sort order's rows, sorted within a memory budget
+        var sorters = new List<RowSorter>(); // rows put in a new sort order within a memory budget, disposed at the end
         try
         {
             var ownerGrants = reader.OwnerGrants;
@@ -409,50 +464,38 @@ public static class JazminFile
             // The tables afterwards: those kept (renamed as asked), then those added.
             var plan = PlanTables(reader.Tables, update, ownerGrants is not null);
             var kept = readers.Where(r => !plan.Removed.Contains(r.TableName)).ToList();
-            var rowChanges = update.Insert.Count > 0 || update.Upsert.Count > 0 || update.Delete is not null || update.SortedBy is not null || update.Indexes is not null || update.Columns is not null;
-            if (plan.Removed.Contains(reader.TableName) && rowChanges) throw new JazminValidationException($"Table '{reader.TableName}' is being removed: its rows can't change too");
             string FinalName(string name) => plan.Names.TryGetValue(name, out var to) ? to : name;
 
-            // The sort order afterwards: the table's, or a new one (SortedBy; empty for none).
-            var target = update.SortedBy is null ? reader.SortedBy : update.SortedBy.Count == 0 ? null : update.SortedBy;
-            var resort = !(target ?? []).SequenceEqual(reader.SortedBy ?? [], StringComparer.Ordinal);
-            var partitionBy = ownerGrants is null ? null : reader.AccessLayout.PartitionBy;
-            if (regroup && partitionBy is null) throw new JazminValidationException("Regroup applies to access-controlled files with PartitionBy");
-            if (regroup && target is { } order && order[0] != partitionBy)
-                throw new JazminValidationException($"Regroup would break the SortedBy order [{string.Join(", ", order)}]: it needs no SortedBy, " +
-                    $"or one that starts with the partition column '{partitionBy}' (then rows are already grouped)");
-
-            var shape = new RowShape(WithIndexes(ColumnsWithIndexes(reader), update.Indexes, reader.SortedBy, target, resort));
-            foreach (var name in target ?? []) shape.Ordinal(name); // an unknown sort column is refused before anything is written
-            IReadOnlyList<JazminColumn> columns = shape.Columns;
-            var keyCols = update.KeyColumns?.Select(shape.Ordinal).ToArray() ?? Array.Empty<int>();
-            var sortedBy = reader.SortedBy;
-            var sortCols = sortedBy?.Select(shape.Ordinal).ToArray();
-            object?[] ValuesOf(IReadOnlyDictionary<string, object?> row) => shape.ValuesOf(row);
-            object?[] KeyTuple(object?[] values, int[] cols) => shape.KeyTuple(values, cols);
-            string KeyText(object?[] values) => shape.KeyText(values, keyCols);
-
-            var pending = new Dictionary<string, (object?[] Values, bool Matched)>(StringComparer.Ordinal);
-            foreach (var row in update.Upsert)
+            // Each table's changes: the main table's from the update's own options, others' from Tables (one rewrite for them all).
+            var changes = new Dictionary<string, JazminTableChanges>(StringComparer.Ordinal) { [reader.TableName] = JazminTableChanges.Of(update) };
+            foreach (var (name, given) in update.Tables ?? new Dictionary<string, JazminTableChanges>())
             {
-                var values = ValuesOf(row);
-                pending[KeyText(values)] = (values, false);
+                if (!readers.Any(r => r.TableName == name)) throw new JazminValidationException($"Tables: the file has no table '{name}'");
+                if (given is null) throw new JazminValidationException($"Tables: '{name}' needs its changes");
+                if (name == reader.TableName && changes[name].Any)
+                    throw new JazminValidationException($"Tables: give table '{name}''s changes either in Tables or with the update's other options, not both");
+                changes[name] = given;
             }
-            var deletePlan = BoundFilter.Bind(update.Delete, reader.Columns);
-            columns = Grown(columns, update.Insert.Concat(update.Upsert).Select(ValuesOf).ToList(), update.Columns);
+            foreach (var (name, c) in changes)
+                if (plan.Removed.Contains(name) && c.Any) throw new JazminValidationException($"Table '{name}' is being removed: its rows can't change too");
+            var rewrites = new Dictionary<JazminReader, TableRewrite>(ReferenceEqualityComparer.Instance);
+            foreach (var r in kept)
+                if (changes.TryGetValue(r.TableName, out var c))
+                    rewrites[r] = new TableRewrite(r, c, ownerGrants is null ? null : r.AccessLayout.PartitionBy, regroup && r == reader, update, sorters);
 
             // The other tables of the file are copied as they are: a new version has fresh secrets throughout (spec 7.6.7).
             var access = ownerGrants is null ? null : AccessFor(reader, ownerGrants, update);
             if (access is not null && newOwner is { } change) access.Grants = change.Grants(access.Grants);
             // Named tables (several, or one with a name) are written as tables, which keeps their names.
             var named = kept.Count + update.AddTables.Count > 1 || kept.Any(r => FinalName(r.TableName).Length > 0) || update.AddTables.Count > 0;
+            var main = named ? null : rewrites[reader]; // not named: the file's one table, the main one
             var options = new JazminWriteOptions
             {
                 Key = newOwner?.Key ?? update.Key,
                 Password = update.Password,
                 KdfIterations = reader.KdfIterations ?? FormatConstants.DefaultKdfIterations,
                 Metadata = MergeMetadata(reader.Metadata, update.Metadata),
-                SortedBy = named ? null : target,
+                SortedBy = main?.Target,
                 Codec = update.Codec,
                 CompressionLevel = update.CompressionLevel,
                 ChunkRows = update.ChunkRows,
@@ -465,24 +508,26 @@ public static class JazminFile
                 Priority = update.Priority,
                 CompactIndexes = update.CompactIndexes ?? reader.CompactIndexes,
                 Tables = named
-                    ? kept.Select(r => ReferenceEquals(r, reader) ? TableFor(r, columns, target, FinalName(r.TableName)) : TableFor(r, null, r.SortedBy, FinalName(r.TableName)))
+                    ? kept.Select(r => rewrites.TryGetValue(r, out var w) ? TableFor(r, w.Columns, w.Target, FinalName(r.TableName)) : TableFor(r, null, r.SortedBy, FinalName(r.TableName)))
                         .Concat(update.AddTables.Select(a => a.Table)).ToList()
                     : null,
             };
-            writer = named ? JazminWriter.Create(temp, options) : JazminWriter.Create(temp, columns, options);
+            writer = named ? JazminWriter.Create(temp, options) : JazminWriter.Create(temp, main!.Columns, options);
             foreach (var source in CarriedFiles(reader, update)) writer.AddSource(source);
             foreach (var file in update.AddFiles) writer.AddFile(file);
 
-            long inserted = 0, updated = 0, deleted = 0, rowCount = 0;
+            var result = new JazminUpdateResult(0, 0, 0, 0);
+            var tableResults = new Dictionary<string, JazminUpdateResult>(StringComparer.Ordinal);
             var first = true;
             foreach (var r in kept)
             {
                 if (!first) writer.StartTable(FinalName(r.TableName));
                 first = false;
-                if (r == reader)
+                if (rewrites.TryGetValue(r, out var rewrite))
                 {
-                    WriteChanged();
-                    rowCount = writer.RowCount;
+                    var done = rewrite.Write(writer);
+                    tableResults[FinalName(r.TableName)] = done;
+                    if (r == reader) result = done;
                 }
                 else
                 {
@@ -501,94 +546,214 @@ public static class JazminFile
                     continue;
                 }
                 var orderCols = addedOrder.Select(addedShape.Ordinal).ToArray();
-                sorter = new RowSorter(added.Table.Columns, values => addedShape.KeyTuple(values, orderCols), update.SortRunRows ?? RowSorter.RunRows(update.Priority), update.Codec);
+                var sorter = new RowSorter(added.Table.Columns, values => addedShape.KeyTuple(values, orderCols), update.SortRunRows ?? RowSorter.RunRows(update.Priority), update.Codec);
+                sorters.Add(sorter);
                 foreach (var row in added.Rows) sorter.Add(addedShape.ValuesOf(row));
                 foreach (var values in sorter.Rows()) writer.WriteValues(values);
                 sorter.Dispose();
-                sorter = null;
             }
 
             foreach (var r in readers) r.Dispose();
-            sorter?.Dispose();
+            foreach (var s in sorters) s.Dispose();
             writer.Finish();
             ReplaceFile(temp, path);
-            return new JazminUpdateResult(rowCount, inserted, updated, deleted) { ExpiredGrantsRemoved = writer.ExpiredGrants };
-
-            void WriteChanged()
-            {
-                // A new sort order: the changed rows go through the sorter, then to the writer in the new order.
-                if (resort && target is not null)
-                {
-                    var targetCols = target.Select(shape.Ordinal).ToArray();
-                    sorter = new RowSorter(columns, values => KeyTuple(values, targetCols), update.SortRunRows ?? RowSorter.RunRows(update.Priority), update.Codec);
-                }
-                void Emit(object?[] values)
-                {
-                    if (sorter is not null) sorter.Add(values);
-                    else writer!.WriteValues(values);
-                }
-                if (sortCols is not null && !resort)
-                {
-                    // Upserted rows are re-inserted at their sorted position (their sort key may change),
-                    // so the whole change set merges into the stream in one pass.
-                    var incoming = update.Insert.Select(ValuesOf).Concat(pending.Values.Select(p => p.Values))
-                        .Select(v => (Values: v, Key: KeyTuple(v, sortCols)))
-                        .OrderBy(x => x.Key, Comparer<object?[]>.Create(SortKeys.Compare))
-                        .ToList();
-                    var next = 0;
-                    foreach (var row in reader.Rows())
-                    {
-                        var values = row.RawValues;
-                        var rowKey = KeyTuple(values, sortCols);
-                        while (next < incoming.Count && SortKeys.Compare(incoming[next].Key, rowKey) < 0) writer.WriteValues(incoming[next++].Values);
-                        var key = pending.Count > 0 ? KeyText(values) : null;
-                        if (key is not null && pending.TryGetValue(key, out var hit))
-                        {
-                            if (hit.Matched) deleted++; // duplicate key rows collapse into the single upserted row
-                            else updated++;
-                            pending[key] = (hit.Values, true);
-                        }
-                        else if (deletePlan is not null && FilterEngine.Evaluate(deletePlan, values)) deleted++;
-                        else writer.WriteValues(values); // the writer copies into its own buffer
-                    }
-                    while (next < incoming.Count) writer.WriteValues(incoming[next++].Values);
-                }
-                else
-                {
-                    foreach (var row in regroup ? reader.RowsByPartition() : reader.Rows())
-                    {
-                        var values = row.RawValues;
-                        var key = pending.Count > 0 ? KeyText(values) : null;
-                        if (key is not null && pending.TryGetValue(key, out var hit))
-                        {
-                            if (hit.Matched)
-                            {
-                                deleted++;
-                                continue;
-                            }
-                            pending[key] = (hit.Values, true);
-                            updated++;
-                            Emit(hit.Values);
-                        }
-                        else if (deletePlan is not null && FilterEngine.Evaluate(deletePlan, values)) deleted++;
-                        else Emit(values); // the writer copies into its own buffer; the sorter keeps the row's own array
-                    }
-                    foreach (var row in update.Insert) Emit(ValuesOf(row));
-                    foreach (var (values, matched) in pending.Values)
-                        if (!matched) Emit(values);
-                    if (sorter is not null)
-                        foreach (var values in sorter.Rows()) writer!.WriteValues(values);
-                }
-                inserted = update.Insert.Count + pending.Values.Count(p => !p.Matched);
-            }
+            return result with { ExpiredGrantsRemoved = writer.ExpiredGrants, Tables = update.Tables is null ? null : tableResults };
         }
         catch
         {
             writer?.Abort();
             foreach (var r in readers) r.Dispose();
-            sorter?.Dispose();
+            foreach (var s in sorters) s.Dispose();
             File.Delete(temp);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// One table's changes, planned: its columns and sort order afterwards, and <see cref="Write"/>, which writes its rows
+    /// with the changes applied. Deletes go first, upserted rows replace whole rows, Set changes the rest Where matches.
+    /// </summary>
+    private sealed class TableRewrite
+    {
+        private readonly JazminReader _reader;
+        private readonly JazminTableChanges _changes;
+        private readonly bool _regroup;
+        private readonly string _name;
+        private readonly bool _resortAsked;
+        private readonly bool _setsOrder;
+        private readonly JazminFilter? _whereFilter;
+        private readonly JazminUpdate _update;
+        private readonly List<RowSorter> _sorters;
+        private readonly RowShape _shape;
+        private readonly int[] _keyCols;
+        private readonly int[]? _sortCols;
+        private readonly Dictionary<string, (object?[] Values, bool Matched)> _pending = new(StringComparer.Ordinal);
+        private readonly BoundFilter? _delete;
+        private readonly BoundFilter? _where;
+        private readonly int[] _setCols = [];
+        private readonly object?[] _setValues = [];
+
+        public IReadOnlyList<JazminColumn> Columns { get; }
+
+        public IReadOnlyList<string>? Target { get; }
+
+        public TableRewrite(JazminReader reader, JazminTableChanges changes, string? partitionBy, bool regroup, JazminUpdate update, List<RowSorter> sorters)
+        {
+            (_reader, _changes, _regroup, _update, _sorters) = (reader, changes, regroup, update, sorters);
+            var name = _name = reader.TableName.Length > 0 ? $"Table '{reader.TableName}'" : "The table";
+            if (changes.Upsert.Count > 0 && (changes.KeyColumns is null || changes.KeyColumns.Count == 0))
+                throw new JazminValidationException("Upsert needs KeyColumns, e.g. KeyColumns = [\"id\"]");
+            if ((changes.Set is null) != (changes.Where is null))
+                throw new JazminValidationException($"{name}: Set and Where go together: Set = {{ [column] = value }}, Where = a filter (JazminFilter.And() for every row)");
+            if (changes.Set is { Count: 0 }) throw new JazminValidationException($"{name}: Set needs a column to set");
+
+            // The sort order afterwards: the table's, or a new one (SortedBy; empty for none).
+            Target = changes.SortedBy is null ? reader.SortedBy : changes.SortedBy.Count == 0 ? null : changes.SortedBy;
+            var resortAsked = !(Target ?? []).SequenceEqual(reader.SortedBy ?? [], StringComparer.Ordinal);
+            if (regroup && partitionBy is null) throw new JazminValidationException("Regroup applies to access-controlled files with PartitionBy");
+            if (regroup && Target is { } order && order[0] != partitionBy)
+                throw new JazminValidationException($"Regroup would break the SortedBy order [{string.Join(", ", order)}]: it needs no SortedBy, " +
+                    $"or one that starts with the partition column '{partitionBy}' (then rows are already grouped)");
+
+            _shape = new RowShape(WithIndexes(ColumnsWithIndexes(reader), changes.Indexes, reader.SortedBy, Target, resortAsked));
+            foreach (var n in Target ?? []) _shape.Ordinal(n); // an unknown sort column is refused before anything is written
+            _keyCols = changes.KeyColumns?.Select(_shape.Ordinal).ToArray() ?? [];
+            _sortCols = reader.SortedBy?.Select(_shape.Ordinal).ToArray();
+            foreach (var row in changes.Upsert)
+            {
+                var values = _shape.ValuesOf(row);
+                _pending[_shape.KeyText(values, _keyCols)] = (values, false);
+            }
+            _delete = BoundFilter.Bind(changes.Delete, reader.Columns);
+
+            // Set: its columns exist; in a shared file the partition column stays (its rows would leave the partitions
+            // keys are granted). Rows whose sort columns are set move: they go through the sorter, as a new order would.
+            if (changes.Set is { } set)
+            {
+                foreach (var column in set.Keys)
+                {
+                    if (!_shape.Columns.Any(c => c.Name == column)) throw new JazminValidationException($"{name}: Set: unknown column '{column}'");
+                    if (column == partitionBy)
+                        throw new JazminValidationException($"{name}: Set changes the partition column '{partitionBy}': the rows would leave the partitions keys are granted");
+                }
+                _setCols = set.Keys.Select(_shape.Ordinal).ToArray();
+                _setValues = _shape.ValuesOf(set);
+                _where = BoundFilter.Bind(changes.Where, reader.Columns);
+            }
+            // Rows whose sort columns are set move. When few match (up to the sort budget) they are found first, by the
+            // file's indexes, held, and merged in at their new place as the table streams; more go through the sorter.
+            _resortAsked = resortAsked;
+            _setsOrder = Target is not null && changes.Set is not null && changes.Set.Keys.Any(Target.Contains);
+            _whereFilter = changes.Where;
+            Columns = Grown(_shape.Columns, changes.Insert.Concat(changes.Upsert).Select(_shape.ValuesOf).Append(_setValues).Where(v => v.Length > 0).ToList(), changes.Columns);
+        }
+
+        /// <summary>Writes the table's rows with the changes applied.</summary>
+        public JazminUpdateResult Write(JazminWriter writer)
+        {
+            long inserted, updated = 0, deleted = 0;
+            List<object?[]>? moved = null; // the rows whose sort columns are set, changed, when few enough to hold
+            // Counted first (by the indexes, or the filter's columns only), so too many are never gathered.
+            if (_setsOrder && !_resortAsked && !_regroup && _reader.Count(_whereFilter) <= (_update.SortRunRows ?? RowSorter.RunRows(_update.Priority)))
+            {
+                moved = [];
+                foreach (var row in _reader.Find(_whereFilter))
+                {
+                    var values = row.RawValues;
+                    if ((_pending.Count > 0 && _pending.ContainsKey(_shape.KeyText(values, _keyCols))) || (_delete is not null && FilterEngine.Evaluate(_delete, values)))
+                        continue; // upserted or deleted instead
+                    var copy = (object?[])values.Clone();
+                    foreach (var i in _setCols) copy[i] = _setValues[i];
+                    moved.Add(copy);
+                }
+            }
+            var resort = _resortAsked || (_setsOrder && moved is null);
+            RowSorter? sorter = null;
+            if (resort && Target is not null)
+            {
+                var targetCols = Target.Select(_shape.Ordinal).ToArray();
+                sorter = new RowSorter(Columns, values => _shape.KeyTuple(values, targetCols), _update.SortRunRows ?? RowSorter.RunRows(_update.Priority), _update.Codec);
+                _sorters.Add(sorter);
+            }
+            void Emit(object?[] values)
+            {
+                if (sorter is not null) sorter.Add(values);
+                else writer.WriteValues(values);
+            }
+            object?[] Changed(object?[] values)
+            {
+                if (_where is null || !FilterEngine.Evaluate(_where, values)) return values;
+                updated++;
+                var copy = (object?[])values.Clone();
+                foreach (var i in _setCols) copy[i] = _setValues[i];
+                return copy;
+            }
+            if (_sortCols is not null && !resort)
+            {
+                // Upserted rows are re-inserted at their sorted position (their sort key may change),
+                // so the whole change set merges into the stream in one pass.
+                var incoming = _changes.Insert.Select(_shape.ValuesOf).Concat(_pending.Values.Select(p => p.Values)).Concat(moved ?? [])
+                    .Select(v => (Values: v, Key: _shape.KeyTuple(v, _sortCols)))
+                    .OrderBy(x => x.Key, Comparer<object?[]>.Create(SortKeys.Compare))
+                    .ToList();
+                var next = 0;
+                var movedOut = 0;
+                foreach (var row in _reader.Rows())
+                {
+                    var values = row.RawValues;
+                    var rowKey = _shape.KeyTuple(values, _sortCols);
+                    while (next < incoming.Count && SortKeys.Compare(incoming[next].Key, rowKey) < 0) writer.WriteValues(incoming[next++].Values);
+                    var key = _pending.Count > 0 ? _shape.KeyText(values, _keyCols) : null;
+                    if (key is not null && _pending.TryGetValue(key, out var hit))
+                    {
+                        if (hit.Matched) deleted++; // duplicate key rows collapse into the single upserted row
+                        else updated++;
+                        _pending[key] = (hit.Values, true);
+                    }
+                    else if (_delete is not null && FilterEngine.Evaluate(_delete, values)) deleted++;
+                    else if (moved is not null && FilterEngine.Evaluate(_where!, values))
+                    {
+                        updated++; // written at its new place, from incoming
+                        movedOut++;
+                    }
+                    else writer.WriteValues(Changed(values)); // the writer copies into its own buffer
+                }
+                while (next < incoming.Count) writer.WriteValues(incoming[next++].Values);
+                // Every row taken out was one gathered, or a row would be lost or doubled (nothing is written then).
+                if (moved is not null && movedOut != moved.Count)
+                    throw new InvalidOperationException($"{_name}: {moved.Count} rows to move were found, but {movedOut} were taken out");
+            }
+            else
+            {
+                foreach (var row in _regroup ? _reader.RowsByPartition() : _reader.Rows())
+                {
+                    var values = row.RawValues;
+                    var key = _pending.Count > 0 ? _shape.KeyText(values, _keyCols) : null;
+                    if (key is not null && _pending.TryGetValue(key, out var hit))
+                    {
+                        if (hit.Matched)
+                        {
+                            deleted++;
+                            continue;
+                        }
+                        _pending[key] = (hit.Values, true);
+                        updated++;
+                        Emit(hit.Values);
+                    }
+                    else if (_delete is not null && FilterEngine.Evaluate(_delete, values)) deleted++;
+                    else Emit(Changed(values)); // the writer copies into its own buffer; the sorter keeps the row's own array
+                }
+                foreach (var row in _changes.Insert) Emit(_shape.ValuesOf(row));
+                foreach (var (values, matched) in _pending.Values)
+                    if (!matched) Emit(values);
+                if (sorter is not null)
+                {
+                    foreach (var values in sorter.Rows()) writer.WriteValues(values);
+                    sorter.Dispose(); // its temporary files go now, not after every table
+                }
+            }
+            inserted = _changes.Insert.Count + _pending.Values.Count(p => !p.Matched);
+            return new JazminUpdateResult(writer.RowCount, inserted, updated, deleted);
         }
     }
 
