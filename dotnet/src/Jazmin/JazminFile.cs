@@ -205,6 +205,14 @@ public sealed record JazminUpdateResult(long RowCount, long Inserted, long Updat
 
     /// <summary>With <see cref="JazminUpdate.Tables"/>: each changed table's counts, by its name afterwards.</summary>
     public IReadOnlyDictionary<string, JazminUpdateResult>? Tables { get; init; }
+
+    // Printed as before, with Tables only when given (logs and output stay the same for updates without it).
+    private bool PrintMembers(StringBuilder builder)
+    {
+        builder.Append($"RowCount = {RowCount}, Inserted = {Inserted}, Updated = {Updated}, Deleted = {Deleted}, ExpiredGrantsRemoved = {ExpiredGrantsRemoved}");
+        if (Tables is not null) builder.Append($", Tables = {{ {string.Join(", ", Tables.Select(t => $"{t.Key} = {t.Value}"))} }}");
+        return true;
+    }
 }
 
 /// <summary>Changes to apply with <see cref="JazminFile.Append"/> (written at the end of the file).</summary>
