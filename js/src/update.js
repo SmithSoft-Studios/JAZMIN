@@ -94,6 +94,9 @@ function compareTuples(a, b) {
  *                       sort column gets a sorted index, unless named here
  *   sortedBy: [...]     a new sort order (null: none): every row is put in it, within a memory budget (sortRunRows
  *                       rows at a time, by priority; more go through temporary files locked with a key of their own)
+ *   addTables: [{ name, columns, sortedBy, partitionBy, columnGroups, chunkRows, chunkBytes, rows }]   new tables,
+ *                       written after the others; rows is any iterable (put in sortedBy's order within the budget)
+ *   removeTables: [...] tables to leave out; renameTables: { old: new }   (saved shapes and package.edit follow)
  *
  * Returns { rowCount, inserted, updated, deleted }.
  */
@@ -117,7 +120,7 @@ export function updateUnlocked(path, options = {}) {
     key, password, insert = [], upsert = [], keyColumns, delete: deleteWhere, metadata,
     grant = [], revoke = [], codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, compactIndexes, now, layout,
     addFiles = [], removeFiles = [], package: packageSettings, table, regroup = false, columns: given, addShapes = [], removeShapes = [],
-    indexes, sortedBy: newSortedBy, sortRunRows,
+    indexes, sortedBy: newSortedBy, sortRunRows, addTables = [], removeTables = [], renameTables = {},
   } = options;
   if (upsert.length && (!Array.isArray(keyColumns) || keyColumns.length === 0)) {
     throw new JazminValidationError('upsert needs keyColumns, e.g. { keyColumns: ["id"] }');
@@ -138,6 +141,13 @@ export function updateUnlocked(path, options = {}) {
       readers.length = 0;
       for (const name of reader.tables) readers.push(name === reader.table ? reader : new JazminReader(path, { key, password, table: name }));
     }
+
+    // The tables afterwards: those kept (renamed as asked), then those added.
+    const tablePlan = planTables(reader.tables.length ? reader.tables : [reader.table], { addTables, removeTables, renameTables, owner: Boolean(owner) });
+    const kept = readers.filter((r) => !tablePlan.removed.has(r.table));
+    const rowChanges = insert.length || upsert.length || deleteWhere || newSortedBy !== undefined || indexes || given;
+    if (tablePlan.removed.has(reader.table) && rowChanges) throw new JazminValidationError(`Table '${reader.table}' is being removed: its rows can't change too`);
+    const finalName = (name) => tablePlan.names.get(name) ?? name;
 
     // The sort order afterwards: the file's, or a new one (sortedBy; null or [] for none).
     const target = targetSortedBy(newSortedBy, reader.sortedBy);
@@ -181,10 +191,19 @@ export function updateUnlocked(path, options = {}) {
     let access = owner ? accessFor(owner, grant, revoke) : undefined;
     if (newOwner) access = { ...access, grants: newOwner.grants(access.grants) };
     // Named tables (several, or one with a name) are written as tables, which keeps their names.
-    const named = readers.length > 1 || reader.table !== '';
+    const named = kept.length + addTables.length > 1 || kept.some((r) => finalName(r.table) !== '') || addTables.length > 0;
+    const kinds = (r) => (r === reader ? columns : columnsWithIndexes(r));
     writer = new JazminWriter(temp, {
       ...(named
-        ? { tables: readers.map((r) => ({ name: r.table, columns: r === reader ? columns : columnsWithIndexes(r), sortedBy: r === reader ? target : r.sortedBy, ...(owner ? tableLayout(r[OWNER_GRANTS]) : {}) })) }
+        ? {
+          tables: [
+            ...kept.map((r) => ({ name: finalName(r.table), columns: kinds(r), sortedBy: r === reader ? target : r.sortedBy, ...(owner ? tableLayout(r[OWNER_GRANTS]) : {}) })),
+            ...addTables.map((t) => ({
+              name: t.name, columns: t.columns, sortedBy: t.sortedBy, chunkRows: t.chunkRows, chunkBytes: t.chunkBytes,
+              ...(owner ? { partitionBy: t.partitionBy, columnGroups: t.columnGroups } : {}),
+            })),
+          ],
+        }
         : { columns, sortedBy: target }),
       metadata: { ...reader.metadata, ...(metadata ?? {}) },
       codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, layout,
@@ -193,8 +212,8 @@ export function updateUnlocked(path, options = {}) {
       access: access && named ? { grants: access.grants } : access,
       now, // expired grants are dropped, and the new version's fresh secrets lock them out
       files: [...carriedFiles(reader, addFiles, removeFiles), ...addFiles],
-      package: packageSettings !== undefined ? packageSettings : reader.package,
-      shapes: [...keptShapes(reader[FILE_STATE]?.shapes ?? [], addShapes, removeShapes), ...addShapes],
+      package: packageAfter(packageSettings !== undefined ? packageSettings : reader.package, tablePlan),
+      shapes: [...keptShapes(reader[FILE_STATE]?.shapes ?? [], addShapes, removeShapes).map((shape) => shapeAfter(shape, tablePlan)), ...addShapes],
     });
 
     const stats = { inserted: 0, updated: 0, deleted: 0 };
@@ -249,14 +268,33 @@ export function updateUnlocked(path, options = {}) {
     };
 
     let rowCount = 0;
-    for (const r of readers) {
-      if (r !== readers[0]) writer.startTable(r.table);
+    let first = true;
+    for (const r of kept) {
+      if (!first) writer.startTable(finalName(r.table));
+      first = false;
       if (r !== reader) {
         for (const row of r.rows()) writer.writeRow(row);
       } else {
         writeChanged();
         rowCount = writer.rowCount;
       }
+    }
+    // Added tables: their rows as given, or put in their sortedBy's order within the memory budget.
+    for (const t of addTables) {
+      if (!first) writer.startTable(t.name);
+      first = false;
+      if (!t.sortedBy) {
+        for (const row of t.rows ?? []) writer.writeRow(row);
+        continue;
+      }
+      sorter = new RowSorter(normalizeColumns(t.columns), t.sortedBy, {
+        runRows: sortRunRows ?? SORT_RUN_ROWS[priority ?? 'balanced'] ?? SORT_RUN_ROWS.balanced,
+        writeOptions: { codec, level, maxDegreeOfParallelism, priority },
+      });
+      for (const row of t.rows ?? []) sorter.add(row);
+      for (const row of sorter.rows()) writer.writeRow(row);
+      sorter.close();
+      sorter = null;
     }
 
     for (const r of readers) r.close();
@@ -271,6 +309,75 @@ export function updateUnlocked(path, options = {}) {
     fs.rmSync(temp, { force: true });
     throw error;
   }
+}
+
+/**
+ * Which tables a rewrite keeps, removes and renames, and adds, checked: { removed: Set, names: Map(old -> new) }.
+ * A file's single unnamed table needs a name before a table is added beside it.
+ */
+function planTables(existing, { addTables, removeTables, renameTables, owner }) {
+  if (!Array.isArray(addTables) || !Array.isArray(removeTables)) throw new JazminValidationError('addTables and removeTables must be arrays');
+  if (renameTables === null || typeof renameTables !== 'object' || Array.isArray(renameTables)) throw new JazminValidationError('renameTables: { oldName: newName }');
+  const removed = new Set(removeTables);
+  for (const name of removed) if (!existing.includes(name)) throw new JazminValidationError(`removeTables: the file has no table '${name}'`);
+  const names = new Map(Object.entries(renameTables));
+  for (const [from, to] of names) {
+    if (!existing.includes(from)) throw new JazminValidationError(`renameTables: the file has no table '${from}'`);
+    if (removed.has(from)) throw new JazminValidationError(`renameTables: table '${from}' is being removed`);
+    if (typeof to !== 'string' || to === '') throw new JazminValidationError(`renameTables: '${from}' needs a non-empty new name`);
+  }
+  const after = existing.filter((n) => !removed.has(n)).map((n) => names.get(n) ?? n);
+  for (const t of addTables) {
+    if (!t || typeof t.name !== 'string' || t.name === '') throw new JazminValidationError('addTables: each table needs a name');
+    if (!owner && (t.partitionBy != null || t.columnGroups !== undefined)) throw new JazminValidationError(`addTables: '${t.name}': partitionBy and columnGroups apply to shared files`);
+    if (t.rows !== undefined && (t.rows === null || typeof t.rows[Symbol.iterator] !== 'function')) throw new JazminValidationError(`addTables: '${t.name}': rows must be an array or another iterable`);
+    after.push(t.name);
+  }
+  if (!after.length) throw new JazminValidationError('A file needs at least one table: add one, or keep one');
+  if (addTables.length && after.includes('')) throw new JazminValidationError("The file's table has no name: name it first (renameTables: { '': 'clients' })");
+  const seen = new Set();
+  for (const n of after) {
+    if (seen.has(n)) throw new JazminValidationError(`Table '${n}' would be in the file twice`);
+    seen.add(n);
+  }
+  return { removed, names, first: existing[0], changed: removed.size > 0 || names.size > 0 };
+}
+
+/** Each `$from` (a linked table) in a shape, in place of `rename` (old name -> new name). */
+function renameLinks(value, rename) {
+  if (Array.isArray(value)) return value.map((v) => renameLinks(v, rename));
+  if (value === null || typeof value !== 'object') return value;
+  return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, k === '$from' && typeof v === 'string' ? rename(v) : renameLinks(v, rename)]));
+}
+
+/** The tables a shape reads: its own (none named: the file's first) and every `$from`. */
+function shapeTables(shape, first) {
+  const names = new Set([shape.table ?? first]);
+  const walk = (v) => {
+    if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === 'object') for (const [k, x] of Object.entries(v)) (k === '$from' && typeof x === 'string' ? names.add(x) : walk(x));
+  };
+  walk(shape.shape);
+  return names;
+}
+
+/** A saved shape after tables are renamed; refused when it reads a table being removed (remove it too). */
+function shapeAfter(shape, { removed, names, first, changed }) {
+  if (!changed) return shape;
+  for (const t of shapeTables(shape, first)) {
+    if (removed.has(t)) throw new JazminValidationError(`Saved shape '${shape.name}' reads table '${t}', which is being removed: remove the shape too (removeShapes)`);
+  }
+  const rename = (n) => names.get(n) ?? n;
+  // Named explicitly: "the first table" may be another table afterwards.
+  return { ...shape, table: rename(shape.table ?? first), shape: renameLinks(shape.shape, rename) };
+}
+
+/** The package settings after tables are renamed or removed: its edit table follows a rename, and can't be removed. */
+function packageAfter(settings, { removed, names, first, changed }) {
+  if (!changed || !settings?.edit) return settings;
+  const table = settings.edit.table ?? first; // none named: the file's first, which may be another table afterwards
+  if (removed.has(table)) throw new JazminValidationError(`The document's edits change table '${table}', which is being removed: change package.edit first`);
+  return { ...settings, edit: { ...settings.edit, table: names.get(table) ?? table } };
 }
 
 /** The sort order a rewrite gives a table: its own (`given` undefined), none (null or []), or the names given. */

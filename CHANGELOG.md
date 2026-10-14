@@ -6,6 +6,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Added
+- **Add, remove and rename tables in an existing file** (`update()` / `compact()`: `addTables`, `removeTables`,
+  `renameTables`; .NET `JazminUpdate.AddTables` with `JazminAddedTable`, `RemoveTables`, `RenameTables`): one rewrite
+  that keeps everything else. An added table's rows are streamed (and sorted within the memory budget when it has
+  `sortedBy`); in a shared file, a table with the same partition column is seen by each key for its own partitions.
+  Saved shapes and the document's edits follow a rename, keep reading "the first table" by name, and a table they read
+  can't be removed until they go too. USER-GUIDE 23.5.
 - **Change an existing file's indexes and sort order** (`update()` and `compact()`: `indexes`, `sortedBy`; .NET
   `JazminUpdate.Indexes`, `SortedBy`): add, change or remove a column's sorted and text-search indexes, and give a
   table a new sort order (or none), in one rewrite that keeps everything else. A new sort order is applied within a

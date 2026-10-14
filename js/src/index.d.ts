@@ -664,6 +664,12 @@ export interface UpdateOptions {
   sortedBy?: string[] | null;
   /** Rows sorted in memory at a time when re-sorting (default by priority: 10,000, 25,000 or 100,000); more go through temporary files locked with a key of their own. */
   sortRunRows?: number;
+  /** New tables, written after the others. rows: any iterable, read once (put in sortedBy's order within the memory budget). */
+  addTables?: (TableDefinition & { rows?: Iterable<JazminRow> })[];
+  /** Tables to leave out; saved shapes and package.edit that read one are refused unless they go too. */
+  removeTables?: string[];
+  /** Tables to rename, old name to new; saved shapes and package.edit follow. A file's single unnamed table is ''. */
+  renameTables?: Record<string, string>;
 }
 
 export interface UpdateResult {
