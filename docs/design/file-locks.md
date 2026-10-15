@@ -1,8 +1,11 @@
 # Locked embedded files: a second password or 2FA for stored files
 
 Status: **decided** (owner, 2026-10-14): the owner key opens locked files without the password or 2FA (decision 1, yes);
-decisions 2 to 4 as recommended unless the owner says otherwise. Nothing here is built yet. It changes the file
-format (an addition older readers handle gracefully, see "Compatibility"), so it is explained in plain words first.
+decisions 2 to 4 as recommended unless the owner says otherwise. **Specified** (2026-10-15): spec 6.8.1, with one
+choice made there: **locks only in access-controlled (shared) files.** In a file with one key or password, the owner's
+copy of each lock key (decision 1) would let anyone with that key open every lock, so a lock would protect nothing;
+without that copy, a rewrite could not re-seal the locked files. Such files refuse a lock, saying why. It changes the
+file format (an addition older readers handle gracefully, see "Compatibility"), so it is explained in plain words first.
 
 ## The idea in plain words
 
