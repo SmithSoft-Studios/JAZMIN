@@ -342,7 +342,28 @@ export interface TableDefinition {
   chunkBytes?: number;
 }
 
-export interface WriteOptions {
+/**
+ * Progress of a rewrite or write: 'sort' (rows put into a new sort order, when update() or compact() change it),
+ * 'write' (rows written into the new file, after each chunk) and 'indexes' (indexes built at the end, per table).
+ * `total` is null when the number of rows isn't known (rows from a generator).
+ */
+export interface RewriteProgress {
+  stage: 'sort' | 'write' | 'indexes';
+  done: number;
+  total: number | null;
+}
+
+export interface RewriteProgressOptions {
+  /** Called as the rewrite goes: see RewriteProgress. */
+  onProgress?: (progress: RewriteProgress) => void;
+  /**
+   * Stops the rewrite at its next report with the signal's reason (an AbortError): write() leaves no file, update() and
+   * compact() leave the file as it was.
+   */
+  signal?: AbortSignal;
+}
+
+export interface WriteOptions extends RewriteProgressOptions {
   /** Omit to infer the schema from the rows. */
   columns?: JazminColumnInput[];
   /**
@@ -675,7 +696,7 @@ export interface TableChanges {
   columns?: JazminColumnInput[];
 }
 
-export interface UpdateOptions {
+export interface UpdateOptions extends RewriteProgressOptions {
   /** Required for encrypted files; the OWNER key for access-controlled files. */
   key?: KeyInput;
   password?: string;
@@ -753,7 +774,7 @@ export interface UpdateResult {
 /** Streams the file into a new version with the changes applied, then atomically replaces it. */
 export function update(path: string, options: UpdateOptions): UpdateResult;
 
-export interface AppendOptions extends Omit<UpdateOptions, 'revoke' | 'compactIndexes'> {
+export interface AppendOptions extends Omit<UpdateOptions, 'revoke' | 'compactIndexes' | 'onProgress' | 'signal'> {
   /** Compact automatically afterwards when either threshold is reached. */
   autoCompact?: { deletedRatio?: number; appends?: number };
 }

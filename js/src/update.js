@@ -13,7 +13,7 @@ import { INDEX_KINDS, compareKeys, keyId, normalizeValue, toKey } from './types.
 import { withLock } from './lock.js';
 import { RowSorter, SORT_RUN_ROWS } from './sort-rows.js';
 import { linksAfter } from './links.js';
-import { JazminWriter } from './writer.js';
+import { JazminWriter, PROGRESS_TOTAL } from './writer.js';
 
 /**
  * Atomically replaces `path` with `temp`: readers never see a half-written file. Readers that have the file open keep
@@ -138,8 +138,9 @@ export function updateUnlocked(path, options = {}) {
     key, password, metadata,
     grant = [], revoke = [], codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, compactIndexes, now, layout,
     addFiles = [], removeFiles = [], package: packageSettings, table, regroup = false, addShapes = [], removeShapes = [],
-    sortRunRows, addTables = [], removeTables = [], renameTables = {}, links, tables: tableChanges,
+    sortRunRows, addTables = [], removeTables = [], renameTables = {}, links, tables: tableChanges, onProgress, signal,
   } = options;
+  signal?.throwIfAborted();
   if (tableChanges !== undefined && (tableChanges === null || typeof tableChanges !== 'object' || Array.isArray(tableChanges))) {
     throw new JazminValidationError('tables: { tableName: { insert, upsert, keyColumns, delete, set, where, indexes, sortedBy } }');
   }
@@ -176,8 +177,18 @@ export function updateUnlocked(path, options = {}) {
     for (const [name, c] of changes) {
       if (tablePlan.removed.has(name) && anyChanges(c)) throw new JazminValidationError(`Table '${name}' is being removed: its rows can't change too`);
     }
+    // Progress: the rows of the tables kept and added; rows sorted ('sort') and written ('write') count towards it.
+    const totalRows = onProgress
+      ? kept.reduce((n, r) => n + r.rowCount, 0) + addTables.reduce((n, t) => n + (Array.isArray(t.rows) ? t.rows.length : 0), 0)
+      : null;
+    let sortedRows = 0;
+    const onSorted = onProgress || signal ? (n) => {
+      signal?.throwIfAborted();
+      sortedRows += n;
+      onProgress?.({ stage: 'sort', done: sortedRows, total: totalRows });
+    } : null;
     const context = {
-      owner, sortRunRows, priority, codec, level, maxDegreeOfParallelism,
+      owner, sortRunRows, priority, codec, level, maxDegreeOfParallelism, onSorted,
       track: (sorter) => { sorters.push(sorter); return sorter; },
     };
     const plans = new Map(kept.filter((r) => changes.has(r.table)).map((r) => [r, planTableChanges(r, changes.get(r.table), { ...context, regroup: r === reader && regroup })]));
@@ -206,7 +217,7 @@ export function updateUnlocked(path, options = {}) {
       metadata: { ...reader.metadata, ...(metadata ?? {}) },
       codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, layout,
       compactIndexes: compactIndexes ?? reader[COMPACT_INDEXES],
-      key: newOwner ? newOwner.key : key, password, kdfIterations: reader.kdfIterations,
+      key: newOwner ? newOwner.key : key, password, kdfIterations: reader.kdfIterations, onProgress, signal, [PROGRESS_TOTAL]: totalRows,
       access: access && named ? { grants: access.grants } : access,
       now, // expired grants are dropped, and the new version's fresh secrets lock them out
       files: [...carriedFiles(reader, addFiles, removeFiles), ...addFiles],
@@ -248,6 +259,7 @@ export function updateUnlocked(path, options = {}) {
     for (const r of readers) r.close();
     for (const s of sorters) s.close();
     writer.finish();
+    signal?.throwIfAborted(); // the last moment a stop leaves the file as it was
     replaceFile(temp, path);
     return { ...stats, expiredGrantsRemoved: writer.expiredGrants, ...(tableChanges !== undefined ? { tables: tableStats } : {}) };
   } catch (error) {
@@ -259,9 +271,10 @@ export function updateUnlocked(path, options = {}) {
   }
 }
 
-const sorterOptions = ({ sortRunRows, priority, codec, level, maxDegreeOfParallelism }) => ({
+const sorterOptions = ({ sortRunRows, priority, codec, level, maxDegreeOfParallelism, onSorted }) => ({
   runRows: sortRunRows ?? SORT_RUN_ROWS[priority ?? 'balanced'] ?? SORT_RUN_ROWS.balanced,
   writeOptions: { codec, level, maxDegreeOfParallelism, priority },
+  onSorted,
 });
 
 /**

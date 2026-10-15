@@ -144,6 +144,9 @@ export const PAGING = Symbol('jazmin.paging');
 /** Internal: `[CHUNK_MAP]: false` writes no owner chunk map, as writers before it did (tests of older files). */
 export const CHUNK_MAP = Symbol('jazmin.chunkMap');
 
+/** Internal: the rows a write will hand the writer, when known, for progress (`total` of the 'write' stage). */
+export const PROGRESS_TOTAL = Symbol('jazmin.progressTotal');
+
 /** Orders two rows by the `sortedBy` columns; nulls sort first. */
 function compareSortKeys(a, b) {
   for (let i = 0; i < a.length; i++) {
@@ -284,6 +287,7 @@ export class JazminWriter {
   #sortCols = null;
   #lastSortKey = null;
   #continue = null; // append mode: state of the file being continued
+  #progress = null; // onProgress and signal, when given: { onProgress, signal, total, written }
   #files = { entries: new Map(), contents: new Map(), nextId: 0 }; // embedded files (spec 6.8): path -> entry, sha256 -> stored content
   #package; // package settings for viewers (validated at finish)
   #shapes = new Map(); // saved export shapes (spec 6.8): name -> entry
@@ -301,7 +305,10 @@ export class JazminWriter {
       columns, metadata = {}, codec = DEFAULTS.codec, level, chunkRows = DEFAULTS.chunkRows,
       chunkBytes = DEFAULTS.chunkBytes, key, password, kdfIterations = DEFAULTS.kdfIterations, sortedBy, access, now,
       layout, files, package: packageSettings, tables, priority = 'balanced', compactIndexes = false, shapes, links,
+      onProgress, signal,
     } = options;
+    signal?.throwIfAborted();
+    this.#progress = onProgress || signal ? { onProgress, signal, total: options[PROGRESS_TOTAL] ?? null, written: 0 } : null;
     const { maxDegreeOfParallelism = writeThreads(priority) } = options;
     checkPriority(priority);
     if (typeof compactIndexes !== 'boolean') throw new JazminValidationError('compactIndexes must be true or false');
@@ -722,6 +729,7 @@ export class JazminWriter {
 
   #flushChunk() {
     if (this.#chunkRows === 0) return;
+    if (this.#progress) this.#reportRows(this.#chunkRows);
     const ordinal = this.#firstOrdinal + this.#chunks.length;
     const partition = this.#access ? this.#secrets.addPartition(this.#chunkPartition) : WHOLE_TABLE;
     const entry = {
@@ -915,10 +923,26 @@ export class JazminWriter {
   }
 
   /** Index sections for this writer's rows (one segment per index; spec 8). */
+  /** Progress: a chunk of `rows` rows is being written ({ stage: 'write' }); the signal is checked first. */
+  #reportRows(rows) {
+    const progress = this.#progress;
+    progress.signal?.throwIfAborted();
+    progress.written += rows;
+    progress.onProgress?.({ stage: 'write', done: progress.written, total: progress.total });
+  }
+
+  /** Progress: `done` of the table's `total` indexes are built ({ stage: 'indexes' }); the signal is checked first. */
+  #reportIndexes(done, total) {
+    this.#progress.signal?.throwIfAborted();
+    if (done > 0) this.#progress.onProgress?.({ stage: 'indexes', done, total });
+  }
+
   #writeIndexes(segment) {
     const suffix = segment ? `/${segment}` : '';
     const key = (sectionId) => this.#key(sectionId, this.#secrets?.owner, KEYRING_GROUPS.index);
-    return this.#indexBuilders.map((ix) => {
+    const count = this.#indexBuilders.length;
+    const built = this.#indexBuilders.map((ix, i) => {
+      if (this.#progress) this.#reportIndexes(i, count);
       const base = `${this.#tableIndex}/index/${ix.column}/${ix.kind}${suffix}`;
       if (ix.kind === 'trigram') return { column: ix.column, kind: ix.kind, section: this.#writeSection(ix.builder.encode(), base, key(base)), segment };
       const pages = [];
@@ -932,6 +956,8 @@ export class JazminWriter {
       const directory = encodeIndexDirectory({ pages, nulls }, Boolean(this.#access));
       return { column: ix.column, kind: ix.kind, section: this.#writeSection(directory, base, key(base)), segment };
     });
+    if (this.#progress && count) this.#reportIndexes(count, count);
+    return built;
   }
 
   /**
