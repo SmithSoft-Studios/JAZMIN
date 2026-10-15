@@ -251,3 +251,48 @@ test('update and compact keep files and their groups in access-controlled files'
   assert.equal(d.readFile('d2.txt').toString(), 'more D');
   assert.equal(d.readFile('img/logoD.png').toString(), 'D only');
 });
+
+// Stored-file options (issue #188): list: false keeps a file out of viewers' lists of files (one the document page
+// uses); in access-controlled files each file group can have its own actions, and a key that sees the file through
+// several groups may do what any of them allows. Rewrites and appends keep each group's actions.
+test('list: false is an action; actions can differ by file group, and rewrites keep them', () => {
+  const plain = write(null, rows, { columns, files: [{ path: 'font.woff2', content: 'x', actions: { list: false } }] });
+  assert.deepEqual(open(plain).files[0].actions, { list: false });
+  assert.throws(() => write(null, rows, { columns, files: [{ path: 'a', content: 'x', actions: { hide: true } }] }), /unknown action 'hide' \(open, save, print, pdf, image, list\)/);
+  assert.throws(() => write(null, rows, { columns, files: [{ path: 'a', content: 'x', groups: ['A'], groupActions: { A: { save: false } } }] }), /groupActions need an access-controlled file/);
+
+  const owner = JazminKey.generate();
+  const keys = Object.fromEntries(['a', 'b', 'd', 'all'].map((n) => [n, owner.createAccessKey()]));
+  const options = {
+    columns, key: owner, sortedBy: ['group', 'id'],
+    files: [{
+      path: 'docs/terms.pdf', content: 'terms', groups: ['A', 'B', 'C', 'D'], actions: { print: false },
+      groupActions: { A: { save: false, list: false }, B: { save: true } },
+    }],
+    access: { partitionBy: 'group', grants: [{ key: keys.a, rows: ['A'] }, { key: keys.b, rows: ['B'] }, { key: keys.d, rows: ['D'] }, { key: keys.all, rows: '*' }] },
+  };
+  assert.throws(() => write(null, rows, { ...options, files: [{ ...options.files[0], groupActions: { E: { save: false } } }] }), /'E' is not one of the file's groups/);
+  const file = path.join(tmpDir(), 'g.jzm');
+  write(file, rows, options);
+  const actions = (key) => {
+    const r = open(fs.readFileSync(file), { key: key.toString(), accessState: false });
+    const f = r.files.find((x) => x.path === 'docs/terms.pdf');
+    r.close();
+    return f.actions;
+  };
+  const check = (when) => {
+    assert.deepEqual(actions(keys.a), { save: false, list: false }, `${when}: A's own`);
+    assert.deepEqual(actions(keys.b), { save: true }, `${when}: B's own`);
+    assert.deepEqual(actions(keys.d), { print: false }, `${when}: D has the file's`);
+    assert.equal(actions(keys.all), undefined, `${when}: through every group, what any allows: all of it`);
+    const o = open(fs.readFileSync(file), { key: owner }).files.find((x) => x.path === 'docs/terms.pdf');
+    assert.deepEqual(o.groupActions, { A: { save: false, list: false }, B: { save: true }, C: { print: false }, D: { print: false } }, when);
+  };
+  check('written');
+  compact(file, { key: owner });
+  check('compacted');
+  update(file, { key: owner, addFiles: [{ path: 'news.html', content: 'news' }] });
+  check('updated');
+  append(file, { key: owner, addFiles: [{ path: 'more.txt', content: 'more', groups: ['D'] }] });
+  check('appended');
+});

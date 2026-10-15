@@ -653,13 +653,27 @@
 
   /**
    * What viewers may do with a file (spec 6.8): the actions this reader knows, of the right types (as the library's
-   * readActions): open, save, print, image (true or false), pdf (true, false, or the page settings).
+   * readActions): open, save, print, image, list (true or false), pdf (true, false, or the page settings).
    */
+  const FILE_FLAGS = ['open', 'save', 'print', 'image', 'list'];
+
   function fileActions(actions) {
     if (actions === null || typeof actions !== 'object' || Array.isArray(actions)) return undefined;
     const out = {};
-    for (const name of ['open', 'save', 'print', 'image']) if (typeof actions[name] === 'boolean') out[name] = actions[name];
+    for (const name of FILE_FLAGS) if (typeof actions[name] === 'boolean') out[name] = actions[name];
     if (typeof actions.pdf === 'boolean' || (actions.pdf !== null && typeof actions.pdf === 'object' && !Array.isArray(actions.pdf))) out.pdf = actions.pdf;
+    return Object.keys(out).length ? out : undefined;
+  }
+
+  /**
+   * Actions seen through two file groups, as one (as the library's mergeActions): allowed when either allows (an action
+   * left out is allowed); page settings for PDFs are the first's that allows them.
+   */
+  function mergeActions(a, b) {
+    if (!a || !b) return undefined;
+    const out = {};
+    for (const name of FILE_FLAGS) if (name in a && name in b) out[name] = a[name] || b[name];
+    if ('pdf' in a && 'pdf' in b) out.pdf = a.pdf === false ? b.pdf : a.pdf;
     return Object.keys(out).length ? out : undefined;
   }
 
@@ -3057,7 +3071,10 @@
           const directory = checkFileDirectory(parseJson(fromUtf8.decode(await file.section(dir.section, sectionId, key, { requireDigest })), 'An embedded-file directory', true));
           for (const c of directory.contents) contents.set(c.id, c);
           for (const f of directory.files) {
-            if (!entries.has(f.path)) entries.set(f.path, { path: f.path, type: f.type, content: f.content, actions: fileActions(f.actions) });
+            const known = entries.get(f.path);
+            // Seen through several groups: an action is allowed when any of them allows it.
+            if (known) known.actions = mergeActions(known.actions, fileActions(f.actions));
+            else entries.set(f.path, { path: f.path, type: f.type, content: f.content, actions: fileActions(f.actions) });
           }
           for (const s of directoryShapes(directory)) {
             if (shapes.has(s.name)) continue;
@@ -3532,5 +3549,5 @@
 
   global.JazminBrowser = { ...API_CORE };
   // For the add-ons: the core's functions, and the hooks through which the core reaches them.
-  Object.defineProperty(global.JazminBrowser, Symbol.for('jazmin.browser.internals'), { value: { PREAMBLE, TRAILER, ENVELOPE, FLAG_ENCRYPTED, FLAG_PASSWORD, FLAG_ACCESS, KNOWN_FLAGS, CODEC_NONE, CODEC_DEFLATE, CODEC_BROTLI, MIN_KDF_ITERATIONS, MAX_KDF_ITERATIONS, TYPE_NAMES, ENCODING, NESTED_COLUMNS, MAX_NESTING_DEPTH, isNested, HAS_NULLS, POW10, SLOT_ID, SLOT_ENTRY, PAGE_ENTRY, ONLINE_SLOT, WHOLE_TABLE, EVERYONE, subtle, utf8, fromUtf8, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, CRC_TABLE, crc32, hexToBytes, toHex, concat, equal, compareBytes, base64ToBytes, base64UrlToBytes, bytesToBase64Url, view, sha256, hkdf, hmacSha256, pbkdf2, decrypt, inflateRaw, verifySignature, MASTER_KEY_REFUSED, checksum, parseKey, keyText, parseUnlockToken, slotId, Reader, text, num, bytesOf, parseJson, repeatsName, dateFromMs, msFromFile, readMessage, readPacked, cumulative, readRef, readColumn, readPartition, readIndexRef, readTable, readHeader, readDirectory, readStatistics, fileActions, readIndexDirectory, readPartitionList, readDelta, readPostings, readPostingsSection, directoryShapes, checkFileDirectory, formatDecimal, readDecimal, readPlain, skipPlain, MADE_PER_ROW, decodeColumnar, decodeColumnarAt, skipValue, decodeAt, streamType, decodeStream, partEnd, decodeNested, OPS, STRING_OPS, keyOf, keyHash, inKeys, compare, compileFilter, condition, ORDERED_TYPES, RANGE_OPS, FEW_ROWS, SMALL_LOOKUP_BYTES, PAGES_CACHED, keyCompare, readKey, decodeBound, planOf, planLeaf, answeredExactly, setField, columnCollector, planColumns, filterReads, leafType, nestedMayMatch, leafMayMatch, mayMatch, leafMustMatch, mustMatch, sortBounds, unionAll, intersectSorted, PageKeys, readRowIds, PagedIndex, trigramsOf, trigramAnswers, skipPostings, intersectPostings, GRAM_HIGH, TrigramSegment, COMMON_SHARE, LazyTrigramIndex, CompositeIndex, leafLookup, indexPlan, sourceOf, BLOCK_SIZE, BLOCKS_CACHED, urlSource, openUrl, openScript, scriptBytes, open, openFile, locateTrailer, findPage, findSlot, openTable, EXPORT_TYPES, XML_NAME, XML_UNWRITABLE, bytesToBase64, exportText, exportJson, exportNested, csvQuote, xmlEscape, xmlElement, exportPieces, exportTo, ENOUGH, exportString, exportBlob, JazminValidationError, normalizeBigInt, MAX_SAFE_BIG, compareDecimalKeys, decimalKeyOf, parseDecimalText, DECIMAL_TEXT, validation, hooks, addOn } });
+  Object.defineProperty(global.JazminBrowser, Symbol.for('jazmin.browser.internals'), { value: { PREAMBLE, TRAILER, ENVELOPE, FLAG_ENCRYPTED, FLAG_PASSWORD, FLAG_ACCESS, KNOWN_FLAGS, CODEC_NONE, CODEC_DEFLATE, CODEC_BROTLI, MIN_KDF_ITERATIONS, MAX_KDF_ITERATIONS, TYPE_NAMES, ENCODING, NESTED_COLUMNS, MAX_NESTING_DEPTH, isNested, HAS_NULLS, POW10, SLOT_ID, SLOT_ENTRY, PAGE_ENTRY, ONLINE_SLOT, WHOLE_TABLE, EVERYONE, subtle, utf8, fromUtf8, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, CRC_TABLE, crc32, hexToBytes, toHex, concat, equal, compareBytes, base64ToBytes, base64UrlToBytes, bytesToBase64Url, view, sha256, hkdf, hmacSha256, pbkdf2, decrypt, inflateRaw, verifySignature, MASTER_KEY_REFUSED, checksum, parseKey, keyText, parseUnlockToken, slotId, Reader, text, num, bytesOf, parseJson, repeatsName, dateFromMs, msFromFile, readMessage, readPacked, cumulative, readRef, readColumn, readPartition, readIndexRef, readTable, readHeader, readDirectory, readStatistics, FILE_FLAGS, fileActions, mergeActions, readIndexDirectory, readPartitionList, readDelta, readPostings, readPostingsSection, directoryShapes, checkFileDirectory, formatDecimal, readDecimal, readPlain, skipPlain, MADE_PER_ROW, decodeColumnar, decodeColumnarAt, skipValue, decodeAt, streamType, decodeStream, partEnd, decodeNested, OPS, STRING_OPS, keyOf, keyHash, inKeys, compare, compileFilter, condition, ORDERED_TYPES, RANGE_OPS, FEW_ROWS, SMALL_LOOKUP_BYTES, PAGES_CACHED, keyCompare, readKey, decodeBound, planOf, planLeaf, answeredExactly, setField, columnCollector, planColumns, filterReads, leafType, nestedMayMatch, leafMayMatch, mayMatch, leafMustMatch, mustMatch, sortBounds, unionAll, intersectSorted, PageKeys, readRowIds, PagedIndex, trigramsOf, trigramAnswers, skipPostings, intersectPostings, GRAM_HIGH, TrigramSegment, COMMON_SHARE, LazyTrigramIndex, CompositeIndex, leafLookup, indexPlan, sourceOf, BLOCK_SIZE, BLOCKS_CACHED, urlSource, openUrl, openScript, scriptBytes, open, openFile, locateTrailer, findPage, findSlot, openTable, EXPORT_TYPES, XML_NAME, XML_UNWRITABLE, bytesToBase64, exportText, exportJson, exportNested, csvQuote, xmlEscape, xmlElement, exportPieces, exportTo, ENOUGH, exportString, exportBlob, JazminValidationError, normalizeBigInt, MAX_SAFE_BIG, compareDecimalKeys, decimalKeyOf, parseDecimalText, DECIMAL_TEXT, validation, hooks, addOn } });
 })(globalThis);

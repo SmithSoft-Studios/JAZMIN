@@ -662,12 +662,20 @@ id>` in access-controlled files, followed by `/<s>` when written by append
   directories omit it, so a key does not learn the names of other groups.
 - `actions` (optional) says what viewers may do with the file: `open` (show
   it), `save` (save it as it is), `print` (print the page), `pdf` (save the
-  page as PDF) and `image` (save the page as an image), each `true` or
+  page as PDF), `image` (save the page as an image) and `list` (show it in
+  lists of the file's files; `false` for one the document page uses, such as
+  a script or a font, which the page can still load), each `true` or
   `false`; `pdf` MAY instead be page settings, which allow it. An action
   left out is allowed. Writers MUST NOT write other actions or other types.
   Readers MUST ignore actions they do not know and values of the wrong
   type, and SHOULD take page settings they do not know as `true`. Actions
   steer viewers: a key that sees a file can read it whatever they say.
+- In access-controlled files each file group's directory lists a file with
+  its own `actions`, which MAY differ from group to group. A key that sees
+  a file through several groups SHOULD take an action as allowed when any of
+  those directories allows it (an action left out being allowed), and page
+  settings for PDFs from the first directory that allows them. Writers that
+  rewrite a file's directories SHOULD keep each group's actions.
 - **Page settings** (`package.pdf`, and `pdf` in `actions`) are a JSON
   object of optional members: `format` (`A0` to `A6`, `Letter`, `Legal`,
   `Tabloid` or `Ledger`), `landscape`, `printBackground` and
@@ -1740,6 +1748,15 @@ indexes, embedded files) written by both reference implementations.
   Readers that don't know them ignore them, as they do other members; the
   libraries of releases 1.0 to 1.3 also leave them out when they rewrite a
   file's directories (append, update, compaction).
+- **Since format 1.0, a new action and actions by file group (6.8):** the
+  action `list`, and in access-controlled files each file group's directory
+  with its own actions, merged for a key that sees several groups. Readers
+  that don't know `list` ignore it (and list the file); those of releases
+  1.0 to 1.6 take a key's actions from the first group they read. When those
+  libraries rewrite a file's directories (append, update, compaction), they
+  leave out `list` and give every group the first group's actions, which can
+  allow a group more than it was: rewrite such files with release 1.7 or
+  later.
 - **Since format 1.0, a new optional JSON member (6.8):** saved export
   shapes, `shapes` in file directories. Readers that don't know it ignore
   it, and the libraries of releases 1.0 to 1.4 leave it out when they

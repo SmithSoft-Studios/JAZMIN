@@ -1208,14 +1208,23 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                     var path = (string)f!["path"]!;
                     List<string>? groups = f["groups"] is JsonArray g ? g.Select(x => (string)x!).ToList()
                         : ownerNames is not null && ownerNames.TryGetValue(group, out var name) ? [name] : null;
+                    // Actions as this library knows them (later ones, and wrong types, left out), as update keeps them.
+                    var actions = EmbeddedFiles.ActionsFrom(f["actions"]) is { } a ? EmbeddedFiles.ActionsJson(a, path) : null;
+                    // The owner keeps each group's actions, so rewrites and appends write them back as they were.
+                    var ownerGroup = ownerNames is not null && ownerNames.TryGetValue(group, out var ownName) ? ownName : null;
                     if (!entries.TryGetValue(path, out var known))
                     {
-                        // Actions as this library knows them (later ones, and wrong types, left out), as update keeps them.
-                        var actions = EmbeddedFiles.ActionsFrom(f["actions"]) is { } a ? EmbeddedFiles.ActionsJson(a, path) : null;
-                        entries[path] = new FileEntry(path, (string)f["type"]!, (int)f["content"]!, groups, actions);
+                        entries[path] = new FileEntry(path, (string)f["type"]!, (int)f["content"]!, groups, actions,
+                            ownerGroup is null ? null : new Dictionary<string, JsonObject?>(StringComparer.Ordinal) { [ownerGroup] = actions });
                     }
-                    else if (known.Groups is not null && groups is not null)
-                        entries[path] = known with { Groups = known.Groups.Union(groups).Order(StringComparer.Ordinal).ToList() };
+                    else
+                    {
+                        // Seen through several groups: an action is allowed when any of them allows it.
+                        var merged = known with { Actions = EmbeddedFiles.MergeActions(known.Actions, actions) };
+                        if (known.Groups is not null && groups is not null) merged = merged with { Groups = known.Groups.Union(groups).Order(StringComparer.Ordinal).ToList() };
+                        if (ownerGroup is not null) merged = merged with { GroupActions = new(known.GroupActions ?? new(StringComparer.Ordinal), StringComparer.Ordinal) { [ownerGroup] = actions } };
+                        entries[path] = merged;
+                    }
                 }
                 foreach (var (shape, hasGroups) in SavedShapes.FromDirectory(json))
                 {
@@ -1246,6 +1255,10 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             return entries.Values.Select(e => new JazminEmbeddedFile(e.Path, e.Type, contents[e.Content].Size, contents[e.Content].Sha256, e.Groups?.ToList())
             {
                 Actions = EmbeddedFiles.ActionsFrom(e.Actions),
+                // The owner sees each group's actions when they differ.
+                GroupActions = e.GroupActions is { } byGroup && byGroup.Values.Select(a => a?.ToJsonString() ?? "{}").Distinct().Count() > 1
+                    ? byGroup.ToDictionary(p => p.Key, p => EmbeddedFiles.ActionsFrom(p.Value), StringComparer.Ordinal)
+                    : null,
             }).ToList();
         }
     }

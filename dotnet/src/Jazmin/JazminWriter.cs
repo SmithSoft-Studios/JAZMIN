@@ -412,7 +412,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             stored = new StoredContent { Id = id, Size = source.Size, Sha256 = source.Sha256, Key = key, Blocks = blocks };
             _contents[source.Sha256] = stored;
         }
-        _fileEntries[source.Path] = new FileEntry(source.Path, source.Type, stored.Id, source.Groups, source.Actions);
+        _fileEntries[source.Path] = new FileEntry(source.Path, source.Type, stored.Id, source.Groups, source.Actions, source.GroupActions);
     }
 
     /// <summary>Writes the file directories (one per file group in access-controlled files); returns the header member.</summary>
@@ -422,7 +422,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         var byId = _contents.Values.ToDictionary(c => c.Id);
         var shapes = _shapes.Values.OrderBy(s => s.Name, StringComparer.Ordinal).ToList();
         var firstTable = _continue?.Header.Tables[0].Name ?? _tables[0].Name;
-        JsonObject Directory(IEnumerable<FileEntry> list, bool withGroups, IEnumerable<SavedShape> saved)
+        // A file's actions in a group's directory: the group's own (GroupActions), else the file's.
+        JsonObject Directory(IEnumerable<FileEntry> list, bool withGroups, IEnumerable<SavedShape> saved, string? group = null)
         {
             var files = list.ToList();
             var directory = new JsonObject
@@ -431,7 +432,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                 {
                     var entry = new JsonObject { ["path"] = e.Path, ["type"] = e.Type, ["content"] = e.Content };
                     if (withGroups) entry["groups"] = new JsonArray((e.Groups ?? [EmbeddedFiles.Everyone]).Select(g => (JsonNode?)g).ToArray());
-                    if (e.Actions is not null) entry["actions"] = e.Actions.DeepClone();
+                    var actions = group is not null && e.GroupActions is { } byGroup && byGroup.TryGetValue(group, out var own) ? own : e.Actions;
+                    if (actions is { Count: > 0 }) entry["actions"] = actions.DeepClone();
                     return (JsonNode?)entry;
                 }).ToArray()),
                 ["contents"] = new JsonArray(files.Select(e => e.Content).Distinct().Order().Select(id => (JsonNode?)byId[id].ToJson()).ToArray()),
@@ -451,6 +453,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             directories.Add((group, WriteSection(Encoding.UTF8.GetBytes(json.ToJsonString()), sectionId, key)));
         if (_access is null)
         {
+            if (entries.FirstOrDefault(e => e.GroupActions is not null) is { } grouped)
+                throw new JazminValidationException($"File '{grouped.Path}': GroupActions need an access-controlled file (only its keys see files by group)");
             if (_keys is not null && !_keys.Keyring.ContainsKey(FormatConstants.KeyringFiles)) _keys.Keyring[FormatConstants.KeyringFiles] = RandomNumberGenerator.GetBytes(32);
             var sectionId = $"files/dir{suffix}";
             WriteDirectory(EmbeddedFiles.Everyone, sectionId, Directory(entries, true, shapes), _keys?.SectionKey(FormatConstants.KeyringFiles, sectionId));
@@ -463,7 +467,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             {
                 var id = _secrets!.PartitionId(name); // same opaque HMAC id as partitions
                 var sectionId = $"files/dir/{id}{suffix}";
-                WriteDirectory(id, sectionId, Directory(entries.Where(e => (e.Groups ?? [EmbeddedFiles.Everyone]).Contains(name)), false, shapes.Where(s => s.Groups.Contains(name))),
+                WriteDirectory(id, sectionId, Directory(entries.Where(e => (e.Groups ?? [EmbeddedFiles.Everyone]).Contains(name)), false, shapes.Where(s => s.Groups.Contains(name)), name),
                     Crypto.Hkdf(_secrets.FileGroupSecret(id), _salt, $"JAZMIN/1/{sectionId}"));
             }
         }

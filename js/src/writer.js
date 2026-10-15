@@ -454,7 +454,10 @@ export class JazminWriter {
       stored = { id, size: src.size, sha256: src.sha256, blockSize: FILE_BLOCK_SIZE, ...(key ? { key: key.toString('base64') } : {}), blocks };
       this.#files.contents.set(src.sha256, stored);
     }
-    this.#files.entries.set(src.path, { path: src.path, type: src.type, groups: src.groups, content: stored.id, ...(src.actions ? { actions: src.actions } : {}) });
+    this.#files.entries.set(src.path, {
+      path: src.path, type: src.type, groups: src.groups, content: stored.id, ...(src.actions ? { actions: src.actions } : {}),
+      ...(src.groupActions ? { groupActions: src.groupActions } : {}),
+    });
   }
 
   /** Columns of the table rows go to. */
@@ -1052,8 +1055,13 @@ export class JazminWriter {
       ...(s.table === undefined || s.table === firstTable ? {} : { table: s.table }), // none: the first table
       ...(withGroups ? { groups: s.groups } : {}), shape: s.shape,
     });
-    const directory = (list, withGroups, saved) => ({
-      files: list.map((e) => ({ path: e.path, type: e.type, content: e.content, ...(withGroups ? { groups: e.groups } : {}), ...(e.actions ? { actions: e.actions } : {}) })),
+    // A file's actions in a group's directory: the group's own (groupActions), else the file's.
+    const actionsIn = (e, group) => (group !== undefined && e.groupActions?.[group]) || e.actions;
+    const directory = (list, withGroups, saved, group) => ({
+      files: list.map((e) => {
+        const actions = actionsIn(e, group);
+        return { path: e.path, type: e.type, content: e.content, ...(withGroups ? { groups: e.groups } : {}), ...(actions && Object.keys(actions).length ? { actions } : {}) };
+      }),
       contents: [...new Set(list.map((e) => e.content))].sort((a, b) => a - b).map((id) => byId.get(id)),
       ...(saved.length ? { shapes: saved.map((s) => savedShape(s, withGroups)) } : {}),
     });
@@ -1066,6 +1074,8 @@ export class JazminWriter {
       member.directories.push({ group, section: this.#writeSection(Buffer.from(JSON.stringify(json), 'utf8'), sectionId, key) });
     };
     if (!this.#access) {
+      const grouped = entries.find((e) => e.groupActions);
+      if (grouped) throw new JazminValidationError(`File '${grouped.path}': groupActions need an access-controlled file (only its keys see files by group)`);
       if (this.#keys && !this.#keys.keyring.files) this.#keys.keyring.files = crypto.randomBytes(32);
       const sectionId = `files/dir${suffix}`;
       write(EVERYONE, sectionId, directory(entries, true, shapes), this.#keys?.sectionKey(KEYRING_GROUPS.files, sectionId));
@@ -1075,7 +1085,7 @@ export class JazminWriter {
     for (const name of this.#fileGroupNames) {
       const id = this.#secrets.partitionId(name); // same opaque HMAC id as partitions
       const sectionId = `files/dir/${id}${suffix}`;
-      write(id, sectionId, directory(entries.filter((e) => e.groups.includes(name)), false, shapes.filter((s) => s.groups.includes(name))),
+      write(id, sectionId, directory(entries.filter((e) => e.groups.includes(name)), false, shapes.filter((s) => s.groups.includes(name)), name),
         hkdf(this.#secrets.fileGroupSecret(id), this.#salt, `JAZMIN/1/${sectionId}`));
     }
     return member;

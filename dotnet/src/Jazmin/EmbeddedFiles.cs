@@ -47,13 +47,25 @@ public sealed class JazminFileInput
 
     /// <summary>What viewers may do with the file (format 1.4): null allows everything.</summary>
     public JazminFileActions? Actions { get; init; }
+
+    /// <summary>
+    /// Access-controlled files: actions for some of the file's groups, instead of <see cref="Actions"/> (1.7). A key that
+    /// sees the file through several groups may do what any of them allows.
+    /// </summary>
+    public IReadOnlyDictionary<string, JazminFileActions>? GroupActions { get; init; }
 }
 
 /// <summary>An embedded file visible to the current key.</summary>
 public sealed record JazminEmbeddedFile(string Path, string Type, long Size, string Sha256, IReadOnlyList<string>? Groups)
 {
-    /// <summary>What viewers may do with the file, when its writer set it (format 1.4); null allows everything.</summary>
+    /// <summary>
+    /// What viewers may do with the file, when its writer set it (format 1.4); null allows everything. Seen through
+    /// several groups, what any of them allows.
+    /// </summary>
     public JazminFileActions? Actions { get; init; }
+
+    /// <summary>The owner of an access-controlled file: each group's actions, when they differ (1.7); else null.</summary>
+    public IReadOnlyDictionary<string, JazminFileActions?>? GroupActions { get; init; }
 }
 
 /// <summary>
@@ -79,6 +91,9 @@ public sealed record JazminFileActions
 
     /// <summary>Save the page as an image.</summary>
     public bool? Image { get; init; }
+
+    /// <summary>List the file among the file's files; false keeps out of viewers' lists one the document page uses (1.7).</summary>
+    public bool? List { get; init; }
 }
 
 /// <summary>Page settings for a document's PDFs (spec 6.8): each optional, checked when written.</summary>
@@ -303,7 +318,24 @@ internal static class EmbeddedFiles
         }
         else if (actions.Pdf is { } pdf) json["pdf"] = pdf;
         if (actions.Image is { } image) json["image"] = image;
+        if (actions.List is { } list) json["list"] = list;
         return json.Count > 0 ? json : null;
+    }
+
+    private static readonly string[] Flags = ["open", "save", "print", "image", "list"];
+
+    /// <summary>
+    /// Actions seen through two file groups, as one: an action is allowed when either allows it (an action left out is
+    /// allowed); page settings for PDFs are the first's that allows them. Null allows everything.
+    /// </summary>
+    public static JsonObject? MergeActions(JsonObject? a, JsonObject? b)
+    {
+        if (a is null || b is null) return null;
+        var merged = new JsonObject();
+        foreach (var name in Flags)
+            if (a[name] is JsonValue x && b[name] is JsonValue y) merged[name] = x.GetValue<bool>() || y.GetValue<bool>();
+        if (a["pdf"] is { } pa && b["pdf"] is { } pb) merged["pdf"] = (pa is JsonValue v && v.TryGetValue<bool>(out var off) && !off ? pb : pa).DeepClone();
+        return merged.Count > 0 ? merged : null;
     }
 
     /// <summary>A file's actions as a reader takes them: the ones it knows, of the right types; null when none.</summary>
@@ -318,7 +350,7 @@ internal static class EmbeddedFiles
             settings = PdfFrom(p, strict: true);
             pdf = settings is null ? true : null; // settings it doesn't know: allowed, with the viewer's own
         }
-        var actions = new JazminFileActions { Open = Flag(o["open"]), Save = Flag(o["save"]), Print = Flag(o["print"]), Pdf = pdf, PdfSettings = settings, Image = Flag(o["image"]) };
+        var actions = new JazminFileActions { Open = Flag(o["open"]), Save = Flag(o["save"]), Print = Flag(o["print"]), Pdf = pdf, PdfSettings = settings, Image = Flag(o["image"]), List = Flag(o["list"]) };
         return actions == new JazminFileActions() ? null : actions;
     }
 }
@@ -330,6 +362,7 @@ internal sealed class FileSource
     public required string Type { get; init; }
     public required List<string> Groups { get; init; }
     public JsonObject? Actions { get; init; }
+    public Dictionary<string, JsonObject?>? GroupActions { get; init; }
     public required long Size { get; init; }
     public required string Sha256 { get; init; }
     public required Func<long, int, byte[]> Read { get; init; }
@@ -340,12 +373,18 @@ internal sealed class FileSource
         var type = input.Type ?? EmbeddedFiles.MediaType(path);
         var groups = EmbeddedFiles.NormalizeGroups(input.Groups, path);
         var actions = EmbeddedFiles.ActionsJson(input.Actions, path);
+        Dictionary<string, JsonObject?>? groupActions = null;
+        foreach (var (group, given) in input.GroupActions ?? new Dictionary<string, JazminFileActions>())
+        {
+            if (!groups.Contains(group)) throw new JazminValidationException($"File '{path}': GroupActions: '{group}' is not one of the file's groups ({string.Join(", ", groups)})");
+            (groupActions ??= new(StringComparer.Ordinal))[group] = EmbeddedFiles.ActionsJson(given, path);
+        }
         if ((input.Content is null) == (input.FilePath is null)) throw new JazminValidationException($"File '{path}': supply exactly one of content or file");
         if (input.Content is { } bytes)
         {
             return new FileSource
             {
-                Path = path, Type = type, Groups = groups, Actions = actions, Size = bytes.Length,
+                Path = path, Type = type, Groups = groups, Actions = actions, GroupActions = groupActions, Size = bytes.Length,
                 Sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
                 Read = (offset, length) => bytes.AsSpan((int)offset, length).ToArray(),
             };
@@ -360,7 +399,7 @@ internal sealed class FileSource
         }
         return new FileSource
         {
-            Path = path, Type = type, Groups = groups, Actions = actions, Size = size, Sha256 = sha,
+            Path = path, Type = type, Groups = groups, Actions = actions, GroupActions = groupActions, Size = size, Sha256 = sha,
             Read = (offset, length) =>
             {
                 using var stream = File.OpenRead(disk);
@@ -432,7 +471,8 @@ internal sealed class StoredContent
 }
 
 /// <summary>A directory entry: path -> content id, with its groups where known, and its actions (as stored).</summary>
-internal sealed record FileEntry(string Path, string Type, int Content, List<string>? Groups, JsonObject? Actions = null);
+internal sealed record FileEntry(string Path, string Type, int Content, List<string>? Groups, JsonObject? Actions = null,
+    Dictionary<string, JsonObject?>? GroupActions = null);
 
 /// <summary>The files and saved shapes carried from one version of a file to the next (append / update).</summary>
 internal sealed record FileState(List<FileEntry> Entries, List<StoredContent> Contents, int NextId, JsonObject? Package, List<SavedShape>? Shapes = null);

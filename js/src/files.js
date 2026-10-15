@@ -52,7 +52,8 @@ export function fileSource(entry) {
   const type = entry.type === undefined ? mediaType(filePath) : String(entry.type);
   const groups = normalizeGroups(entry.groups, filePath);
   const actions = normalizeActions(entry.actions, filePath);
-  const extra = actions ? { actions } : {};
+  const groupActions = normalizeGroupActions(entry.groupActions, groups, filePath);
+  const extra = { ...(actions ? { actions } : {}), ...(groupActions ? { groupActions } : {}) };
   if ((entry.content === undefined) === (entry.file === undefined)) {
     throw new JazminValidationError(`File '${filePath}': supply exactly one of content or file`);
   }
@@ -188,12 +189,13 @@ export function checkEdit(edit, tables, { partial = false } = {}) {
   }
 }
 
-const FLAGS = ['open', 'save', 'print', 'image'];
+const FLAGS = ['open', 'save', 'print', 'image', 'list'];
 
 /**
- * What viewers may do with a file (spec 6.8): { open, save, print, pdf, image }, each true or false (all allowed when
- * left out); pdf may instead be the page settings for its PDFs. These steer viewers: a key that sees a file can read it
- * with the library whatever they say.
+ * What viewers may do with a file (spec 6.8): { open, save, print, pdf, image, list }, each true or false (all allowed
+ * when left out); pdf may instead be the page settings for its PDFs; list: false keeps the file out of viewers' lists of
+ * files (one the document page uses, such as a script or a font). These steer viewers: a key that sees a file can read
+ * it with the library whatever they say.
  */
 export function normalizeActions(actions, filePath) {
   if (actions === undefined) return undefined;
@@ -207,9 +209,37 @@ export function normalizeActions(actions, filePath) {
     } else if (name === 'pdf') {
       out.pdf = typeof value === 'boolean' ? value : normalizePdf(value, `${where}.pdf`);
     } else {
-      throw new JazminValidationError(`${where}: unknown action '${name}' (open, save, print, pdf, image)`);
+      throw new JazminValidationError(`${where}: unknown action '${name}' (open, save, print, pdf, image, list)`);
     }
   }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * A file's actions per file group (access-controlled files): { [group]: actions }, for groups the file is in, each as
+ * `actions`. A key that sees the file through several groups may do what any of them allows (mergeActions).
+ */
+export function normalizeGroupActions(groupActions, groups, filePath) {
+  if (groupActions === undefined) return undefined;
+  const where = `File '${filePath}': groupActions`;
+  if (groupActions === null || typeof groupActions !== 'object' || Array.isArray(groupActions)) throw new JazminValidationError(`${where} must be an object of actions by file group`);
+  const out = {};
+  for (const [group, actions] of Object.entries(groupActions)) {
+    if (!groups.includes(group)) throw new JazminValidationError(`${where}: '${group}' is not one of the file's groups (${groups.join(', ')})`);
+    out[group] = normalizeActions(actions, filePath) ?? {};
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * Actions seen through two file groups, as one: an action is allowed when either allows it (an action left out is
+ * allowed); page settings for PDFs are the first's that allows them.
+ */
+export function mergeActions(a, b) {
+  if (!a || !b) return undefined;
+  const out = {};
+  for (const name of FLAGS) if (name in a && name in b) out[name] = a[name] || b[name];
+  if ('pdf' in a && 'pdf' in b) out.pdf = a.pdf === false ? b.pdf : a.pdf;
   return Object.keys(out).length ? out : undefined;
 }
 
