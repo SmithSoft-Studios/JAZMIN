@@ -39,10 +39,10 @@ test('where gives what the function gives over every row, in file order, whether
 
 test('what is read: the filter, the columns the functions name, the file order, offset and limit', () => {
   const q = from(reader).where((t) => t.city === 'Durban').select((t) => ({ id: t.id, n: t.n }));
-  assert.deepEqual(q.explain(), { filter: { city: { eq: 'Durban' } }, exact: true, columns: ['id', 'city', 'n'].filter((c) => c !== 'city'), offset: 0, limit: null, fileOrder: false, inMemory: ['select'], notes: [] });
+  assert.deepEqual(q.explain(), { filter: { city: { eq: 'Durban' } }, exact: true, columns: ['id', 'city', 'n'].filter((c) => c !== 'city'), offset: 0, limit: null, fileOrder: false, reverse: false, inMemory: ['select'], notes: [] });
   // The file is sorted by id: no sort; skip and take go to the reader.
   const page = from(reader).where((t) => t.n > 0).orderBy((t) => t.id).skip(10).take(5).select((t) => t.id);
-  assert.deepEqual(page.explain(), { filter: { n: { gt: 0 } }, exact: true, columns: ['id'], offset: 10, limit: 5, fileOrder: true, inMemory: ['select'], notes: [] });
+  assert.deepEqual(page.explain(), { filter: { n: { gt: 0 } }, exact: true, columns: ['id'], offset: 10, limit: 5, fileOrder: true, reverse: false, inMemory: ['select'], notes: [] });
   assert.deepEqual(page.toArray(), ids(all.filter((r) => r.n > 0)).slice(10, 15));
   // A function not read exactly runs on each row first; skip and take then run here.
   const loose = from(reader).where((t) => t.amount >= 100).skip(2).take(3);

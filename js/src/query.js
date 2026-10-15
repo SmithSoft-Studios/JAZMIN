@@ -112,6 +112,15 @@ export class JazminQuery {
     if (this.#steps.at(-1)?.op !== 'order') throw fail(`${what} follows orderBy or orderByDescending`);
   }
 
+  /**
+   * The rows in the other order (LINQ's Reverse). Straight after the where functions, or after orderBy on the file's own
+   * sortedBy columns, the reader reads the file last first, as fast as first first: the newest rows of a file sorted by
+   * date. Rows with the same sort key come last first too, unlike orderByDescending, which keeps them in file order.
+   */
+  reverse() {
+    return this.#with({ op: 'reverse' });
+  }
+
   skip(n) {
     return this.#with({ op: 'skip', n: count(n, 'skip') });
   }
@@ -143,7 +152,7 @@ export class JazminQuery {
    * needs no sort; skip and take go to the reader when nothing before them runs here.
    */
   #plan(terminal) {
-    const plan = { filter: null, exact: true, notes: [], select: null, offset: 0, limit: Infinity, fileOrder: false, rest: [] };
+    const plan = { filter: null, exact: true, notes: [], select: null, offset: 0, limit: Infinity, fileOrder: false, reverse: false, rest: [] };
     const reader = isReader(this.#source) ? this.#source : null;
     if (!reader) {
       plan.rest = sorts(this.#steps, null);
@@ -171,6 +180,12 @@ export class JazminQuery {
     if (j > k && inOrder) {
       plan.fileOrder = true;
       k = j;
+    }
+    // The file's order backwards: the reader reads last first.
+    if (steps[k]?.op === 'reverse') {
+      plan.reverse = true;
+      plan.fileOrder = true;
+      k++;
     }
     // Offset and limit: to the reader when every where ran there exactly and nothing reorders the rows before them.
     let rest = steps.slice(k);
@@ -202,7 +217,10 @@ export class JazminQuery {
     const plan = this.#plan(terminal);
     let rows;
     if (isReader(this.#source)) {
-      const options = { ...(plan.select ? { select: plan.select } : {}), ...(plan.offset ? { offset: plan.offset } : {}), ...(plan.limit !== Infinity ? { limit: plan.limit } : {}) };
+      const options = {
+        ...(plan.select ? { select: plan.select } : {}), ...(plan.offset ? { offset: plan.offset } : {}), ...(plan.limit !== Infinity ? { limit: plan.limit } : {}),
+        ...(plan.reverse ? { reverse: true } : {}),
+      };
       rows = plan.limit === 0 ? [] : this.#source.find(plan.filter, options);
     } else {
       rows = this.#source;
@@ -304,6 +322,7 @@ export class JazminQuery {
       offset: plan.offset,
       limit: plan.limit === Infinity ? null : plan.limit,
       fileOrder: plan.fileOrder,
+      reverse: plan.reverse,
       inMemory: plan.rest.map((s) => s.op),
       notes: [...new Set(plan.notes)],
     };
@@ -386,6 +405,9 @@ const APPLY = {
       return a.i - b.i; // stable
     });
     return list.map((x) => x.row);
+  },
+  reverse(rows) {
+    return [...rows].reverse();
   },
   *skip(rows, step) {
     let left = step.n;

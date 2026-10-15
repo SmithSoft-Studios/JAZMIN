@@ -4,6 +4,12 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **Reading last first: `reverse: true` (#189 E1, both libraries and the browser reader).** `find`, `rows`, `findAsync`,
+  `findBatchesAsync`, exports, and the browser reader's `find` and `query` take `reverse: true` (.NET
+  `JazminQueryOptions.Reverse`): the reader starts at the last chunk, so the newest rows of a file sorted by date come
+  first as fast as the oldest, with any filter, index or key; `offset` and `limit` count from the end. Query APIs:
+  `reverse()` (JS and the browser) and LINQ `Reverse()` (.NET) after the filters are read this way. On 1,000,000 rows,
+  one account's newest 20 took 5.2 ms instead of 46.5 ms (count, then the last page). No format change.
 - **Locked stored files: a password, an unlock token from your key service, or both (#188, both libraries; spec 6.8.1).**
   In a shared file, `locks: { contracts: { password } | { online: true } | both }` and a file's `lock: 'contracts'`
   keep the file shut for a key that sees it until `reader.unlock('contracts', { password, unlockToken })`; `readFile`

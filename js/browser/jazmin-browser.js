@@ -2934,12 +2934,18 @@
      * from..to-1 of a chunk, with its decoded columns by position, which is all columnArrays() needs. Without a filter,
      * no row object is built at all, unbroken runs of rows go to the sink together, and dates are milliseconds.
      */
-    async function* matches(filter, { offset = 0, limit = Infinity, select, signal, onProgress } = {}, sink = null) {
+    // `only` (matchesReversed): the plan and candidates, worked out already, and the chunk runs to read.
+    async function* matches(filter, { offset = 0, limit = Infinity, select, signal, onProgress, reverse = false } = {}, sink = null, only = null) {
+      if (typeof reverse !== 'boolean') throw new JazminError('reverse must be true or false');
+      if (reverse && !only) {
+        yield* matchesReversed(filter, { offset, limit, select, signal, onProgress });
+        return;
+      }
       signal?.throwIfAborted();
       const match = filter ? compileFilter(filter, visibleColumns) : null;
       if (select) for (const name of select) if (!visibleColumns.some((c) => c.name === name)) throw new JazminError(`Unknown column '${name}' in select`);
-      const plan = planOf(filter, planColumnsList);
-      const { runs, rowIds } = await route(plan);
+      const plan = only ? only.plan : planOf(filter, planColumnsList);
+      const { runs, rowIds } = only ?? await route(plan);
       if (match) {
         yield* filtered(match, plan, runs, rowIds, { offset, limit, select, signal, onProgress }, sink);
         return;
@@ -2991,6 +2997,39 @@
           }
           yield select ? Object.fromEntries(select.map((name) => [name, row[name]])) : row;
           if (++yielded >= limit) return;
+        }
+      }
+      if (runs.length) onProgress?.({ done: runs.length, total: runs.length, matches: skipped + yielded });
+    }
+
+    /**
+     * Rows last first, as the library's reverse: the chunks the query reads, from the last; each one's matching rows read
+     * as matches() reads them and given last first. Chunks an offset passes over whole are counted, not read.
+     */
+    async function* matchesReversed(filter, { offset, limit, select, signal, onProgress }) {
+      signal?.throwIfAborted();
+      if (select) for (const name of select) if (!visibleColumns.some((c) => c.name === name)) throw new JazminError(`Unknown column '${name}' in select`);
+      const plan = planOf(filter, planColumnsList);
+      const { runs, rowIds } = await route(plan);
+      let skipped = 0;
+      let yielded = 0;
+      for (let i = runs.length - 1, done = 0; i >= 0 && yielded < limit; i--, done++) {
+        if (done) onProgress?.({ done, total: runs.length, matches: skipped + yielded });
+        signal?.throwIfAborted();
+        const { chunk } = runs[i];
+        if (rowIds === null && skipped < offset && offset - skipped >= liveRows(chunk) && (!plan || mustMatch(plan, statsOf(chunk), chunk.rowCount))) {
+          skipped += liveRows(chunk);
+          continue;
+        }
+        const rows = [];
+        for await (const row of matches(filter, { select }, null, { plan, runs: [runs[i]], rowIds })) rows.push(row);
+        for (let k = rows.length - 1; k >= 0 && yielded < limit; k--) {
+          if (skipped < offset) {
+            skipped++;
+            continue;
+          }
+          yielded++;
+          yield rows[k];
         }
       }
       if (runs.length) onProgress?.({ done: runs.length, total: runs.length, matches: skipped + yielded });
@@ -3238,9 +3277,9 @@
       /** Another table of the same file (the file is not read again). */
       openTable: (tableName) => openTable(file, tableName),
       /**
-       * Rows matching a filter (spec 9), chunk by chunk. options: { offset, limit, select }, and for long reads
-       * { signal, onProgress } (see count). Chunk statistics, the sort order and indexes decide which chunks are read,
-       * as in the library.
+       * Rows matching a filter (spec 9), chunk by chunk. options: { offset, limit, select, reverse } (reverse: last row
+       * first, as fast as first first), and for long reads { signal, onProgress } (see count). Chunk statistics, the sort
+       * order and indexes decide which chunks are read, as in the library.
        */
       find(filter, options) {
         return matches(filter, options);
@@ -3250,9 +3289,9 @@
        * row matches are counted without reading them); pass { total: false } to read only the page. { signal,
        * onProgress } as for count, for the search and then the count.
        */
-      async query(filter, { offset = 0, limit = 100, select, total = true, signal, onProgress } = {}) {
+      async query(filter, { offset = 0, limit = 100, select, total = true, signal, onProgress, reverse = false } = {}) {
         const rows = [];
-        for await (const row of matches(filter, { offset, limit, select, signal, onProgress })) rows.push(row);
+        for await (const row of matches(filter, { offset, limit, select, signal, onProgress, reverse })) rows.push(row);
         return total ? { rows, total: await this.count(filter, { signal, onProgress }) } : { rows };
       },
       /**
@@ -6562,6 +6601,11 @@
       return this._with({ op: 'order', fn: queryFn(key, 'thenByDescending'), desc: true, then: true });
     }
 
+    /** The rows in the other order; after the where functions (or the file's own order) the reader reads last first. */
+    reverse() {
+      return this._with({ op: 'reverse' });
+    }
+
     skip(n) {
       return this._with({ op: 'skip', n: queryCount(n, 'skip') });
     }
@@ -6633,7 +6677,7 @@
     }
 
     explain() {
-      return { filter: null, exact: true, columns: null, offset: 0, limit: null, fileOrder: false, inMemory: querySorts(this._steps, null).map((s) => s.op), notes: [] };
+      return { filter: null, exact: true, columns: null, offset: 0, limit: null, fileOrder: false, reverse: false, inMemory: querySorts(this._steps, null).map((s) => s.op), notes: [] };
     }
   }
 
@@ -6674,6 +6718,9 @@
     },
     sort(rows, step) {
       return sortQueryRows([...rows], step);
+    },
+    reverse(rows) {
+      return [...rows].reverse();
     },
     *skip(rows, step) {
       let left = step.n;
@@ -6742,7 +6789,7 @@
     _plan(terminal) {
       const reader = this._source;
       const steps = this._steps;
-      const plan = { filter: null, exact: true, notes: [], select: null, offset: 0, limit: Infinity, fileOrder: false, rest: [] };
+      const plan = { filter: null, exact: true, notes: [], select: null, offset: 0, limit: Infinity, fileOrder: false, reverse: false, rest: [] };
       let k = 0;
       const filters = [];
       const checks = [];
@@ -6763,6 +6810,12 @@
       if (j > k && inOrder) {
         plan.fileOrder = true;
         k = j;
+      }
+      // The file's order backwards: the reader reads last first.
+      if (steps[k]?.op === 'reverse') {
+        plan.reverse = true;
+        plan.fileOrder = true;
+        k++;
       }
       let rest = steps.slice(k);
       let r = 0;
@@ -6790,7 +6843,10 @@
 
     async *_rows(terminal) {
       const plan = this._plan(terminal);
-      const options = { ...(plan.select ? { select: plan.select } : {}), ...(plan.offset ? { offset: plan.offset } : {}), ...(plan.limit !== Infinity ? { limit: plan.limit } : {}) };
+      const options = {
+        ...(plan.select ? { select: plan.select } : {}), ...(plan.offset ? { offset: plan.offset } : {}), ...(plan.limit !== Infinity ? { limit: plan.limit } : {}),
+        ...(plan.reverse ? { reverse: true } : {}),
+      };
       let rows = plan.limit === 0 ? [] : this._source.find(plan.filter, options);
       for (const step of plan.rest) rows = READER_STEPS[step.op](rows, step);
       yield* rows;
@@ -6865,6 +6921,7 @@
         offset: plan.offset,
         limit: plan.limit === Infinity ? null : plan.limit,
         fileOrder: plan.fileOrder,
+        reverse: plan.reverse,
         inMemory: plan.rest.map((s) => s.op),
         notes: [...new Set(plan.notes)],
       };
@@ -6922,6 +6979,11 @@
       const list = [];
       for await (const row of rows) list.push(row);
       yield* sortQueryRows(list, step);
+    },
+    async *reverse(rows) {
+      const list = [];
+      for await (const row of rows) list.push(row);
+      yield* list.reverse();
     },
     async *skip(rows, step) {
       let left = step.n;

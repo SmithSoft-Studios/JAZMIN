@@ -72,6 +72,12 @@ public sealed class JazminQueryOptions
     public long? Limit { get; set; }
 
     /// <summary>
+    /// Last row first (1.7): in a file sorted by date, the newest first, as fast as the oldest (the reader starts at the
+    /// last chunk). <see cref="Offset"/> and <see cref="Limit"/> count from the end.
+    /// </summary>
+    public bool Reverse { get; set; }
+
+    /// <summary>
     /// Reports how far a long read has got, after each chunk it reads (none when no chunk needs reading): see
     /// <see cref="JazminReadProgress"/>.
     /// </summary>
@@ -2318,7 +2324,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         if (!cancellationToken.CanBeCanceled || options?.CancellationToken.CanBeCanceled == true) return options;
         return new JazminQueryOptions
         {
-            Select = options?.Select, Offset = options?.Offset ?? 0, Limit = options?.Limit, Progress = options?.Progress,
+            Select = options?.Select, Offset = options?.Offset ?? 0, Limit = options?.Limit, Reverse = options?.Reverse ?? false, Progress = options?.Progress,
             CancellationToken = cancellationToken, Trimmed = options?.Trimmed,
         };
     }
@@ -2335,8 +2341,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     public IEnumerable<JazminRow> Find(string whereJson, JazminQueryOptions? options = null) => Find(JazminFilter.Parse(whereJson), options);
 
     /// <summary>
-    /// Streams visible rows matching a filter, in row order. Uses indexes to read only candidate
-    /// chunks; otherwise scans, skipping chunks whose statistics prove they cannot match.
+    /// Streams visible rows matching a filter, in row order, or the last row first with
+    /// <see cref="JazminQueryOptions.Reverse"/>. Uses indexes to read only candidate chunks; otherwise scans, skipping
+    /// chunks whose statistics prove they cannot match.
     /// </summary>
     public IEnumerable<JazminRow> Find(JazminFilter? filter, JazminQueryOptions? options = null)
     {
@@ -2347,19 +2354,71 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         var schema = options?.Trimmed is { Count: > 0 } trimmed
             ? _allColumns.Select(c => trimmed.TryGetValue(c.Name, out var t) ? t : c).ToArray()
             : null;
-        return FindIterator(plan, shape, options?.Offset ?? 0, options?.Limit ?? long.MaxValue, schema, options);
+        return options?.Reverse == true
+            ? ReverseIterator(plan, shape, options.Offset, options.Limit ?? long.MaxValue, schema, options)
+            : FindIterator(plan, shape, options?.Offset ?? 0, options?.Limit ?? long.MaxValue, schema, options);
     }
 
+    /// <summary>
+    /// Rows last first: the chunks the query reads, from the last, a few at a time (1, 2, 4, then 8, decoded in parallel
+    /// as a forward read decodes them); each chunk's matching rows given last first, so memory is a few chunks' rows.
+    /// Chunks an offset passes over whole are counted, not read; until the offset is reached chunks are read one at a time.
+    /// </summary>
+    private IEnumerable<JazminRow> ReverseIterator(BoundFilter? plan, RowShape shape, long offset, long limit, JazminColumn[]? schema, JazminQueryOptions options)
+    {
+        var rowIds = Candidates(plan);
+        var runs = ChunkRuns(plan, rowIds);
+        var whole = WholeChunkTest(plan);
+        var watch = ReadWatch.For(options.Progress, options.CancellationToken, () => runs.Count);
+        var inner = new JazminQueryOptions { CancellationToken = options.CancellationToken, Trimmed = options.Trimmed };
+        long skipped = 0, yielded = 0;
+        var batch = 1;
+        for (var i = runs.Count - 1; i >= 0 && yielded < limit;)
+        {
+            var ordinal = runs[i].Ordinal;
+            if (rowIds is null && skipped < offset && offset - skipped >= LiveRows(ordinal) && whole(ordinal))
+            {
+                skipped += LiveRows(ordinal);
+                i--;
+                continue;
+            }
+            var take = new List<(int Ordinal, int From, int To)>();
+            for (var size = skipped < offset ? 1 : batch; i >= 0 && take.Count < size; i--) take.Add(runs[i]);
+            if (skipped >= offset) batch = Math.Min(batch * 2, 8);
+            foreach (var _ in take) watch?.ChunkStarts(yielded);
+            // Chunk by chunk in that order, each one's rows first first: a lower row id starts the next chunk.
+            var rows = FindIterator(plan, shape, 0, long.MaxValue, schema, inner, rowIds, take).ToList();
+            for (var begin = 0; begin < rows.Count && yielded < limit;)
+            {
+                var end = begin + 1;
+                while (end < rows.Count && rows[end].RowId > rows[end - 1].RowId) end++;
+                for (var k = end - 1; k >= begin && yielded < limit; k--)
+                {
+                    if (skipped < offset)
+                    {
+                        skipped++;
+                        continue;
+                    }
+                    yielded++;
+                    yield return rows[k];
+                }
+                begin = end;
+            }
+        }
+        watch?.Done(yielded);
+    }
+
+    // only (ReverseIterator): the chunk runs to read, with the query's candidates (`candidates`) worked out already.
     private IEnumerable<JazminRow> FindIterator(BoundFilter? plan, RowShape shape, long offset, long limit, JazminColumn[]? schema = null,
-        JazminQueryOptions? options = null)
+        JazminQueryOptions? options = null, long[]? candidates = null, List<(int Ordinal, int From, int To)>? only = null)
     {
         long skipped = 0, yielded = 0;
-        var rowIds = Candidates(plan);
+        var rowIds = only is not null ? candidates : Candidates(plan);
         var watch = ReadWatch.For(options?.Progress, options?.CancellationToken ?? default, () => PlannedChunks(plan, rowIds, offset));
         if (_access is null)
         {
             // Decode only the filter's and the selected columns, of the chunks the index candidates (or the scan) name.
-            foreach (var row in ScanColumns(plan, shape, offset, limit, rowIds, schema, watch)) yield return row;
+            foreach (var row in ScanColumns(plan, shape, offset, limit, rowIds, schema, watch, only)) yield return row;
             yield break;
         }
         var wanted = WantedColumns(plan, shape.Selection); // only the filter's and the selected columns are decoded
@@ -2377,7 +2436,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         }
 
         var whole = WholeChunkTest(plan);
-        foreach (var (ordinal, from, to) in ChunkRuns(plan, rowIds))
+        foreach (var (ordinal, from, to) in only ?? ChunkRuns(plan, rowIds))
         {
             if (yielded >= limit) break;
             if (rowIds is null && skipped < offset && offset - skipped >= LiveRows(ordinal) && whole(ordinal))
@@ -2477,14 +2536,14 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// index candidates (<paramref name="rowIds"/>) only their chunks are read and only their rows checked.
     /// </summary>
     private IEnumerable<JazminRow> ScanColumns(BoundFilter? plan, RowShape shape, long offset, long limit, long[]? rowIds = null, JazminColumn[]? schema = null,
-        ReadWatch? watch = null)
+        ReadWatch? watch = null, List<(int Ordinal, int From, int To)>? only = null)
     {
         var wanted = WantedColumns(plan, shape.Selection);
         schema = DecodeSchema(plan, shape.Selection, schema);
         var all = !wanted.Contains(false);
         long skipped = 0, yielded = 0;
         var deleted = 0;
-        var runs = ChunkRuns(plan, rowIds);
+        var runs = only ?? ChunkRuns(plan, rowIds);
         var ordinals = runs.Select(run => run.Ordinal).ToArray();
         var whole = WholeChunkTest(plan);
         var filter = plan is null ? null : new ChunkFilter(plan, wanted, rowIds, rowIds is null ? null : runs.ToDictionary(run => run.Ordinal, run => (run.From, run.To)), _rowStart);
@@ -2496,6 +2555,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             while (runs[next].Ordinal != ordinal) next++;
             var (_, from, to) = runs[next];
             var start = _rowStart[ordinal];
+            if (only is not null) deleted = FirstDeletedAtOrAfter(start); // chunks given in any order (ReverseIterator)
             var count = rowIds is null ? _rowCount[ordinal] : to - from;
             for (var k = 0; k < count && yielded < limit; k++)
             {
@@ -2541,6 +2601,13 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             var remaining = rest.Length == 1 ? rest : rest.TakeWhile(_ => yielded < limit);
             foreach (var chunk in DecodeAhead(remaining, _types, all ? null : wanted, rampUp: limited, filter: filter, schema: schema)) yield return chunk;
         }
+    }
+
+    /// <summary>Where row ids from <paramref name="rowId"/> start in the deleted rows (sorted).</summary>
+    private int FirstDeletedAtOrAfter(long rowId)
+    {
+        var at = Array.BinarySearch(_deleted, rowId);
+        return at >= 0 ? at : ~at;
     }
 
     /// <summary>How many of these chunks (in order, every row matching) hold the next <paramref name="rows"/> live rows.</summary>
@@ -2786,7 +2853,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// from the chunk's decoded columns, with no row array.
     /// </summary>
     internal IEnumerable<T> TypedRows<T>(TypeMap map, JazminSerializerSettings? settings, JazminFilter? filter, Func<T, bool>? check = null,
-        long offset = 0, long? limit = null, IReadOnlyList<string>? select = null, IReadOnlyDictionary<string, JazminColumn>? trimmed = null)
+        long offset = 0, long? limit = null, IReadOnlyList<string>? select = null, IReadOnlyDictionary<string, JazminColumn>? trimmed = null, bool reverse = false)
     {
         bool[]? only = null;
         if (select is not null)
@@ -2796,7 +2863,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         }
         // The file's other columns would only be decoded to be ignored.
         select ??= map.Columns.Select(c => VisibleColumnName(c.Name)).OfType<string>().Distinct().ToList();
-        var rows = Find(filter, new JazminQueryOptions { Offset = offset, Limit = limit, Select = select, Trimmed = trimmed });
+        var rows = Find(filter, new JazminQueryOptions { Offset = offset, Limit = limit, Select = select, Trimmed = trimmed, Reverse = reverse });
         var direct = _access is null ? map.ColumnReader(_allColumns, only) : null;
         return Iterate();
 

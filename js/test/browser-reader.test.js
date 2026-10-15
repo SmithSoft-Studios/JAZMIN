@@ -452,3 +452,22 @@ test('locked files: the browser reader lists them and opens them as the library 
   assert.equal(new TextDecoder().decode(await other.readFile('p.txt')), 'password file');
   library.close();
 });
+
+test('reverse: the browser reader reads last first as the library does, in find, query and the query add-on', async () => {
+  const columns = [{ name: 'id', type: 'int' }, { name: 'at', type: 'datetime' }, { name: 'account', type: 'string', index: ['sorted'] }];
+  const rows = Array.from({ length: 3000 }, (_, i) => ({ id: i, at: new Date(Date.UTC(2026, 0, 1) + i * 60_000), account: `A${i % 23}` }));
+  const bytes = write(null, rows, { columns, sortedBy: ['at'], chunkRows: 200 });
+  const library = open(bytes);
+  const browser = await JazminBrowser.open(new Uint8Array(bytes));
+  const ids = (list) => list.map((r) => r.id);
+  for (const [filter, options] of [[null, { limit: 30 }], [null, { offset: 2500 }], [{ account: 'A4' }, { offset: 2, limit: 50 }], [{ id: { gte: 1000, lt: 1400 } }, {}]]) {
+    const got = [];
+    for await (const row of browser.find(filter, { ...options, reverse: true })) got.push(row.id);
+    assert.deepEqual(got, ids([...library.find(filter, { ...options, reverse: true })]), JSON.stringify([filter, options]));
+  }
+  assert.deepEqual(ids((await browser.query({ account: 'A4' }, { limit: 3, reverse: true, total: false })).rows), ids([...library.find({ account: 'A4' }, { limit: 3, reverse: true })]));
+  const query = JazminBrowser.from(browser).where((t) => t.account === 'A7').reverse().take(4);
+  assert.deepEqual(ids(await query.toArray()), ids([...library.find({ account: 'A7' }, { reverse: true, limit: 4 })]));
+  assert.equal(query.explain().reverse, true);
+  library.close();
+});
