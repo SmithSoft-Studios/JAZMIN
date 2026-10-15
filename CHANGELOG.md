@@ -4,6 +4,11 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **Progress and Stop for long reads (.NET, #184).** `JazminQueryOptions.Progress` (an `IProgress<JazminReadProgress>`:
+  `Done`, `Total`, `Matches` after each chunk) and `JazminQueryOptions.CancellationToken` (checked before each chunk, so
+  synchronous reads can be stopped too) for `Find`, `FindAsync` and `Explain(filter, true, options)`; `FindAsync`'s own
+  token now also stops a read inside a batch. New overloads `Count(filter, progress, cancellationToken)` and
+  `CountAsync(filter, progress, cancellationToken)`. Without them, reads take the same time as 1.6.2.
 - **Progress and Stop for long reads (JavaScript, #184).** `onProgress` (called after each chunk with `{ done, total,
   matches }`) and `signal` (an `AbortSignal`, checked before each chunk) on `count`, `find`, `findAsync`,
   `findBatchesAsync`, `columnArrays`, `explain({ analyze: true })` and the exports, as the browser reader has them.

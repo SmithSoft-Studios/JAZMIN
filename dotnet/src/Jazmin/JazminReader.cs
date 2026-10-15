@@ -71,8 +71,57 @@ public sealed class JazminQueryOptions
 
     public long? Limit { get; set; }
 
+    /// <summary>
+    /// Reports how far a long read has got, after each chunk it reads (none when no chunk needs reading): see
+    /// <see cref="JazminReadProgress"/>.
+    /// </summary>
+    public IProgress<JazminReadProgress>? Progress { get; set; }
+
+    /// <summary>
+    /// Stops the read before its next chunk, with an <see cref="OperationCanceledException"/>. Synchronous reads take it
+    /// here; the async methods also take one of their own.
+    /// </summary>
+    public CancellationToken CancellationToken { get; set; }
+
     /// <summary>LINQ: nested columns trimmed to the fields a query reads, by name (see QueryUsage).</summary>
     internal IReadOnlyDictionary<string, JazminColumn>? Trimmed { get; init; }
+}
+
+/// <summary>
+/// How far a long read has got, reported after each chunk: <paramref name="Done"/> chunks read of the
+/// <paramref name="Total"/> it plans to read, and <paramref name="Matches"/> matching rows so far. A limit can end a read
+/// before Done reaches Total.
+/// </summary>
+public readonly record struct JazminReadProgress(long Done, long Total, long Matches);
+
+/// <summary>
+/// Progress and stopping for one read: before each chunk is read, the chunks finished so far are reported and the token
+/// checked, so a stop takes effect before the next chunk.
+/// </summary>
+internal sealed class ReadWatch(IProgress<JazminReadProgress>? progress, CancellationToken cancellationToken, long total)
+{
+    private long _started;
+
+    /// <summary>Null when a read asks for neither: it then runs as before. A token already cancelled stops it now.</summary>
+    public static ReadWatch? For(IProgress<JazminReadProgress>? progress, CancellationToken cancellationToken, Func<long> total)
+    {
+        if (progress is null && !cancellationToken.CanBeCanceled) return null;
+        cancellationToken.ThrowIfCancellationRequested();
+        return new ReadWatch(progress, cancellationToken, progress is null ? 0 : total());
+    }
+
+    public void ChunkStarts(long matches)
+    {
+        if (_started > 0) progress?.Report(new JazminReadProgress(_started, total, matches));
+        cancellationToken.ThrowIfCancellationRequested();
+        _started++;
+    }
+
+    /// <summary>The last report, once the read is done or a limit ended it.</summary>
+    public void Done(long matches)
+    {
+        if (_started > 0) progress?.Report(new JazminReadProgress(_started, total, matches));
+    }
 }
 
 /// <summary>How a filter executes: via indexes (candidate rows) or a chunk scan (chunks skipped by statistics).</summary>
@@ -2107,7 +2156,18 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// so a request thread is never blocked by a long scan. Same rows, same order as Find.
     /// </summary>
     public IAsyncEnumerable<JazminRow> FindAsync(JazminFilter? filter, JazminQueryOptions? options = null, CancellationToken cancellationToken = default) =>
-        AsyncRows.Of(Find(filter, options), cancellationToken); // Find validates the filter now, not on the first await
+        AsyncRows.Of(Find(filter, WithToken(options, cancellationToken)), cancellationToken); // Find validates the filter now
+
+    /// <summary>The options with the async method's token, so it also stops the read inside a batch.</summary>
+    private static JazminQueryOptions? WithToken(JazminQueryOptions? options, CancellationToken cancellationToken)
+    {
+        if (!cancellationToken.CanBeCanceled || options?.CancellationToken.CanBeCanceled == true) return options;
+        return new JazminQueryOptions
+        {
+            Select = options?.Select, Offset = options?.Offset ?? 0, Limit = options?.Limit, Progress = options?.Progress,
+            CancellationToken = cancellationToken, Trimmed = options?.Trimmed,
+        };
+    }
 
     /// <summary>FindAsync with a filter in JSON ("where") form.</summary>
     public IAsyncEnumerable<JazminRow> FindAsync(string whereJson, JazminQueryOptions? options = null, CancellationToken cancellationToken = default) =>
@@ -2133,17 +2193,19 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         var schema = options?.Trimmed is { Count: > 0 } trimmed
             ? _allColumns.Select(c => trimmed.TryGetValue(c.Name, out var t) ? t : c).ToArray()
             : null;
-        return FindIterator(plan, shape, options?.Offset ?? 0, options?.Limit ?? long.MaxValue, schema);
+        return FindIterator(plan, shape, options?.Offset ?? 0, options?.Limit ?? long.MaxValue, schema, options);
     }
 
-    private IEnumerable<JazminRow> FindIterator(BoundFilter? plan, RowShape shape, long offset, long limit, JazminColumn[]? schema = null)
+    private IEnumerable<JazminRow> FindIterator(BoundFilter? plan, RowShape shape, long offset, long limit, JazminColumn[]? schema = null,
+        JazminQueryOptions? options = null)
     {
         long skipped = 0, yielded = 0;
         var rowIds = Candidates(plan);
+        var watch = ReadWatch.For(options?.Progress, options?.CancellationToken ?? default, () => PlannedChunks(plan, rowIds, offset));
         if (_access is null)
         {
             // Decode only the filter's and the selected columns, of the chunks the index candidates (or the scan) name.
-            foreach (var row in ScanColumns(plan, shape, offset, limit, rowIds, schema)) yield return row;
+            foreach (var row in ScanColumns(plan, shape, offset, limit, rowIds, schema, watch)) yield return row;
             yield break;
         }
         var wanted = WantedColumns(plan, shape.Selection); // only the filter's and the selected columns are decoded
@@ -2163,24 +2225,40 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         var whole = WholeChunkTest(plan);
         foreach (var (ordinal, from, to) in ChunkRuns(plan, rowIds))
         {
-            if (yielded >= limit) yield break;
+            if (yielded >= limit) break;
             if (rowIds is null && skipped < offset && offset - skipped >= LiveRows(ordinal) && whole(ordinal))
             {
                 skipped += LiveRows(ordinal); // every row matches and lies before the offset: no need to read it
                 continue;
             }
+            watch?.ChunkStarts(yielded);
             var rows = ChunkRows(ordinal, wanted);
             var start = _rowStart[ordinal];
             var count = rowIds is null ? rows.Length : to - from;
-            for (var k = 0; k < count; k++)
+            for (var k = 0; k < count && yielded < limit; k++)
             {
-                if (yielded >= limit) yield break;
                 var r = rowIds is null ? k : (int)(rowIds[from + k] - start);
                 if (!Accept(rows[r])) continue;
                 yielded++;
                 yield return new JazminRow(start + r, shape, rows[r]);
             }
         }
+        watch?.Done(yielded);
+    }
+
+    /// <summary>
+    /// The chunks a query plans to read, for progress: its chunk runs, less the leading chunks an offset skips whole
+    /// (every row matching, all before the offset).
+    /// </summary>
+    private long PlannedChunks(BoundFilter? plan, long[]? rowIds, long offset)
+    {
+        var runs = ChunkRuns(plan, rowIds);
+        if (offset <= 0 || rowIds is not null) return runs.Count;
+        var whole = WholeChunkTest(plan);
+        long skipped = 0;
+        var i = 0;
+        for (; i < runs.Count && offset - skipped >= LiveRows(runs[i].Ordinal) && whole(runs[i].Ordinal); i++) skipped += LiveRows(runs[i].Ordinal);
+        return runs.Count - i;
     }
 
     /// <summary>
@@ -2244,7 +2322,8 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// A query on a file with one column group: only the columns the filter and the selection use are decoded, and with
     /// index candidates (<paramref name="rowIds"/>) only their chunks are read and only their rows checked.
     /// </summary>
-    private IEnumerable<JazminRow> ScanColumns(BoundFilter? plan, RowShape shape, long offset, long limit, long[]? rowIds = null, JazminColumn[]? schema = null)
+    private IEnumerable<JazminRow> ScanColumns(BoundFilter? plan, RowShape shape, long offset, long limit, long[]? rowIds = null, JazminColumn[]? schema = null,
+        ReadWatch? watch = null)
     {
         var wanted = WantedColumns(plan, shape.Selection);
         schema = DecodeSchema(plan, shape.Selection, schema);
@@ -2258,13 +2337,14 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         var next = 0; // the run of the chunk being read (chunks come in order; some are skipped)
         foreach (var (ordinal, columns, matches, _) in Chunks())
         {
+            if (yielded >= limit) break;
+            watch?.ChunkStarts(yielded);
             while (runs[next].Ordinal != ordinal) next++;
             var (_, from, to) = runs[next];
             var start = _rowStart[ordinal];
             var count = rowIds is null ? _rowCount[ordinal] : to - from;
-            for (var k = 0; k < count; k++)
+            for (var k = 0; k < count && yielded < limit; k++)
             {
-                if (yielded >= limit) yield break;
                 var r = rowIds is null ? k : (int)(rowIds[from + k] - start);
                 var rowId = start + r;
                 while (deleted < _deleted.Length && _deleted[deleted] < rowId) deleted++;
@@ -2279,6 +2359,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 yield return new JazminRow(rowId, shape, columns, r); // points into the chunk: no copy per row
             }
         }
+        watch?.Done(yielded);
 
         // Chunks wholly before the offset are counted, not read. Until the offset is reached chunks are read one at a
         // time, since each one read decides whether the next can be skipped; then they are read ahead and decoded in
@@ -2322,21 +2403,47 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// chunks whose statistics prove every row matches are counted by their row counts without being read, and in the
     /// others only the filter's columns are decoded.
     /// </summary>
-    public long Count(JazminFilter? filter = null)
+    public long Count(JazminFilter? filter = null) => Count(filter, null);
+
+    /// <summary>
+    /// <see cref="Count(JazminFilter?)"/>, reporting each chunk it reads to <paramref name="progress"/> and stopping before
+    /// the next chunk when <paramref name="cancellationToken"/> is cancelled. A count that statistics or indexes answer
+    /// reads no chunk and reports nothing.
+    /// </summary>
+    public long Count(JazminFilter? filter, IProgress<JazminReadProgress>? progress, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var plan = Plan(filter);
         if (plan is null) return RowCount;
         var rowIds = Candidates(plan);
         if (rowIds is not null && FilterEngine.AnsweredExactly(plan)) return rowIds.Length - DeletedAmong(rowIds);
         var whole = WholeChunkTest(plan);
+        var all = ChunkRuns(plan, rowIds);
+        var watch = ReadWatch.For(progress, cancellationToken, () => all.Count);
         long n = 0;
         var runs = new List<(int Ordinal, int From, int To)>();
-        foreach (var run in ChunkRuns(plan, rowIds))
+        foreach (var run in all)
         {
-            if (rowIds is null && whole(run.Ordinal)) n += LiveRows(run.Ordinal);
+            if (rowIds is null && whole(run.Ordinal))
+            {
+                watch?.ChunkStarts(n); // counted from its row count, without reading it
+                n += LiveRows(run.Ordinal);
+            }
             else runs.Add(run);
         }
-        return n + CountMatches(plan, runs, rowIds);
+        n += CountMatches(plan, runs, rowIds, watch, n);
+        watch?.Done(n);
+        return n;
+    }
+
+    /// <summary>
+    /// Count for async code: the count runs on a thread-pool thread while you await, and stops before its next chunk when
+    /// the token is cancelled.
+    /// </summary>
+    public Task<long> CountAsync(JazminFilter? filter = null, IProgress<JazminReadProgress>? progress = null, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        return Task.Run(() => Count(filter, progress, cancellationToken), cancellationToken);
     }
 
     /// <summary>How many of these row ids (ascending) appends have deleted.</summary>
@@ -2355,7 +2462,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// Rows matching a filter in these chunk runs (see <see cref="ChunkRuns"/>), decoding only the filter's columns: read
     /// ahead and in parallel, as a scan reads them, in files without access control.
     /// </summary>
-    private long CountMatches(BoundFilter plan, List<(int Ordinal, int From, int To)> runs, long[]? rowIds)
+    private long CountMatches(BoundFilter plan, List<(int Ordinal, int From, int To)> runs, long[]? rowIds, ReadWatch? watch = null, long before = 0)
     {
         var wanted = WantedColumns(plan, []);
         long n = 0;
@@ -2363,6 +2470,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         {
             foreach (var (ordinal, from, to) in runs)
             {
+                watch?.ChunkStarts(before + n);
                 var rows = ChunkRows(ordinal, wanted);
                 var start = _rowStart[ordinal];
                 var count = rowIds is null ? rows.Length : to - from;
@@ -2375,6 +2483,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         var next = 0; // the run of the chunk being counted (chunks come in run order)
         foreach (var (ordinal, columns) in DecodeAhead(runs.Select(run => run.Ordinal), _types, wanted, schema: DecodeSchema(plan, [], null)))
         {
+            watch?.ChunkStarts(before + n);
             while (runs[next].Ordinal != ordinal) next++;
             var (_, from, to) = runs[next];
             var start = _rowStart[ordinal];
