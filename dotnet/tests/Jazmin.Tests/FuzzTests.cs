@@ -237,6 +237,29 @@ internal static class Fuzzing
         {
             File.Delete(path);
         }
+        // 1.7: an order with other text comparisons (the catalog's sort, spec 6.7), and the package's newer settings
+        // (online, keyService, masks), which every reader that opens the file reads (as js/test/fuzz-helpers.js).
+        var sorted = Path.Combine(Path.GetTempPath(), $"jazmin-fuzz-{Guid.NewGuid():N}.jzm");
+        try
+        {
+            File.WriteAllBytes(sorted, Write(120, JazminCodec.None, files: true));
+            JazminFile.Update(sorted, new JazminUpdate
+            {
+                Sort = [new JazminSortKey("name") { NoCase = true, Natural = true }, new JazminSortKey("id")],
+                Codec = JazminCodec.None, ChunkRows = 16,
+                Package = new JazminPackage
+                {
+                    Entry = "index.html", Title = "Fuzz", AllowedOrigins = ["https://cdn.example.com"], Online = JazminOnline.Required,
+                    KeyService = "https://keys.example.com/unlock",
+                    Masks = new Dictionary<string, JazminMaskView> { ["name"] = new() { Reveal = JazminMaskReveal.Column, Seconds = 10, WhenHidden = false, IdleSeconds = 0 } },
+                },
+            });
+            files.Add(File.ReadAllBytes(sorted));
+        }
+        finally
+        {
+            File.Delete(sorted);
+        }
         foreach (var name in new[] { "js-plain.jzm", "js-brotli.jzm", "js-appended.jzm" }) files.Add(File.ReadAllBytes(Path.Combine(Fixtures, name)));
         return files;
     }
@@ -427,6 +450,7 @@ internal static class Fuzzing
             _ = r.Metadata;
             _ = r.Indexes;
             _ = r.SortedBy;
+            _ = r.Sort;
             _ = r.Package;
             var corpusColumns = r.Columns.Select(c => c.Name).SequenceEqual(Columns.Select(c => c.Name));
             var nestedColumns = r.Columns.Select(c => c.Name).SequenceEqual(Columns.Concat(NestedColumns).Select(c => c.Name));
@@ -437,6 +461,7 @@ internal static class Fuzzing
                 {
                     r.Explain(filter);
                     foreach (var row in r.Find(filter, new JazminQueryOptions { Limit = 40 })) Touch(row);
+                    foreach (var row in r.Find(filter, new JazminQueryOptions { Limit = 20, Reverse = true })) Touch(row); // last first (1.7)
                     if (filter is not null) r.Count(filter);
                 }, strict);
             }

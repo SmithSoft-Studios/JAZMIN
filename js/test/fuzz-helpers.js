@@ -4,7 +4,7 @@
 // Whole files: plain (unencrypted) files are damaged section by section, and each damaged section gets a correct
 // CRC-32 again, so the damage reaches the decoders instead of stopping at the checksum. Encrypted files would only
 // exercise the authenticated decryption; their decoders are the same, and are also fuzzed directly.
-import { append, JazminError, open, toJSON, write } from '../src/index.js';
+import { append, JazminError, open, toJSON, update, write } from '../src/index.js';
 import { crc32 } from '../src/binary.js';
 import {
   decodeChunkDirectoryLists, decodeChunkMap, decodeColumnDefinitions, decodeDelta, decodeHeader, decodeIndexDirectory, decodeOwnerCatalog, joinChunkMaps,
@@ -103,6 +103,18 @@ export function corpus() {
   write(file, rows.slice(0, 80), { ...base, codec: 'none' });
   append(file, { insert: rows.slice(80), delete: { id: { lt: 10 } }, codec: 'none', chunkRows: 16 });
   files.push(fs.readFileSync(file));
+  // 1.7: an order with other text comparisons (the catalog's sort, spec 6.7), and the package's newer settings (online,
+  // keyService, masks), which every reader that opens the file reads.
+  const sorted = path.join(dir, 'sorted.jzm');
+  write(sorted, rows, {
+    ...base, codec: 'none', files: [{ path: 'index.html', content: '<p>x</p>' }],
+    package: {
+      entry: 'index.html', title: 'Fuzz', allowedOrigins: ['https://cdn.example.com'], online: 'required',
+      keyService: 'https://keys.example.com/unlock', masks: { name: { reveal: 'column', seconds: 10, whenHidden: false, idleSeconds: 0 } },
+    },
+  });
+  update(sorted, { sortedBy: [{ column: 'name', nocase: true, natural: true }, 'id'], codec: 'none', chunkRows: 16 });
+  files.push(fs.readFileSync(sorted));
   fs.rmSync(dir, { recursive: true, force: true });
   return files;
 }
@@ -207,6 +219,7 @@ export function exercise(buf) {
       void r.metadata;
       void r.indexes;
       void r.sortedBy;
+      void r.sort;
       void r.package;
       const n = r.rowCount;
       for (const filter of FILTERS) {
@@ -214,6 +227,7 @@ export function exercise(buf) {
           r.explain(filter);
           let k = 0;
           for (const x of r.find(filter, { limit: 40 })) if (x && ++k > 40) break;
+          for (const x of r.find(filter, { limit: 20, reverse: true })) if (x && ++k > 60) break; // last first (1.7)
         } catch (error) {
           if (!(error instanceof JazminError)) throw error;
         }
