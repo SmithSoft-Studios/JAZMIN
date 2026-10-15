@@ -2769,6 +2769,39 @@ export class JazminReader {
     return { ...this.#describe(filter), ...cost };
   }
 
+  /**
+   * What a read would cost, known before it starts: from directories, chunk statistics and indexes only, no rows read.
+   * `chunks`, `rows` and `bytes` are what find() reads at most (a limit can end it sooner; chunks an `offset` skips
+   * whole are left out); `countChunks`, `countRows` and `countBytes` what count() reads (0 when indexes or chunk
+   * statistics answer it). `bytes` are the chunks' stored bytes, before decompressing.
+   */
+  estimate(filter, { offset = 0 } = {}) {
+    const plan = this.#plan(filter);
+    const rowIds = this.#candidates(plan);
+    const whole = this.#wholeChunkTest(plan);
+    const counted = !plan || (rowIds !== null && answeredExactly(plan)); // count() needs no chunk
+    const result = { chunks: 0, rows: 0, bytes: 0, countChunks: 0, countRows: 0, countBytes: 0 };
+    let skipped = 0;
+    for (const { ordinal, from, to } of this.#chunkRuns(plan, rowIds)) {
+      const live = this.#liveRows(ordinal);
+      const rows = rowIds === null ? live : to - from;
+      const { length } = this.#span(ordinal);
+      // As #plannedChunks: leading chunks an offset skips whole are counted, not read.
+      if (!result.chunks && rowIds === null && offset - skipped >= live && whole(ordinal)) skipped += live;
+      else {
+        result.chunks++;
+        result.rows += rows;
+        result.bytes += length;
+      }
+      if (!counted && !(rowIds === null && whole(ordinal))) {
+        result.countChunks++;
+        result.countRows += rows;
+        result.countBytes += length;
+      }
+    }
+    return result;
+  }
+
   #describe(filter) {
     const plan = this.#plan(filter);
     const ids = this.#candidates(plan);

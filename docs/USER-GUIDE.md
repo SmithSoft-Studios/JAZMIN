@@ -1218,6 +1218,26 @@ Console.WriteLine($"{plan.Strategy}: {plan.Cost!.Rows} rows, {plan.Cost.BytesRea
   - use smaller chunks (`chunkRows`);
   - or add an index.
 
+**Before a query runs: `estimate()`** (1.7). It says what a read would cost without reading a row, from the chunk
+directories, statistics and indexes: `chunks`, `rows` and `bytes` that `find()` reads at most (a `limit` can end it
+sooner), and `countChunks`, `countRows` and `countBytes` that `count()` reads, 0 when indexes or statistics answer it.
+A program can warn before a slow query, or ask first, as JAZMIN Scout does. On the from-disk demo's 1,000,000
+transactions (sorted by date, indexed by account):
+
+```js
+reader.estimate({ city: 'Durban' });         // no index: { chunks: 245, rows: 1000000, bytes: 8337930, countChunks: 245, ... }
+reader.estimate({ account: 'ACC-1042' });    // an index: { chunks: 244, rows: 2053, ..., countChunks: 0, countRows: 0, countBytes: 0 }
+reader.estimate({ date: { gte: '2026-12-01T00:00:00Z' } });   // the sort order: { chunks: 22, rows: 86592, ..., countChunks: 1 }
+```
+
+```csharp
+var estimate = reader.Estimate(JazminFilter.Eq("city", "Durban"));   // JazminReadEstimate(Chunks: 245, Rows: 1000000, ...)
+```
+
+The count of `city` then took 107 ms; the other two counts 0 and 2 ms. Estimating took under 7 ms. One case costs
+more: a range an index answers with millions of rows (`id >= 20,000,000` of 25,000,000) took about 1 s, because the
+reader lists the index's rows to plan the read, as the read itself does.
+
 ### 9.7 Paging
 
 `offset` and `limit` page through results. A chunk that lies wholly before the

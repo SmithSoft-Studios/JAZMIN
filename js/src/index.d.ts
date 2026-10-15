@@ -464,6 +464,16 @@ export type Filter = {
   not?: Filter;
 } & { [column: string]: Condition | string | number | bigint | boolean | Date | null | Filter[] | Filter | undefined };
 
+/** What a read would cost (reader.estimate()): chunks, rows and stored bytes find() and count() read. */
+export interface ReadEstimate {
+  chunks: number;
+  rows: number;
+  bytes: number;
+  countChunks: number;
+  countRows: number;
+  countBytes: number;
+}
+
 /** Progress of a long read, reported after each chunk: chunks finished and planned, and matching rows so far. */
 export interface ReadProgress {
   done: number;
@@ -928,6 +938,11 @@ export class JazminReader implements Iterable<JazminRow> {
    */
   explain(filter: Filter, options: QueryOptions & { analyze: true }): QueryPlan & QueryCost;
   explain(filter: Filter, options?: QueryOptions & { analyze?: boolean }): QueryPlan | (QueryPlan & QueryCost);
+  /**
+   * What a read would cost, known before it starts (no rows are read): chunks, rows and stored bytes find() reads at
+   * most, and those count() reads (0 when indexes or chunk statistics answer it).
+   */
+  estimate(filter?: Filter | null, options?: { offset?: number }): ReadEstimate;
   close(): void;
   [Symbol.iterator](): Iterator<JazminRow>;
 }
