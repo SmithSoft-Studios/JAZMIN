@@ -1,10 +1,8 @@
 # Masked values: columns shown masked until a password or 2FA
 
-Status: **proposed** (2026-10-15), for the owner's review. Decided already (2026-10-15, #190): whole columns first,
-with the format ready for single values; a masked value shows `••••` and, if the owner chooses, a part of it, kept as a
-separate ordinary column that can be sorted and indexed; the owner sets how long a revealed value shows (default 30 s,
-or off); free in the libraries and the viewer like locks (the editor in Scout Pro); in 1.7.0. This note proposes the
-rest and lists what is still the owner's to decide (at the end).
+Status: **decided** (owner, 2026-10-15, #190): everything below, with the four recommendations at the end adopted
+(all five shown-part options; the bystander defaults; viewer reveal reports, opt-in by the page; masked rows in 1.7 in
+the format and the viewers). **Specified:** spec 7.6.8. In 1.7.0.
 
 ## The idea in plain words
 
@@ -27,9 +25,10 @@ Today a shared file's columns are in **column groups**, each encrypted with its 
 secret (in its key slot, spec 7.6.4) or doesn't. A **masked column** is a column in a group of its own whose secret,
 in each key slot that grants it, is **sealed under a lock** instead of given as it is:
 
-- The slot's bundle gets `maskedColumns: { "<group>": { "lock": "<id>", "sealed": "<b64>" } }` and the lock's
-  `{ kind, salt, iterations, keyService }`, the same locks as 6.8.1 (one password or 2FA check can open masked columns
-  and locked files together). `sealed` is the group secret under the lock key, as file keys are.
+- The slot's bundle gets `masks` (spec 7.6.8: the exact format): the lock's `{ kind, salt, iterations, keyService }`,
+  the same locks as 6.8.1 (one password or 2FA check can open masked columns and locked files together), and for the
+  group its secret sealed under the lock key, as file keys are, with the column's position, name, type and its shown
+  and unmasked columns, so a key can list the column before it is unlocked.
 - **Older readers** (1.0–1.6) ignore the bundle member they don't know: to them the masked column is a column their key
   doesn't see, which is hidden. They never show a masked value and never fail.
 - The **owner** holds every lock (as for files), so the owner reads, rewrites and changes masked columns normally.
