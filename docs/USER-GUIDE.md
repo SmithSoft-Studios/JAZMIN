@@ -2299,6 +2299,61 @@ README has the full figures.
 waiting in a folder, then compacts the shared file. Run it on a schedule where
 the owner key is kept. Writing these files in a browser is section 24.3.
 
+### 15.7 Masked columns: a password or 2FA as well as the key
+
+A column of a shared file can be **masked** (1.7, spec 7.6.8): a key granted it
+sees that the column is there and what the owner lets it show (`••••4821`),
+but not its values, until it unlocks the column with a password, an unlock
+token from your key service (2FA), or both: the same **locks** as stored
+files (section 19.6), so one unlock can open masked columns and locked files
+together.
+
+```js
+write('staff.jzm', rows, {
+  key: owner, access: { partitionBy: 'dept', grants },
+  columns: [
+    { name: 'id', type: 'int' }, { name: 'dept', type: 'string' }, { name: 'name', type: 'string' }, { name: 'grade', type: 'string' },
+    { name: 'account', type: 'string', mask: { lock: 'pay', show: { keepFormat: true, last: 4 } } },  // •••• •••• •••• 4821
+    { name: 'salary', type: 'decimal', mask: { lock: 'hr', rows: { grade: { gte: 'M1' } } } },        // only managers' rows
+  ],
+  locks: { pay: { password: 'correct horse battery staple' }, hr: { online: true } },
+  package: { masks: { salary: { reveal: 'value', seconds: 30 } } },     // how viewers show revealed values
+});
+
+const reader = open('staff.jzm', { key: accessKey });
+reader.masked;               // [{ column: 'account', lock: { id: 'pay', kind: 'password', unlocked: false }, shown: 'account_shown' }, ...]
+reader.columns;              // ..., account_shown, salary_unmasked: the masked columns aren't there yet
+reader.unlock('pay', { password: 'correct horse battery staple' });   // now rows have account
+```
+
+- **What a masked value shows** (`show`): `'none'` (the default), `{ last: 4 }`
+  (`••••4821`), `{ first: 2, last: 2 }` (`48••••21`), `{ keepFormat: true,
+  last: 4 }` (spaces and dashes kept, `•••• •••• •••• 4821`; an email keeps
+  its domain, `t•••••@example.com`), or `{ column: 'label' }`, a column you
+  fill (`Visa ending 4821`, `R40k–R50k`). The writer makes the shown values
+  in `<column>_shown`, an ordinary column you can filter, sort and index.
+- **Masking only some rows** (`rows`, a filter): the other rows' values go to
+  `<column>_unmasked`, which every key granted the table sees. Viewers show
+  the two as one column. A filter on one doesn't see the other's values.
+- **Grants:** a masked column is in a column group of its own, `mask.<column>`.
+  A grant of every column (`columns: '*'`) includes it, masked; a grant that
+  lists groups gets it only if it lists that group.
+- **The owner** sees every value. `update()`, `compact()` and `append()` keep
+  the masks, make the shown values of new rows, and put new rows in the
+  masked or the unmasked column by `rows`.
+- **Viewers** (the web viewer, Scout) show a revealed value for a while and
+  mask it again: by default one value at a time, for 30 seconds, and as soon
+  as the window is hidden or there is no input for 60 seconds. The file's
+  `package.masks` changes that per column (`reveal: 'column'`, `seconds: 0`
+  for as long as it is unlocked, `whenHidden`, `idleSeconds`). This is about
+  people walking away from an open screen: a value once on screen can be
+  copied.
+- **Older libraries** (1.0-1.6) read the file and don't show the masked
+  columns at all (the shown and unmasked columns are ordinary columns). Don't
+  rewrite or append to it with them: they would drop the masks, and keys
+  would lose the masked columns (never get them unmasked); the owner keeps the
+  values.
+
 ## 16. Updating files
 
 JAZMIN files are written once and **updated by rewriting**:

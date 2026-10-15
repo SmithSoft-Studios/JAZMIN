@@ -1,0 +1,173 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { test } from 'node:test';
+import { JazminKey, JazminKeyError, append, compact, issueFileUnlockToken, open, update, write } from '../src/index.js';
+import { shownText } from '../src/masks.js';
+
+// Masked columns (spec 7.6.8): a column shown masked until its lock opens, with a shown column made by a rule and,
+// for masked rows only, an unmasked column.
+
+const ITERATIONS = 1000;
+const tmpDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-masks-'));
+const rows = [
+  { id: 1, dept: 'A', name: 'Ann', account: '4821 0393 7712 4821', email: 'thandi@example.com', salary: '52000.00' },
+  { id: 2, dept: 'A', name: 'Ben', account: '1111 2222 3333 4444', email: 'ben@example.org', salary: '61000.50' },
+  { id: 3, dept: 'B', name: 'Cas', account: '9', email: null, salary: null },
+];
+const columns = [
+  { name: 'id', type: 'int' }, { name: 'dept', type: 'string' }, { name: 'name', type: 'string' },
+  { name: 'account', type: 'string', mask: { lock: 'pay', show: { keepFormat: true, last: 4 } } },
+  { name: 'email', type: 'string', mask: { lock: 'pay', show: { keepFormat: true } } },
+  { name: 'salary', type: 'decimal', mask: { lock: 'hr', rows: { id: { gte: 2 } } } },
+];
+
+function staffFile(file = path.join(tmpDir(), 'staff.jzm')) {
+  const owner = JazminKey.generate();
+  const keys = { staff: owner.createAccessKey(), deptB: owner.createAccessKey(), noMask: owner.createAccessKey() };
+  write(file, rows, {
+    columns, key: owner, access: {
+      partitionBy: 'dept',
+      grants: [{ key: keys.staff, rows: '*' }, { key: keys.deptB, rows: ['B'] }, { key: keys.noMask, rows: '*', columns: ['*'] }],
+    },
+    locks: { pay: { password: 'pw', iterations: ITERATIONS }, hr: { online: true } },
+  });
+  return { owner, keys, file };
+}
+
+const asKey = (file, key) => open(fs.readFileSync(file), { key: key.toString(), accessState: false });
+
+test('what a masked value shows, by each rule', () => {
+  assert.equal(shownText({ kind: 'last', last: 4 }, '4821 0393 7712 4821'), '••••4821');
+  assert.equal(shownText({ kind: 'last', last: 4 }, '482'), '••••', 'too short to show any of it');
+  assert.equal(shownText({ kind: 'firstLast', first: 2, last: 2 }, '8501015009087'), '85••••87');
+  assert.equal(shownText({ kind: 'keepFormat', last: 4 }, '4821 0393-7712 4821'), '•••• ••••-•••• 4821');
+  assert.equal(shownText({ kind: 'keepFormat', last: 4 }, 'thandi@example.com'), 't•••••@example.com', 'an email keeps its domain');
+  assert.equal(shownText({ kind: 'last', last: 2 }, '61000.50'), '••••50');
+  assert.equal(shownText({ kind: 'last', last: 4 }, null), null);
+});
+
+test('a key granted a masked column sees it masked, with its shown and unmasked columns, until it unlocks', () => {
+  const { keys, file, owner } = staffFile();
+  const r = asKey(file, keys.staff);
+  assert.deepEqual(r.columns.map((c) => c.name), ['id', 'dept', 'name', 'account_shown', 'email_shown', 'salary_unmasked']);
+  assert.deepEqual(r.masked.map((m) => [m.column, m.type, m.group, m.lock.id, m.lock.kind, m.lock.unlocked, m.shown ?? null, m.unmasked ?? null]), [
+    ['account', 'string', 'mask.account', 'pay', 'password', false, 'account_shown', null],
+    ['email', 'string', 'mask.email', 'pay', 'password', false, 'email_shown', null],
+    ['salary', 'decimal', 'mask.salary', 'hr', 'online', false, null, 'salary_unmasked'],
+  ]);
+  assert.deepEqual([...r.rows()].map((x) => [x.account_shown, x.email_shown, x.salary_unmasked]), [
+    ['•••• •••• •••• 4821', 't•••••@example.com', '52000.00'], ['•••• •••• •••• 4444', 'b••@example.org', null], ['9', null, null],
+  ]);
+  assert.throws(() => [...r.find({ account: '9' })], /account/, 'a filter on a masked column fails as for a hidden one');
+  assert.throws(() => r.unlock('pay', { password: 'nope' }), JazminKeyError);
+  r.unlock('pay', { password: 'pw' });
+  assert.deepEqual([...r.find({ account: '9' })].map((x) => x.id), [3], 'unlocked, it is a column like any other');
+  assert.deepEqual(r.masked.map((m) => m.lock.unlocked), [true, true, false]);
+  assert.ok(!r.columns.some((c) => c.name === 'salary'), 'its own lock still shuts salary');
+  r.unlock('hr', { unlockToken: issueFileUnlockToken(file, owner, 'hr') });
+  assert.deepEqual([...r.rows()].map((x) => [x.salary, x.salary_unmasked]), [[null, '52000.00'], ['61000.50', null], [null, null]]);
+  // Another table reader of the same file is built again too.
+  r.close();
+});
+
+test('masks are per grant and per partition; a grant without the masked group never sees it', () => {
+  const { keys, file } = staffFile();
+  const b = asKey(file, keys.deptB);
+  assert.deepEqual([...b.rows()].map((x) => x.id), [3]);
+  b.unlock('pay', { password: 'pw' });
+  assert.deepEqual([...b.rows()].map((x) => x.account), ['9']);
+  b.close();
+  const owner = JazminKey.generate();
+  const reader = owner.createAccessKey();
+  const narrow = write(null, rows, {
+    columns, key: owner, access: { columnGroups: { contact: ['name'] }, grants: [{ key: reader, columns: ['contact'] }] },
+    locks: { pay: { password: 'pw', iterations: ITERATIONS }, hr: { online: true } },
+  });
+  const n = open(narrow, { key: reader.toString(), accessState: false });
+  assert.deepEqual(n.masked, [], 'not granted the masked groups');
+  n.close();
+});
+
+test('the owner sees everything; rewrites and appends keep the masks; new rows follow the rows filter', () => {
+  const { keys, file, owner } = staffFile();
+  const o = open(file, { key: owner });
+  assert.deepEqual(o.masked.map((m) => [m.column, m.lock.unlocked]), [['account', true], ['email', true], ['salary', true]]);
+  assert.equal([...o.rows()][1].salary, '61000.50');
+  assert.deepEqual(o.writerFeatures.sort(), ['file-locks', 'masked-columns']);
+  assert.deepEqual(o.readerFeatures, [], 'no reader feature: older readers read the file, the masked columns hidden');
+  o.close();
+  const check = (when, expected) => {
+    const r = asKey(file, keys.staff);
+    assert.equal(r.masked.length, 3, when);
+    r.unlock('pay', { password: 'pw' });
+    assert.deepEqual([...r.rows()].map((x) => [x.id, x.account, x.account_shown, x.salary_unmasked]), expected, when);
+    r.close();
+  };
+  const before = [[1, '4821 0393 7712 4821', '•••• •••• •••• 4821', '52000.00'], [2, '1111 2222 3333 4444', '•••• •••• •••• 4444', null], [3, '9', '9', null]];
+  check('written', before);
+  compact(file, { key: owner });
+  check('compacted', before);
+  update(file, { key: owner, insert: [{ id: 0, dept: 'A', name: 'Dee', account: '7777 8888', salary: '1.00' }] });
+  check('updated', [...before, [0, '7777 8888', '•••• 8888', '1.00']]);
+  append(file, { key: owner, insert: [{ id: 9, dept: 'B', name: 'Eve', account: '1234 5678', salary: '2.00' }] });
+  check('appended', [...before, [0, '7777 8888', '•••• 8888', '1.00'], [9, '1234 5678', '•••• 5678', null]]);
+});
+
+test('masks are checked', () => {
+  const owner = JazminKey.generate();
+  const access = { grants: [{ key: owner.createAccessKey() }] };
+  const base = { key: owner, access, locks: { pay: { password: 'pw', iterations: ITERATIONS } } };
+  const col = (mask) => [{ name: 'id', type: 'int' }, { name: 'account', type: 'string', mask }];
+  assert.throws(() => write(null, [], { columns: col({ lock: 'pay' }), key: owner }), /masked columns need an access-controlled file/);
+  assert.throws(() => write(null, [], { ...base, columns: col({ lock: 'nope' }) }), /Column 'account': mask: no lock 'nope' \(locks: pay\)/);
+  assert.throws(() => write(null, [], { ...base, columns: col({}) }), /needs the lock that opens it/);
+  assert.throws(() => write(null, [], { ...base, columns: col({ lock: 'pay', show: { last: 99 } }) }), /show.last must be a whole number from 0 to 64/);
+  assert.throws(() => write(null, [], { ...base, columns: col({ lock: 'pay', show: { column: 'label' } }) }), /show.column 'label' is not a column/);
+  assert.throws(() => write(null, [], { ...base, columns: col({ lock: 'pay', hide: true }) }), /unknown option 'hide'/);
+  assert.throws(() => write(null, [], { ...base, columns: [...col({ lock: 'pay', show: { last: 4 } }), { name: 'account_shown', type: 'string' }] }),
+    /a column 'account_shown' is there already/);
+  assert.throws(() => write(null, [], { ...base, access: { ...access, columnGroups: { money: ['account'] } }, columns: col({ lock: 'pay' }) }), /in two column groups/);
+  assert.throws(() => write(null, [], { ...base, columns: col({ lock: 'pay' }), locks: { pay: null } }), /no lock 'pay' to remove|no lock 'pay'/);
+  // A shown column the owner fills: no rule, the values as given.
+  const own = write(null, [{ id: 1, account: '12345', label: 'Savings ending 45' }], {
+    ...base, columns: [...col({ lock: 'pay', show: { column: 'label' } }), { name: 'label', type: 'string' }],
+  });
+  const r = open(own, { key: access.grants[0].key.toString(), accessState: false });
+  assert.deepEqual([...r.rows()], [{ id: 1, label: 'Savings ending 45' }]);
+  assert.equal(r.masked[0].shown, 'label');
+  r.close();
+});
+
+test("an unlock reaches the readers of the file's other tables, opened before it", () => {
+  const owner = JazminKey.generate();
+  const key = owner.createAccessKey();
+  const file = write(null, { notes: [{ n: 1 }], people: rows }, {
+    tables: [{ name: 'notes', columns: [{ name: 'n', type: 'int' }] }, { name: 'people', columns }],
+    key: owner, access: { grants: [{ key }] },
+    locks: { pay: { password: 'pw', iterations: ITERATIONS }, hr: { online: true } },
+  });
+  const notes = open(file, { key: key.toString(), accessState: false });
+  const people = notes.openTable('people');
+  assert.deepEqual(notes.masked, []);
+  assert.equal(people.masked.length, 3);
+  assert.ok(!people.columns.some((c) => c.name === 'account'));
+  notes.unlock('pay', { password: 'pw' });
+  assert.deepEqual([...people.rows()].map((x) => x.account), ['4821 0393 7712 4821', '1111 2222 3333 4444', '9']);
+  people.close();
+  notes.close();
+});
+
+test('the package says how viewers show revealed values, by column; checked', () => {
+  const owner = JazminKey.generate();
+  const base = {
+    columns, key: owner, access: { grants: [{ key: owner.createAccessKey() }] },
+    locks: { pay: { password: 'pw', iterations: ITERATIONS }, hr: { online: true } }, files: [{ path: 'index.html', content: '<p>Staff</p>' }],
+  };
+  const bytes = write(null, rows, { ...base, package: { entry: 'index.html', masks: { salary: { reveal: 'column', seconds: 0, whenHidden: true, idleSeconds: 120 } } } });
+  assert.deepEqual(open(bytes, { key: owner }).package.masks, { salary: { reveal: 'column', seconds: 0, whenHidden: true, idleSeconds: 120 } });
+  assert.throws(() => write(null, rows, { ...base, package: { masks: { salary: { reveal: 'all' } } } }), /package.masks.salary.reveal: 'value' or 'column'/);
+  assert.throws(() => write(null, rows, { ...base, package: { masks: { salary: { seconds: -1 } } } }), /a whole number of seconds from 0 to 86400/);
+  assert.throws(() => write(null, rows, { ...base, package: { masks: { salary: { blur: true } } } }), /unknown setting 'blur'/);
+});

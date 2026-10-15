@@ -36,6 +36,18 @@ export function openContentKey(lockKeyBytes, lockId, contentId, sealed) {
   return decrypt(lockKeyBytes, sealed, sealAad(lockId, contentId));
 }
 
+const groupAad = (id, group) => Buffer.from(`JAZMIN/1/lock/${id}/column-group/${group}`, 'utf8');
+
+/** A masked column group's secret sealed under a lock's key (spec 7.6.8). */
+export function sealGroupSecret(lock, group, secret) {
+  return encrypt(lock.key, secret, groupAad(lock.id, group));
+}
+
+/** A masked column group's secret from its sealed form; throws JazminKeyError when the lock key is wrong. */
+export function openGroupSecret(lockKeyBytes, lockId, group, sealed) {
+  return decrypt(lockKeyBytes, sealed, groupAad(lockId, group));
+}
+
 const checksum = (bytes) => crypto.createHash('sha256').update(bytes).digest().subarray(0, CHECKSUM_SIZE);
 
 /** An online lock's secret as the key service hands it out: "jzf1-" + base64url(S || SHA-256(S)[0..3]). */

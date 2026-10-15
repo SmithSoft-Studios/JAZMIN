@@ -20,6 +20,8 @@ export interface JazminColumnInput {
   type: JazminType;
   /** Default true. */
   nullable?: boolean;
+  /** Shared files: shown masked until its lock opens (1.7, spec 7.6.8). */
+  mask?: MaskOptions;
   description?: string;
   /** Free-form details (units, format hints, max length...). */
   attributes?: Record<string, JsonValue>;
@@ -217,6 +219,43 @@ export interface PackageSettings {
   edit?: EditSettings;
   /** The owner's key service for the file's online locks (1.7, spec 6.8.2): an https address viewers sign in at. */
   keyService?: string;
+  /** How viewers show masked columns' revealed values, by column (1.7, spec 7.6.8). */
+  masks?: Record<string, MaskViewSettings>;
+}
+
+/** How viewers show a masked column's revealed values (defaults: 'value', 30, true, 60). */
+export interface MaskViewSettings {
+  /** One value at a time, or the whole column. */
+  reveal?: 'value' | 'column';
+  /** How long a revealed value shows; 0: while unlocked. */
+  seconds?: number;
+  /** Mask again when the viewer's window is hidden or loses focus. */
+  whenHidden?: boolean;
+  /** Mask again after this long without input; 0: never. */
+  idleSeconds?: number;
+}
+
+/**
+ * A masked column (1.7, spec 7.6.8): shown masked to keys granted it until its lock opens. Shared files only. show:
+ * what a masked value shows ('none', the last characters, the first and last, the format kept, or a column the owner
+ * fills); rows: a filter of the rows to mask (the others' values go to an unmasked column).
+ */
+export interface MaskOptions {
+  lock: string;
+  show?: 'none' | { last: number } | { first: number; last?: number } | { keepFormat: true; last?: number } | { column: string };
+  rows?: Filter;
+}
+
+/** A masked column as a reader lists it. Until its lock is unlocked it isn't in columns or rows. */
+export interface MaskedColumn {
+  column: string;
+  type: string;
+  group: string;
+  lock: LockInfo;
+  /** The column with what its values show. */
+  shown?: string;
+  /** The column with its values in the rows that aren't masked. */
+  unmasked?: string;
 }
 
 /** What a file's document may change: rows of one table, by their key. */
@@ -974,6 +1013,8 @@ export class JazminReader implements Iterable<JazminRow> {
   readonly shapes: SavedShape[];
   /** Locks of the stored files this key can see (1.7). */
   readonly locks: LockInfo[];
+  /** This table's masked columns (1.7, spec 7.6.8); unlock() with their lock adds them to columns and rows. */
+  readonly masked: MaskedColumn[];
   /**
    * Opens a lock for as long as the reader is open: { password }, { unlockToken } (from the file owner's key service), or
    * both, as its kind needs. Throws JazminKeyError when they are wrong.

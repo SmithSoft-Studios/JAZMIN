@@ -129,6 +129,32 @@ export function checkKeyService(value, where) {
   return address;
 }
 
+const MASK_SETTINGS = { reveal: ['value', 'column'], seconds: 'count', whenHidden: 'bool', idleSeconds: 'count' };
+
+/**
+ * How viewers show masked columns' revealed values (spec 7.6.8), by column: { reveal: 'value' | 'column', seconds,
+ * whenHidden, idleSeconds } (seconds and idleSeconds 0 to 86400; 0: no time limit).
+ */
+function normalizeMaskSettings(masks) {
+  if (masks === null || typeof masks !== 'object' || Array.isArray(masks)) throw new JazminValidationError('package.masks: { column: { reveal, seconds, whenHidden, idleSeconds } }');
+  const out = {};
+  for (const [column, given] of Object.entries(masks)) {
+    const where = `package.masks.${column}`;
+    if (given === null || typeof given !== 'object' || Array.isArray(given)) throw new JazminValidationError(`${where} must be an object`);
+    const settings = {};
+    for (const [name, value] of Object.entries(given)) {
+      const kind = MASK_SETTINGS[name];
+      if (!kind) throw new JazminValidationError(`${where}: unknown setting '${name}' (reveal, seconds, whenHidden, idleSeconds)`);
+      if (Array.isArray(kind) ? !kind.includes(value) : kind === 'bool' ? typeof value !== 'boolean' : !(Number.isInteger(value) && value >= 0 && value <= 86400)) {
+        throw new JazminValidationError(`${where}.${name}: ${Array.isArray(kind) ? kind.map((k) => `'${k}'`).join(' or ') : kind === 'bool' ? 'true or false' : 'a whole number of seconds from 0 to 86400'}`);
+      }
+      settings[name] = value;
+    }
+    out[column] = settings;
+  }
+  return out;
+}
+
 export function normalizePackage(settings, paths) {
   if (settings === undefined || settings === null) return undefined;
   if (typeof settings !== 'object' || Array.isArray(settings)) throw new JazminValidationError('package must be an object');
@@ -156,6 +182,7 @@ export function normalizePackage(settings, paths) {
   if (settings.edit !== undefined) out.edit = normalizeEdit(settings.edit);
   // The owner's key service for the file's online locks (spec 6.8.2).
   if (settings.keyService !== undefined) out.keyService = checkKeyService(settings.keyService, 'package.keyService');
+  if (settings.masks !== undefined) out.masks = normalizeMaskSettings(settings.masks);
   return out;
 }
 

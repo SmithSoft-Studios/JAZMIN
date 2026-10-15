@@ -8,6 +8,7 @@ namespace Jazmin.Tests;
 /// Other text orders (spec 6.7): text sorted ignoring case and accents (NoCase), with the numbers inside it by value
 /// (Natural), or both, kept by writers, appends, updates and rewrites; SortedBy keeps the plain leading keys.
 /// </summary>
+[Collection("Temporary sort folders")] // re-sorts make and delete jazmin-sort-* in the temp folder, which other tests count
 public class SortOrderTests
 {
     private static JsonNode Vectors => JsonNode.Parse(File.ReadAllText(Path.Combine(Fuzzing.Fixtures, "sort-orders.json")))!;

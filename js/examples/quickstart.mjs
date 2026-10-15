@@ -430,4 +430,18 @@ console.log('31.', [...namesReader.rows()].map((r) => r.name), namesReader.sort)
 namesReader.close();
 // 31. [ 'Apple', 'émile', 'file1', 'File2', 'file10' ] [ { column: 'name', nocase: true, natural: true } ]
 
+// 32. A masked column (USER-GUIDE 15.7): a key granted it sees what the owner lets it show, until it unlocks the column.
+const payOwner = JazminKey.generate();
+const payClerk = payOwner.createAccessKey();
+const pay = write(null, [{ id: 1, name: 'Thandi', account: '4821 0393 7712 4821' }], {
+  columns: [{ name: 'id', type: 'int' }, { name: 'name', type: 'string' }, { name: 'account', type: 'string', mask: { lock: 'pay', show: { keepFormat: true, last: 4 } } }],
+  key: payOwner, access: { grants: [{ key: payClerk }] }, locks: { pay: { password: 'correct horse battery staple' } },
+});
+const payView = open(pay, { key: payClerk });
+const before32 = [...payView.rows()][0];
+payView.unlock('pay', { password: 'correct horse battery staple' });
+console.log('32.', before32, '->', [...payView.rows()][0].account);
+payView.close();
+// 32. { id: 1, name: 'Thandi', account_shown: '•••• •••• •••• 4821' } -> 4821 0393 7712 4821
+
 fs.rmSync(dir, { recursive: true, force: true });
