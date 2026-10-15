@@ -14,7 +14,7 @@ import { JazminFormatError, JazminValidationError } from './errors.js';
 import { grantExpiry, toMs } from './expiry.js';
 import { JazminAccessKey, JazminKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey } from './keys.js';
 import { withLock } from './lock.js';
-import { JazminReader, KEY_ROTATION } from './reader.js';
+import { JazminReader, KEY_ROTATION, checkWriterFeatures } from './reader.js';
 import { encodeSection, reencryptSection } from './section.js';
 import { NEW_OWNER, replaceFile, updateUnlocked } from './update.js';
 
@@ -70,6 +70,7 @@ function rotateUnlocked(path, { key, password, newKey, newPassword, kdfIteration
   let reader = new JazminReader(path, { key, password });
   let plan;
   try {
+    checkWriterFeatures(reader);
     if (!reader.encrypted) throw new JazminValidationError('The file is not encrypted: it has no key to rotate');
     plan = reader[KEY_ROTATION];
     if (plan.flags & FLAG_APPENDED || plan.recovered) {

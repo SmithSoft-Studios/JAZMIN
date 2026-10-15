@@ -4,7 +4,7 @@ import { growColumns } from './nested.js';
 import { keptShapes, tableColumns } from './saved-shapes.js';
 import { normalizeColumns } from './schema.js';
 import { withLock } from './lock.js';
-import { APPEND_STATE, JazminReader, OWNER_GRANTS, ROWS_WITH_IDS } from './reader.js';
+import { APPEND_STATE, JazminReader, OWNER_GRANTS, ROWS_WITH_IDS, checkWriterFeatures } from './reader.js';
 import { compareKeys, normalizeValue, toKey } from './types.js';
 import { accessFor, checkAppendGrants, columnsWithIndexes, updateUnlocked } from './update.js';
 import { CONTINUE, JazminWriter } from './writer.js';
@@ -34,6 +34,7 @@ function compareTuples(a, b) {
  *          grant (access-controlled files), codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority,
  *          addFiles (add or replace by path), removeFiles (paths), package (viewer settings),
  *          addShapes (saved export shapes: add or replace by name), removeShapes (names),
+ *          locks (shared files: add, change or remove locks of stored files, as for update()),
  *          autoCompact: { deletedRatio?, appends? }   compact afterwards when either is reached
  *
  * In a file with sortedBy, appended rows must sort after the existing rows; use update() to
@@ -49,7 +50,7 @@ function appendUnlocked(path, options) {
   const {
     key, password, insert = [], upsert = [], keyColumns, delete: deleteWhere, metadata, grant = [], revoke = [],
     codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, autoCompact, now,
-    addFiles = [], removeFiles = [], package: packageSettings, table, columns: given, addShapes = [], removeShapes = [],
+    addFiles = [], removeFiles = [], package: packageSettings, table, columns: given, addShapes = [], removeShapes = [], locks,
   } = options;
   if (upsert.length && (!Array.isArray(keyColumns) || keyColumns.length === 0)) {
     throw new JazminValidationError('upsert needs keyColumns, e.g. { keyColumns: ["id"] }');
@@ -60,6 +61,7 @@ function appendUnlocked(path, options) {
   let writer;
   let result;
   try {
+    checkWriterFeatures(reader);
     const owner = reader[OWNER_GRANTS];
     if (!owner && reader.access) throw new JazminKeyError("Only the file owner's master key can modify this file");
     if (!owner && grant.length) throw new JazminValidationError('grant applies only to access-controlled files');
@@ -107,6 +109,7 @@ function appendUnlocked(path, options) {
         nextId: state.files?.nextId ?? 0,
         package: state.files?.package,
         shapes: keptShapes(state.files?.shapes ?? [], addShapes, removeShapes),
+        locks: state.files?.locks ?? [],
       };
     } else if (removeFiles.length) {
       throw new JazminValidationError(`removeFiles: no file '${removeFiles[0]}'`);
@@ -146,6 +149,7 @@ function appendUnlocked(path, options) {
       files: addFiles,
       ...(packageSettings !== undefined ? { package: packageSettings } : {}),
       shapes: addShapes,
+      ...(locks !== undefined ? { locks } : {}),
       [CONTINUE]: { ...state, deleted: [...allDeleted], grown, shapeTables },
     });
     try {

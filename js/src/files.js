@@ -53,7 +53,11 @@ export function fileSource(entry) {
   const groups = normalizeGroups(entry.groups, filePath);
   const actions = normalizeActions(entry.actions, filePath);
   const groupActions = normalizeGroupActions(entry.groupActions, groups, filePath);
-  const extra = { ...(actions ? { actions } : {}), ...(groupActions ? { groupActions } : {}) };
+  // lock: the id of the lock (spec 6.8.1) that must be opened before the file is, one of the writer's `locks`.
+  if (entry.lock !== undefined && (typeof entry.lock !== 'string' || entry.lock.length < 1 || entry.lock.length > 64)) {
+    throw new JazminValidationError(`File '${filePath}': lock must be a lock id (1 to 64 characters)`);
+  }
+  const extra = { ...(actions ? { actions } : {}), ...(groupActions ? { groupActions } : {}), ...(entry.lock !== undefined ? { lock: entry.lock } : {}) };
   if ((entry.content === undefined) === (entry.file === undefined)) {
     throw new JazminValidationError(`File '${filePath}': supply exactly one of content or file`);
   }

@@ -15,13 +15,14 @@ import { columnBuffer, encodeColumnBuffers, nestedStage } from './columnar.js';
 import { isNested } from './nested.js';
 import { EVERYONE, FILE_BLOCK_SIZE, FILE_SOURCE, checkEdit, fileSource, normalizePackage } from './files.js';
 import {
-  DEFAULTS, DEFAULT_COLUMN_GROUP, FILE_ID_SIZE, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, INDEX_DELTAS, INLINE_PARTITIONS, NESTED_COLUMNS,
+  DEFAULTS, DEFAULT_COLUMN_GROUP, FILE_ID_SIZE, FILE_LOCKS, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, INDEX_DELTAS, INLINE_PARTITIONS, NESTED_COLUMNS,
   KEYRING_GROUPS, MAGIC, MAX_KDF_ITERATIONS, MIN_KDF_ITERATIONS, PREAMBLE_SIZE, SALT_SIZE, TRAILER_SIZE, WHOLE_TABLE,
 } from './constants.js';
 import { JazminValidationError } from './errors.js';
 import { LINKS_KEY, checkLinkDefinitions, normalizeLinks } from './links.js';
 import { INDEX_BUILDERS, INDEX_PAGE_BYTES, INDEX_SPILL_ENTRIES, encodePostingsSection } from './indexes.js';
 import { JazminKey, KeySchedule, deriveFromPassword, fingerprint, hkdf, parseAnyKey } from './keys.js';
+import { ownerLockList, sealContentKey, writerLocks } from './locks.js';
 import { checkPriority, writeThreads } from './priority.js';
 import { checkShapeList, checkShapes, normalizeShapes } from './saved-shapes.js';
 import { normalizeColumns } from './schema.js';
@@ -146,6 +147,12 @@ export const CHUNK_MAP = Symbol('jazmin.chunkMap');
 
 /** Internal: the rows a write will hand the writer, when known, for progress (`total` of the 'write' stage). */
 export const PROGRESS_TOTAL = Symbol('jazmin.progressTotal');
+
+/** Internal: the locks a rewrite keeps, as the owner directory has them (update(); an append has them in CONTINUE). */
+export const KEPT_LOCKS = Symbol('jazmin.keptLocks');
+
+/** Where the writer keeps a stored content: by its bytes and its lock. */
+const contentSlot = (c) => (c.lock === undefined ? c.sha256 : `${c.sha256}/${c.lock}`);
 
 /** Orders two rows by the `sortedBy` columns; nulls sort first. */
 function compareSortKeys(a, b) {
@@ -292,6 +299,7 @@ export class JazminWriter {
   #package; // package settings for viewers (validated at finish)
   #shapes = new Map(); // saved export shapes (spec 6.8): name -> entry
   #fileGroupNames = []; // access mode: names of the file groups written
+  #locks = new Map(); // locks of stored files (spec 6.8.1): id -> { id, kind, salt, iterations, key, secret }
   #parallelism; // threads encoding chunk sections (1 = this thread only)
   #indexDeltas = false; // sorted index pages with keys and first row ids as differences (reader feature 'index-deltas')
   #usesIndexDeltas = false; // a page was written that way: the header names the feature
@@ -305,7 +313,7 @@ export class JazminWriter {
       columns, metadata = {}, codec = DEFAULTS.codec, level, chunkRows = DEFAULTS.chunkRows,
       chunkBytes = DEFAULTS.chunkBytes, key, password, kdfIterations = DEFAULTS.kdfIterations, sortedBy, access, now,
       layout, files, package: packageSettings, tables, priority = 'balanced', compactIndexes = false, shapes, links,
-      onProgress, signal,
+      onProgress, signal, locks,
     } = options;
     signal?.throwIfAborted();
     this.#progress = onProgress || signal ? { onProgress, signal, total: options[PROGRESS_TOTAL] ?? null, written: 0 } : null;
@@ -337,6 +345,11 @@ export class JazminWriter {
     // An append keeps the file's index encoding: its readers already support it (or the file would not use it).
     this.#indexDeltas = cont ? cont.header.readerFeatures.includes(INDEX_DELTAS) : compactIndexes;
     if (access !== undefined) checkAccessOptions(access);
+    if (locks !== undefined && !access) {
+      throw new JazminValidationError('Locks need an access-controlled file (spec 6.8.1): with one key or password, that key would open every lock');
+    }
+    const lockChanges = writerLocks(locks, cont?.files?.locks ?? options[KEPT_LOCKS]);
+    this.#locks = lockChanges.locks;
     if (tables !== undefined) {
       if (!Array.isArray(tables) || tables.length === 0) throw new JazminValidationError('tables must be a non-empty array of table definitions');
       if (columns !== undefined || sortedBy !== undefined || access?.partitionBy != null || access?.columnGroups !== undefined) {
@@ -407,7 +420,16 @@ export class JazminWriter {
       if (cont?.files) {
         // Files already in the file stay; their stored contents are reused by reference.
         for (const e of cont.files.entries) this.#files.entries.set(e.path, e);
-        for (const c of cont.files.contents) this.#files.contents.set(c.sha256, c);
+        for (const c of cont.files.contents) {
+          // A removed lock's contents stay, unlocked.
+          const { lock, ...unlocked } = c;
+          if (lock !== undefined && !this.#locks.has(lock) && !lockChanges.removed.has(lock)) {
+            const path = cont.files.entries.find((e) => e.content === c.id)?.path ?? `#${c.id}`;
+            throw new JazminValidationError(`File '${path}' names lock '${lock}', which the file no longer has: remove the file with update({ removeFiles })`);
+          }
+          const kept = lock !== undefined && this.#locks.has(lock) ? c : unlocked;
+          this.#files.contents.set(contentSlot(kept), kept);
+        }
         this.#files.nextId = cont.files.nextId;
       }
       this.#package = packageSettings !== undefined ? packageSettings : cont?.files?.package;
@@ -438,7 +460,13 @@ export class JazminWriter {
     const entry = typeof entryOrPath === 'string' ? { ...options, path: entryOrPath, content } : entryOrPath;
     const src = entry?.[FILE_SOURCE] ? entry : fileSource(entry);
     if (this.#files.entries.has(src.path)) throw new JazminValidationError(`File '${src.path}' is added twice`);
-    let stored = this.#files.contents.get(src.sha256);
+    if (src.lock !== undefined && !this.#locks.has(src.lock)) {
+      const known = this.#locks.size ? `locks: ${[...this.#locks.keys()].join(', ')}` : 'no locks given';
+      throw new JazminValidationError(`File '${src.path}': no lock '${src.lock}' (${known})`);
+    }
+    // The same bytes locked and unlocked (or under two locks) are two contents: one's key must not open the other.
+    const slot = contentSlot(src);
+    let stored = this.#files.contents.get(slot);
     if (!stored) {
       this.#writePending(); // sections are written in order: chunks still being encoded go first
       const id = this.#files.nextId++;
@@ -451,8 +479,11 @@ export class JazminWriter {
         blocks.push({ offset: this.#out.position, length: section.length, ...(this.#access ? { digest: digest(section).toString('base64') } : {}) });
         this.#out.write(section);
       }
-      stored = { id, size: src.size, sha256: src.sha256, blockSize: FILE_BLOCK_SIZE, ...(key ? { key: key.toString('base64') } : {}), blocks };
-      this.#files.contents.set(src.sha256, stored);
+      stored = {
+        id, size: src.size, sha256: src.sha256, blockSize: FILE_BLOCK_SIZE, ...(key ? { key: key.toString('base64') } : {}),
+        ...(src.lock !== undefined ? { lock: src.lock } : {}), blocks,
+      };
+      this.#files.contents.set(slot, stored);
     }
     this.#files.entries.set(src.path, {
       path: src.path, type: src.type, groups: src.groups, content: stored.id, ...(src.actions ? { actions: src.actions } : {}),
@@ -838,7 +869,8 @@ export class JazminWriter {
     if (this.#usesNested) readerFeatures.add(NESTED_COLUMNS);
     const header = {
       readerFeatures: [...readerFeatures],
-      writerFeatures: cont ? cont.header.writerFeatures : [],
+      // file-locks while the file has a lock: writers that would not keep them must not modify it (spec 6.8.1, 12).
+      writerFeatures: [...(cont ? cont.header.writerFeatures.filter((f) => f !== FILE_LOCKS) : []), ...(this.#locks.size ? [FILE_LOCKS] : [])],
       created: cont ? cont.header.created : this.#options.now,
       modified: cont ? this.#options.now : 0,
       appendCount: segment,
@@ -1057,14 +1089,38 @@ export class JazminWriter {
     });
     // A file's actions in a group's directory: the group's own (groupActions), else the file's.
     const actionsIn = (e, group) => (group !== undefined && e.groupActions?.[group]) || e.actions;
-    const directory = (list, withGroups, saved, group) => ({
-      files: list.map((e) => {
-        const actions = actionsIn(e, group);
-        return { path: e.path, type: e.type, content: e.content, ...(withGroups ? { groups: e.groups } : {}), ...(actions && Object.keys(actions).length ? { actions } : {}) };
-      }),
-      contents: [...new Set(list.map((e) => e.content))].sort((a, b) => a - b).map((id) => byId.get(id)),
-      ...(saved.length ? { shapes: saved.map((s) => savedShape(s, withGroups)) } : {}),
+    // A locked content's key is not in the directories: they hold it sealed under its lock's key (spec 6.8.1), sealed
+    // once per content for every directory that lists it.
+    const sealed = new Map();
+    const sealedKey = (c) => {
+      if (!sealed.has(c.id)) sealed.set(c.id, sealContentKey(this.#locks.get(c.lock), c.id, Buffer.from(c.key, 'base64')).toString('base64'));
+      return sealed.get(c.id);
+    };
+    const lockEntry = (lock, keys) => ({
+      id: lock.id, kind: lock.kind, salt: lock.salt.toString('base64'), ...(lock.iterations === undefined ? {} : { iterations: lock.iterations }), keys,
     });
+    const directory = (list, withGroups, saved, group) => {
+      const contents = [...new Set(list.map((e) => e.content))].sort((a, b) => a - b).map((id) => byId.get(id));
+      const locks = new Map();
+      for (const c of contents) {
+        if (c.lock === undefined) continue;
+        if (!locks.has(c.lock)) locks.set(c.lock, {});
+        locks.get(c.lock)[c.id] = sealedKey(c);
+      }
+      return {
+        files: list.map((e) => {
+          const actions = actionsIn(e, group);
+          return { path: e.path, type: e.type, content: e.content, ...(withGroups ? { groups: e.groups } : {}), ...(actions && Object.keys(actions).length ? { actions } : {}) };
+        }),
+        contents: contents.map((c) => {
+          if (c.lock === undefined) return c;
+          const { key: _, ...locked } = c;
+          return locked;
+        }),
+        ...(locks.size ? { locks: [...locks].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)).map(([id, keys]) => lockEntry(this.#locks.get(id), keys)) } : {}),
+        ...(saved.length ? { shapes: saved.map((s) => savedShape(s, withGroups)) } : {}),
+      };
+    };
     const settings = normalizePackage(this.#package, new Set(this.#files.entries.keys()));
     if (settings?.edit) checkEdit(settings.edit, this.#tableDefs, { partial: Boolean(this.#continue) });
     const suffix = segment ? `/${segment}` : '';
@@ -1106,6 +1162,8 @@ export class JazminWriter {
         mode: g.mode,
         ...(g.share ? { share: g.share.toString('base64') } : {}),
       })),
+      // Every lock with its key and secret: the owner opens locked files, and rewrites keep the locks (spec 6.8.1).
+      ...(this.#locks.size ? { locks: ownerLockList(this.#locks) } : {}),
     });
   }
 

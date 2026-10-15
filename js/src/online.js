@@ -2,7 +2,8 @@
 import { JazminAccessExpiredError, JazminValidationError } from './errors.js';
 import { toMs } from './expiry.js';
 import { encodeUnlockToken, parseAnyKey } from './keys.js';
-import { JazminReader, OWNER_GRANTS } from './reader.js';
+import { encodeFileUnlockToken } from './locks.js';
+import { JazminReader, OWNER_GRANTS, OWNER_LOCKS } from './reader.js';
 import { DRAFT_MAGIC, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, MAGIC, PREAMBLE_SIZE } from './constants.js';
 import { JazminFormatError } from './errors.js';
 import fs from 'node:fs';
@@ -60,6 +61,25 @@ export function issueUnlockToken(path, ownerKey, accessKey, { now } = {}) {
     throw new JazminAccessExpiredError(`Access for key ${keyId} expired at ${grant.expires}`);
   }
   return encodeUnlockToken(Buffer.from(grant.share, 'base64'));
+}
+
+/**
+ * What a key service hands a person who passed its checks (sign-in, 2FA, their grant): the unlock token (jzf1-...) of
+ * an online lock of the file's stored files (spec 6.8.1); `reader.unlock(lockId, { unlockToken })` opens the lock with
+ * it. Owner key required. The token stays the same across updates and appends, and when the lock's password changes.
+ */
+export function issueFileUnlockToken(path, ownerKey, lockId) {
+  const reader = new JazminReader(path, { key: ownerKey });
+  try {
+    const locks = reader[OWNER_LOCKS];
+    if (!locks) throw new JazminValidationError('File unlock tokens exist only for access-controlled files, and need the owner key');
+    const lock = locks.get(lockId);
+    if (!lock) throw new JazminValidationError(`No lock '${lockId}' in this file`);
+    if (!lock.secret) throw new JazminValidationError(`Lock '${lockId}' is a password lock: it has no unlock token`);
+    return encodeFileUnlockToken(lock.secret);
+  } finally {
+    reader.close();
+  }
 }
 
 /**

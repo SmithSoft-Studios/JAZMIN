@@ -30,6 +30,19 @@ export class JazminUnlockRequiredError extends JazminKeyError {
 }
 
 /**
+ * A stored file is locked (spec 6.8.1): `reader.unlock(lock, { password, unlockToken })` opens it. `path`, `lock` (the
+ * lock's id) and `kind` ('password', 'online' or 'both') say what to ask for.
+ */
+export class JazminFileLockedError extends JazminKeyError {
+  constructor(message, { path, lock, kind }) {
+    super(message);
+    this.path = path;
+    this.lock = lock;
+    this.kind = kind;
+  }
+}
+
+/**
  * A submission that must not be filed (fileSubmission): the message says why, for the sender. Keep the batch aside;
  * other errors (the shared file busy, a full disk) mean try again later.
  */

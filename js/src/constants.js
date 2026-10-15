@@ -35,7 +35,11 @@ export const INDEX_DELTAS_ENCODING = 1;
 export const NESTED_COLUMNS = 'nested-columns';
 
 export const SUPPORTED_READER_FEATURES = new Set([INDEX_DELTAS, NESTED_COLUMNS]);
-export const SUPPORTED_WRITER_FEATURES = new Set();
+/** Writer feature 'file-locks' (spec 6.8.1): a file with locks; a writer that did not keep them would lose the locked keys. */
+export const FILE_LOCKS = 'file-locks';
+
+/** Writer features this implementation supports (spec 12): it refuses to modify a file with any other. */
+export const SUPPORTED_WRITER_FEATURES = new Set([FILE_LOCKS]);
 
 export const DEFAULTS = Object.freeze({
   chunkRows: 4096,
