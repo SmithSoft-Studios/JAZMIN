@@ -664,8 +664,9 @@ text) and `segment` when an append wrote the directories.
 - `package` holds the entry path (which MUST be a stored path), a title, the
   https origins the page may contact, whether WebAssembly is allowed, `pdf`,
   the page settings for the document's PDFs (below), and `edit`, what the
-  document may change (7.9), and `keyService`, the https address of the
-  owner's key service for the file's online locks (6.8.2). Viewers MUST
+  document may change (7.9), `keyService`, the https address of the
+  owner's key service for the file's online locks (6.8.2), and `masks`, how
+  viewers show masked columns' revealed values (7.6.8). Viewers MUST
   treat stored files as untrusted content and SHOULD derive the page's
   security policy from these settings only.
 - Writers MUST NOT reuse a content id within a file, so block section ids
@@ -1041,8 +1042,9 @@ key the slot belongs to:
 - **Owner bundle:** `{ "header": b64(H), "owner": b64(O) }`
 - **Access bundle:** `{ "header": b64(H), "partitions": { id: b64(P(id)) },
   "partitionNames": { id: name }, "columns": { g: b64(C(g)) } }` (ids in
-  base64url), plus `expires` / `online` (7.7), `files` (6.8) and
-  `submission` (7.8). Readers MUST ignore bundle fields they don't know.
+  base64url), plus `expires` / `online` (7.7), `files` (6.8),
+  `submission` (7.8) and `masks` (7.6.8). Readers MUST ignore bundle fields
+  they don't know.
 
 A grant of all rows (`rows: "*"`) covers every partition present in that
 version of the file.
@@ -1102,7 +1104,8 @@ covers the whole file.
   "fileGroups": [names], "grants": [ { "key": "jza1-...", "rows": "*" |
   [partition names], "columns": "*" | [names], "files": ..., "label": "...", "expires":
   ..., "mode": ..., "share": ... } ], "locks": [ { "id", "kind", "salt", "iterations",
-  "key", "secret" } ] }` (`locks`: 6.8.1). Only the owner reads it.
+  "key", "secret" } ], "masks": [ ... ] }` (`locks`: 6.8.1; `masks`: 7.6.8).
+  Only the owner reads it.
 
 #### 7.6.6. Reading
 
@@ -1134,6 +1137,69 @@ covers the whole file.
   match the owner key.
 - Every new version (11.1) MUST use a fresh `file_id`, salt, `H` and `O`.
   Revoked keys therefore cannot read new versions.
+
+#### 7.6.8. Masked Columns
+
+A column of an access-controlled file MAY be **masked**: a key granted it sees
+that the column is there, and a shown part the owner chose (`••••4821`), but
+not its values, until the key holder unlocks it with a password, an unlock
+token, or both: the locks of 6.8.1.
+
+- **A masked column group** holds one masked column, of one table. Its name
+  is chosen by the writer (the reference writers use `mask.` and the
+  column's name, or a name made from it when that isn't a valid group name).
+  Grants name it as any column group.
+- **In a key slot** that grants it, the group is not in `columns`. The access
+  bundle's member `masks` holds `{ "locks": { "<lock id>": { "kind",
+  "salt", "iterations", "keyService" } }, "groups": { "<group>": { "lock":
+  "<lock id>", "sealed": "<base64>", "column": { "position", "name",
+  "type", "shown", "unmasked" } } } }`: the lock as in 6.8.1 (without
+  `keys`), the group secret `C(g)` sealed under the lock key `L` (`nonce (12)
+  || AES-256-GCM(C(g)) || tag (16)`, additional data `"JAZMIN/1/lock/" ||
+  lock id || "/column-group/" || g`), and the column: its table (the table's
+  index in the header), position and name, its type (5.1) as text, and the
+  names of its shown and unmasked columns when it has them.
+- **The shown column** (`shown`, optional) is an ordinary column, in a group
+  the key sees, that holds what a masked value shows: text the writer made
+  from the value by a rule, or values the owner gave. It is stored, filtered,
+  sorted and indexed as any column.
+- **Masked rows only** (`unmasked`, optional): a masked column MAY be null in
+  rows that don't need masking, with their values in an ordinary column of
+  the same type, the *unmasked* column, which is null in the masked rows.
+  Readers give both columns as they are (a filter on one doesn't see the
+  other's values); viewers that know masks show a row's value from the
+  unmasked column when it is not null, else from the masked column once
+  unlocked, else as masked.
+- **Readers** list a masked column (name, type, lock) and give no value for
+  it until its lock is unlocked: then they derive `L`, open `C(g)` (a tag that
+  doesn't verify means a wrong password or token), and read the group as any
+  granted group. An unlock lasts while the reader is open.
+- **The owner** derives `C(g)` as for any group. The owner directory's
+  `masks` lists `[ { "group", "lock", "table", "position", "column", "type",
+  "shown", "unmasked", "show", "rows" } ]`, so rewrites and appends keep them
+  and write every key slot again (`show`: the rule
+  the shown column is made by; `rows`: the filter (9) of the rows masked, for
+  rows added later; both writer conventions); its `locks` holds the locks
+  (6.8.1).
+- **Older readers** don't know `masks`: to them the masked group is a group
+  their key isn't granted, so the column is hidden; the shown and unmasked
+  columns are ordinary columns.
+- **Grants in the owner directory** name masked groups in `maskedColumns`,
+  not in `columns`, and a grant of every group lists the groups that aren't
+  masked in `columns`, with `allColumns: true`. So a writer that doesn't know
+  masks grants no one a masked group when it rewrites the key slots: the
+  column is hidden from keys rather than given to them unmasked.
+- **Writer feature:** a file with a masked column names the writer feature
+  `masked-columns` (12): a writer that rewrote its key slots without `masks`
+  would leave keys without the column.
+- **Viewer settings:** the package's `masks` (6.8) MAY say, for a masked
+  column by name, how viewers show revealed values: `{ "reveal": "value" |
+  "column", "seconds": n, "whenHidden": bool, "idleSeconds": n }`: one value
+  at a time or the whole column; how long a revealed value shows (0: while
+  unlocked); whether it is masked again when the viewer's window is hidden
+  or loses focus; and after how long without input (0: never). Readers SHOULD
+  default to `value`, 30, true and 60. These steer viewers: a key holder who
+  unlocked a column can read its values with the library whatever they say.
 
 ### 7.7. Time-Limited Access
 
@@ -1702,8 +1768,8 @@ fresh secrets. The result has `append_count` 0 and the APPENDED flag clear.
   Reader features are also writer features.
 - Feature names are lowercase ASCII letters, digits and `-`. Format 1.0
   defined none. Defined since: the reader features `index-deltas` (8.1) and
-  `nested-columns` (5.4), and the writer feature `file-locks` (6.8.1). A
-  file that uses none has empty lists.
+  `nested-columns` (5.4), and the writer features `file-locks` (6.8.1)
+  and `masked-columns` (7.6.8). A file that uses none has empty lists.
 - The magic `JZM1` changes only if the container itself changes
   incompatibly.
 
@@ -1868,6 +1934,14 @@ indexes, embedded files) written by both reference implementations.
   Readers that don't know them ignore them, as they do other members; the
   libraries of releases 1.0 to 1.3 also leave them out when they rewrite a
   file's directories (append, update, compaction).
+- **Since format 1.0, masked columns (7.6.8):** a column of an
+  access-controlled file shown masked until its lock opens: `masks` in key
+  slots, the owner directory and the package settings. Readers that don't
+  know them see the column as one their key isn't granted. Writer feature
+  `masked-columns`; releases 1.0 to 1.6 don't check it, and an append or
+  rewrite with them writes key slots and an owner directory without `masks`:
+  as grants list masked groups apart (7.6.8), keys then lose the column (it
+  is never given unmasked), and the owner keeps it, to mask again.
 - **Since format 1.0, other text orders (6.7):** a table's optional `sort`
   (catalog field 13 of `Table`): keys that compare text ignoring case and
   accents, or with the numbers inside it by value. `sorted_by` keeps the
