@@ -98,7 +98,7 @@ button.small { padding: 3px 10px; font-size: 12.5px; }
 #jz-lock input { box-sizing: border-box; }
 #jz-lock .sign-in { margin-top: 8px; }
 .online-note { margin: 0 0 8px; color: var(--muted); font-size: 12.5px; }
-.online-note::before { content: 'F310  '; }
+.online-note::before { content: '\1F310\00a0'; }
 .offline { padding: 18px 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
 .offline p { margin: 4px 0; }
 td.masked .mask-shown { color: var(--muted); letter-spacing: .02em; }
