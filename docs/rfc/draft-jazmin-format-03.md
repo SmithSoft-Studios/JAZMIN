@@ -741,6 +741,61 @@ contents.
   as 10.4 checks a shape), and MUST ignore entries that are not
   well-formed.
 
+#### 6.8.1. Locked Files
+
+In an access-controlled file, a stored content MAY be **locked**: opening it
+needs, besides a key that sees it, a password, an unlock token from the
+owner's key service, or both. A key that sees a locked content's file learns
+its path, type and size, not its bytes. Locks are named; one lock MAY cover
+several contents, so one password or token opens them all. Files that are not
+access-controlled MUST NOT hold locks. A file with a lock (in its owner
+directory) names the **writer feature** `file-locks` (12): a writer that
+rewrote its directories without the locks would lose the locked contents'
+keys.
+
+- A locked content's entry in `contents` has `lock` (the lock's id, 1 to 64
+  characters) and no `key`. Every directory that lists the content locks it
+  with the same lock.
+- A directory that lists a locked content has a member `locks`, an array of
+  the locks its contents use: `{ "id": "<id>", "kind": "password" |
+  "online" | "both", "salt": "<base64, 16 bytes>", "iterations": n,
+  "keys": { "<content id>": "<base64>" } }`. `iterations` is present for the
+  password kinds. `keys` holds, for each content of the directory with this
+  lock, its key `K` sealed under the lock key: `nonce (12) || AES-256-GCM(K)
+  || tag (16)`, with additional data `"JAZMIN/1/lock/" || id || "/" ||
+  content id` (decimal).
+- **The lock key `L`** (32 bytes):
+  - `password`: `PBKDF2-HMAC-SHA256(UTF-8(password), salt, iterations, 32)`,
+    with the limits of 7.2 on `iterations`;
+  - `online`: `HKDF-SHA256(ikm = S, salt, info = "JAZMIN/1/lock/" || id)`,
+    where `S` is the lock's secret, 32 random bytes;
+  - `both`: `HKDF-SHA256(ikm = P || S, salt, info = "JAZMIN/1/lock/" || id)`,
+    where `P` is the password's PBKDF2 output as for `password`.
+- **The owner holds every lock** (7.6.5): the owner directory's `locks` is
+  `[ { "id", "kind", "salt", "iterations", "key": "<base64 L>", "secret":
+  "<base64 S>" } ]`, with the lock's `salt` and `iterations` as in its
+  directories and `secret` for the online kinds. With the owner key a reader opens locked contents
+  without a password or token, and writers that rewrite the file (11.2,
+  compaction) keep each lock's id, kind, salt, `L` and `S`, sealing each
+  content's key again in the new version's directories. Changing a lock's
+  password changes `L` and the sealed keys, not the contents.
+- **An unlock token** gives `S` to a reader of an online lock:
+  `"jzf1-" || base64url_nopad(S || SHA-256(S)[0..3])`. A key service, which
+  holds `S` (from the owner directory, or the owner's list), SHOULD issue it
+  only after its own checks (sign-in, 2FA, the person's grant, an audit
+  record). Readers MUST verify the 4-byte checksum.
+- **Readers** list a locked content's files with their lock (`id`, `kind`)
+  and refuse to read them until unlocked. Given a password or token, a reader
+  derives `L` and opens a key in `keys`; a tag that doesn't verify means the
+  password or token is wrong. An unlock lasts while the reader is open.
+- Readers that don't know locks see a content with no `key` and SHOULD
+  refuse to read it, saying it has no key; they read everything else.
+- **Limits:** a password lock can be guessed offline by whoever has the file
+  and a key that sees the content, as fast as PBKDF2 allows; an online lock
+  can't, as `S` is not in the file. Once a locked file is open, its bytes can
+  be copied: a lock decides who can open, as actions (6.8) decide what
+  viewers offer.
+
 ## 7. Encryption and Keys
 
 ### 7.1. Algorithms
@@ -983,7 +1038,8 @@ covers the whole file.
 - The owner directory (`owner`, UTF-8 JSON) holds `{ "partitions": [names],
   "fileGroups": [names], "grants": [ { "key": "jza1-...", "rows": "*" |
   [partition names], "columns": "*" | [names], "files": ..., "label": "...", "expires":
-  ..., "mode": ..., "share": ... } ] }`. Only the owner reads it.
+  ..., "mode": ..., "share": ... } ], "locks": [ { "id", "kind", "salt", "iterations",
+  "key", "secret" } ] }` (`locks`: 6.8.1). Only the owner reads it.
 
 #### 7.6.6. Reading
 
@@ -1583,7 +1639,8 @@ fresh secrets. The result has `append_count` 0 and the APPENDED flag clear.
   Reader features are also writer features.
 - Feature names are lowercase ASCII letters, digits and `-`. Format 1.0
   defined none. Defined since: the reader features `index-deltas` (8.1) and
-  `nested-columns` (5.4). A file that uses none has empty lists.
+  `nested-columns` (5.4), and the writer feature `file-locks` (6.8.1). A
+  file that uses none has empty lists.
 - The magic `JZM1` changes only if the container itself changes
   incompatibly.
 
@@ -1748,6 +1805,18 @@ indexes, embedded files) written by both reference implementations.
   Readers that don't know them ignore them, as they do other members; the
   libraries of releases 1.0 to 1.3 also leave them out when they rewrite a
   file's directories (append, update, compaction).
+- **Since format 1.0, locked files (6.8.1):** a stored content of an
+  access-controlled file can need a password, an unlock token from the
+  owner's key service, or both. New optional members: `lock` in a directory's
+  `contents`, `locks` in directories and in the owner directory. Readers that
+  don't know them read the rows and every unlocked file, and refuse a locked
+  one as having no key (releases 1.0 to 1.6: "Embedded content ... has no
+  key"). No reader feature: one would make those readers refuse the whole
+  file. Such files name the writer feature `file-locks`, but the libraries of
+  releases 1.0 to 1.6 don't check writer features: an append with them
+  writes the directories without the locks, and the locked contents' keys
+  are lost (their rewrites fail, as they can't read locked contents). Modify
+  files with locks with release 1.7 or later.
 - **Since format 1.0, a new action and actions by file group (6.8):** the
   action `list`, and in access-controlled files each file group's directory
   with its own actions, merged for a key that sees several groups. Readers

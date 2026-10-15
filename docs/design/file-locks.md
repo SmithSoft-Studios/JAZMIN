@@ -1,8 +1,11 @@
 # Locked embedded files: a second password or 2FA for stored files
 
 Status: **decided** (owner, 2026-10-14): the owner key opens locked files without the password or 2FA (decision 1, yes);
-decisions 2 to 4 as recommended unless the owner says otherwise. Nothing here is built yet. It changes the file
-format (an addition older readers handle gracefully, see "Compatibility"), so it is explained in plain words first.
+decisions 2 to 4 as recommended unless the owner says otherwise. **Specified** (2026-10-15): spec 6.8.1, with one
+choice made there: **locks only in access-controlled (shared) files.** In a file with one key or password, the owner's
+copy of each lock key (decision 1) would let anyone with that key open every lock, so a lock would protect nothing;
+without that copy, a rewrite could not re-seal the locked files. Such files refuse a lock, saying why. It changes the
+file format (an addition older readers handle gracefully, see "Compatibility"), so it is explained in plain words first.
 
 ## The idea in plain words
 
@@ -99,6 +102,10 @@ only ever contacts a service the file's owner chose). An unlock lasts while the 
 - **Older readers (1.0 to 1.5)** read the rows and every unlocked file as before. A locked file is listed, and opening
   it fails with "Embedded content … has no key", so nothing is ever shown wrongly. No reader feature is added, because
   that would make older readers refuse the whole file. To be checked against the published 1.5.0 of both libraries.
+- **Writer feature `file-locks`** (decided while specifying): a file with a lock names it, and release 1.7 refuses
+  to modify a file with a writer feature it does not know, as the spec already says. Releases 1.0 to 1.6 don't check
+  writer features: an append with them would write the file lists without the locks and lose the locked files' keys
+  (their rewrites fail safely). The release notes say to modify locked files with 1.7 or later.
 - Appends keep locks as they are. Rewrites keep them (with owner escrow they re-encrypt as now; without it, locked
   files are copied untouched).
 - `rotateKey` (a new key without decoding rows) leaves locks as they are; changing a lock's password re-encrypts only
