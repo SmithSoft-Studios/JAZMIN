@@ -20,7 +20,7 @@ import {
 } from './constants.js';
 import { JazminValidationError } from './errors.js';
 import { LINKS_KEY, checkLinkDefinitions, normalizeLinks } from './links.js';
-import { INDEX_BUILDERS, INDEX_PAGE_BYTES, encodePostingsSection } from './indexes.js';
+import { INDEX_BUILDERS, INDEX_PAGE_BYTES, INDEX_SPILL_ENTRIES, encodePostingsSection } from './indexes.js';
 import { JazminKey, KeySchedule, deriveFromPassword, fingerprint, hkdf, parseAnyKey } from './keys.js';
 import { checkPriority, writeThreads } from './priority.js';
 import { checkShapeList, checkShapes, normalizeShapes } from './saved-shapes.js';
@@ -329,6 +329,8 @@ export class JazminWriter {
       pageBytes: options[PAGING]?.pageBytes ?? INDEX_PAGE_BYTES,
       keySlotPageBytes: options[PAGING]?.keySlotPageBytes ?? KEY_SLOT_PAGE_BYTES,
       chunkMap: options[CHUNK_MAP] !== false,
+      // Sorted index entries held before they go to a temporary file (bounded memory for any number of keys).
+      spillEntries: options[PAGING]?.spillEntries ?? INDEX_SPILL_ENTRIES[priority],
     };
     const cont = options[CONTINUE];
     this.#continue = cont ?? null;
@@ -494,13 +496,15 @@ export class JazminWriter {
     this.#groups = def.columnGroups.map((g) => ({ name: g.name, cols: g.cols }));
     this.#chunks = [];
     this.#chunkPartition = null;
+    this.#closeIndexBuilders();
     this.#indexBuilders = [];
     def.columns.forEach((column, col) => {
       for (const kind of column.index) {
         // Readers find the leading sortedBy column's values from chunk statistics and have never used its sorted
         // index (spec 6.7): it is not written.
         if (kind === 'sorted' && def.sortCols?.[0] === col) continue;
-        this.#indexBuilders.push({ col, column: column.name, kind, builder: new INDEX_BUILDERS[kind](column.type) });
+        const builder = new INDEX_BUILDERS[kind](column.type, Infinity, { spillEntries: this.#options.spillEntries });
+        this.#indexBuilders.push({ col, column: column.name, kind, builder });
       }
     });
     const cont = this.#continue;
@@ -957,7 +961,13 @@ export class JazminWriter {
       return { column: ix.column, kind: ix.kind, section: this.#writeSection(directory, base, key(base)), segment };
     });
     if (this.#progress && count) this.#reportIndexes(count, count);
+    this.#closeIndexBuilders(); // their temporary runs, if any, are no longer needed
     return built;
+  }
+
+  /** Deletes the index builders' temporary runs (sorted indexes past their budget write runs to temporary files). */
+  #closeIndexBuilders() {
+    for (const ix of this.#indexBuilders) ix.builder.close?.();
   }
 
   /**
@@ -1137,6 +1147,7 @@ export class JazminWriter {
   /** Abandons the output: a new file is deleted; an appended file is cut back to its previous end. */
   abort() {
     this.#finished = true;
+    this.#closeIndexBuilders();
     this.#closePool();
     if (this.#continue) {
       const flags = Buffer.alloc(2);

@@ -116,4 +116,67 @@ public sealed class IndexBuilderTests
         }
         Assert.Equal(nulls, builder.Nulls);
     }
+
+    // Bounded memory (issue #186): past spillEntries entries the builder writes its sorted entries to a temporary file
+    // (sealed with a key made for it and never kept) and starts again; Pages merges the files. The pages must be the
+    // reference builder's, byte for byte, and no file may be left or readable. Mirrors js/test/index-builder.test.js.
+    private static int SpillDirs() => Directory.GetDirectories(Path.GetTempPath(), "jazmin-index-*").Length;
+
+    [Theory]
+    [MemberData(nameof(Cases))]
+    public void Pages_are_the_same_when_spilled_to_temporary_files(string name)
+    {
+        var before = SpillDirs();
+        var (type, values) = Data(name);
+        var builder = new SortedIndexBuilder(type, spillEntries: 997);
+        var reference = new ReferenceBuilder(type);
+        try
+        {
+            for (var row = 0; row < values.Count; row++)
+            {
+                builder.Add(row, values[row]);
+                reference.Add(row, values[row]);
+            }
+            foreach (var pageBytes in new[] { 64, 4096 })
+            {
+                var expected = reference.Pages(pageBytes);
+                var actual = builder.Pages(pageBytes).ToList();
+                Assert.Equal(expected.Count, actual.Count);
+                for (var i = 0; i < expected.Count; i++)
+                {
+                    Assert.Equal(expected[i].First, actual[i].First);
+                    Assert.Equal(expected[i].Raw, actual[i].Raw);
+                }
+            }
+        }
+        finally
+        {
+            builder.Close();
+        }
+        Assert.Equal(before, SpillDirs());
+    }
+
+    [Fact]
+    public void Spilled_entries_are_not_readable_on_disk_and_Close_deletes_them_unread()
+    {
+        var ours = Directory.GetDirectories(Path.GetTempPath(), "jazmin-index-*").ToHashSet();
+        var builder = new SortedIndexBuilder(JazminType.String, spillEntries: 100);
+        for (var row = 0; row < 1000; row++) builder.Add(row, $"secret-{row * 7919 % 1000:D4}");
+        var files = Directory.GetDirectories(Path.GetTempPath(), "jazmin-index-*").Where(d => !ours.Contains(d)).SelectMany(Directory.GetFiles).ToList();
+        try
+        {
+            Assert.True(files.Count >= 9, $"{files.Count} runs");
+            foreach (var file in files)
+            {
+                var bytes = File.ReadAllBytes(file);
+                Assert.DoesNotContain("secret-", System.Text.Encoding.Latin1.GetString(bytes));
+                Assert.DoesNotContain("secret-", System.Text.Encoding.Unicode.GetString(bytes));
+            }
+        }
+        finally
+        {
+            builder.Close();
+        }
+        Assert.All(files, file => Assert.False(File.Exists(file)));
+    }
 }

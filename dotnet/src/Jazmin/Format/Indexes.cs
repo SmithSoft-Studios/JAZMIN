@@ -87,6 +87,11 @@ internal static class RowSet
 internal interface IIndexBuilder
 {
     void Add(long rowId, object? internalValue);
+
+    /// <summary>Deletes what the builder keeps on disk, if anything (a sorted index past its budget writes runs there).</summary>
+    void Close()
+    {
+    }
 }
 
 internal sealed class KeyComparer : IComparer<object>
@@ -97,8 +102,23 @@ internal sealed class KeyComparer : IComparer<object>
 }
 
 /// <summary>Builds a sorted value index: distinct values in ascending order, each with its row ids.</summary>
-internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
+internal sealed class SortedIndexBuilder(JazminType type, long spillEntries = long.MaxValue) : IIndexBuilder
 {
+    /// <summary>
+    /// Entries (keys and later row ids) held before they are written to a temporary file, by the writer's priority:
+    /// 25,000,000 distinct keys held gigabytes otherwise. The same budgets as the JavaScript library's.
+    /// </summary>
+    public static long SpillEntries(JazminPriority priority) => priority switch
+    {
+        JazminPriority.Memory => 1_000_000,
+        JazminPriority.Speed => long.MaxValue,
+        _ => 4_000_000,
+    };
+
+    private long _held; // entries held: keys and later row ids
+    private readonly List<SpillRun> _spills = new(); // oldest first
+    private string? _spillDir;
+
     // Distinct keys, each with its first row id; later row ids only for keys seen again, so a column of unique values
     // (ids) needs no list per key. Entries are kept in blocks small enough to stay off the large object heap: growing
     // one large array would force full garbage collections of the writer's whole heap.
@@ -131,6 +151,7 @@ internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
         }
         var key = Values.ToKey(type, internalValue);
         if (Values.IsNaN(key)) return; // NaN is never indexed
+        if (++_held > spillEntries) Spill();
         if (_positions is null && _count > 0)
         {
             // Keys arriving in ascending order (ids, a sorted column) can only repeat the last one: no lookup needed.
@@ -187,6 +208,94 @@ internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
 
     /// <summary>Row ids of null cells.</summary>
     public IReadOnlyList<long> Nulls => _nulls;
+
+    /// <summary>
+    /// Writes the entries held, sorted, to a temporary file, and starts again empty. Spills come in row order, so a key in
+    /// several runs has its row ids in run order, ascending.
+    /// </summary>
+    private void Spill()
+    {
+        _spillDir ??= Directory.CreateTempSubdirectory("jazmin-index-").FullName;
+        var run = new SpillRun(Path.Combine(_spillDir, $"run-{_spills.Count}"), type);
+        run.Write(MemoryEntries(fresh: false));
+        _spills.Add(run);
+        _blocks = new List<Entry[]>();
+        _count = 0;
+        _runStarts.Clear();
+        _runStarts.Add(0);
+        _positions = null;
+        _held = 1; // the entry being added
+    }
+
+    /// <summary>The entries held, in ascending order, each with all its row ids (one list reused unless <paramref name="fresh"/>).</summary>
+    private IEnumerable<(object Key, List<long> Postings)> MemoryEntries(bool fresh)
+    {
+        var postings = new List<long>();
+        foreach (var (at, others) in SortedEntries())
+        {
+            if (fresh) postings = new List<long>();
+            else postings.Clear();
+            var entry = At(at);
+            postings.Add(entry.FirstRow);
+            if (entry.MoreRows is { } more) postings.AddRange(more);
+            foreach (var other in others ?? [])
+            {
+                postings.Add(At(other).FirstRow);
+                if (At(other).MoreRows is { } later) postings.AddRange(later);
+            }
+            yield return (entry.Key, postings);
+        }
+    }
+
+    /// <summary>
+    /// Every entry in ascending order, merging the temporary runs and what is held: keys that compare equal keep the order
+    /// first seen (an older run first), and the same key in several runs is one entry, its row ids in run order.
+    /// </summary>
+    private IEnumerable<(object Key, List<long> Postings)> AllEntries()
+    {
+        if (_spills.Count == 0)
+        {
+            foreach (var entry in MemoryEntries(fresh: false)) yield return entry;
+            yield break;
+        }
+        var sources = _spills.Select(run => run.Entries().GetEnumerator()).Append(MemoryEntries(fresh: true).GetEnumerator()).ToArray();
+        var heads = new (object Key, List<long> Postings)?[sources.Length];
+        void Advance(int i) => heads[i] = sources[i].MoveNext() ? sources[i].Current : null;
+        try
+        {
+            for (var i = 0; i < sources.Length; i++) Advance(i);
+            while (true)
+            {
+                var best = -1;
+                for (var i = 0; i < heads.Length; i++)
+                    if (heads[i] is { } head && (best < 0 || KeyComparer.Instance.Compare(head.Key, heads[best]!.Value.Key) < 0)) best = i;
+                if (best < 0) yield break;
+                var (key, postings) = heads[best]!.Value;
+                Advance(best);
+                for (var i = best + 1; i < heads.Length; i++)
+                {
+                    if (heads[i] is { } other && KeyComparer.Instance.Compare(other.Key, key) == 0 && other.Key.Equals(key))
+                    {
+                        postings.AddRange(other.Postings);
+                        Advance(i);
+                    }
+                }
+                yield return (key, postings);
+            }
+        }
+        finally
+        {
+            foreach (var source in sources) source.Dispose();
+        }
+    }
+
+    /// <summary>Deletes the temporary runs (after the pages are written, or when the write is given up).</summary>
+    public void Close()
+    {
+        if (_spillDir is not null && Directory.Exists(_spillDir)) Directory.Delete(_spillDir, true);
+        _spillDir = null;
+        _spills.Clear();
+    }
 
     /// <summary>
     /// The distinct keys in ascending order, as entry positions: the first, and those of the same key in later runs
@@ -266,7 +375,6 @@ internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
     public IEnumerable<(byte[] First, int Count, byte[] Raw)> Pages(int pageBytes, bool deltas = false)
     {
         var body = new ByteWriter(Math.Min(pageBytes * 2, 1 << 20));
-        var postings = new List<long>();
         var keys = deltas ? new PageKeys(type) : null;
         long previousFirst = 0;
         // Encoding 1 pages are cut where encoding 0 pages would be, so they hold as many entries: a lookup decodes a whole
@@ -274,20 +382,11 @@ internal sealed class SortedIndexBuilder(JazminType type) : IIndexBuilder
         long plainBytes = 0;
         object? first = null;
         var count = 0;
-        foreach (var (at, others) in SortedEntries())
+        foreach (var (key, postings) in AllEntries())
         {
-            var entry = At(at);
-            if (count == 0) first = entry.Key;
-            var plainKey = keys?.Write(body, entry.Key) ?? 0;
-            if (keys is null) Values.Encode(body, type, entry.Key);
-            postings.Clear();
-            postings.Add(entry.FirstRow);
-            if (entry.MoreRows is { } more) postings.AddRange(more);
-            foreach (var other in others ?? [])
-            {
-                postings.Add(At(other).FirstRow);
-                if (At(other).MoreRows is { } later) postings.AddRange(later);
-            }
+            if (count == 0) first = key;
+            var plainKey = keys?.Write(body, key) ?? 0;
+            if (keys is null) Values.Encode(body, type, key);
             if (keys is not null)
             {
                 var postingsStart = body.Length;
@@ -966,5 +1065,104 @@ internal sealed class PageKeys(JazminType type)
             default:
                 return Values.DecodeKey(reader, type);
         }
+    }
+}
+
+/// <summary>
+/// A run of sorted index entries in a temporary file: frames of entries (the key as in a page, then its row ids),
+/// each sealed with AES-GCM under a key made for the run and never kept, so no key reaches the disk readable. Read back
+/// once, in order.
+/// </summary>
+internal sealed class SpillRun(string path, JazminType type)
+{
+    private const int FrameBytes = 256 * 1024;
+    private readonly byte[] _key = System.Security.Cryptography.RandomNumberGenerator.GetBytes(32);
+
+    public void Write(IEnumerable<(object Key, List<long> Postings)> entries)
+    {
+        using var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 16);
+        using var aes = new System.Security.Cryptography.AesGcm(_key, 16);
+        var body = new ByteWriter(FrameBytes + 1024);
+        long frame = 0;
+        void Flush()
+        {
+            if (body.Length == 0) return;
+            var plain = body.AsSpan();
+            var sealedBytes = new byte[4 + plain.Length + 16];
+            System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(sealedBytes, plain.Length);
+            aes.Encrypt(Nonce(frame++), plain, sealedBytes.AsSpan(4, plain.Length), sealedBytes.AsSpan(4 + plain.Length, 16));
+            file.Write(sealedBytes);
+            body.Reset();
+        }
+        foreach (var (key, postings) in entries)
+        {
+            WriteKey(body, key);
+            body.VarUInt((ulong)postings.Count);
+            long previous = 0;
+            foreach (var id in postings)
+            {
+                body.VarUInt((ulong)(id - previous));
+                previous = id;
+            }
+            if (body.Length >= FrameBytes) Flush();
+        }
+        Flush();
+    }
+
+    public IEnumerable<(object Key, List<long> Postings)> Entries()
+    {
+        using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 16);
+        using var aes = new System.Security.Cryptography.AesGcm(_key, 16);
+        var head = new byte[4];
+        long frame = 0;
+        while (file.Read(head, 0, 4) is var n && n > 0)
+        {
+            if (n < 4) file.ReadExactly(head, n, 4 - n);
+            var length = System.Buffers.Binary.BinaryPrimitives.ReadInt32LittleEndian(head);
+            var sealedBytes = new byte[length + 16];
+            file.ReadExactly(sealedBytes);
+            var plain = new byte[length];
+            aes.Decrypt(Nonce(frame++), sealedBytes.AsSpan(0, length), sealedBytes.AsSpan(length, 16), plain);
+            var reader = new ByteReader(plain);
+            while (!reader.Eof)
+            {
+                var key = ReadKey(reader);
+                var count = (int)reader.VarUInt();
+                var postings = new List<long>(count);
+                long previous = 0;
+                for (var i = 0; i < count; i++) postings.Add(previous += (long)reader.VarUInt());
+                yield return (key, postings);
+            }
+        }
+    }
+
+    /// <summary>
+    /// A key as it is: text as its UTF-16 code units (UTF-8, as pages store it, turns a lone surrogate into U+FFFD, and the
+    /// key read back would no longer match the same key held in memory); other types as in a page.
+    /// </summary>
+    private void WriteKey(ByteWriter body, object key)
+    {
+        if (type != JazminType.String)
+        {
+            Values.Encode(body, type, key);
+            return;
+        }
+        var text = (string)key;
+        body.VarUInt((ulong)text.Length);
+        body.Bytes(System.Runtime.InteropServices.MemoryMarshal.AsBytes(text.AsSpan()));
+    }
+
+    private object ReadKey(ByteReader reader)
+    {
+        if (type != JazminType.String) return Values.DecodeKey(reader, type);
+        var length = (int)reader.VarUInt();
+        return new string(System.Runtime.InteropServices.MemoryMarshal.Cast<byte, char>(reader.Bytes(length * 2)));
+    }
+
+    private static byte[] Nonce(long frame)
+    {
+        var nonce = new byte[12];
+        System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(nonce, frame);
+        return nonce;
     }
 }

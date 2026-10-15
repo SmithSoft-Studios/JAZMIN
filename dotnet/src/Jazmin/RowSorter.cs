@@ -17,6 +17,15 @@ internal sealed class RowSorter : IDisposable
         _ => 25_000,
     };
 
+    /// <summary>
+    /// Sorted runs merged at once at most: each open run holds a decoded chunk, so 25,000,000 rows in runs of 10,000
+    /// (2,500 runs) held about 1.6 GB while merging (JavaScript). With the rows to come known, runs are made long enough.
+    /// </summary>
+    public const int MaxRuns = 256;
+
+    /// <summary>Rows per run for <paramref name="rows"/> rows to come: <see cref="RunRows(JazminPriority)"/>, or longer to stay within <see cref="MaxRuns"/>.</summary>
+    public static int RunRows(JazminPriority priority, long rows) => (int)Math.Max(RunRows(priority), (rows + MaxRuns - 1) / MaxRuns);
+
     private const int RunChunkRows = 512; // the merge decodes one chunk of each run at a time
 
     private readonly IReadOnlyList<JazminColumn> _columns;
