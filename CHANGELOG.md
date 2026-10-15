@@ -3,7 +3,11 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
-## Unreleased
+## 1.6.1 - 2026-10-15 (file format 1.0)
+A fix for documents that edit a table other than the file's first, and a sample key service that never holds the
+owner key.
+
+- **Compatibility:** the same file format, no API change. Change files and files are unchanged.
 - **Fixed: applying a change file to a shared file of several tables.** The sender's partitions and columns were
   checked against the file's first table instead of the table the document edits, so when that table wasn't first (or
   had another partition column or column groups), changes the sender was allowed to make were refused ("column … can't
