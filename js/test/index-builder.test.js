@@ -106,3 +106,39 @@ for (const [name, [type, make]] of Object.entries(CASES)) {
     assert.deepEqual(builder.nulls, nulls);
   });
 }
+
+// V8 refuses a Map more than 2²³ entries (Node 24: "Map maximum size exceeded"). Keys in no particular order use the
+// builder's lookup table, which held one entry per distinct key, so a sorted index on a column with more distinct values
+// than that failed (25,000,000 rows sorted by id, an index on name). Its tables now go on in further Maps.
+test('index builder: more distinct keys in no particular order than one Map holds', () => {
+  const n = 9_000_000;
+  const builder = new SortedIndexBuilder('int');
+  for (let row = 0; row < n; row++) builder.add(row, (row * 7_919) % n); // 7,919 is prime: every key once, out of order
+  let count = 0;
+  for (const page of builder.pages(1 << 20)) count += page.count;
+  assert.equal(count, n);
+});
+
+// The same path with a small limit, compared byte for byte with the reference builder.
+for (const [name, [type, make]] of Object.entries({
+  'int, table mode': ['int', () => Array.from({ length: N }, () => int(-50_000, 50_000))],
+  'string, table mode': ['string', () => Array.from({ length: N }, (_, i) => `k${(i * 7919) % N}`)],
+  'int, repeated keys in one run': ['int', () => Array.from({ length: N }, (_, i) => Math.floor(i / 2))],
+  'int, repeated keys across runs': ['int', () => Array.from({ length: 40 }, () => Array.from({ length: 500 }, (_, i) => Math.floor(i / 2))).flat()],
+})) {
+  test(`index builder: tables past their limit give the reference builder's pages (${name})`, () => {
+    const values = make();
+    const builder = new SortedIndexBuilder(type, 1000);
+    const reference = new ReferenceBuilder(type);
+    values.forEach((v, row) => {
+      builder.add(row, v);
+      reference.add(row, v);
+    });
+    for (const pageBytes of [64, 1 << 20]) {
+      const expected = reference.pages(pageBytes);
+      const actual = [...builder.pages(pageBytes)];
+      assert.equal(actual.length, expected.length);
+      actual.forEach((page, i) => assert.ok(Buffer.from(page.raw).equals(Buffer.from(expected[i].raw)), `page ${i} (${pageBytes})`));
+    }
+  });
+}
