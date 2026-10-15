@@ -161,10 +161,55 @@ internal static class Masks
         or UnicodeCategory.TitlecaseLetter or UnicodeCategory.ModifierLetter or UnicodeCategory.OtherLetter
         or UnicodeCategory.DecimalDigitNumber or UnicodeCategory.LetterNumber or UnicodeCategory.OtherNumber;
 
-    /// <summary>What a masked value shows, by its rule (null for none), by code points so a character is never split.</summary>
+    private static bool IsWordChar(char c) => char.IsAsciiLetterOrDigit(c) || (c >= 0x80 && char.GetUnicodeCategory(c) is UnicodeCategory.UppercaseLetter
+        or UnicodeCategory.LowercaseLetter or UnicodeCategory.TitlecaseLetter or UnicodeCategory.ModifierLetter or UnicodeCategory.OtherLetter
+        or UnicodeCategory.DecimalDigitNumber or UnicodeCategory.LetterNumber or UnicodeCategory.OtherNumber);
+
+    /// <summary>
+    /// What a masked value shows, by its rule (null for none), by code points so a character is never split. Text without
+    /// surrogate pairs (nearly all) is masked by characters with one allocation: the result.
+    /// </summary>
     public static string? ShownText(JazminMaskShow show, string? value)
     {
         if (value is null) return null;
+        if (value.AsSpan().IndexOfAnyInRange('\uD800', '\uDFFF') >= 0) return ShownRunes(show, value);
+        switch (show.Kind)
+        {
+            case JazminMaskShowKind.Last:
+                return value.Length > show.Last ? string.Concat(Dots, value.AsSpan(value.Length - show.Last)) : Dots;
+            case JazminMaskShowKind.FirstAndLast:
+                return value.Length > show.First + show.Last
+                    ? string.Concat(value.AsSpan(0, show.First), Dots, value.AsSpan(value.Length - show.Last)) : Dots;
+            case JazminMaskShowKind.KeepFormat:
+            {
+                var at = value.LastIndexOf('@');
+                if (at > 0)
+                {
+                    return string.Create(value.Length, (value, at), static (span, s) => // an email: its domain kept
+                    {
+                        span[0] = s.value[0];
+                        span[1..s.at].Fill('•');
+                        s.value.AsSpan(s.at).CopyTo(span[s.at..]);
+                    });
+                }
+                return string.Create(value.Length, (value, show.Last), static (span, s) =>
+                {
+                    var keep = s.Last;
+                    for (var i = span.Length - 1; i >= 0; i--)
+                    {
+                        var c = s.value[i];
+                        span[i] = !IsWordChar(c) || keep-- > 0 ? c : '•';
+                    }
+                });
+            }
+            default:
+                return null;
+        }
+    }
+
+    /// <summary><see cref="ShownText"/> for text with surrogate pairs: by code points.</summary>
+    internal static string? ShownRunes(JazminMaskShow show, string value)
+    {
         var text = value.EnumerateRunes().ToArray();
         string Join(IEnumerable<Rune> runes) => string.Concat(runes.Select(r => r.ToString()));
         switch (show.Kind)

@@ -47,12 +47,57 @@ const showAsGiven = (rule) => (rule.kind === 'none' ? 'none' : rule.kind === 'co
   : rule.kind === 'keepFormat' ? { keepFormat: true, last: rule.last } : rule.kind === 'firstLast' ? { first: rule.first, last: rule.last } : { last: rule.last });
 
 const textOf = (value) => (value instanceof Date ? value.toISOString() : typeof value === 'bigint' ? value.toString() : String(value));
-const isWordChar = (ch) => /[\p{L}\p{N}]/u.test(ch);
+const WORD = /[\p{L}\p{N}]/u;
+const isWordChar = (ch) => WORD.test(ch);
+const SURROGATE = /[\uD800-\uDFFF]/;
+const NOT_ASCII = /[^\x00-\x7F]/; // eslint-disable-line no-control-regex
+const ASCII_WORDS = /[0-9A-Za-z]/g;
+const WORDS = /[\p{L}\p{N}]/gu;
+const DOT_CODE = 0x2022; // •
+const MASK_BUFFER = new Uint16Array(4096); // keepFormat's output, reused: values up to this long make no array
+const isWordAt = (text, i) => {
+  const code = text.charCodeAt(i);
+  return (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || (code >= 128 && WORD.test(text[i]));
+};
 
-/** What a masked value shows, by its rule (null for none). */
+/**
+ * What a masked value shows, by its rule (null for none), by code points so a character is never split. Text without
+ * surrogate pairs (nearly all) is masked by slicing, without an array per value.
+ */
 export function shownText(rule, value) {
   if (value === null || value === undefined) return null;
-  const text = [...textOf(value)]; // by code points, so a character is never split
+  const plain = textOf(value);
+  if (!SURROGATE.test(plain)) {
+    switch (rule.kind) {
+      case 'last': return plain.length > rule.last ? DOTS + plain.slice(plain.length - rule.last) : DOTS;
+      case 'firstLast': return plain.length > rule.first + rule.last ? plain.slice(0, rule.first) + DOTS + plain.slice(plain.length - rule.last) : DOTS;
+      case 'keepFormat': {
+        const at = plain.lastIndexOf('@');
+        if (at > 0) return plain[0] + '•'.repeat(at - 1) + plain.slice(at); // an email: its domain kept
+        // The last `last` letters and digits stay, other letters and digits are masked: one pass into a reused buffer.
+        let keep = rule.last;
+        const n = plain.length;
+        if (n <= MASK_BUFFER.length) {
+          for (let i = n - 1; i >= 0; i--) MASK_BUFFER[i] = !isWordAt(plain, i) || keep-- > 0 ? plain.charCodeAt(i) : DOT_CODE;
+          return String.fromCharCode.apply(null, MASK_BUFFER.subarray(0, n));
+        }
+        let from = n; // a long value: the letters and digits before the first kept one, masked by a regex
+        while (from > 0 && keep > 0) {
+          from--;
+          if (isWordAt(plain, from)) keep--;
+        }
+        const head = plain.slice(0, from);
+        return head.replace(NOT_ASCII.test(head) ? WORDS : ASCII_WORDS, '•') + plain.slice(from);
+      }
+      default: return null;
+    }
+  }
+  return shownCodePoints(rule, plain);
+}
+
+/** shownText by code points, for text with surrogate pairs (exported for tests). */
+export function shownCodePoints(rule, plain) {
+  const text = [...plain]; // by code points, so a character is never split
   switch (rule.kind) {
     case 'last': return text.length > rule.last ? DOTS + text.slice(text.length - rule.last).join('') : DOTS;
     case 'firstLast': return text.length > rule.first + rule.last ? text.slice(0, rule.first).join('') + DOTS + text.slice(text.length - rule.last).join('') : DOTS;

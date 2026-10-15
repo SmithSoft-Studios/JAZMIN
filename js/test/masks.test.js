@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { JazminKey, JazminKeyError, append, compact, issueFileUnlockToken, open, update, write } from '../src/index.js';
-import { rowMasker, shownText, tableMasks } from '../src/masks.js';
+import { rowMasker, shownCodePoints, shownText, tableMasks } from '../src/masks.js';
 
 // Masked columns (spec 7.6.8): a column shown masked until its lock opens, with a shown column made by a rule and,
 // for masked rows only, an unmasked column.
@@ -46,6 +46,22 @@ test('what a masked value shows, by each rule', () => {
   assert.equal(shownText({ kind: 'keepFormat', last: 4 }, 'thandi@example.com'), 't•••••@example.com', 'an email keeps its domain');
   assert.equal(shownText({ kind: 'last', last: 2 }, '61000.50'), '••••50');
   assert.equal(shownText({ kind: 'last', last: 4 }, null), null);
+});
+
+test('the fast shown text is the same as by code points, for every rule', () => {
+  const pieces = ['4821', ' ', '-', '.', '@', 'é', 'ß', 'Ж', '٣', '½', 'x', 'Z', '0', '/', '••', '名'];
+  let seed = 7;
+  const next = (n) => {
+    seed = (seed * 1103515245 + 12345) % 2147483648;
+    return seed % n;
+  };
+  const rules = [{ kind: 'last', last: 0 }, { kind: 'last', last: 4 }, { kind: 'firstLast', first: 2, last: 3 }, { kind: 'keepFormat', last: 0 },
+    { kind: 'keepFormat', last: 4 }, { kind: 'keepFormat', last: 64 }];
+  for (let i = 0; i < 3000; i++) {
+    let text = '';
+    for (let k = next(12); k > 0; k--) text += pieces[next(pieces.length)];
+    for (const rule of rules) assert.equal(shownText(rule, text), shownCodePoints(rule, text), JSON.stringify([rule, text]));
+  }
 });
 
 test('a key granted a masked column sees it masked, with its shown and unmasked columns, until it unlocks', () => {
