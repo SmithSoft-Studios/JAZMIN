@@ -37,12 +37,14 @@ export class RowSorter {
   #runs = [];
   #dir = null;
   #readers = [];
+  #onSorted;
 
   /**
    * columns: the table's column definitions; sortedBy: the column names to sort by; runRows: rows sorted in memory at
-   * a time; writeOptions: codec, level, maxDegreeOfParallelism and priority for the temporary runs.
+   * a time; writeOptions: codec, level, maxDegreeOfParallelism and priority for the temporary runs; onSorted(n): called
+   * with the number of rows each time a run of them is sorted (for progress).
    */
-  constructor(columns, sortedBy, { runRows = SORT_RUN_ROWS.balanced, writeOptions = {} } = {}) {
+  constructor(columns, sortedBy, { runRows = SORT_RUN_ROWS.balanced, writeOptions = {}, onSorted = null } = {}) {
     if (!Number.isInteger(runRows) || runRows < 1) throw new JazminValidationError('The sort needs at least 1 row in memory');
     const byName = new Map(columns.map((c) => [c.name, c]));
     const sortColumns = sortedBy.map((name) => {
@@ -57,6 +59,7 @@ export class RowSorter {
     this.#columns = columns.map(({ index, ...c }) => c); // the runs need no indexes
     this.#runRows = runRows;
     this.#writeOptions = writeOptions;
+    this.#onSorted = onSorted;
   }
 
   /** Adds a row. */
@@ -78,6 +81,7 @@ export class RowSorter {
     if (!this.#buffer.length) return;
     this.#dir ??= fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-sort-'));
     const file = path.join(this.#dir, `run-${this.#runs.length}.jzm`);
+    const count = this.#buffer.length;
     const key = JazminKey.generate();
     // Small chunks, light compression and one thread: the merge holds one decoded chunk per run, and runs are read once.
     const writer = new JazminWriter(file, { ...this.#writeOptions, columns: this.#columns, key, chunkRows: RUN_CHUNK_ROWS, level: 1, maxDegreeOfParallelism: 1 });
@@ -89,12 +93,15 @@ export class RowSorter {
       throw error;
     }
     this.#runs.push({ file, key });
+    this.#onSorted?.(count);
   }
 
   /** Every row added, in the new order. Call once, then close(). */
   *rows() {
     if (!this.#runs.length) {
-      for (const { row } of this.#sorted()) yield row;
+      const sorted = this.#sorted();
+      this.#onSorted?.(sorted.length);
+      for (const { row } of sorted) yield row;
       return;
     }
     this.#spill();

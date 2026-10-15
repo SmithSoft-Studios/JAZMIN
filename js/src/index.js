@@ -10,7 +10,7 @@ import { inferSchema } from './schema.js';
 import { TextColumnInference, textToValue, toObject } from './formats/text.js';
 import { setField } from './schema.js';
 import { writeShape } from './shape.js';
-import { JazminWriter } from './writer.js';
+import { JazminWriter, PROGRESS_TOTAL } from './writer.js';
 
 export { JazminReader } from './reader.js';
 export { JazminWriter } from './writer.js';
@@ -92,7 +92,7 @@ export async function writeAsync(target, rows, options = {}) {
 export function write(target, rows, options = {}) {
   if (options.tables) return writeTables(target, rows, options);
   const list = options.columns ? rows : Array.from(rows);
-  return writeFrom(target, () => list, options);
+  return writeFrom(target, () => list, Array.isArray(list) ? { ...options, [PROGRESS_TOTAL]: list.length } : options);
 }
 
 /** write() with `tables`: `rows` maps each table's name to its rows (a table left out is written empty). */
