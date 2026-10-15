@@ -4,6 +4,9 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **An online dashboard in the demo gallery (#218).** The from-disk sample's Documents page has a third document,
+  `dashboard.jzm`: the Inter font from Google Fonts, Chart.js (an exact version, with its `integrity` hash) and icons
+  from jsDelivr, with `online: 'required'`; without the charts it shows the figures as a table.
 - **Documents that need the internet (#218, spec 6.8).** `package.online: 'required' | 'optional'` (.NET
   `JazminPackage.Online`, `JazminOnline`), with `allowedOrigins`. The web viewer says the document needs to be online;
   with `'required'`, offline, it shows a message instead of the document, and the document once back online.

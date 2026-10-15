@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sales dashboard</title>
+<!-- From the internet, as the file allows (package.allowedOrigins, online: 'required'): the Inter font from Google
+     Fonts, Chart.js from jsDelivr at an exact version with its integrity hash, and icons from jsDelivr. -->
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap">
+<link rel="stylesheet" href="dashboard.css">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"
+  integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ" crossorigin="anonymous"></script>
+</head>
+<body>
+<header class="top">
+  <div>
+    <p class="eyebrow" id="company"></p>
+    <h1>Sales dashboard</h1>
+    <p id="period" class="muted"></p>
+  </div>
+  <p class="online" id="online"></p>
+</header>
+
+<section class="kpis">
+  <div><img alt="" src="https://cdn.jsdelivr.net/npm/lucide-static@1.46.0/icons/trending-up.svg"><span>Revenue</span><strong id="revenue"></strong></div>
+  <div><img alt="" src="https://cdn.jsdelivr.net/npm/lucide-static@1.46.0/icons/shopping-cart.svg"><span>Orders</span><strong id="orders"></strong></div>
+  <div><img alt="" src="https://cdn.jsdelivr.net/npm/lucide-static@1.46.0/icons/store.svg"><span>Branches</span><strong id="branches"></strong></div>
+  <div><img alt="" src="https://cdn.jsdelivr.net/npm/lucide-static@1.46.0/icons/target.svg"><span>Best month</span><strong id="best"></strong></div>
+</section>
+
+<section class="grid">
+  <div class="card wide"><h2>Revenue by month and branch</h2><canvas id="months" aria-label="Revenue by month and branch"></canvas></div>
+  <div class="card"><h2>Revenue by branch</h2><canvas id="branch" aria-label="Revenue by branch"></canvas></div>
+  <div class="card"><h2>Share by category</h2><canvas id="category" aria-label="Share by category"></canvas></div>
+</section>
+
+<section id="fallback" class="card" hidden>
+  <h2>Revenue by branch</h2>
+  <p class="muted">The charts need to be online: the figures follow.</p>
+  <table><thead><tr><th>Branch</th><th>Revenue</th><th>Orders</th></tr></thead><tbody id="fallback-rows"></tbody></table>
+</section>
+
+<script src="dashboard.js"></script>
+</body>
+</html>

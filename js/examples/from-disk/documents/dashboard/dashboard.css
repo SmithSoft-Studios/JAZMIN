@@ -1,0 +1,28 @@
+:root { --ink: #172033; --muted: #5d6679; --line: #e3e7ef; --soft: #f5f7fb; --accent: #4f46e5; }
+* { box-sizing: border-box; }
+body { margin: 0 auto; max-width: 68rem; padding: 1.75rem 1.5rem 2.5rem; font: 14.5px/1.5 Inter, system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: #fff; }
+h1 { margin: 0; font-size: 1.9rem; letter-spacing: -0.02em; }
+h2 { margin: 0 0 0.75rem; font-size: 0.95rem; }
+.muted { color: var(--muted); }
+.eyebrow { margin: 0 0 0.2rem; color: var(--accent); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; font-size: 0.78rem; }
+.top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 1rem; padding-bottom: 1.1rem; border-bottom: 2px solid var(--ink); }
+.top p { margin: 0.2rem 0 0; }
+.online { padding: 0.3rem 0.7rem; border-radius: 999px; background: #eef2ff; color: var(--accent); font-size: 0.8rem; font-weight: 600; }
+.kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; margin: 1.25rem 0; }
+.kpis div { display: grid; grid-template-columns: auto 1fr; column-gap: 0.6rem; align-items: center; padding: 0.85rem 1rem; border-radius: 12px; background: var(--soft); }
+.kpis img { grid-row: span 2; width: 1.6rem; height: 1.6rem; padding: 0.35rem; border-radius: 8px; background: #fff; }
+.kpis span { color: var(--muted); font-size: 0.8rem; }
+.kpis strong { font-size: 1.25rem; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.card { border: 1px solid var(--line); border-radius: 14px; padding: 1rem 1.15rem; break-inside: avoid; }
+.card.wide { grid-column: 1 / -1; }
+.card canvas { width: 100% !important; max-height: 18rem; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line); text-align: left; }
+td:not(:first-child), th:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+@media (max-width: 720px) {
+  body { padding: 1.1rem 1rem 2rem; }
+  .kpis { grid-template-columns: 1fr 1fr; }
+  .grid { grid-template-columns: 1fr; }
+}
+@media print { .online { display: none; } }

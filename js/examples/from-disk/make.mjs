@@ -159,6 +159,20 @@ write(tasksFile, tasks(), {
   password: 'demo',
 });
 fs.writeFileSync(`${tasksFile}.js`, portableScript(tasksFile));
+// A dashboard that loads from the internet: the Inter font from Google Fonts, Chart.js and icons from jsDelivr. The
+// file names those origins (allowedOrigins) and says it needs them (online: 'required'): the viewer says so, and
+// offline it waits for the network.
+const dashboardFile = path.join(site, 'data/dashboard.jzm');
+write(dashboardFile, branchSales(), {
+  columns: [{ name: 'month', type: 'string' }, { name: 'branch', type: 'string' }, { name: 'category', type: 'string' }, { name: 'revenue', type: 'decimal' }, { name: 'orders', type: 'int' }],
+  metadata: { company: 'Harbour & Co. Stores', title: 'Sales dashboard', period: 'January to June 2026', currency: 'ZAR' },
+  files: pageFiles('dashboard'),
+  package: {
+    entry: 'index.html', title: 'Sales dashboard, January to June 2026', online: 'required',
+    allowedOrigins: ['https://fonts.googleapis.com', 'https://fonts.gstatic.com', 'https://cdn.jsdelivr.net'],
+  },
+});
+fs.writeFileSync(`${dashboardFile}.js`, portableScript(dashboardFile));
 
 // One file, three people: each access key sees its branch's rows (or all), the pay columns or not, and the files and
 // saved shapes of the groups it sees. The owner key stays out of the site: browsers refuse a shared file's owner key.

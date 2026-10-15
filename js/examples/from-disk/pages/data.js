@@ -6,6 +6,7 @@ var data = {
   bank: 'data/bank.jzm.js', // tables.html
   report: 'data/report.jzm.js', // documents.html
   tasks: 'data/tasks.jzm.js', // documents.html
+  dashboard: 'data/dashboard.jzm.js', // documents.html: loads its font, charts and icons from the internet
   shared: 'data/shared.jzm.js', // shared.html, with the keys in data/shared-keys.js
   remco: 'data/remco.jzm.js', // two-factor.html, with the key in data/two-factor-keys.js
 };
