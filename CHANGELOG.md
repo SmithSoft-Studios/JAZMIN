@@ -3,7 +3,11 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
-## Unreleased
+## 1.6.2 - 2026-10-15 (file format 1.0)
+A fix for sorted indexes on columns with millions of distinct values (JavaScript).
+
+- **Compatibility:** the same file format, no API change. Index pages are byte-for-byte the same as 1.6.1 writes
+  where 1.6.1 could write them. The .NET packages have no change beyond the version.
 - **Fixed: a sorted index on a column with more than about 8 million distinct values (JavaScript).** When the values
   don't arrive in order (the rows are sorted by another column), the index builder keeps a lookup table of the values,
   and V8 refuses a `Map` more than 2²³ entries: writing or changing such a file stopped with "Map maximum
