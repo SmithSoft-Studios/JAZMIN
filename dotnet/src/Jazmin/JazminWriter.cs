@@ -89,6 +89,9 @@ public sealed class JazminWriteOptions
     /// <summary>The locks a rewrite keeps, as the owner directory has them (Update; an append has them in its state).</summary>
     internal IReadOnlyList<LockState>? KeptLocks { get; init; }
 
+    /// <summary>The masked columns a rewrite keeps, as the owner directory has them, each with its table's "tableName" afterwards (spec 7.6.8).</summary>
+    internal IReadOnlyList<JsonObject>? KeptMasks { get; init; }
+
     /// <summary>
     /// Export shapes saved in the file, offered by name. In a shared file each key that sees one (its groups) must see
     /// every column it uses, or the file is refused.
@@ -198,7 +201,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     /// <summary>A table to write, checked (spec 6.2). Partition columns and column groups belong to access-controlled files.</summary>
     // SortedBy: the order's leading plain keys (the catalog's sorted_by); Order: the whole order (spec 6.7).
     private sealed record TableSpec(string Name, JazminColumn[] Columns, IReadOnlyList<string>? SortedBy, JazminSortKey[]? Order, int[]? SortCols, int ChunkRows,
-        int ChunkBytes, string? PartitionBy, int PartitionCol, List<(string Name, int[] Cols)> ColumnGroups);
+        int ChunkBytes, string? PartitionBy, int PartitionCol, List<(string Name, int[] Cols)> ColumnGroups, List<MaskSpec> Masks);
 
     [ThreadStatic]
     private static ByteWriter? _payloadWriter; // per-thread payload buffer, reused
@@ -231,7 +234,9 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     private int _firstOrdinal;
     private readonly Dictionary<string, FileEntry> _fileEntries = new(StringComparer.Ordinal); // embedded files by path
     private readonly Dictionary<string, StoredContent> _contents = new(StringComparer.Ordinal); // by SHA-256 and lock: stored once
-    private readonly Dictionary<string, LockState> _locks; // locks of stored files (spec 6.8.1) by id
+    private readonly Dictionary<string, LockState> _locks; // locks of stored files (spec 6.8.1) and masked columns (7.6.8) by id
+    private readonly List<JsonObject> _otherMasks = []; // an append: the file's other tables' masked columns, as the owner directory has them
+    private RowMasker? _masker; // the table's masked columns: makes a row's shown values and moves its unmasked values
     private int _nextContent;
     private JsonObject? _packageJson;
     private bool _packageSet;
@@ -283,22 +288,43 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         var access = _options.Access;
         if (_options.Locks is not null && access is null)
             throw new JazminValidationException("Locks need an access-controlled file (spec 6.8.1): with one key or password, that key would open every lock");
-        var (locks, removedLocks) = Jazmin.Locks.ForWriter(_options.Locks, cont?.Files?.Locks ?? _options.KeptLocks);
+        // An append keeps the owner directory's locks (masked columns may use them with no file stored).
+        var (locks, removedLocks) = Jazmin.Locks.ForWriter(_options.Locks, cont is not null ? Jazmin.Locks.ReadOwner(cont.Directory?["locks"]).Values : _options.KeptLocks);
         _locks = locks;
+        // The masked columns a rewrite or an append keeps: the file's, for the table they are of.
+        var fileMasks = cont?.Directory?["masks"] is JsonArray listed
+            ? listed.Select(m => m as JsonObject ?? throw new JazminFormatException("The owner directory's masked columns are malformed")).ToList() : [];
+        IEnumerable<JsonNode?> KeptMasks(string table) => cont is not null
+            ? fileMasks.Where(m => (int?)m["table"] == cont.TableIndex)
+            : (_options.KeptMasks ?? []).Where(m => (string?)m["tableName"] == table);
+        _otherMasks.AddRange(fileMasks.Where(m => (int?)m["table"] != cont!.TableIndex));
         if (_options.Tables is { } tables)
         {
             if (tables.Count == 0) throw new JazminValidationException("Tables must list at least one table");
             if (columns is not null || _options.SortedBy is not null || _options.Sort is not null || access?.PartitionBy is not null || access?.ColumnGroups.Count > 0)
                 throw new JazminValidationException("With Tables, give the columns, SortedBy (or Sort), PartitionBy and ColumnGroups in each table");
-            _tables = tables.Select(t => Spec(t.Name, t.Columns, SortOrder.Of(t.SortedBy, t.Sort), t.PartitionBy, t.ColumnGroups, t.ChunkRows, t.ChunkBytes, named: true)).ToArray();
+            _tables = tables.Select(t => Spec(t.Name, t.Columns, SortOrder.Of(t.SortedBy, t.Sort), t.PartitionBy, t.ColumnGroups, t.ChunkRows, t.ChunkBytes, named: true, KeptMasks(t.Name))).ToArray();
             var twice = _tables.GroupBy(t => t.Name, StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1);
             if (twice is not null) throw new JazminValidationException($"Table '{twice.Key}' is declared twice");
         }
         else
         {
             if (columns is null) throw new JazminValidationException("Give the columns, or the Tables option");
-            _tables = [Spec(cont?.Table.Name ?? "", columns, SortOrder.Of(_options.SortedBy, _options.Sort), access?.PartitionBy, access?.ColumnGroups, null, null, named: false)];
+            var name = cont?.Table.Name ?? "";
+            _tables = [Spec(name, columns, SortOrder.Of(_options.SortedBy, _options.Sort), access?.PartitionBy, access?.ColumnGroups, null, null, named: false, KeptMasks(name))];
         }
+        // Each masked column's lock is one of the file's, and its group is of one table.
+        foreach (var (column, lockId) in _otherMasks.Select(m => ((string?)m["column"], (string?)m["lock"])).Concat(_tables.SelectMany(t => t.Masks.Select(m => ((string?)m.Column, (string?)m.Lock)))))
+        {
+            if (lockId is null || !_locks.ContainsKey(lockId))
+            {
+                var known = _locks.Count > 0 ? $"locks: {string.Join(", ", _locks.Keys)}" : "no locks given";
+                throw new JazminValidationException($"Column '{column}': mask: no lock '{lockId}' ({known})");
+            }
+        }
+        var maskGroups = _otherMasks.Select(m => (string?)m["group"]).ToHashSet(StringComparer.Ordinal);
+        foreach (var m in _tables.SelectMany(t => t.Masks))
+            if (!maskGroups.Add(m.Group)) throw new JazminValidationException($"Column '{m.Column}': a masked column group is of one table ('{m.Group}' is in two)");
         // Links between the tables: checked against them, kept in the metadata (names only).
         if (_options.Links is { } links)
         {
@@ -589,10 +615,18 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
 
     /// <summary>A table's definition, checked (spec 6.2).</summary>
     private TableSpec Spec(string name, IEnumerable<JazminColumn> columnList, IReadOnlyList<JazminSortKey>? order, string? partitionBy,
-        Dictionary<string, string[]>? columnGroups, int? chunkRows, int? chunkBytes, bool named)
+        Dictionary<string, string[]>? columnGroups, int? chunkRows, int? chunkBytes, bool named, IEnumerable<JsonNode?> keptMasks)
     {
         if (named && string.IsNullOrEmpty(name)) throw new JazminValidationException("Each table needs a name");
-        var columns = columnList.ToArray();
+        // Masked columns (spec 7.6.8): each in a group of its own, with its shown and unmasked columns added.
+        var (columns, masks, maskGroups) = Masks.ForTable(columnList.ToArray(), keptMasks);
+        if (masks.Count > 0)
+        {
+            if (_options.Access is null)
+                throw new JazminValidationException($"Column '{masks[0].Column}': masked columns need an access-controlled file (spec 7.6.8): only its keys can be given a column masked");
+            columnGroups = new Dictionary<string, string[]>(columnGroups ?? new(), StringComparer.Ordinal);
+            foreach (var (group, members) in maskGroups) columnGroups[group] = members;
+        }
         TypeNames.Validate(columns);
         var rows = chunkRows ?? _options.ChunkRows;
         if (rows < 1) throw new JazminValidationException("ChunkRows must be positive");
@@ -618,7 +652,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             if (partitionBy is not null || columnGroups is { Count: > 0 })
                 throw new JazminValidationException("PartitionBy and ColumnGroups need an access-controlled file (the Access option)");
             return new TableSpec(name, columns, sortedBy, orderKeys, sortCols, rows, chunkBytes ?? _options.ChunkBytes, null, -1,
-                [(FormatConstants.DefaultColumnGroup, Enumerable.Range(0, columns.Length).ToArray())]);
+                [(FormatConstants.DefaultColumnGroup, Enumerable.Range(0, columns.Length).ToArray())], masks);
         }
         var layout = AccessConfig.NormalizeTable(partitionBy, columnGroups ?? new(), columns);
         foreach (var i in sortCols ?? [])
@@ -626,7 +660,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             if (layout.ColumnGroups[0].Name != FormatConstants.DefaultColumnGroup || !layout.ColumnGroups[0].Cols.Contains(i))
                 throw new JazminValidationException($"The SortedBy column '{columns[i].Name}' must stay in the default column group");
         }
-        return new TableSpec(name, columns, sortedBy, orderKeys, sortCols, rows, chunkBytes ?? _options.ChunkBytes, layout.PartitionBy, layout.PartitionCol, layout.ColumnGroups);
+        return new TableSpec(name, columns, sortedBy, orderKeys, sortCols, rows, chunkBytes ?? _options.ChunkBytes, layout.PartitionBy, layout.PartitionCol, layout.ColumnGroups, masks);
     }
 
     /// <summary>Makes <paramref name="table"/> (table <paramref name="index"/> of the file) the table rows go to.</summary>
@@ -644,6 +678,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         _sortCols = table.SortCols;
         _lastSortKey = null;
         _sortKeyScratch = null;
+        _masker = table.Masks.Count > 0 ? new RowMasker(table.Masks, table.Columns, _options.JsonOptions) : null;
         _directDates = null;
         _parts = table.ColumnGroups.Select(g => new Part(g.Name, g.Cols)).ToArray();
         _chunks.Clear();
@@ -833,6 +868,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         var normalized = _normalized;
         try
         {
+            if (_masker is not null) values = _masker.Apply(values); // shown values made, unmasked values moved (spec 7.6.8)
             var directDates = _directDates ??= DirectDateColumns();
             for (var i = 0; i < _columns.Length; i++)
             {
@@ -1061,7 +1097,9 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         {
             ReaderFeatures = readerFeatures,
             // file-locks while the file has a lock: writers that would not keep them must not modify it (spec 6.8.1, 12).
-            WriterFeatures = (cont?.Header.WriterFeatures ?? []).Where(f => f != Jazmin.Locks.Feature).Concat(_locks.Count > 0 ? [Jazmin.Locks.Feature] : []).ToList(),
+            // masked-columns while a column is masked: writers that don't know masks would grant them unmasked (spec 7.6.8).
+            WriterFeatures = (cont?.Header.WriterFeatures ?? []).Where(f => f != Jazmin.Locks.Feature && f != Masks.Feature)
+                .Concat(_locks.Count > 0 ? [Jazmin.Locks.Feature] : []).Concat(AllMasks().Count > 0 ? [Masks.Feature] : []).ToList(),
             Created = cont?.Header.Created ?? Now.ToUnixTimeMilliseconds(),
             Modified = cont is null ? 0 : Now.ToUnixTimeMilliseconds(),
             AppendCount = segment,
@@ -1352,9 +1390,21 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             ["partitions"] = new JsonArray(_secrets!.Names.Select(n => (JsonNode?)JsonValue.Create(n)).ToArray()),
         };
         if (_fileGroupNames.Count > 0) directory["fileGroups"] = new JsonArray(_fileGroupNames.Select(n => (JsonNode?)JsonValue.Create(n)).ToArray());
+        // A grant names masked groups in maskedColumns, and every group as those listed with allColumns (spec 7.6.8): a
+        // writer that doesn't know masks (1.0-1.6) then grants no one a masked group when it rewrites the file.
+        var masks = AllMasks();
+        var maskedGroups = masks.Select(m => (string)m["group"]!).ToHashSet(StringComparer.Ordinal);
         directory["grants"] = new JsonArray(_access!.Grants.Select(g =>
         {
-            var grant = new JsonObject { ["key"] = g.Key.Export(), ["rows"] = GrantList(g.Rows), ["columns"] = GrantList(g.Columns) };
+            var grant = new JsonObject { ["key"] = g.Key.Export(), ["rows"] = GrantList(g.Rows) };
+            if (maskedGroups.Count == 0) grant["columns"] = GrantList(g.Columns);
+            else
+            {
+                var names = g.Columns ?? _allGroupNames;
+                grant["columns"] = GrantList(names.Where(n => !maskedGroups.Contains(n)).ToList());
+                if (names.Where(maskedGroups.Contains).ToList() is { Count: > 0 } masked) grant["maskedColumns"] = GrantList(masked);
+                if (g.Columns is null) grant["allColumns"] = true;
+            }
             if (g.Label is not null) grant["label"] = g.Label;
             if (g.Files is { Count: > 0 } files) grant["files"] = files.Contains(EmbeddedFiles.Everyone) ? "*" : new JsonArray(files.Select(f => (JsonNode?)f).ToArray());
             if (g.Expires is { } expires) grant["expires"] = Iso(expires);
@@ -1364,8 +1414,15 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         }).ToArray());
         // Every lock with its key and secret: the owner opens locked files, and rewrites keep the locks (spec 6.8.1).
         if (_locks.Count > 0) directory["locks"] = Jazmin.Locks.OwnerList(_locks.Values);
+        // Every masked column, so rewrites and appends keep them and write each key slot again (spec 7.6.8).
+        if (masks.Count > 0) directory["masks"] = new JsonArray(masks.Select(m => (JsonNode?)m.DeepClone()).ToArray());
         return directory.ToJsonString();
     }
+
+    /// <summary>Every masked column of the file, as the owner directory keeps them (spec 7.6.8), by table and position.</summary>
+    private List<JsonObject> AllMasks() =>
+        _otherMasks.Concat(_tables.SelectMany((t, i) => Masks.OwnerEntries(t.Masks, _continue?.TableIndex ?? i, t.Columns)))
+            .OrderBy(m => (int)m["table"]!).ThenBy(m => (int)m["position"]!).ToList();
 
     /// <summary>The key-slot payload: one small slot for the owner, one per grant (spec 7.6.4).</summary>
     private List<(byte[] Id, byte[] Sealed, bool Online)> KeySlotEntries()
@@ -1377,6 +1434,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         {
             AccessCrypto.SealSlot(_options.Key!.Bytes, _salt, _fileId, new JsonObject { ["header"] = header, ["owner"] = Convert.ToBase64String(s.Owner) }),
         };
+        var maskedGroups = AllMasks().ToDictionary(m => (string)m["group"]!, StringComparer.Ordinal);
         foreach (var grant in _access!.Grants)
         {
             var partitions = new JsonObject();
@@ -1388,9 +1446,32 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                 partitions[id] = Convert.ToBase64String(s.PartitionSecret(id));
                 partitionNames[id] = name;
             }
-            var columns = new JsonObject((grant.Columns ?? allColumns)
+            // A masked column's group (spec 7.6.8): its secret sealed under its lock, with the column, under "masks".
+            var granted = grant.Columns ?? allColumns;
+            var columns = new JsonObject(granted.Where(n => !maskedGroups.ContainsKey(n))
                 .Select(n => new KeyValuePair<string, JsonNode?>(n, Convert.ToBase64String(s.ColumnSecret(n)))));
             var bundle = new JsonObject { ["header"] = header, ["partitions"] = partitions, ["partitionNames"] = partitionNames, ["columns"] = columns };
+            var maskLocks = new JsonObject();
+            var maskGroups = new JsonObject();
+            foreach (var n in granted)
+            {
+                if (!maskedGroups.TryGetValue(n, out var m) || maskGroups.ContainsKey(n)) continue;
+                var l = _locks[(string)m["lock"]!];
+                if (!maskLocks.ContainsKey(l.Id))
+                {
+                    var lockJson = new JsonObject { ["kind"] = Jazmin.Locks.KindText(l.Kind), ["salt"] = Convert.ToBase64String(l.Salt) };
+                    if (l.Iterations is { } iterations) lockJson["iterations"] = iterations;
+                    if (l.KeyService is not null) lockJson["keyService"] = l.KeyService;
+                    maskLocks[l.Id] = lockJson;
+                }
+                var column = new JsonObject
+                {
+                    ["table"] = m["table"]!.DeepClone(), ["position"] = m["position"]!.DeepClone(), ["name"] = m["column"]!.DeepClone(), ["type"] = m["type"]!.DeepClone(),
+                };
+                if (m["shown"] is { } shown) column["shown"] = shown.DeepClone();
+                if (m["unmasked"] is { } unmasked) column["unmasked"] = unmasked.DeepClone();
+                maskGroups[n] = new JsonObject { ["lock"] = l.Id, ["sealed"] = Convert.ToBase64String(Masks.SealGroup(l, n, s.ColumnSecret(n))), ["column"] = column };
+            }
             bundle["submission"] = Convert.ToBase64String(_options.Key!.SubmissionKey(grant.Key.Id).Bytes); // what this holder sends back (spec 7.8)
             var fileSecrets = new JsonObject();
             foreach (var name in _fileGroupNames)
@@ -1399,6 +1480,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                 if (SeesFileGroup(grant, name, id)) fileSecrets[id] = Convert.ToBase64String(s.FileGroupSecret(id));
             }
             if (fileSecrets.Count > 0) bundle["files"] = fileSecrets;
+            if (maskGroups.Count > 0) bundle["masks"] = new JsonObject { ["locks"] = maskLocks, ["groups"] = maskGroups };
             if (grant.Expires is { } expires) bundle["expires"] = Iso(expires);
             if (grant.Mode == JazminGrantMode.Online) bundle["online"] = true;
             slots.Add(AccessCrypto.SealSlot(grant.Key.Secret, _salt, _fileId, bundle, grant.Share));

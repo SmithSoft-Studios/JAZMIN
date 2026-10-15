@@ -151,19 +151,20 @@ export const ownerMasks = (masks, table, columns) => masks.map((m) => {
 
 /**
  * A row's mask work, for the writer: the shown values made, and in tables that mask some rows, each row's value in the
- * masked or the unmasked column. A row that gives the unmasked column (a rewrite carrying the file's rows) keeps it.
+ * masked or the unmasked column: it stays masked when the row matches `rows`, else it moves to the unmasked column. A
+ * row with only an unmasked value (one the file has) keeps it. The .NET library does the same.
  */
 export function rowMasker(masks, columns) {
-  const work = masks.map((m) => ({ ...m, matches: m.rows !== undefined ? compileFilter(m.rows, columns) : null }));
+  const work = masks.map((m) => ({ ...m, matches: m.rows !== undefined ? compileFilter(m.rows, columns) : () => true }));
   return (row) => {
     let out = row;
     for (const m of work) {
       if (out === row) out = { ...row };
-      if (m.unmasked && row[m.unmasked] === undefined) {
-        // A new row: masked when it matches `rows`, else its value goes to the unmasked column.
+      const value = row[m.column];
+      if (m.unmasked && value !== null && value !== undefined) {
         if (m.matches(row)) out[m.unmasked] = null;
         else {
-          out[m.unmasked] = row[m.column] ?? null;
+          out[m.unmasked] = value;
           out[m.column] = null;
         }
       }

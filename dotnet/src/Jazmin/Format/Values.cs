@@ -89,6 +89,10 @@ internal static class Values
         _ => null,
     };
 
+    /// <summary>A datetime (Unix milliseconds) as ISO-8601 text in UTC with milliseconds, as JavaScript's toISOString writes it.</summary>
+    public static string IsoText(long ms) =>
+        DateTimeOffset.FromUnixTimeMilliseconds(ms).UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", CultureInfo.InvariantCulture);
+
     private static readonly JsonDocumentOptions UniqueNames = new() { AllowDuplicateProperties = false };
 
     /// <summary>Parses JSON text read from a file: damaged text is a <see cref="JazminFormatException"/>.</summary>

@@ -85,6 +85,13 @@ public sealed class JazminColumn
     /// <summary>An object's fields, in order.</summary>
     public IReadOnlyList<JazminColumn>? Fields { get; init; }
 
+    /// <summary>
+    /// Writers: the column is masked (1.7, spec 7.6.8) - keys granted it see it once its lock is unlocked, and until then
+    /// what <see cref="JazminMask.Show"/> makes. Shared files only. Not kept in the column's definition: readers list
+    /// masked columns in <see cref="JazminReader.Masked"/>.
+    /// </summary>
+    public JazminMask? Mask { get; init; }
+
     /// <summary>A field a query does not read (LINQ): its stream is passed over, and its member keeps its default.</summary>
     internal bool Unread { get; init; }
 

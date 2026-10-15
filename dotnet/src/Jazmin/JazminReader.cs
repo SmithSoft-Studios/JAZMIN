@@ -203,6 +203,15 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
         /// <summary>Owner only: the owner directory's locks, read once.</summary>
         public Dictionary<string, LockState>? OwnerLocks { get; set; }
+
+        /// <summary>The key slot's masked columns' locks (spec 7.6.8), by id: no content keys of their own.</summary>
+        public Dictionary<string, DirectoryLock> MaskLocks { get; init; } = new(StringComparer.Ordinal);
+
+        /// <summary>The key slot's masked column groups: each one's lock, its secret sealed under it, and its column.</summary>
+        public Dictionary<string, (string Lock, byte[] Sealed, JsonObject Column)> MaskGroups { get; init; } = new(StringComparer.Ordinal);
+
+        /// <summary>The readers of the file's tables, built again when a masked column is unlocked.</summary>
+        public List<JazminReader> Readers { get; } = [];
     }
 
     /// <summary>A column group: its columns (by position) and whether this key can open it.</summary>
@@ -273,13 +282,14 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private readonly byte[] _salt;
     private readonly KeySchedule? _keys;
     private readonly AccessState? _access;
-    private readonly JazminColumn[] _allColumns; // by position; hidden columns are unnamed placeholders
-    private readonly JazminType[] _types;
-    private readonly GroupInfo[] _groups;
-    private readonly int[] _groupOf; // position -> column group index (-1: hidden)
-    private readonly int[] _visibleCols;
-    private readonly RowShape _visibleShape; // rows with every visible column: one name lookup for all queries
-    private readonly IReadOnlyList<JazminColumn> _visibleColumns;
+    // The columns, built again when a masked column is unlocked (spec 7.6.8): see Reopen.
+    private JazminColumn[] _allColumns; // by position; hidden columns are unnamed placeholders
+    private JazminType[] _types;
+    private GroupInfo[] _groups;
+    private int[] _groupOf; // position -> column group index (-1: hidden)
+    private int[] _visibleCols;
+    private RowShape _visibleShape; // rows with every visible column: one name lookup for all queries
+    private IReadOnlyList<JazminColumn> _visibleColumns;
     private readonly Dictionary<string, PartitionInfo> _partitions = new(StringComparer.Ordinal); // looked up so far
     private readonly Dictionary<string, List<SectionRef>> _deltaSegments = new(StringComparer.Ordinal); // added by appends
     private byte[]? _partitionTable; // the partition table's bytes until every partition is listed
@@ -370,6 +380,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 throw new JazminValidationException($"This file has no table '{options.Table}' (tables: {string.Join(", ", _header.Tables.Select(t => $"'{t.Name}'"))})");
             _table = _header.Tables.Count > 0 ? _header.Tables[_tableIndex] : throw new JazminFormatException("Catalog: the file lists no tables");
             (_allColumns, _groups, _groupOf) = OpenColumns();
+            _access?.Readers.Add(this);
             var n = _table.ChunkCount;
             // Each chunk is stored as sections of at least an envelope: a damaged count cannot size these arrays.
             if (n < 0 || (long)n * FormatConstants.EnvelopeSize > _stream.Length) throw new JazminFormatException("Catalog: the chunk count is larger than the file can hold");
@@ -383,10 +394,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             _statLookup = col => StatAt(col, _statOrdinal);
             _leafStats = new Dictionary<string, ColumnStatsByChunk>?[_allColumns.Length];
             _leafLookup = (col, path) => LeafStatAt(col, path, _statOrdinal);
-            _types = _allColumns.Select(c => c.Type).ToArray();
-            _visibleCols = Enumerable.Range(0, _allColumns.Length).Where(i => _groupOf[i] >= 0).ToArray();
-            _visibleColumns = _visibleCols.Select(i => _allColumns[i]).ToList();
-            _visibleShape = new RowShape(_allColumns, _visibleCols);
+            (_types, _visibleCols, _visibleColumns, _visibleShape) = ColumnViews();
             OpenPartitions();
             if (_table.Deletes is { } deletes)
             {
@@ -751,6 +759,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             FileSecrets = Secrets(bundle["files"]),
             Submission = bundle["submission"] is { } submission ? Convert.FromBase64String((string)submission!) : null,
         };
+        ReadBundleMasks(bundle["masks"], state);
         return (state, AccessCrypto.HeaderKey(headerSecret, salt));
     }
 
@@ -805,6 +814,41 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         throw new JazminFormatException("Missing trailer - file is truncated or incomplete");
     }
 
+    /// <summary>
+    /// A key slot's masked columns (spec 7.6.8): their locks and groups, into <paramref name="state"/>. A member that isn't
+    /// well-formed is refused.
+    /// </summary>
+    private static void ReadBundleMasks(JsonNode? masks, AccessState state)
+    {
+        if (masks is null) return;
+        static void Ok(bool test)
+        {
+            if (!test) throw new JazminFormatException("The key slot's masked columns are malformed");
+        }
+        Ok(masks is JsonObject && masks["locks"] is JsonObject && masks["groups"] is JsonObject);
+        try
+        {
+            foreach (var (id, node) in masks["locks"]!.AsObject())
+            {
+                var kind = Jazmin.Locks.KindFrom((string?)node?["kind"]);
+                Ok(node is JsonObject && kind is not null && node["salt"] is JsonValue);
+                state.MaskLocks[id] = new DirectoryLock(id, kind!.Value, Convert.FromBase64String((string)node!["salt"]!), (int?)node["iterations"], [],
+                    EmbeddedFiles.KeyServiceAddress(node["keyService"]));
+            }
+            foreach (var (group, node) in masks["groups"]!.AsObject())
+            {
+                var column = node?["column"] as JsonObject;
+                Ok(node is JsonObject && node["lock"] is JsonValue && state.MaskLocks.ContainsKey((string)node["lock"]!) && node["sealed"] is JsonValue
+                    && column is not null && column["table"] is JsonValue && column["position"] is JsonValue && column["name"] is JsonValue && column["type"] is JsonValue);
+                state.MaskGroups[group] = ((string)node!["lock"]!, Convert.FromBase64String((string)node["sealed"]!), column!);
+            }
+        }
+        catch (Exception e) when (e is FormatException or InvalidOperationException)
+        {
+            throw new JazminFormatException("The key slot's masked columns are malformed", e);
+        }
+    }
+
     private byte[]? PartitionSecret(string id) =>
         _access!.IsOwner ? _access.Secrets!.PartitionSecret(id) : _access.Partitions.GetValueOrDefault(id);
 
@@ -816,6 +860,24 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         _access is not null ? AccessCrypto.SectionKey(secret!, _salt, sectionId) : _keys?.SectionKey(group, sectionId);
 
     private static string IdText(byte[] id) => id.Length > 0 ? Base64Url.Encode(id) : FormatConstants.WholeTable;
+
+    /// <summary>The column types, and the visible columns: positions, definitions and the row shape.</summary>
+    private (JazminType[], int[], IReadOnlyList<JazminColumn>, RowShape) ColumnViews()
+    {
+        var visible = Enumerable.Range(0, _allColumns.Length).Where(i => _groupOf[i] >= 0).ToArray();
+        return (_allColumns.Select(c => c.Type).ToArray(), visible, visible.Select(i => _allColumns[i]).ToList(), new RowShape(_allColumns, visible));
+    }
+
+    /// <summary>Builds the columns again, a masked column unlocked (spec 7.6.8): it becomes one of <see cref="Columns"/>.</summary>
+    private void Reopen()
+    {
+        (_allColumns, _groups, _groupOf) = OpenColumns();
+        (_types, _visibleCols, _visibleColumns, _visibleShape) = ColumnViews();
+        _cachedOrdinal = -1;
+        _cachedRows = null;
+        _cachedWanted = null;
+        _shapeList = null;
+    }
 
     /// <summary>Column groups and definitions; restricted groups only when this key may open them (spec 7.6.5).</summary>
     private (JazminColumn[], GroupInfo[], int[]) OpenColumns()
@@ -1084,10 +1146,10 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             {
                 var block = segment.Statistics[b];
                 if (segment.StatsLoaded.Contains(b) || !block.Columns.Any(wanted.Contains)) continue;
-                segment.StatsLoaded.Add(b);
                 if (block.Columns.Length == 0 || block.Columns.Any(c => c < 0 || c >= _allColumns.Length)) throw new JazminFormatException("Statistics block lists unknown columns");
                 var group = _groupOf[block.Columns[0]];
-                if (group < 0) continue; // a column group this key cannot see
+                if (group < 0) continue; // a column group this key cannot see (yet: a masked one may be unlocked)
+                segment.StatsLoaded.Add(b);
                 var sectionId = $"{_tableIndex}/stats/{segment.Partition}/{b}{segment.Suffix}";
                 var key = _access is not null
                     ? AccessCrypto.PartKey(PartitionSecret(segment.Partition)!, ColumnSecret(_groups[group].Name)!, _salt, sectionId)
@@ -1325,13 +1387,45 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         get
         {
             FileIndex();
-            return _fileLocks.Keys.Order(StringComparer.Ordinal).Select(LockInfo).ToList();
+            return _fileLocks.Keys.Union(_access?.MaskLocks.Keys ?? Enumerable.Empty<string>()).Order(StringComparer.Ordinal).Select(LockInfo).ToList();
         }
     }
 
+    /// <summary>
+    /// Masked columns of this table (1.7, spec 7.6.8), by position. Until its lock is unlocked (<see cref="Unlock"/>) a
+    /// masked column isn't in <see cref="Columns"/>: rows don't have it. <see cref="JazminMaskedColumn.Shown"/> names the
+    /// column with what its values show; <see cref="JazminMaskedColumn.Unmasked"/>, the column with its values in the
+    /// rows that aren't masked.
+    /// </summary>
+    public IReadOnlyList<JazminMaskedColumn> Masked
+    {
+        get
+        {
+            if (_access is null) return [];
+            if (_access.IsOwner)
+            {
+                return OwnerMasks().Where(m => (int?)m["table"] == _tableIndex).OrderBy(m => (int)m["position"]!)
+                    .Select(m => new JazminMaskedColumn((string)m["column"]!, TypeNames.Parse((string)m["type"]!), (string)m["group"]!, LockInfo((string)m["lock"]!),
+                        (string?)m["shown"], (string?)m["unmasked"])).ToList();
+            }
+            return _access.MaskGroups.Where(g => (int?)g.Value.Column["table"] == _tableIndex).OrderBy(g => (int)g.Value.Column["position"]!)
+                .Select(g => new JazminMaskedColumn((string)g.Value.Column["name"]!, TypeNames.Parse((string)g.Value.Column["type"]!), g.Key, LockInfo(g.Value.Lock),
+                    (string?)g.Value.Column["shown"], (string?)g.Value.Column["unmasked"])).ToList();
+        }
+    }
+
+    /// <summary>Internal: the owner directory's masked columns (owner key only), as it keeps them; else empty.</summary>
+    internal List<JsonObject> OwnerMasks() => _access is { IsOwner: true } && OwnerDirectory()["masks"] is JsonArray masks
+        ? masks.Select(m => m as JsonObject ?? throw new JazminFormatException("The owner directory's masked columns are malformed")).ToList()
+        : [];
+
+    /// <summary>A lock, from the file directories (stored files) or the key slot's masked columns (spec 7.6.8).</summary>
+    private DirectoryLock? LockRecord(string id) => _fileLocks.GetValueOrDefault(id) ?? _access?.MaskLocks.GetValueOrDefault(id);
+
     private JazminLockInfo LockInfo(string id)
     {
-        var l = _fileLocks.GetValueOrDefault(id);
+        var l = LockRecord(id);
+        if (l is null && OwnerLockStates()?.GetValueOrDefault(id) is { } owned) l = new DirectoryLock(id, owned.Kind, owned.Salt, owned.Iterations, [], owned.KeyService);
         // Where an online lock's unlock token comes from (spec 6.8.2): the lock's own key service, else the file's.
         var keyService = l is null || l.Kind == JazminLockKind.Password ? null : l.KeyService ?? (_fileKeyService ??= EmbeddedFiles.KeyServiceAddress(PackageJson?["keyService"]) ?? "");
         return new(id, l?.Kind, LockKeyOf(id) is not null, keyService is { Length: > 0 } ? keyService : null);
@@ -1359,25 +1453,33 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     public void Unlock(string lockId, string? password = null, string? unlockToken = null)
     {
         FileIndex();
-        if (!_fileLocks.TryGetValue(lockId, out var l)) throw new JazminValidationException($"No lock '{lockId}' is visible with this key");
+        var l = LockRecord(lockId) ?? throw new JazminValidationException($"No lock '{lockId}' is visible with this key");
         if ((Jazmin.Locks.NeedsPassword(l.Kind) && password is null) || (Jazmin.Locks.NeedsSecret(l.Kind) && unlockToken is null))
             throw new JazminValidationException($"Lock '{lockId}' needs {Jazmin.Locks.Needs(l.Kind)}");
         if (LockKeyOf(lockId) is not null) return;
         Jazmin.Locks.CheckIterations(lockId, l.Kind, l.Iterations);
         var secret = Jazmin.Locks.NeedsSecret(l.Kind) ? Jazmin.Locks.ParseToken(unlockToken!) : null;
         var key = Jazmin.Locks.LockKey(lockId, l.Kind, l.Salt, l.Iterations, password, secret);
+        // Checked by opening what it seals: a stored file's key, or a masked column group's secret (spec 7.6.8).
+        var masked = _access!.MaskGroups.Where(g => g.Value.Lock == lockId).ToList();
         var (contentId, sealedKey) = l.Keys.FirstOrDefault();
-        if (sealedKey is null) throw new JazminFormatException($"Lock '{lockId}' has no sealed keys");
+        if (sealedKey is null && masked.Count == 0) throw new JazminFormatException($"Lock '{lockId}' has no sealed keys");
+        var opened = new Dictionary<string, byte[]>(StringComparer.Ordinal);
         try
         {
-            Jazmin.Locks.Open(key, lockId, int.Parse(contentId, System.Globalization.CultureInfo.InvariantCulture), Convert.FromBase64String(sealedKey));
+            if (sealedKey is not null) Jazmin.Locks.Open(key, lockId, int.Parse(contentId, System.Globalization.CultureInfo.InvariantCulture), Convert.FromBase64String(sealedKey));
+            foreach (var (group, entry) in masked) opened[group] = Masks.OpenGroup(key, lockId, group, entry.Sealed);
         }
         catch (Exception e) when (e is JazminKeyException or FormatException or OverflowException)
         {
             var what = l.Kind switch { JazminLockKind.Password => "password", JazminLockKind.Online => "unlock token", _ => "password or unlock token" };
             throw new JazminKeyException($"Wrong {what} for lock '{lockId}'");
         }
-        _access!.Unlocked[lockId] = key;
+        _access.Unlocked[lockId] = key;
+        if (opened.Count == 0) return;
+        // The masked columns become columns the key sees, in every reader of the file's tables.
+        foreach (var (group, groupSecret) in opened) _access.ColumnSecrets[group] = groupSecret;
+        foreach (var reader in _access.Readers.ToList()) reader.Reopen();
     }
 
     private StoredContent FileContent(string path)
@@ -1689,7 +1791,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 directory["partitions"]!.AsArray().Select(n => (string)n!).ToList(),
                 columnGroups,
                 directory["grants"]!.AsArray().Select(g => new JazminGrantInfo(
-                    JazminAccessKey.FromOwnerDirectory((string)g!["key"]!).Id, ListOrAll(g["rows"]), ListOrAll(g["columns"]), (string?)g["label"])
+                    JazminAccessKey.FromOwnerDirectory((string)g!["key"]!).Id, ListOrAll(g["rows"]), GrantColumns(g), (string?)g["label"])
                 {
                     Mode = (string?)g["mode"] == "online" ? JazminGrantMode.Online : JazminGrantMode.Offline,
                     Expires = g["expires"] is { } e ? DateTimeOffset.Parse((string)e!, CultureInfo.InvariantCulture) : null,
@@ -1711,6 +1813,15 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     internal static IReadOnlyList<string>? ListOrAll(JsonNode? node) =>
         node is JsonArray array ? array.Select(n => (string)n!).ToList() : null; // "*" (or missing) means all
+
+    /// <summary>
+    /// An owner directory grant's column groups (null: all): masked groups are listed apart, and a grant of every group
+    /// says so (spec 7.6.8).
+    /// </summary>
+    internal static IReadOnlyList<string>? GrantColumns(JsonNode grant) =>
+        (bool?)grant["allColumns"] == true ? null
+        : grant["maskedColumns"] is JsonArray masked && ListOrAll(grant["columns"]) is { } columns ? [.. columns, .. masked.Select(n => (string)n!)]
+        : ListOrAll(grant["columns"]);
 
     // ---- chunks ----------------------------------------------------------------------------------
 
@@ -2965,6 +3076,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     public void Dispose()
     {
+        _access?.Readers.Remove(this);
         _cachedRows = null;
         foreach (var index in _indexes.Values) (index as LazyTrigramIndex)?.Release(); // their buffers go back to the pool
         _indexes.Clear();

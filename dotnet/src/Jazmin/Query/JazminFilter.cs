@@ -114,6 +114,32 @@ public abstract class JazminFilter
 
     internal static JazminValidationException Invalid(string message) => new($"Invalid filter: {message}");
 
+    /// <summary>The filter in its JSON form (spec 9), as <see cref="FromJson"/> reads it: kept in files (masked rows, spec 7.6.8).</summary>
+    internal System.Text.Json.Nodes.JsonNode ToJson() => this switch
+    {
+        Condition c => new System.Text.Json.Nodes.JsonObject { [c.Column] = new System.Text.Json.Nodes.JsonObject { [c.Op] = OperandJson(c.Value) } },
+        Group g => new System.Text.Json.Nodes.JsonObject { [g.Kind] = new System.Text.Json.Nodes.JsonArray(g.Items.Select(i => (System.Text.Json.Nodes.JsonNode?)i.ToJson()).ToArray()) },
+        Negation n => new System.Text.Json.Nodes.JsonObject { ["not"] = n.Item.ToJson() },
+        _ => throw Invalid("unknown filter"),
+    };
+
+    private static System.Text.Json.Nodes.JsonNode? OperandJson(object? value) => value switch
+    {
+        null => null,
+        JazminFilter f => f.ToJson(),
+        JsonElement e => System.Text.Json.Nodes.JsonNode.Parse(e.GetRawText()),
+        string s => s,
+        bool b => b,
+        long or int or short or sbyte or byte or ushort or uint => System.Text.Json.Nodes.JsonValue.Create(Convert.ToInt64(value, System.Globalization.CultureInfo.InvariantCulture)),
+        ulong u => u,
+        double d => d,
+        float f => (double)f,
+        decimal m => m.ToString(System.Globalization.CultureInfo.InvariantCulture), // exact, as decimal columns' values are text
+        DateTime or DateTimeOffset or DateOnly => Jazmin.Format.Values.IsoText(Jazmin.Format.Values.ToEpochMs(value)!.Value), // as datetime columns read them
+        System.Collections.IEnumerable list => new System.Text.Json.Nodes.JsonArray(list.Cast<object?>().Select(OperandJson).ToArray()),
+        _ => throw Invalid($"a {value.GetType().Name} value can't be kept in a file"),
+    };
+
     internal sealed class Condition(string column, string op, object? value) : JazminFilter
     {
         public string Column { get; } = column;

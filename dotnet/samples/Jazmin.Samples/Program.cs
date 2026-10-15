@@ -603,6 +603,31 @@ using (var namesReader = JazminReader.Open(namesPath))
     // 32. [Apple, émile, file1, File2, file10] name (nocase, natural)
 }
 
+// --- 33. A masked column (USER-GUIDE 15.7): a key granted it sees what the owner lets it show, until it unlocks the column.
+var payOwner = JazminKey.Generate();
+var payClerk = payOwner.CreateAccessKey();
+var payPath = Path.Combine(dir, "pay.jzm");
+using (var writer = JazminWriter.Create(payPath,
+    [
+        new JazminColumn("id", JazminType.Int), new JazminColumn("name", JazminType.String),
+        new JazminColumn("account", JazminType.String) { Mask = new JazminMask("pay") { Show = JazminMaskShow.KeepFormat(4) } },
+    ],
+    new JazminWriteOptions
+    {
+        Key = payOwner, Access = new JazminAccessOptions { Grants = [new JazminGrant(payClerk)] },
+        Locks = new Dictionary<string, JazminLockOptions?> { ["pay"] = new() { Password = "correct horse battery staple" } },
+    }))
+{
+    writer.WriteRow(new Dictionary<string, object?> { ["id"] = 1L, ["name"] = "Thandi", ["account"] = "4821 0393 7712 4821" });
+}
+using (var payView = JazminReader.Open(payPath, new JazminReadOptions { AccessKey = payClerk }))
+{
+    var before = payView.Rows().First()["account_shown"];
+    payView.Unlock("pay", password: "correct horse battery staple");
+    Console.WriteLine($"33. {before} -> {payView.Rows().First()["account"]}");
+    // 33. •••• •••• •••• 4821 -> 4821 0393 7712 4821
+}
+
 Directory.Delete(dir, true);
 
 public readonly record struct Money(long Cents, string Currency);
