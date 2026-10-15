@@ -169,6 +169,12 @@ public sealed class JazminPackage
 
     /// <summary>The owner's key service for the file's online locks (1.7, spec 6.8.2): an https address viewers sign in at.</summary>
     public string? KeyService { get; init; }
+
+    /// <summary>
+    /// How viewers show masked columns' revealed values (1.7, spec 7.6.8), by masked column name: one value or the whole
+    /// column, for how long, and when they are masked again.
+    /// </summary>
+    public IReadOnlyDictionary<string, JazminMaskView>? Masks { get; init; }
 }
 
 /// <summary>Validation, media types and the stored-content model for embedded files (spec 6.8).</summary>
@@ -234,6 +240,7 @@ internal static class EmbeddedFiles
         if (package.Pdf is { } pdf) json["pdf"] = PdfJson(pdf, "package.pdf");
         if (package.Edit is { } edit) json["edit"] = Changes.EditJson(edit);
         if (package.KeyService is { } keyService) json["keyService"] = CheckKeyService(keyService, "package.keyService");
+        if (package.Masks is { } masks) json["masks"] = Jazmin.Masks.PackageJson(masks);
         return json;
     }
 
@@ -262,6 +269,7 @@ internal static class EmbeddedFiles
         Pdf = o["pdf"] is JsonObject pdf ? PdfFrom(pdf, strict: false) : null,
         Edit = Changes.EditFrom(o["edit"]),
         KeyService = KeyServiceAddress(o["keyService"]),
+        Masks = Jazmin.Masks.PackageFrom(o["masks"]),
     };
 
     private static readonly string[] PdfFormats = ["A0", "A1", "A2", "A3", "A4", "A5", "A6", "Letter", "Legal", "Tabloid", "Ledger"];

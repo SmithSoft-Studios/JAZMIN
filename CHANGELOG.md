@@ -4,6 +4,11 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **Masked columns in .NET (#190).** `JazminColumn.Mask` (`new JazminMask(lock) { Show = JazminMaskShow.KeepFormat(4),
+  Rows = filter }`), `reader.Masked`, `Unlock` opening masked columns in every table reader of the file, and
+  `JazminPackage.Masks` (`JazminMaskView`). Update, Compact and Append keep the masks; each library reads and changes the
+  other's masked files. Appends now keep locks that only masked columns use (no stored files). A row's value is masked or
+  unmasked by `rows` each time it is written, in both libraries, so a row an update changes to no longer match is unmasked.
 - **Masked columns: shown masked until a password or 2FA (#190, JavaScript; spec 7.6.8).** In a shared file a column's
   `mask: { lock, show, rows }` keeps its values from keys granted it until `reader.unlock(lock, ...)` (the locks of
   stored files): `reader.masked` lists them with what they show (`<column>_shown`, made by a rule: the last characters,

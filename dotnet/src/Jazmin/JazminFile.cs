@@ -564,6 +564,8 @@ public static class JazminFile
                 // The file's locks, changed by those given (the writer refuses locks in a file that is not shared).
                 Locks = update.Locks,
                 KeptLocks = ownerGrants is not null ? reader.OwnerLockStates()!.Values.ToList() : null,
+                // The masked columns of the tables kept, by their names afterwards (spec 7.6.8).
+                KeptMasks = ownerGrants is not null ? KeptMasks(reader, plan.Removed, FinalName) : null,
                 Now = update.Now, // expired grants are dropped; the new version's fresh secrets lock them out
                 Priority = update.Priority,
                 CompactIndexes = update.CompactIndexes ?? reader.CompactIndexes,
@@ -984,6 +986,20 @@ public static class JazminFile
                 if (row[i] is { } value && seen.Add(value.GetType())) grown[i] = Nested.GrowFor(grown[i], value);
         }
         return grown;
+    }
+
+    /// <summary>The owner directory's masked columns of the tables a rewrite keeps, each with its table's name afterwards ("tableName").</summary>
+    private static List<JsonObject> KeptMasks(JazminReader reader, ICollection<string> removed, Func<string, string> finalName)
+    {
+        var names = reader.Tables;
+        return reader.OwnerMasks().Select(m => (Mask: m, Table: (int?)m["table"] is int i && i >= 0 && i < names.Count ? names[i] : null))
+            .Where(m => m.Table is not null && !removed.Contains(m.Table))
+            .Select(m =>
+            {
+                var entry = (JsonObject)m.Mask.DeepClone();
+                entry["tableName"] = finalName(m.Table!);
+                return entry;
+            }).ToList();
     }
 
     /// <summary>A table of the file as writer options for a rewrite: its columns with their indexes, sort order and layout.</summary>
@@ -1512,7 +1528,7 @@ public static class JazminFile
                 JsonValue all => [(string)all!],
                 _ => null,
             };
-            var narrower = !Covers(grant.Rows, JazminReader.ListOrAll(old["rows"])) || !Covers(grant.Columns, JazminReader.ListOrAll(old["columns"]))
+            var narrower = !Covers(grant.Rows, JazminReader.ListOrAll(old["rows"])) || !Covers(grant.Columns, JazminReader.GrantColumns(old))
                 || !FilesCover(grant.Files, oldFiles)
                 || (expires is { } end && (oldExpires is null || end < oldExpires))
                 || (grant.Mode == JazminGrantMode.Online && (string?)old["mode"] != "online");
@@ -1537,7 +1553,7 @@ public static class JazminFile
             grants[byId ? key.Id : (n++).ToString(CultureInfo.InvariantCulture)] = new JazminGrant(key)
             {
                 Rows = JazminReader.ListOrAll(node["rows"]),
-                Columns = JazminReader.ListOrAll(node["columns"]),
+                Columns = JazminReader.GrantColumns(node),
                 Label = (string?)node["label"],
                 Expires = node["expires"] is { } expires ? DateTimeOffset.Parse((string)expires!, CultureInfo.InvariantCulture) : null,
                 Mode = (string?)node["mode"] == "online" ? JazminGrantMode.Online : JazminGrantMode.Offline,

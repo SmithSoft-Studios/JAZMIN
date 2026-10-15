@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { JazminKey, JazminKeyError, append, compact, issueFileUnlockToken, open, update, write } from '../src/index.js';
-import { shownText } from '../src/masks.js';
+import { rowMasker, shownText, tableMasks } from '../src/masks.js';
 
 // Masked columns (spec 7.6.8): a column shown masked until its lock opens, with a shown column made by a rule and,
 // for masked rows only, an unmasked column.
@@ -113,6 +113,19 @@ test('the owner sees everything; rewrites and appends keep the masks; new rows f
   check('updated', [...before, [0, '7777 8888', '•••• 8888', '1.00']]);
   append(file, { key: owner, insert: [{ id: 9, dept: 'B', name: 'Eve', account: '1234 5678', salary: '2.00' }] });
   check('appended', [...before, [0, '7777 8888', '•••• 8888', '1.00'], [9, '1234 5678', '•••• 5678', null]]);
+});
+
+test("a row's value goes where the rows filter says, each time it is written", () => {
+  const { columns: all, masks } = tableMasks(columns);
+  const masker = rowMasker(masks, all);
+  const written = (row) => {
+    const out = masker(row);
+    return [out.salary ?? null, out.salary_unmasked ?? null];
+  };
+  assert.deepEqual(written({ id: 2, salary: '5.00' }), ['5.00', null], 'matches: masked');
+  assert.deepEqual(written({ id: 1, salary: '5.00' }), [null, '5.00'], "doesn't: unmasked");
+  assert.deepEqual(written({ id: 2, salary: null, salary_unmasked: '5.00' }), [null, '5.00'], 'only an unmasked value (one the file has): kept');
+  assert.deepEqual(written({ id: 2, salary: '5.00', salary_unmasked: 'old' }), ['5.00', null], 'a masked value wins');
 });
 
 test('masks are checked', () => {

@@ -2326,6 +2326,24 @@ reader.columns;              // ..., account_shown, salary_unmasked: the masked 
 reader.unlock('pay', { password: 'correct horse battery staple' });   // now rows have account
 ```
 
+In .NET a column takes a `Mask`, and the reader lists `Masked`:
+
+```csharp
+JazminColumn[] columns =
+[
+    new("id", JazminType.Int), new("dept", JazminType.String), new("name", JazminType.String), new("grade", JazminType.String),
+    new("account", JazminType.String) { Mask = new JazminMask("pay") { Show = JazminMaskShow.KeepFormat(4) } },
+    new("salary", JazminType.Decimal) { Mask = new JazminMask("hr") { Rows = JazminFilter.Gte("grade", "M1") } },
+];
+using var reader = JazminReader.Open("staff.jzm", new JazminReadOptions { AccessKey = accessKey });
+reader.Masked;                                                   // account (lock pay, shown in account_shown), salary (lock hr, ...)
+reader.Unlock("pay", password: "correct horse battery staple");  // now rows have account
+```
+
+`JazminMaskShow` has `None`, `LastOf(4)`, `FirstAndLast(2, 2)`, `KeepFormat(4)`
+and `FromColumn("label")`; `JazminPackage.Masks` takes a `JazminMaskView` per
+column.
+
 - **What a masked value shows** (`show`): `'none'` (the default), `{ last: 4 }`
   (`••••4821`), `{ first: 2, last: 2 }` (`48••••21`), `{ keepFormat: true,
   last: 4 }` (spaces and dashes kept, `•••• •••• •••• 4821`; an email keeps
@@ -2334,13 +2352,16 @@ reader.unlock('pay', { password: 'correct horse battery staple' });   // now row
   in `<column>_shown`, an ordinary column you can filter, sort and index.
 - **Masking only some rows** (`rows`, a filter): the other rows' values go to
   `<column>_unmasked`, which every key granted the table sees. Viewers show
-  the two as one column. A filter on one doesn't see the other's values.
+  the two as one column. A filter on one doesn't see the other's values. Each
+  time a row is written (new, or rewritten by an update) its value goes where
+  `rows` says, so a row changed to no longer match is unmasked.
 - **Grants:** a masked column is in a column group of its own, `mask.<column>`.
   A grant of every column (`columns: '*'`) includes it, masked; a grant that
   lists groups gets it only if it lists that group.
 - **The owner** sees every value. `update()`, `compact()` and `append()` keep
   the masks, make the shown values of new rows, and put new rows in the
-  masked or the unmasked column by `rows`.
+  masked or the unmasked column by `rows`. Both libraries read and change
+  each other's masked files.
 - **Viewers** (the web viewer, Scout) show a revealed value for a while and
   mask it again: by default one value at a time, for 30 seconds, and as soon
   as the window is hidden or there is no input for 60 seconds. The file's
