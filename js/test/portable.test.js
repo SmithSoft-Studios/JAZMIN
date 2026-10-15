@@ -15,13 +15,17 @@ test('portableHtml: the viewer, its styles and scripts inline, with the file ins
   const html = portableHtml(file);
   assert.ok(html.startsWith('<!doctype html>'));
   assert.doesNotMatch(html, /<script [^>]*src=|<link [^>]*rel="(?:stylesheet|manifest|icon)"/); // it needs nothing beside it
-  for (const kind of ['css', 'reader', 'sandbox', 'viewer']) assert.match(html, new RegExp(`data-jz-inline="${kind}">`));
+  for (const kind of ['css', 'reader', 'reader-shapes', 'reader-writer', 'sandbox', 'viewer']) assert.match(html, new RegExp(`data-jz-inline="${kind}">`));
   const embedded = html.match(/<script id="jz-embedded" type="application\/octet-stream" data-name="([^"]*)">([^<]*)<\/script>/);
   assert.equal(embedded[1], 'js-files-access.jzm');
   assert.ok(Buffer.from(embedded[2], 'base64').equals(fs.readFileSync(file))); // the file as it is: still encrypted
   // Each script is its file, whole: one that contains "</script" can't end its element early.
   const viewer = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../viewer');
-  for (const [kind, source] of [['reader', '../browser/jazmin-browser.js'], ['sandbox', 'sandbox.js'], ['viewer', 'viewer.js']]) {
+  // The reader's core, and its add-ons after it (the viewer loads them when first needed; a copy has them inline).
+  const sources = [['reader', '../browser/jazmin-browser-core.js'], ['reader-shapes', '../browser/jazmin-browser-shapes.js'],
+    ['reader-writer', '../browser/jazmin-browser-writer.js'], ['sandbox', 'sandbox.js'], ['viewer', 'viewer.js']];
+  assert.deepEqual(sources.map(([kind]) => html.indexOf(`<script data-jz-inline="${kind}">`)), sources.map(([kind]) => html.indexOf(`<script data-jz-inline="${kind}">`)).sort((a, b) => a - b), 'in this order');
+  for (const [kind, source] of sources) {
     const start = html.indexOf(`<script data-jz-inline="${kind}">`) + `<script data-jz-inline="${kind}">`.length;
     const inline = html.slice(start, html.indexOf('</script>', start));
     assert.equal(inline, fs.readFileSync(path.join(viewer, source), 'utf8').replace(/<\/script/gi, '<\/script'), kind);

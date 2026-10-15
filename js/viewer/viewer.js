@@ -306,7 +306,7 @@
   async function showSavedShapes(reader) {
     let shapes = [];
     try {
-      shapes = await reader.shapes();
+      shapes = await withAddOn(() => reader.shapes());
     } catch {
       // a file whose shapes can't be read still shows its rows
     }
@@ -377,6 +377,7 @@
       return null;
     }
     try {
+      await addOn('shapes');
       await JazminBrowser.shapeSchema(state.reader, shape);
     } catch (error) {
       if ($('jz-shape-text').value === text) shapeLine(false, error.message);
@@ -395,7 +396,7 @@
     const started = performance.now();
     $('jz-shape-note').textContent = 'Making a preview…';
     try {
-      const text = await JazminBrowser.toJSON(state.reader, { shape, pretty: true, filter: shapeFilter(), maxLength: PREVIEW_CHARS });
+      const text = await withAddOn(() => JazminBrowser.toJSON(state.reader, { shape, pretty: true, filter: shapeFilter(), maxLength: PREVIEW_CHARS }));
       const cut = text.length >= PREVIEW_CHARS;
       $('jz-shape-output').textContent = cut ? `${text}\n…` : text;
       $('jz-shape-output').hidden = false;
@@ -408,6 +409,7 @@
   async function shapeSchemaShown() {
     const shape = await checkShape();
     if (!shape) return;
+    await addOn('shapes');
     $('jz-shape-output').textContent = JSON.stringify(await JazminBrowser.shapeSchema(state.reader, shape), null, 2);
     $('jz-shape-output').hidden = false;
     $('jz-shape-note').textContent = "The JSON Schema (draft 2020-12) of the shape's JSON output";
@@ -441,6 +443,7 @@
     note.textContent = `Exporting ${what} as ${format.toUpperCase()}…`;
     const started = performance.now();
     try {
+      if (shape) await addOn('shapes');
       const blob = await JazminBrowser.exportBlob(reader, format, { filter, shape, signal: job.signal, onProgress: busy.progress });
       const shaped = !shape ? '' : label ? `-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'shaped'}` : '-shaped';
       const name = `${state.name.replace(/\.jzm$/i, '')}${filter ? '-filtered' : ''}${shaped}.${format}`;
@@ -676,6 +679,7 @@
   async function saveChanges(changes) {
     const reader = frameReader;
     const shared = Boolean(reader.access);
+    await addOn('writer');
     const blob = await JazminBrowser.writeChanges(reader, changes, shared ? {} : state.options); // checks them first
     if (!(await confirmChanges(changes, reader.package.edit, shared))) throw new Error('The changes were not saved');
     const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, '');
@@ -745,6 +749,42 @@
     status(describe(reader));
   }
 
+  // ---- the browser reader's add-ons: loaded when first needed ---------------------------------------
+  // The page loads the reader's core (jazmin-browser-core.js); export shapes and the writer come from add-ons beside it,
+  // loaded the first time they are needed. A copy saved as one HTML file has them all inline.
+  const ADD_ONS = { shapes: 'shapeSchema', writer: 'writeChanges' }; // add-on -> a function it adds
+  const addOnLoads = {};
+
+  /** Loads jazmin-browser-<name>.js (once), unless JazminBrowser already has it (the full script, or a saved copy). */
+  function addOn(name) {
+    if (typeof JazminBrowser[ADD_ONS[name]] === 'function') return Promise.resolve();
+    addOnLoads[name] ??= new Promise((resolve, reject) => {
+      const core = document.querySelector('[data-jz-inline="reader"]');
+      const script = document.createElement('script');
+      script.src = new URL(`jazmin-browser-${name}.js`, core.src || document.baseURI).href;
+      script.setAttribute('data-jz-inline', `reader-${name}`); // a saved copy inlines it like the core
+      script.onload = () => resolve();
+      script.onerror = () => {
+        delete addOnLoads[name];
+        reject(new Error(`Could not load jazmin-browser-${name}.js`));
+      };
+      core.after(script); // after the core: in a saved copy the inline scripts run in this order
+    });
+    return addOnLoads[name];
+  }
+
+  /** Runs `fn`; if the reader says it needs an add-on that isn't loaded, loads it and runs `fn` again. */
+  async function withAddOn(fn) {
+    try {
+      return await fn();
+    } catch (error) {
+      const needed = /needs jazmin-browser-(\w+)\.js/.exec(error?.message ?? '');
+      if (!needed || !ADD_ONS[needed[1]]) throw error;
+      await addOn(needed[1]);
+      return fn();
+    }
+  }
+
   // ---- saving as one HTML file ---------------------------------------------------------------------
 
   /** The viewer's own sources: inline when this page is itself an export, fetched otherwise. */
@@ -763,6 +803,7 @@
 
   /** One HTML file holding the viewer and this .jzm: it opens by double-click, offline, and still asks for the key. */
   async function exportHtml() {
+    await Promise.all(Object.keys(ADD_ONS).map(addOn)); // the copy opens offline: every add-on goes inline
     const doc = document.documentElement.cloneNode(true);
     for (const el of doc.querySelectorAll('[data-jz-inline]')) {
       const kind = el.getAttribute('data-jz-inline');

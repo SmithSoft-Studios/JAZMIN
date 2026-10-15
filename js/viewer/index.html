@@ -141,7 +141,8 @@
   </form>
 </dialog>
 
-<script src="../browser/jazmin-browser.js" data-jz-inline="reader"></script>
+<!-- The browser reader's core; its add-ons (shapes, writer) are loaded when first needed (viewer.js, addOn). -->
+<script src="../browser/jazmin-browser-core.js" data-jz-inline="reader"></script>
 <script src="sandbox.js" data-jz-inline="sandbox"></script>
 <script src="viewer.js" data-jz-inline="viewer"></script>
 </body>

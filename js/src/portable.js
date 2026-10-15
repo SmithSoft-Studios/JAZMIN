@@ -8,6 +8,9 @@ import { JazminValidationError } from './errors.js';
 
 const VIEWER = new URL('../viewer/', import.meta.url);
 const MAGIC = 'JZM1';
+// The browser reader's add-ons the viewer loads when first needed (viewer.js, addOn): a copy opens offline, so they go
+// inline after the core, as the viewer's own Save as HTML puts them.
+const READER_ADD_ONS = ['shapes', 'writer'];
 
 const read = (relative) => fs.readFileSync(new URL(relative, VIEWER), 'utf8');
 const attribute = (text) => String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
@@ -22,8 +25,11 @@ export function portableHtml(file, { name } = {}) {
   let html = read('index.html');
   // Styles and scripts inline (as the viewer's Save as HTML), so the page needs nothing beside it.
   html = html.replace(/<link rel="stylesheet" href="([^"]+)" data-jz-inline="css">/, (_, href) => `<style data-jz-inline="css">${read(href)}</style>`);
-  html = html.replace(/<script src="([^"]+)" data-jz-inline="(\w+)"><\/script>/g,
-    (_, src, kind) => `<script data-jz-inline="${kind}">${read(src).replace(/<\/script/gi, '<\\/script')}</script>`);
+  const inline = (kind, src) => `<script data-jz-inline="${kind}">${read(src).replace(/<\/script/gi, '<\\/script')}</script>`;
+  html = html.replace(/<script src="([^"]+)" data-jz-inline="(\w+)"><\/script>/g, (_, src, kind) => {
+    if (kind !== 'reader' || !src.endsWith('jazmin-browser-core.js')) return inline(kind, src);
+    return [inline(kind, src), ...READER_ADD_ONS.map((name) => inline(`reader-${name}`, src.replace(/core\.js$/, `${name}.js`)))].join('\n');
+  });
   html = html.replace(/<link rel="(?:manifest|icon)"[^>]*>\r?\n?/g, ''); // an installed app's: not for a copy
   const embedded = `<script id="jz-embedded" type="application/octet-stream" data-name="${attribute(fileName)}">${bytes.toString('base64')}</script>`;
   return html.replace(/<body([^>]*)>/, (body) => `${body}\n${embedded}`);

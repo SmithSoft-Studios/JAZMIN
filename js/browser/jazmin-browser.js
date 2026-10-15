@@ -3222,6 +3222,7 @@
       async shapes() {
         if (!shapeList) {
           const { shapes } = await files();
+          if (shapes.size === 0) return []; // none saved: nothing to check (nor the shapes add-on to load)
           const first = header.tables[0].name;
           const columns = new Map([[table.name, visibleColumns]]);
           for (const s of shapes.values()) {
