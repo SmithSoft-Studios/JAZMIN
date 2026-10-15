@@ -20,7 +20,7 @@ import {
 } from './constants.js';
 import { JazminFileLockedError, JazminFormatError, JazminKeyError, JazminValidationError } from './errors.js';
 import { enforceExpiry, toMs } from './expiry.js';
-import { EVERYONE, mergeActions, readActions } from './files.js';
+import { EVERYONE, keyServiceAddress, mergeActions, readActions } from './files.js';
 import { answeredExactly, evaluate, filterReads, indexPlan, mayMatch, mustMatch, normalizeFilter } from './filter.js';
 import { CompositeIndex, LazyTrigramIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
 import { JazminAccessKey, JazminKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
@@ -1442,7 +1442,11 @@ export class JazminReader {
         const directory = checkFileDirectory(parseJsonText(this.#read(dir.section, sectionId, key).toString('utf8'), 'An embedded-file directory', true));
         for (const c of directory.contents) index.contents.set(c.id, c);
         for (const l of directory.locks ?? []) {
-          if (!index.locks.has(l.id)) index.locks.set(l.id, { id: l.id, kind: l.kind, salt: Buffer.from(l.salt, 'base64'), iterations: l.iterations, keys: new Map() });
+          if (!index.locks.has(l.id)) {
+            index.locks.set(l.id, {
+              id: l.id, kind: l.kind, salt: Buffer.from(l.salt, 'base64'), iterations: l.iterations, keys: new Map(), keyService: keyServiceAddress(l.keyService),
+            });
+          }
           const lock = index.locks.get(l.id);
           for (const [id, sealed] of Object.entries(l.keys)) if (!lock.keys.has(id)) lock.keys.set(id, sealed);
         }
@@ -1484,6 +1488,8 @@ export class JazminReader {
       }
       for (const s of index.shapes.values()) if (s.groups?.includes(EVERYONE)) s.groups = [EVERYONE];
     }
+    // The key service of the file's online locks that don't name their own (spec 6.8.2).
+    index.keyService = member?.package ? keyServiceAddress(parseJsonText(member.package, 'Package settings', true)?.keyService) : undefined;
     this.#fileIndex = index;
     return index;
   }
@@ -1547,8 +1553,11 @@ export class JazminReader {
   }
 
   #lockInfo(id) {
-    const kind = this.#files().locks.get(id)?.kind;
-    return { id, ...(kind ? { kind } : {}), unlocked: this.#lockKeyOf(id) !== undefined };
+    const index = this.#files();
+    const lock = index.locks.get(id);
+    // Where an online lock's unlock token comes from (spec 6.8.2): the lock's own key service, else the file's.
+    const keyService = lock && lock.kind !== 'password' ? lock.keyService ?? index.keyService : undefined;
+    return { id, ...(lock ? { kind: lock.kind } : {}), unlocked: this.#lockKeyOf(id) !== undefined, ...(keyService ? { keyService } : {}) };
   }
 
   /** The key of a lock this reader has opened (or, for the owner, the owner directory's), else undefined. */

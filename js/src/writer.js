@@ -1098,6 +1098,7 @@ export class JazminWriter {
     };
     const lockEntry = (lock, keys) => ({
       id: lock.id, kind: lock.kind, salt: lock.salt.toString('base64'), ...(lock.iterations === undefined ? {} : { iterations: lock.iterations }), keys,
+      ...(lock.keyService ? { keyService: lock.keyService } : {}),
     });
     const directory = (list, withGroups, saved, group) => {
       const contents = [...new Set(list.map((e) => e.content))].sort((a, b) => a - b).map((id) => byId.get(id));

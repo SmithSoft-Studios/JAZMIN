@@ -423,13 +423,15 @@ test('locked files: the browser reader lists them and opens them as the library 
       { path: 'p.txt', content: 'password file', lock: 'p' }, { path: 'o.txt', content: 'online file', lock: 'o' },
       { path: 'b.bin', content: Buffer.alloc(300 * 1024, 7), lock: 'b' }, { path: 'open.txt', content: 'open' },
     ],
-    locks: { p: { password: 'pw', iterations: 1000 }, o: { online: true }, b: { password: 'bp', online: true, iterations: 1000 } },
+    locks: { p: { password: 'pw', iterations: 1000 }, o: { online: true, keyService: 'https://keys.provider.example/jazmin' }, b: { password: 'bp', online: true, iterations: 1000 } },
+    package: { keyService: 'https://keys.owner.example' }, // the online locks' key services (spec 6.8.2): o's own, b the file's
   });
   const library = open(file, { key: key.toString(), accessState: false });
   const browser = await JazminBrowser.open(new Uint8Array(fs.readFileSync(file)), { key: key.toString() });
   const plainFiles = (files) => files.map((f) => ({ path: f.path, lock: f.lock ?? null })).sort((a, b) => (a.path < b.path ? -1 : 1));
   assert.deepEqual(plainFiles(await browser.files()), plainFiles(library.files));
   assert.deepEqual(await browser.locks(), library.locks);
+  assert.deepEqual((await browser.locks()).map((l) => l.keyService ?? null), ['https://keys.owner.example/', 'https://keys.provider.example/jazmin', null]);
   assert.equal(new TextDecoder().decode(await browser.readFile('open.txt')), 'open');
   await assert.rejects(browser.readFile('p.txt'), (e) => e instanceof JazminBrowser.JazminFileLockedError && e.kind === 'password' && /unlock it with its password/.test(e.message));
   await assert.rejects(browser.unlock('p', { password: 'wrong' }), /Wrong password for lock 'p'/);

@@ -270,6 +270,18 @@
 
   const sealAad = (id, contentId) => utf8.encode(`JAZMIN/1/lock/${id}/${contentId}`);
 
+  /** A key service's address (spec 6.8.2): an https URL without a user name, password or fragment; else undefined. */
+  function keyServiceAddress(value) {
+    if (typeof value !== 'string') return undefined;
+    let url;
+    try {
+      url = new URL(value);
+    } catch {
+      return undefined;
+    }
+    return url.protocol === 'https:' && !url.username && !url.password && !url.hash ? url.href : undefined;
+  }
+
   // ---- binary readers -----------------------------------------------------------------------------
 
   /** Little-endian reader over a Uint8Array, mirroring the library's ByteReader. */
@@ -3106,7 +3118,9 @@
           const directory = checkFileDirectory(parseJson(fromUtf8.decode(await file.section(dir.section, sectionId, key, { requireDigest })), 'An embedded-file directory', true));
           for (const c of directory.contents) contents.set(c.id, c);
           for (const l of directory.locks ?? []) {
-            if (!locks.has(l.id)) locks.set(l.id, { id: l.id, kind: l.kind, salt: base64ToBytes(l.salt), iterations: l.iterations, keys: new Map() });
+            if (!locks.has(l.id)) {
+              locks.set(l.id, { id: l.id, kind: l.kind, salt: base64ToBytes(l.salt), iterations: l.iterations, keys: new Map(), keyService: keyServiceAddress(l.keyService) });
+            }
             const lock = locks.get(l.id);
             for (const [id, sealed] of Object.entries(l.keys)) if (!lock.keys.has(id)) lock.keys.set(id, sealed);
           }
@@ -3126,13 +3140,25 @@
         }
         for (const e of entries.values()) if (!contents.has(e.content)) throw new JazminFormatError(`Embedded file '${e.path}' refers to missing content`);
       }
-      return (fileIndex = { entries, contents, shapes, locks, contentKeys: new Map() });
+      // The key service of the file's online locks that don't name their own (spec 6.8.2).
+      let keyService;
+      try {
+        keyService = member?.package ? keyServiceAddress(JSON.parse(member.package)?.keyService) : undefined;
+      } catch {
+        keyService = undefined;
+      }
+      return (fileIndex = { entries, contents, shapes, locks, contentKeys: new Map(), keyService });
     }
 
     // Locks opened, with every table of this file: id -> lock key. The browser never holds a shared file's owner key.
     file.unlocked ??= new Map();
 
-    const lockInfo = (locks, id) => ({ id, ...(locks.get(id) ? { kind: locks.get(id).kind } : {}), unlocked: file.unlocked.has(id) });
+    // Where an online lock's unlock token comes from (spec 6.8.2): the lock's own key service, else the file's.
+    const lockInfo = ({ locks, keyService }, id) => {
+      const lock = locks.get(id);
+      const service = lock && lock.kind !== 'password' ? lock.keyService ?? keyService : undefined;
+      return { id, ...(lock ? { kind: lock.kind } : {}), unlocked: file.unlocked.has(id), ...(service ? { keyService: service } : {}) };
+    };
 
     /** A stored content's key: from its directory, or (locked) unsealed with its lock's key; throws while locked. */
     async function contentKey(content, path) {
@@ -3330,19 +3356,20 @@
       },
       /** Embedded files this key can see: [{ path, type, size, sha256, actions?, lock? }] (lock: { id, kind, unlocked }). */
       async files() {
-        const { entries, contents, locks } = await files();
+        const index = await files();
+        const { entries, contents } = index;
         return [...entries.values()].map((e) => {
           const c = contents.get(e.content);
           return {
             path: e.path, type: e.type, size: c.size, sha256: c.sha256, ...(e.actions ? { actions: JSON.parse(JSON.stringify(e.actions)) } : {}),
-            ...(c.lock !== undefined ? { lock: lockInfo(locks, c.lock) } : {}),
+            ...(c.lock !== undefined ? { lock: lockInfo(index, c.lock) } : {}),
           };
         }).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
       },
       /** Locks of the stored files this key can see (spec 6.8.1): [{ id, kind, unlocked }]. */
       async locks() {
-        const { locks } = await files();
-        return [...locks.keys()].sort().map((id) => lockInfo(locks, id));
+        const index = await files();
+        return [...index.locks.keys()].sort().map((id) => lockInfo(index, id));
       },
       /**
        * Opens a lock for as long as the file is open: { password }, { unlockToken } (jzf1-..., from the file owner's key

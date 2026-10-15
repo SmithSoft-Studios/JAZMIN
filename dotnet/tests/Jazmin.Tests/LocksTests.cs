@@ -274,4 +274,55 @@ public class LocksTests
         Assert.Equal(refused, Assert.Throws<JazminFormatException>(() => JazminFile.Update(path, new JazminUpdate { Insert = [new Dictionary<string, object?> { ["id"] = 1L, ["group"] = "A" }] })).Message);
         Assert.Equal(refused, Assert.Throws<JazminFormatException>(() => JazminFile.Compact(path)).Message);
     }
+
+    [Fact]
+    public void KeyServices_TheFilesForItsOnlineLocks_ALocksOwnOverIt_KeptByRewrites()
+    {
+        var owner = JazminKey.Generate();
+        var a = owner.CreateAccessKey();
+        var path = System.IO.Path.Combine(Directory.CreateTempSubdirectory("jazmin-locks-").FullName, "services.jzm");
+        JazminWriteOptions Options(JazminPackage package, Dictionary<string, JazminLockOptions?> locks) => new()
+        {
+            Key = owner, SortedBy = ["group", "id"], Access = new JazminAccessOptions { PartitionBy = "group", Grants = [new JazminGrant(a)] },
+            Files =
+            [
+                new JazminFileInput("contract.pdf", Bytes("contract")) { Groups = ["A"], Lock = "contracts" },
+                new JazminFileInput("scan.png", Bytes("scan")) { Groups = ["A"], Lock = "medical" },
+                new JazminFileInput("statement.pdf", Bytes("statement")) { Groups = ["A"], Lock = "bank" },
+            ],
+            Package = package, Locks = locks,
+        };
+        var allOnline = new Dictionary<string, JazminLockOptions?> { ["contracts"] = new() { Online = true }, ["medical"] = new() { Online = true }, ["bank"] = new() { Online = true } };
+        foreach (var bad in new[] { "http://keys.example.com", "https://user:pw@keys.example.com", "https://keys.example.com/#x" })
+            Assert.Contains("package.keyService must be an https address", Assert.Throws<JazminValidationException>(() => Write(Options(new JazminPackage { KeyService = bad }, allOnline))).Message);
+        var fileService = new JazminPackage { KeyService = "https://keys.owner.example/unlock" };
+        Assert.Contains("Lock 'contracts': KeyService is for online locks", Assert.Throws<JazminValidationException>(() => Write(Options(fileService,
+            new() { ["contracts"] = new() { Password = "pw", KeyService = "https://k.example" }, ["medical"] = new() { Online = true }, ["bank"] = new() { Online = true } }))).Message);
+        File.WriteAllBytes(path, Write(Options(fileService, new()
+        {
+            ["contracts"] = new() { Password = "pw", Iterations = Iterations },
+            ["medical"] = new() { Online = true, KeyService = "https://keys.medicalaid.example/jazmin" },
+            ["bank"] = new() { Online = true },
+        })));
+        Dictionary<string, string?> Services()
+        {
+            using var r = AsKey(path, a);
+            var found = r.Locks.ToDictionary(l => l.Id, l => l.KeyService);
+            Assert.Equal(found["medical"], r.Files.Single(f => f.Path == "scan.png").Lock!.KeyService);
+            return found;
+        }
+        var expected = new Dictionary<string, string?> { ["bank"] = "https://keys.owner.example/unlock", ["contracts"] = null, ["medical"] = "https://keys.medicalaid.example/jazmin" };
+        Assert.Equal(expected, Services());
+        Assert.Equal([("bank", JazminLockKind.Online, (string?)null), ("medical", JazminLockKind.Online, "https://keys.medicalaid.example/jazmin")],
+            JazminFile.ListFileUnlockTokens(path, owner).Select(t => (t.LockId, t.Kind, t.KeyService)));
+        Assert.Equal(JazminFile.IssueFileUnlockToken(path, owner, "medical"), JazminFile.ListFileUnlockTokens(path, owner).Single(t => t.LockId == "medical").Token);
+        JazminFile.Compact(path, owner);
+        Assert.Equal(expected, Services());
+        JazminFile.Append(path, new JazminAppend { Key = owner, Insert = [new Dictionary<string, object?> { ["id"] = 500L, ["group"] = "B" }] });
+        Assert.Equal(expected, Services());
+        JazminFile.Update(path, new JazminUpdate { Key = owner, Locks = new Dictionary<string, JazminLockOptions?> { ["medical"] = new() { Online = true, Password = "m", Iterations = Iterations } } });
+        Assert.Equal(expected, Services()); // a password added: the service stays
+        JazminFile.Update(path, new JazminUpdate { Key = owner, Locks = new Dictionary<string, JazminLockOptions?> { ["medical"] = new() { Online = true, KeyService = "" } } });
+        Assert.Equal(new Dictionary<string, string?>(expected) { ["medical"] = "https://keys.owner.example/unlock" }, Services()); // "": the file's
+    }
 }

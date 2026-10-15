@@ -64,6 +64,22 @@ export function issueUnlockToken(path, ownerKey, accessKey, { now } = {}) {
 }
 
 /**
+ * Lists the unlock tokens of a file's online locks (spec 6.8.1), for a key service that stores them instead of the
+ * owner key: [{ lockId, kind, keyService?, token }] (keyService: the lock's own, spec 6.8.2). Owner key required.
+ */
+export function listFileUnlockTokens(path, ownerKey) {
+  const reader = new JazminReader(path, { key: ownerKey });
+  try {
+    const locks = reader[OWNER_LOCKS];
+    if (!locks) throw new JazminValidationError('File unlock tokens exist only for access-controlled files, and need the owner key');
+    return [...locks.values()].filter((l) => l.secret).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
+      .map((l) => ({ lockId: l.id, kind: l.kind, ...(l.keyService ? { keyService: l.keyService } : {}), token: encodeFileUnlockToken(l.secret) }));
+  } finally {
+    reader.close();
+  }
+}
+
+/**
  * What a key service hands a person who passed its checks (sign-in, 2FA, their grant): the unlock token (jzf1-...) of
  * an online lock of the file's stored files (spec 6.8.1); `reader.unlock(lockId, { unlockToken })` opens the lock with
  * it. Owner key required. The token stays the same across updates and appends, and when the lock's password changes.

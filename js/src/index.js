@@ -23,7 +23,7 @@ export { portableHtml, portableScript } from './portable.js';
 export { checkPageSettings } from './files.js';
 export { applyChanges, writeChanges } from './changes.js';
 export { SUBMISSION_FILE_TYPES, fileSubmission } from './submissions.js';
-export { accessKeyOf, inspect, issueFileUnlockToken, issueUnlockToken, listUnlockTokens } from './online.js';
+export { accessKeyOf, inspect, issueFileUnlockToken, issueUnlockToken, listFileUnlockTokens, listUnlockTokens } from './online.js';
 export { inferSchema } from './schema.js';
 export { compileShape, shapeSchema } from './shape.js';
 export { from, JazminQuery } from './query.js';

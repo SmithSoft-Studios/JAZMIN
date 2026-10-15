@@ -16,6 +16,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   both libraries. `new JazminFileInput(path, new FileInfo(...)) { Lock = ..., GroupActions = ... }` gives a file read from
   disk the settings `FromFile` has no parameters for. Releases 1.0 to 1.6 read such files and refuse only the locked ones; **don't
   append to them with 1.0 to 1.6**, which would lose the locked files' keys (their update and compact fail safely).
+- **Key services for locks (#188, both libraries and the browser reader; spec 6.8.2).** `package.keyService` (.NET
+  `JazminPackage.KeyService`) names the https service that gives out the tokens of a file's online locks, and a lock can
+  name its own (`keyService` / `JazminLockOptions.KeyService`), for attachments locked for several providers. Readers give
+  each lock's `keyService`; `listFileUnlockTokens` / `JazminFile.ListFileUnlockTokens` list a file's lock tokens for a
+  service that stores them. Rewrites keep them; releases 1.0 to 1.6 drop `keyService` when they rewrite the settings.
 - **Locked files in the browser and the web viewer (#188).** The browser reader lists locked files (`files()`, each
   with `lock`, and `locks()`) and opens them with `unlock(id, { password, unlockToken })`; reading one before throws
   `JazminFileLockedError`. The viewer's Files tab shows a locked file with a padlock and **Unlock…**, which asks for what

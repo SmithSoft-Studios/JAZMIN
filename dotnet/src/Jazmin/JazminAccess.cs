@@ -126,3 +126,9 @@ public sealed record JazminFileInfo(string FileId, string Version, bool Encrypte
 
 /// <summary>An online grant's unlock token, for key services that store them.</summary>
 public sealed record JazminUnlockTokenInfo(string KeyId, string? Label, DateTimeOffset? Expires, string Token);
+
+/// <summary>
+/// An online lock's unlock token (<see cref="JazminFile.ListFileUnlockTokens"/>), for a key service that stores them:
+/// <paramref name="KeyService"/> is the lock's own (spec 6.8.2), when it names one.
+/// </summary>
+public sealed record JazminFileUnlockTokenInfo(string LockId, JazminLockKind Kind, string? KeyService, string Token);

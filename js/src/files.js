@@ -104,6 +104,25 @@ export function fileSource(entry) {
 }
 
 /** Validates `package` settings (spec 6.8). */
+/** A key service's address (spec 6.8.2): an https URL without a user name, password or fragment; else undefined. */
+export function keyServiceAddress(value) {
+  if (typeof value !== 'string') return undefined;
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return undefined;
+  }
+  return url.protocol === 'https:' && !url.username && !url.password && !url.hash ? url.href : undefined;
+}
+
+/** Checks a key service's address given to a writer; returns it as a URL's text. */
+export function checkKeyService(value, where) {
+  const address = keyServiceAddress(value);
+  if (!address) throw new JazminValidationError(`${where} must be an https address without a user name, password or #fragment, such as https://keys.example.com/unlock`);
+  return address;
+}
+
 export function normalizePackage(settings, paths) {
   if (settings === undefined || settings === null) return undefined;
   if (typeof settings !== 'object' || Array.isArray(settings)) throw new JazminValidationError('package must be an object');
@@ -129,6 +148,8 @@ export function normalizePackage(settings, paths) {
   if (settings.allowWasm !== undefined) out.allowWasm = settings.allowWasm === true;
   if (settings.pdf !== undefined) out.pdf = normalizePdf(settings.pdf, 'package.pdf');
   if (settings.edit !== undefined) out.edit = normalizeEdit(settings.edit);
+  // The owner's key service for the file's online locks (spec 6.8.2).
+  if (settings.keyService !== undefined) out.keyService = checkKeyService(settings.keyService, 'package.keyService');
   return out;
 }
 
