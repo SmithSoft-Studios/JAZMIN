@@ -1,4 +1,8 @@
 // Indexes (spec 8): sorted indexes in pages behind a directory, trigram indexes, postings.
+import crypto from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { ByteReader, ByteWriter, msFromFile, normalizeBigInt, utf8Slice } from './binary.js';
 import { INDEX_DELTAS_ENCODING, POSTINGS_ENCODING } from './constants.js';
 import { JazminFormatError } from './errors.js';
@@ -120,12 +124,143 @@ class LargeMap {
   }
 }
 
+/**
+ * Entries (keys and later row ids) a sorted index builder holds before it writes them to a temporary file, by the
+ * writer's priority: 25,000,000 distinct keys held about 3.5-4 GB (in no particular order) or 0.85 GB (in order); a
+ * held entry of text costs about 470 bytes (1,000,000 held: 729 MB at the peak of a rewrite; 4,000,000: 2.1 GB).
+ */
+export const INDEX_SPILL_ENTRIES = { memory: 1_000_000, balanced: 2_000_000, speed: Infinity };
+
+const SPILL_FRAME_BYTES = 256 * 1024; // a run file is written and read a frame of entries at a time
+
+/**
+ * A run of index entries in a temporary file: its sorted entries as frames (a 4-byte length, then the entries:
+ * the key as in a page, then its postings), encrypted with AES-256-CTR under a key made for it and never kept, so no
+ * key reaches the disk readable. Read back once, in order, by entries().
+ */
+class SpillRun {
+  constructor(file, type) {
+    this.file = file;
+    this.type = type;
+    this.key = crypto.randomBytes(32);
+    this.iv = crypto.randomBytes(16);
+  }
+
+  /** Writes the entries ({ key, first, more }) to the file. */
+  write(entries) {
+    const cipher = crypto.createCipheriv('aes-256-ctr', this.key, this.iv);
+    const fd = fs.openSync(this.file, 'wx', 0o600);
+    try {
+      const body = new ByteWriter(SPILL_FRAME_BYTES + 1024);
+      const flush = () => {
+        if (!body.length) return;
+        const frame = Buffer.allocUnsafe(4 + body.length);
+        frame.writeUInt32LE(body.length, 0);
+        body.buf.copy(frame, 4, 0, body.length);
+        fs.writeSync(fd, cipher.update(frame));
+        body.length = 0;
+      };
+      for (const entry of entries) {
+        this.#writeKey(body, entry.key);
+        body.varUint(1 + (entry.more?.length ?? 0));
+        let previous = entry.first;
+        body.varUint(previous);
+        if (entry.more) {
+          for (const id of entry.more) {
+            body.varUint(id - previous);
+            previous = id;
+          }
+        }
+        if (body.length >= SPILL_FRAME_BYTES) flush();
+      }
+      flush();
+      const rest = cipher.final();
+      if (rest.length) fs.writeSync(fd, rest);
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  /**
+   * A key as it is: text as its UTF-16 code units (UTF-8, as pages store it, turns a lone surrogate into U+FFFD, and the
+   * key read back would no longer match the same key held in memory); other types as in a page.
+   */
+  #writeKey(body, key) {
+    if (this.type !== 'string') {
+      encodeValue(body, this.type, key);
+      return;
+    }
+    body.varUint(key.length);
+    for (let i = 0; i < key.length; i++) body.u16(key.charCodeAt(i));
+  }
+
+  #readKey(reader) {
+    if (this.type !== 'string') return toKey(this.type, decodeValue(reader, this.type));
+    const length = reader.varUint();
+    let text = '';
+    for (let done = 0; done < length;) { // a slice at a time: one call with every unit could overflow the stack
+      const units = new Array(Math.min(8192, length - done));
+      for (let i = 0; i < units.length; i++) units[i] = reader.u16();
+      text += String.fromCharCode(...units);
+      done += units.length;
+    }
+    return text;
+  }
+
+  /** The entries back, in the order written: { key, first, more } (one object per entry). */
+  *entries() {
+    const decipher = crypto.createDecipheriv('aes-256-ctr', this.key, this.iv);
+    const fd = fs.openSync(this.file, 'r');
+    try {
+      const read = (n) => {
+        const buf = Buffer.allocUnsafe(n);
+        let got = 0;
+        while (got < n) {
+          const k = fs.readSync(fd, buf, got, n - got, null);
+          if (k === 0) throw new JazminFormatError('A temporary index run is truncated');
+          got += k;
+        }
+        return decipher.update(buf);
+      };
+      for (;;) {
+        const head = Buffer.allocUnsafe(4);
+        const k = fs.readSync(fd, head, 0, 4, null);
+        if (k === 0) return;
+        if (k < 4) throw new JazminFormatError('A temporary index run is truncated');
+        const length = decipher.update(head).readUInt32LE(0);
+        const reader = new ByteReader(read(length));
+        while (!reader.eof) {
+          const key = this.#readKey(reader);
+          const count = reader.varUint();
+          const first = reader.varUint();
+          let more;
+          if (count > 1) {
+            more = new Array(count - 1);
+            let previous = first;
+            for (let i = 0; i < count - 1; i++) more[i] = previous += reader.varUint();
+          }
+          yield { key, first, more };
+        }
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+}
+
 /** Builds a sorted value index: distinct key forms in ascending order, each with its row ids. */
 export class SortedIndexBuilder {
-  /** `mapLimit`: entries per Map of its lookup tables, below the engine's limit (tests). */
-  constructor(type, mapLimit = Infinity) {
+  /**
+   * `mapLimit`: entries per Map of its lookup tables, below the engine's limit (tests). `spillEntries`: entries held
+   * before they are written to a temporary file (INDEX_SPILL_ENTRIES), so memory stays bounded however many keys come.
+   */
+  constructor(type, mapLimit = Infinity, { spillEntries = Infinity } = {}) {
     this.type = type;
     this.mapLimit = mapLimit;
+    this.spillEntries = spillEntries;
+    this.held = 0; // entries held: keys and later row ids
+    this.spills = []; // SpillRun, oldest first
+    this.spillDir = null;
     // Distinct keys of the current run in ascending order (in table mode: all of them, as first seen), each with its
     // first row id; later row ids only for keys seen again (by position), so a column of unique values (ids) needs
     // nothing beyond its keys and first row ids.
@@ -144,6 +279,7 @@ export class SortedIndexBuilder {
     }
     const key = toKey(this.type, value);
     if (Number.isNaN(key)) return; // NaN is never indexed (it is not equal to anything)
+    if (++this.held > this.spillEntries) this.#spill();
     if (this.positions !== null) {
       const at = this.positions.get(keyId(key));
       if (at !== undefined) {
@@ -251,6 +387,68 @@ export class SortedIndexBuilder {
   }
 
   /**
+   * Writes the entries held, sorted, to a temporary file, and starts again empty. Spills come in row order, so a key in
+   * several runs has its row ids in run order, ascending.
+   */
+  #spill() {
+    this.spillDir ??= fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-index-'));
+    const run = new SpillRun(path.join(this.spillDir, `run-${this.spills.length}`), this.type);
+    run.write(this.#entries());
+    this.spills.push(run);
+    this.keys = [];
+    this.firstRows = [];
+    this.moreRows = new LargeMap(this.mapLimit);
+    this.runs = [];
+    this.positions = null;
+    this.held = 1; // the entry being added
+  }
+
+  /**
+   * Every entry in ascending order, merging the temporary runs and what is held: keys that compare equal keep the order
+   * first seen (an older run first), and the same key form in several runs is one entry, its row ids in run order.
+   */
+  *#allEntries() {
+    if (!this.spills.length) {
+      yield* this.#entries();
+      return;
+    }
+    const sources = [...this.spills.map((run) => run.entries()), this.#entries()];
+    // Each source's head, copied (a source reuses its entry object).
+    const heads = sources.map((source) => {
+      const next = source.next();
+      return next.done ? null : { ...next.value };
+    });
+    const advance = (i) => {
+      const next = sources[i].next();
+      heads[i] = next.done ? null : { ...next.value };
+    };
+    for (;;) {
+      let best = -1;
+      for (let i = 0; i < heads.length; i++) {
+        if (heads[i] && (best < 0 || compareKeys(heads[i].key, heads[best].key) < 0)) best = i;
+      }
+      if (best < 0) return;
+      const entry = heads[best];
+      advance(best);
+      for (let i = best + 1; i < heads.length; i++) {
+        const other = heads[i];
+        if (other && compareKeys(other.key, entry.key) === 0 && keyId(other.key) === keyId(entry.key)) {
+          entry.more = [...(entry.more ?? []), other.first, ...(other.more ?? [])];
+          advance(i);
+        }
+      }
+      yield entry;
+    }
+  }
+
+  /** Deletes the temporary runs (after the pages are written, or when the write is given up). */
+  close() {
+    if (this.spillDir) fs.rmSync(this.spillDir, { recursive: true, force: true });
+    this.spillDir = null;
+    this.spills = [];
+  }
+
+  /**
    * The index as pages of about `pageBytes` raw bytes each, generated one at a time (spec 8.1):
    * { first (key bytes), count, raw } with raw = encoding byte + varint count + entries. `deltas`: encoding 1, keys
    * and first row ids as differences from the previous entry's (reader feature 'index-deltas').
@@ -278,7 +476,7 @@ export class SortedIndexBuilder {
       plainBytes = 0;
       return result;
     };
-    for (const entry of this.#entries()) {
+    for (const entry of this.#allEntries()) {
       if (count === 0) first = entry.key;
       if (keys) {
         const plainKey = keys.write(body, entry.key);

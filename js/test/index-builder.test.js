@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { test } from 'node:test';
 import { ByteWriter } from '../src/binary.js';
 import { POSTINGS_ENCODING } from '../src/constants.js';
@@ -142,3 +145,68 @@ for (const [name, [type, make]] of Object.entries({
     }
   });
 }
+
+// Bounded memory (issue #186): past `spillEntries` entries the builder writes its sorted entries to a temporary file
+// (encrypted with a key made for it and never kept) and starts again; pages() merges the files. The pages must be the
+// ones the reference builder writes, byte for byte, and no file may be left or readable.
+const spillDirs = () => fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('jazmin-index-')).length;
+
+for (const [name, [type, make]] of Object.entries(CASES)) {
+  test(`index builder: spilled to temporary files, pages equal the reference builder's (${name})`, () => {
+    const before = spillDirs();
+    const values = make().map((v) => (v === null ? null : normalizeValue(type, v, 'x')));
+    const builder = new SortedIndexBuilder(type, Infinity, { spillEntries: 997 });
+    const reference = new ReferenceBuilder(type);
+    values.forEach((v, row) => {
+      builder.add(row, v);
+      reference.add(row, v);
+    });
+    for (const pageBytes of [64, 4096]) {
+      const expected = reference.pages(pageBytes);
+      const actual = [...builder.pages(pageBytes)];
+      assert.equal(actual.length, expected.length, `${pageBytes}`);
+      actual.forEach((page, i) => {
+        assert.deepEqual(Buffer.from(page.first), Buffer.from(expected[i].first), `page ${i} first`);
+        assert.ok(Buffer.from(page.raw).equals(Buffer.from(expected[i].raw)), `page ${i} bytes (${pageBytes})`);
+      });
+    }
+    builder.close();
+    assert.equal(spillDirs(), before, 'the temporary files are deleted');
+  });
+}
+
+test('index builder: spilled text keeps lone surrogates, which UTF-8 would turn into U+FFFD', () => {
+  // Single UTF-16 code units of an emoji: as UTF-8 both halves read back as U+FFFD, and the runs would not merge.
+  const units = ['a', '\u00e9', '\ud83d', '\ude00', '\ud83d\ude00', '\u4e2d'];
+  const values = Array.from({ length: 5000 }, (_, i) => Array.from({ length: 1 + (i % 4) }, (_, k) => units[(i * 7 + k * 3) % units.length]).join(''));
+  const builder = new SortedIndexBuilder('string', Infinity, { spillEntries: 300 });
+  const reference = new ReferenceBuilder('string');
+  values.forEach((v, row) => {
+    builder.add(row, v);
+    reference.add(row, v);
+  });
+  try {
+    const expected = reference.pages(64);
+    const actual = [...builder.pages(64)];
+    assert.equal(actual.length, expected.length);
+    actual.forEach((page, i) => assert.ok(Buffer.from(page.raw).equals(Buffer.from(expected[i].raw)), `page ${i}`));
+  } finally {
+    builder.close();
+  }
+});
+
+test('index builder: spilled entries are not readable on disk, and close() deletes them unread', () => {
+  const ours = new Set(fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('jazmin-index-')));
+  const builder = new SortedIndexBuilder('string', Infinity, { spillEntries: 100 });
+  for (let row = 0; row < 1000; row++) builder.add(row, `secret-${String((row * 7919) % 1000).padStart(4, '0')}`);
+  const dirs = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith('jazmin-index-') && !ours.has(n));
+  assert.equal(dirs.length, 1);
+  const files = dirs.flatMap((d) => fs.readdirSync(path.join(os.tmpdir(), d)).map((f) => path.join(os.tmpdir(), d, f)));
+  assert.ok(files.length >= 9, `${files.length} runs`);
+  for (const file of files) {
+    const bytes = fs.readFileSync(file);
+    assert.equal(bytes.includes(Buffer.from('secret-')) || bytes.includes(Buffer.from('secret-', 'utf16le')), false, 'no key is written readable');
+  }
+  builder.close();
+  assert.ok(files.every((file) => !fs.existsSync(file)));
+});

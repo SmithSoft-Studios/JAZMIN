@@ -580,7 +580,7 @@ public static class JazminFile
                     continue;
                 }
                 var orderCols = addedOrder.Select(addedShape.Ordinal).ToArray();
-                var sorter = new RowSorter(added.Table.Columns, values => addedShape.KeyTuple(values, orderCols), update.SortRunRows ?? RowSorter.RunRows(update.Priority), update.Codec, onSorted);
+                var sorter = new RowSorter(added.Table.Columns, values => addedShape.KeyTuple(values, orderCols), update.SortRunRows ?? RowSorter.RunRows(update.Priority, added.Rows.TryGetNonEnumeratedCount(out var addedRows) ? addedRows : 0), update.Codec, onSorted);
                 sorters.Add(sorter);
                 foreach (var row in added.Rows) sorter.Add(addedShape.ValuesOf(row));
                 foreach (var values in sorter.Rows()) writer.WriteValues(values);
@@ -726,7 +726,8 @@ public static class JazminFile
             if (resort && Target is not null)
             {
                 var targetCols = Target.Select(_shape.Ordinal).ToArray();
-                sorter = new RowSorter(Columns, values => _shape.KeyTuple(values, targetCols), _update.SortRunRows ?? RowSorter.RunRows(_update.Priority), _update.Codec, _onSorted);
+                sorter = new RowSorter(Columns, values => _shape.KeyTuple(values, targetCols),
+                    _update.SortRunRows ?? RowSorter.RunRows(_update.Priority, _reader.RowCount + _changes.Insert.Count + _changes.Upsert.Count), _update.Codec, _onSorted);
                 _sorters.Add(sorter);
             }
             void Emit(object?[] values)

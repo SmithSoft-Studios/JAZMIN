@@ -27,6 +27,9 @@ public sealed class JazminWriteOptions
     /// <summary>The rows the write will be handed, when known (an update knows them): the Total of the Write stage.</summary>
     internal long? ProgressTotal { get; init; }
 
+    /// <summary>Sorted index entries held before they go to a temporary file (tests); else by <see cref="Priority"/>.</summary>
+    internal long? SpillEntries { get; init; }
+
     public JazminCodec Codec { get; set; } = JazminCodec.Deflate;
 
     /// <summary>Deflate: 0-9, Brotli: 0-11. Null uses a balanced default.</summary>
@@ -572,6 +575,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         _parts = table.ColumnGroups.Select(g => new Part(g.Name, g.Cols)).ToArray();
         _chunks.Clear();
         _chunkPartition = null;
+        CloseIndexBuilders();
         _indexBuilders.Clear();
         for (var i = 0; i < _columns.Length; i++)
         {
@@ -580,7 +584,9 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                 // Readers find the leading SortedBy column's values from chunk statistics and have never used its
                 // sorted index (spec 6.7): it is not written.
                 if (kind == JazminIndexKind.Sorted && table.SortCols is [var leading, ..] && leading == i) continue;
-                IIndexBuilder builder = kind == JazminIndexKind.Sorted ? new SortedIndexBuilder(_columns[i].Type) : new TrigramIndexBuilder();
+                IIndexBuilder builder = kind == JazminIndexKind.Sorted
+                    ? new SortedIndexBuilder(_columns[i].Type, _options.SpillEntries ?? SortedIndexBuilder.SpillEntries(_options.Priority))
+                    : new TrigramIndexBuilder();
                 _indexBuilders.Add((i, _columns[i].Name, TypeNames.IndexName(kind), builder));
             }
         }
@@ -1147,7 +1153,14 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             refs.Add(new IndexRef(ix.Column, ix.Kind, WriteSection(directory, baseId, IndexKey(baseId)), segment));
         }
         if (watched && refs.Count > 0) ReportIndexes(refs.Count, refs.Count);
+        CloseIndexBuilders(); // their temporary runs, if any, are no longer needed
         return refs;
+    }
+
+    /// <summary>Deletes the index builders' temporary runs (sorted indexes past their budget write runs to temporary files).</summary>
+    private void CloseIndexBuilders()
+    {
+        foreach (var ix in _indexBuilders) ix.Builder.Close();
     }
 
     /// <summary>
@@ -1328,6 +1341,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     {
         _faulted = true;
         _finished = true;
+        CloseIndexBuilders();
         foreach (var chunk in _pending)
         {
             try

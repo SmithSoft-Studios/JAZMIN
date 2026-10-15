@@ -250,7 +250,7 @@ export function updateUnlocked(path, options = {}) {
         for (const row of t.rows ?? []) writer.writeRow(row);
         continue;
       }
-      const sorter = context.track(new RowSorter(normalizeColumns(t.columns), t.sortedBy, sorterOptions(context)));
+      const sorter = context.track(new RowSorter(normalizeColumns(t.columns), t.sortedBy, sorterOptions(context, Array.isArray(t.rows) ? t.rows.length : 0)));
       for (const row of t.rows ?? []) sorter.add(row);
       for (const row of sorter.rows()) writer.writeRow(row);
       sorter.close();
@@ -271,8 +271,14 @@ export function updateUnlocked(path, options = {}) {
   }
 }
 
-const sorterOptions = ({ sortRunRows, priority, codec, level, maxDegreeOfParallelism, onSorted }) => ({
-  runRows: sortRunRows ?? SORT_RUN_ROWS[priority ?? 'balanced'] ?? SORT_RUN_ROWS.balanced,
+/**
+ * Sorted runs merged at once at most: each open run holds a decoded chunk, so 25,000,000 rows in runs of 10,000 (2,500
+ * runs) held about 1.6 GB while merging. With the rows to come known, runs are made long enough to stay within it.
+ */
+const MAX_SORT_RUNS = 256;
+
+const sorterOptions = ({ sortRunRows, priority, codec, level, maxDegreeOfParallelism, onSorted }, rows = 0) => ({
+  runRows: sortRunRows ?? Math.max(SORT_RUN_ROWS[priority ?? 'balanced'] ?? SORT_RUN_ROWS.balanced, Math.ceil(rows / MAX_SORT_RUNS)),
   writeOptions: { codec, level, maxDegreeOfParallelism, priority },
   onSorted,
 });
@@ -371,7 +377,7 @@ function planTableChanges(reader, changes, context) {
       }
     }
     const resort = resortAsked || (setsOrder && !moved);
-    const sorter = resort && target ? context.track(new RowSorter(columns, target, sorterOptions(context))) : null;
+    const sorter = resort && target ? context.track(new RowSorter(columns, target, sorterOptions(context, reader.rowCount + insert.length + upsert.length))) : null;
     const emit = sorter ? (row) => sorter.add(row) : (row) => writer.writeRow(row);
     const changed = (row) => {
       if (!matches?.(row)) return row;

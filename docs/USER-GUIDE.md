@@ -2369,7 +2369,14 @@ JazminFile.Update("orders.jzm", new JazminUpdate
 - **A new sort order** puts every row in it, within a memory budget. Up to `sortRunRows` rows (by `priority`: 10,000,
   25,000 or 100,000) are sorted in memory at a time. Larger tables go through temporary files in the system's temp
   folder, each locked with a key made for it and never kept, so no row is written there readable. They are merged
-  into the new file and then deleted. Rows with the same sort values keep the order they had.
+  into the new file and then deleted. Rows with the same sort values keep the order they had. At most 256 runs are
+  merged at once (1.7): with more rows than that, each run holds more of them, since each open run holds a decoded
+  chunk.
+- **Sorted indexes are built within a memory budget too** (1.7). A sorted index holds an entry for each value until
+  the file is written: 25,000,000 different values held 3.5–4 GB. Past 1,000,000 entries (`priority: 'memory'`) or
+  2,000,000 (`'balanced'`) the builder writes its sorted entries to a temporary file, encrypted with a key made for it
+  and never kept, and merges
+  the files into the index at the end; `'speed'` holds them all. The index is byte for byte the same.
 - **In a file with several tables,** the options change the table named by `table` (the first by default).
 
 Measured on 1,000,000 rows (9.2 MB, sorted by id, two sorted indexes), each run in its own process

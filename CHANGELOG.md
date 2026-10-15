@@ -4,6 +4,13 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **Large rewrites in bounded memory (#186, both libraries).** Sorted indexes past 1,000,000 entries
+  (`priority: 'memory'`) or 2,000,000 (`'balanced'`) write their sorted entries to temporary files, encrypted with a key
+  made for them and never kept, and merge them into the index when the file is written; `'speed'` holds them all, as
+  before. The index pages are byte for byte the same. A rewrite that changes the sort order now merges at most 256 sorted
+  runs at once, making runs longer when there are more rows. On 25,000,000 rows (JavaScript), a new index on a text
+  column peaked at 729 MB instead of 4,762 MB (`'memory'`), and a new sort order at 714 MB instead of 4,627 MB; in .NET
+  at 515 MB instead of 4,730 MB, and 501 MB instead of 3,864 MB.
 - **Estimates before a read (#185).** `reader.estimate(filter, { offset })` (.NET `reader.Estimate(filter, offset)`)
   says what a read would cost without reading a row, from chunk directories, statistics and indexes: the chunks, rows
   and stored bytes `find()` reads at most, and those `count()` reads (0 when indexes or statistics answer it). Both
