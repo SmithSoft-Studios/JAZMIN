@@ -3,6 +3,14 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## Unreleased
+- **Fixed: a sorted index on a column with more than about 8 million distinct values (JavaScript).** When the values
+  don't arrive in order (the rows are sorted by another column), the index builder keeps a lookup table of the values,
+  and V8 refuses a `Map` more than 2²³ entries: writing or changing such a file stopped with "Map maximum
+  size exceeded" (25,000,000 rows sorted by `id`, a sorted index on `name`). The builder now goes on in another `Map`
+  when one is full; up to that size it is one `Map` as before. The same index pages, the same memory, no API change.
+  .NET is not affected.
+
 ## 1.6.1 - 2026-10-15 (file format 1.0)
 A fix for documents that edit a table other than the file's first, and a sample key service that never holds the
 owner key.

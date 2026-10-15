@@ -81,16 +81,57 @@ export const INDEX_PAGE_BYTES = 64 * 1024;
  */
 const MAX_RUNS = 32;
 
+/**
+ * A Map with no limit on its entries. V8 refuses a Map more than 2²³ entries (Node 24, "Map maximum size exceeded";
+ * older versions 2²⁴): when one is full, new keys go to another, so up to that size it is one Map. Only `get`, and
+ * `add` for a key not in it, which is all the builder needs. `limit` lowers the size of each Map (tests).
+ */
+class LargeMap {
+  constructor(limit) {
+    this.limit = limit;
+    this.last = new Map();
+    this.full = []; // earlier Maps, full
+  }
+
+  get(key) {
+    const value = this.last.get(key);
+    if (value !== undefined || this.full.length === 0) return value;
+    for (const map of this.full) {
+      const found = map.get(key);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+
+  add(key, value) {
+    if (this.last.size >= this.limit) this.#next();
+    try {
+      this.last.set(key, value);
+    } catch (error) {
+      if (!(error instanceof RangeError) || this.last.size === 0) throw error;
+      this.#next(); // the Map refused to grow: it keeps what it holds
+      this.last.set(key, value);
+    }
+  }
+
+  #next() {
+    this.full.push(this.last);
+    this.last = new Map();
+  }
+}
+
 /** Builds a sorted value index: distinct key forms in ascending order, each with its row ids. */
 export class SortedIndexBuilder {
-  constructor(type) {
+  /** `mapLimit`: entries per Map of its lookup tables, below the engine's limit (tests). */
+  constructor(type, mapLimit = Infinity) {
     this.type = type;
+    this.mapLimit = mapLimit;
     // Distinct keys of the current run in ascending order (in table mode: all of them, as first seen), each with its
     // first row id; later row ids only for keys seen again (by position), so a column of unique values (ids) needs
     // nothing beyond its keys and first row ids.
     this.keys = [];
     this.firstRows = [];
-    this.moreRows = new Map();
+    this.moreRows = new LargeMap(mapLimit);
     this.runs = []; // earlier ascending runs: { keys, firstRows, moreRows }, oldest first
     this.positions = null; // key id -> position in table mode, used once the keys form more than MAX_RUNS runs
     this.nulls = [];
@@ -109,7 +150,7 @@ export class SortedIndexBuilder {
         this.#more(this.moreRows, at).push(rowId);
         return;
       }
-      this.positions.set(keyId(key), this.keys.length);
+      this.positions.add(keyId(key), this.keys.length);
     } else if (this.keys.length > 0) {
       // Keys arriving in ascending order (ids, a sorted column) can only repeat the last one: no lookup needed.
       const n = this.keys.length;
@@ -124,7 +165,7 @@ export class SortedIndexBuilder {
         this.runs.push({ keys: this.keys, firstRows: this.firstRows, moreRows: this.moreRows });
         this.keys = [];
         this.firstRows = [];
-        this.moreRows = new Map();
+        this.moreRows = new LargeMap(this.mapLimit);
         if (this.runs.length >= MAX_RUNS) {
           this.#toTable();
           this.add(rowId, value);
@@ -139,7 +180,7 @@ export class SortedIndexBuilder {
   /** The later row ids of the key at a position, made when it is first seen again. */
   #more(moreRows, at) {
     let more = moreRows.get(at);
-    if (more === undefined) moreRows.set(at, (more = []));
+    if (more === undefined) moreRows.add(at, (more = []));
     return more;
   }
 
@@ -147,14 +188,14 @@ export class SortedIndexBuilder {
   #toTable() {
     const runs = this.runs;
     this.runs = [];
-    this.positions = new Map();
+    this.positions = new LargeMap(this.mapLimit);
     for (const run of runs) {
       for (let i = 0; i < run.keys.length; i++) {
         const at = this.positions.get(keyId(run.keys[i]));
         const runMore = run.moreRows.get(i);
         if (at === undefined) {
-          if (runMore) this.moreRows.set(this.keys.length, runMore);
-          this.positions.set(keyId(run.keys[i]), this.keys.length);
+          if (runMore) this.moreRows.add(this.keys.length, runMore);
+          this.positions.add(keyId(run.keys[i]), this.keys.length);
           this.keys.push(run.keys[i]);
           this.firstRows.push(run.firstRows[i]);
         } else {
