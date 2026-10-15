@@ -459,7 +459,7 @@ else is read when a query needs it.
 ### 6.2. Tables and Columns
 
 A `Table` has a `name`, its `column_count`, its column groups, `sorted_by`
-(6.7), `partition_by` (7.6.2), its row, deleted-row and chunk counts, its
+and `sort` (6.7), `partition_by` (7.6.2), its row, deleted-row and chunk counts, its
 partitions (6.3), its indexes (8) and its deleted rows (11.2).
 
 - **Columns** have a `position`, a unique non-empty `name`, a `type`,
@@ -617,6 +617,38 @@ Writers MUST reject rows that break the declared order. Readers MAY rely on
 it, for example to binary-search the statistics of the leading column, and
 writers SHOULD NOT build a sorted index on the leading column, because
 statistics already locate its values.
+
+**Other text orders** (`sort`, optional). A table MAY declare its order as
+`sort`, a list of keys `{ column, nocase, natural }`, so that text columns
+sort ignoring case and accents (`nocase`), with the numbers inside them by
+value (`natural`), or both. `nocase` and `natural` apply only to `string`
+columns. Nulls come first, as in `sorted_by`.
+
+- **`nocase`:** a value compares as its *folded* form: decomposed (Unicode
+  NFD), without its nonspacing marks (General Category Mn), each code point
+  lowercased by its simple lowercase mapping. So `apple`, `Banana` and
+  `Émile` sort in that order.
+- **`natural`:** a value is split into runs of ASCII digits (`0` to `9`) and
+  runs of other characters, which are compared in turn: two digit runs by
+  numeric value (leading zeros ignored; equal values: the shorter run
+  first), two other runs as text (5.2, folded first with `nocase`), and a
+  digit run before another run. A value that runs out first comes first. So
+  `A2` sorts before `A10`.
+- Values that compare equal (`apple` and `Apple` under `nocase`) MAY be in
+  any order among themselves.
+- **`sorted_by` with `sort`:** writers write in `sorted_by` the leading keys
+  of `sort` that use neither `nocase` nor `natural` (all of them for a plain
+  order, which then needs no `sort`), so readers that don't know `sort`
+  still rely on the part of the order they understand, and binary-search the
+  leading column when it is plain. Readers that know `sort` take the order
+  from it.
+- Statistics and indexes compare as in 5.2 in every table: a filter means the
+  same whatever the order. Only the leading key's statistics are searched,
+  and only when it is plain.
+- Writers MUST reject rows that break the order of `sort`, and keep it when
+  they append to or rewrite the table. Writers that don't know `sort` drop it
+  when they rewrite the table: the table then keeps only its `sorted_by`
+  part, which is still true. No reader or writer feature is needed.
 
 ### 6.8. Embedded Files
 
@@ -1836,6 +1868,11 @@ indexes, embedded files) written by both reference implementations.
   Readers that don't know them ignore them, as they do other members; the
   libraries of releases 1.0 to 1.3 also leave them out when they rewrite a
   file's directories (append, update, compaction).
+- **Since format 1.0, other text orders (6.7):** a table's optional `sort`
+  (catalog field 13 of `Table`): keys that compare text ignoring case and
+  accents, or with the numbers inside it by value. `sorted_by` keeps the
+  leading plain keys, so readers that don't know `sort` read the table
+  correctly with the part of the order they know.
 - **Since format 1.0, key services for locks (6.8.2):** `keyService` in the
   package settings and in directory and owner-directory locks. Readers that
   don't know it ignore it; writers of releases 1.0 to 1.6 leave it out when
