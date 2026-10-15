@@ -4,6 +4,12 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **A smaller browser script: each page loads only what it uses (#187, TASKS P-26).** Besides the full
+  `jazmin-browser.js` (unchanged for pages that load it), a core for reading files and JSON, CSV and XML exports
+  (`jazmin-browser-core.js`, 168 KB, 45 KB gzipped: 55% of the full script) and three add-ons loaded after it:
+  `-shapes.js`, `-writer.js` and `-queries.js`. A call that needs an add-on that isn't loaded says which. They are built
+  from `js/browser/src` by `js/scripts/build-browser.mjs`; npm exports `./browser/core`, `./browser/shapes`,
+  `./browser/writer` and `./browser/queries`. The from-disk sample's pages load only what they use.
 - **Large rewrites in bounded memory (#186, both libraries).** Sorted indexes past 1,000,000 entries
   (`priority: 'memory'`) or 2,000,000 (`'balanced'`) write their sorted entries to temporary files, encrypted with a key
   made for them and never kept, and merge them into the index when the file is written; `'speed'` holds them all, as
