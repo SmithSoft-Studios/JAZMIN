@@ -4,6 +4,11 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **Progress and Stop for rewrites (.NET, #184).** `JazminUpdate.Progress` and `JazminWriteOptions.Progress` (an
+  `IProgress<JazminWriteProgress>`: `Stage` Sort, Write or Indexes, `Done`, `Total`), and a `CancellationToken` on both.
+  New `JazminFile.Compact(path, JazminUpdate, regroup)` takes them for compacting. A stop leaves the file as it was after
+  an update or compact; a writer created on a path deletes its file. Without them, writes and rewrites take the same
+  time as 1.6.2.
 - **Progress and Stop for rewrites (JavaScript, #184).** `write()`, `update()` and `compact()` take `onProgress` and
   `signal`: they report `{ stage, done, total }` with the stages `sort` (rows put into a new sort order), `write` (rows
   written, after each chunk) and `indexes` (indexes built at the end). A stop leaves no file from `write()`, and the

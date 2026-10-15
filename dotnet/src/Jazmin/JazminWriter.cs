@@ -12,6 +12,21 @@ public sealed class JazminWriteOptions
     /// <summary>The serializer's settings, when it writes: how .NET objects in nested columns map to their fields.</summary>
     internal Serialization.JazminSerializerSettings? Serializer { get; init; }
 
+    /// <summary>
+    /// Reports how far the write has got: each chunk of rows written (<see cref="JazminWriteStage.Write"/>), then each
+    /// index built at the end of a table (<see cref="JazminWriteStage.Indexes"/>).
+    /// </summary>
+    public IProgress<JazminWriteProgress>? Progress { get; set; }
+
+    /// <summary>
+    /// Stops the write at its next report with an <see cref="OperationCanceledException"/>. A writer created on a path
+    /// then deletes the file; a writer on a stream leaves it incomplete.
+    /// </summary>
+    public CancellationToken CancellationToken { get; set; }
+
+    /// <summary>The rows the write will be handed, when known (an update knows them): the Total of the Write stage.</summary>
+    internal long? ProgressTotal { get; init; }
+
     public JazminCodec Codec { get; set; } = JazminCodec.Deflate;
 
     /// <summary>Deflate: 0-9, Brotli: 0-11. Null uses a balanced default.</summary>
@@ -209,6 +224,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     private int _chunkRows;
     private long _position;
     private bool _finished;
+    private readonly string? _createdPath; // the file this writer created (not an append): deleted when a stop abandons it
+    private long _progressRows; // rows handed to chunks so far, for Progress
     private bool _faulted;
 
     public JazminWriter(Stream output, IEnumerable<JazminColumn> columns, JazminWriteOptions? options = null, bool leaveOpen = false)
@@ -228,6 +245,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         JazminReader.AppendStateInfo? cont, string? path = null)
     {
         _output = path is not null ? Stream.Null : output ?? throw new ArgumentNullException(nameof(output));
+        options?.CancellationToken.ThrowIfCancellationRequested();
+        _createdPath = cont is null ? path : null;
         _continue = cont;
         _leaveOpen = leaveOpen;
         _options = options ?? new JazminWriteOptions();
@@ -875,6 +894,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     private void FlushChunk()
     {
         if (_chunkRows == 0) return;
+        if (_options.Progress is not null || _options.CancellationToken.CanBeCanceled) ReportRows(_chunkRows);
         var ordinal = _firstOrdinal + _chunks.Count;
         var partition = _access is null ? FormatConstants.WholeTable : _secrets!.AddPartition(_chunkPartition!);
         var stats = new ColumnStats[_columns.Length];
@@ -1058,12 +1078,41 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     }
 
     /// <summary>Index sections for this writer's rows: one segment per index (spec 8).</summary>
+    /// <summary>Progress: a chunk of <paramref name="rows"/> rows is being written; a stop is checked first.</summary>
+    private void ReportRows(int rows)
+    {
+        ThrowIfStopped();
+        _progressRows += rows;
+        _options.Progress?.Report(new JazminWriteProgress(JazminWriteStage.Write, _progressRows, _options.ProgressTotal));
+    }
+
+    /// <summary>Progress: <paramref name="done"/> of the table's <paramref name="total"/> indexes are built; a stop is checked first.</summary>
+    private void ReportIndexes(int done, int total)
+    {
+        ThrowIfStopped();
+        if (done > 0) _options.Progress?.Report(new JazminWriteProgress(JazminWriteStage.Indexes, done, total));
+    }
+
+    /// <summary>
+    /// A stop abandons the write: the output is aborted (Dispose then leaves it, instead of finishing a file without its
+    /// rows) and a file this writer created is deleted.
+    /// </summary>
+    private void ThrowIfStopped()
+    {
+        if (!_options.CancellationToken.IsCancellationRequested) return;
+        Abort();
+        if (_createdPath is not null) File.Delete(_createdPath);
+        _options.CancellationToken.ThrowIfCancellationRequested();
+    }
+
     private List<IndexRef> WriteIndexes(int segment)
     {
         byte[]? IndexKey(string sectionId) => Key(sectionId, _secrets?.Owner, FormatConstants.KeyringIndex);
         var refs = new List<IndexRef>();
+        var watched = _options.Progress is not null || _options.CancellationToken.CanBeCanceled;
         foreach (var ix in _indexBuilders)
         {
+            if (watched) ReportIndexes(refs.Count, _indexBuilders.Count);
             var baseId = FormatConstants.IndexSectionId(_tableIndex, ix.Column, ix.Kind, segment);
             if (ix.Builder is TrigramIndexBuilder trigram)
             {
@@ -1097,6 +1146,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             var directory = Catalog.EncodeIndexDirectory(pages, nulls, _access is not null);
             refs.Add(new IndexRef(ix.Column, ix.Kind, WriteSection(directory, baseId, IndexKey(baseId)), segment));
         }
+        if (watched && refs.Count > 0) ReportIndexes(refs.Count, refs.Count);
         return refs;
     }
 
@@ -1370,6 +1420,25 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         if (!_leaveOpen) _output.Dispose();
     }
 }
+
+/// <summary>The stages a write or rewrite reports (<see cref="JazminWriteProgress"/>).</summary>
+public enum JazminWriteStage
+{
+    /// <summary>Rows put into a new sort order (an update or compact that changes it).</summary>
+    Sort,
+
+    /// <summary>Rows written into the file, reported after each chunk.</summary>
+    Write,
+
+    /// <summary>Indexes built at the end of each table.</summary>
+    Indexes,
+}
+
+/// <summary>
+/// How far a write or rewrite has got: <paramref name="Done"/> of <paramref name="Total"/> rows (Sort, Write) or of the
+/// table's indexes (Indexes). Total is null when the rows to come aren't known (a writer handed rows one at a time).
+/// </summary>
+public readonly record struct JazminWriteProgress(JazminWriteStage Stage, long Done, long? Total);
 
 /// <summary>Orders sort-key tuples; nulls first.</summary>
 internal static class SortKeys

@@ -2369,8 +2369,9 @@ Memory is each process's peak above where it started. A new sort order reads and
 about three times as long as a plain rewrite. The rows it holds at once are few (about 8 MB in JavaScript after
 garbage collection); most of the peak is garbage collected later.
 
-**Progress and Stop** (JavaScript, 1.7). `write()`, `update()` and `compact()` take `onProgress` and `signal`, as reads
-do (section 22.1). A rewrite reports `{ stage, done, total }` in up to three stages: `sort` (rows put into a new sort
+**Progress and Stop** (1.7). `write()`, `update()` and `compact()` take `onProgress` and `signal`, as reads do
+(section 22.1); in .NET, `JazminUpdate`, `JazminWriteOptions` and `JazminFile.Compact(path, update)` take `Progress` (an
+`IProgress<JazminWriteProgress>`) and a `CancellationToken`. A rewrite reports `{ stage, done, total }` in up to three stages: `sort` (rows put into a new sort
 order, only when the order changes), `write` (rows written into the new file, after each chunk) and `indexes`
 (indexes built at the end, for each table). `total` is the rows in the tables (null for `write()` from a generator);
 for `indexes` it is the table's indexes. A stop takes effect at the next report: `write()` leaves no file, and
@@ -2382,8 +2383,18 @@ update('orders.jzm', { key, sortedBy: ['customer', 'date'], signal: stop.signal,
   onProgress: ({ stage, done, total }) => showStep(stage, total ? done / total : null) });
 ```
 
-A rewrite holds its thread until it finishes, so stop it from `onProgress`, or from another thread that sets a flag
-`onProgress` reads (as JAZMIN Scout does).
+```csharp
+using var stop = new CancellationTokenSource();
+JazminFile.Update("orders.jzm", new JazminUpdate
+{
+    Key = key, SortedBy = ["customer", "date"], CancellationToken = stop.Token,
+    Progress = new Progress<JazminWriteProgress>(p => ShowStep(p.Stage, p.Total is { } total ? (double)p.Done / total : null)),
+});
+```
+
+In JavaScript a rewrite holds its thread until it finishes, so stop it from `onProgress`, or from another thread that
+sets a flag `onProgress` reads (as JAZMIN Scout does). In .NET, cancel the token from any thread. A .NET writer
+stopped part-way deletes the file it created; on a stream, it leaves the output incomplete.
 
 ## 17. Appending: fast, frequent changes
 

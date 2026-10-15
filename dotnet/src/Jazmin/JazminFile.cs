@@ -94,6 +94,18 @@ public sealed class JazminUpdate
     /// <summary>Rows sorted in memory at a time when re-sorting (default by <see cref="Priority"/>: 10,000, 25,000 or 100,000).</summary>
     public int? SortRunRows { get; set; }
 
+    /// <summary>
+    /// Reports how far the rewrite has got: rows put into a new sort order (<see cref="JazminWriteStage.Sort"/>, when the
+    /// order changes), rows written (<see cref="JazminWriteStage.Write"/>) and indexes built (<see cref="JazminWriteStage.Indexes"/>).
+    /// </summary>
+    public IProgress<JazminWriteProgress>? Progress { get; set; }
+
+    /// <summary>
+    /// Stops the rewrite at its next report, with an <see cref="OperationCanceledException"/>; the file is left as it was,
+    /// with no temporary file. It is checked once more just before the new version replaces the file.
+    /// </summary>
+    public CancellationToken CancellationToken { get; set; }
+
     /// <summary>New tables, written after the others; a table with SortedBy gets its rows in that order (within the budget).</summary>
     public IReadOnlyList<JazminAddedTable> AddTables { get; set; } = [];
 
@@ -448,6 +460,7 @@ public static class JazminFile
         (JazminKey Key, Func<List<JazminGrant>, List<JazminGrant>> Grants)? newOwner = null)
     {
         ArgumentNullException.ThrowIfNull(update);
+        update.CancellationToken.ThrowIfCancellationRequested();
 
         var temp = $"{path}.{Convert.ToHexString(RandomNumberGenerator.GetBytes(6)).ToLowerInvariant()}.tmp";
         var reader = JazminReader.Open(path, new JazminReadOptions { Key = update.Key, Password = update.Password, Table = update.Table, Priority = update.Priority });
@@ -486,10 +499,20 @@ public static class JazminFile
             }
             foreach (var (name, c) in changes)
                 if (plan.Removed.Contains(name) && c.Any) throw new JazminValidationException($"Table '{name}' is being removed: its rows can't change too");
+            // Progress: the rows of the tables kept and added; rows sorted (Sort) and written (Write) count towards it.
+            var watched = update.Progress is not null || update.CancellationToken.CanBeCanceled;
+            long? totalRows = update.Progress is null ? null : kept.Sum(r => r.RowCount) + update.AddTables.Sum(a => a.Rows.TryGetNonEnumeratedCount(out var n) ? (long)n : 0);
+            long sortedRows = 0;
+            Action<int>? onSorted = watched ? n =>
+            {
+                update.CancellationToken.ThrowIfCancellationRequested();
+                sortedRows += n;
+                update.Progress?.Report(new JazminWriteProgress(JazminWriteStage.Sort, sortedRows, totalRows));
+            } : null;
             var rewrites = new Dictionary<JazminReader, TableRewrite>(ReferenceEqualityComparer.Instance);
             foreach (var r in kept)
                 if (changes.TryGetValue(r.TableName, out var c))
-                    rewrites[r] = new TableRewrite(r, c, ownerGrants is null ? null : r.AccessLayout.PartitionBy, regroup && r == reader, update, sorters);
+                    rewrites[r] = new TableRewrite(r, c, ownerGrants is null ? null : r.AccessLayout.PartitionBy, regroup && r == reader, update, sorters, onSorted);
 
             // The other tables of the file are copied as they are: a new version has fresh secrets throughout (spec 7.6.7).
             var access = ownerGrants is null ? null : AccessFor(reader, ownerGrants, update);
@@ -515,6 +538,9 @@ public static class JazminFile
                 Now = update.Now, // expired grants are dropped; the new version's fresh secrets lock them out
                 Priority = update.Priority,
                 CompactIndexes = update.CompactIndexes ?? reader.CompactIndexes,
+                Progress = update.Progress,
+                CancellationToken = update.CancellationToken,
+                ProgressTotal = totalRows,
                 Tables = named
                     ? kept.Select(r => rewrites.TryGetValue(r, out var w) ? TableFor(r, w.Columns, w.Target, FinalName(r.TableName)) : TableFor(r, null, r.SortedBy, FinalName(r.TableName)))
                         .Concat(update.AddTables.Select(a => a.Table)).ToList()
@@ -554,7 +580,7 @@ public static class JazminFile
                     continue;
                 }
                 var orderCols = addedOrder.Select(addedShape.Ordinal).ToArray();
-                var sorter = new RowSorter(added.Table.Columns, values => addedShape.KeyTuple(values, orderCols), update.SortRunRows ?? RowSorter.RunRows(update.Priority), update.Codec);
+                var sorter = new RowSorter(added.Table.Columns, values => addedShape.KeyTuple(values, orderCols), update.SortRunRows ?? RowSorter.RunRows(update.Priority), update.Codec, onSorted);
                 sorters.Add(sorter);
                 foreach (var row in added.Rows) sorter.Add(addedShape.ValuesOf(row));
                 foreach (var values in sorter.Rows()) writer.WriteValues(values);
@@ -564,6 +590,7 @@ public static class JazminFile
             foreach (var r in readers) r.Dispose();
             foreach (var s in sorters) s.Dispose();
             writer.Finish();
+            update.CancellationToken.ThrowIfCancellationRequested(); // the last moment a stop leaves the file as it was
             ReplaceFile(temp, path);
             return result with { ExpiredGrantsRemoved = writer.ExpiredGrants, Tables = update.Tables is null ? null : tableResults };
         }
@@ -592,6 +619,7 @@ public static class JazminFile
         private readonly JazminFilter? _whereFilter;
         private readonly JazminUpdate _update;
         private readonly List<RowSorter> _sorters;
+        private readonly Action<int>? _onSorted;
         private readonly RowShape _shape;
         private readonly int[] _keyCols;
         private readonly int[]? _sortCols;
@@ -605,9 +633,10 @@ public static class JazminFile
 
         public IReadOnlyList<string>? Target { get; }
 
-        public TableRewrite(JazminReader reader, JazminTableChanges changes, string? partitionBy, bool regroup, JazminUpdate update, List<RowSorter> sorters)
+        public TableRewrite(JazminReader reader, JazminTableChanges changes, string? partitionBy, bool regroup, JazminUpdate update, List<RowSorter> sorters,
+            Action<int>? onSorted = null)
         {
-            (_reader, _changes, _regroup, _update, _sorters) = (reader, changes, regroup, update, sorters);
+            (_reader, _changes, _regroup, _update, _sorters, _onSorted) = (reader, changes, regroup, update, sorters, onSorted);
             var name = _name = reader.TableName.Length > 0 ? $"Table '{reader.TableName}'" : "The table";
             if (changes.Upsert.Count > 0 && (changes.KeyColumns is null || changes.KeyColumns.Count == 0))
                 throw new JazminValidationException("Upsert needs KeyColumns, e.g. KeyColumns = [\"id\"]");
@@ -697,7 +726,7 @@ public static class JazminFile
             if (resort && Target is not null)
             {
                 var targetCols = Target.Select(_shape.Ordinal).ToArray();
-                sorter = new RowSorter(Columns, values => _shape.KeyTuple(values, targetCols), _update.SortRunRows ?? RowSorter.RunRows(_update.Priority), _update.Codec);
+                sorter = new RowSorter(Columns, values => _shape.KeyTuple(values, targetCols), _update.SortRunRows ?? RowSorter.RunRows(_update.Priority), _update.Codec, _onSorted);
                 _sorters.Add(sorter);
             }
             void Emit(object?[] values)
@@ -1172,10 +1201,18 @@ public static class JazminFile
     public static JazminCompactResult Compact(string path, JazminKey key, bool regroup, DateTimeOffset? now = null) =>
         Compact(path, key, null, now, regroup);
 
-    private static JazminCompactResult Compact(string path, JazminKey? key, string? password, DateTimeOffset? now, bool regroup) => WithLock(path, () =>
+    private static JazminCompactResult Compact(string path, JazminKey? key, string? password, DateTimeOffset? now, bool regroup) =>
+        Compact(path, new JazminUpdate { Key = key, Password = password, Now = now }, regroup);
+
+    /// <summary>
+    /// Compact with an update's options: its key or password, and any change it asks for (indexes, sort order, tables),
+    /// with <see cref="JazminUpdate.Progress"/> and <see cref="JazminUpdate.CancellationToken"/> to follow and stop it.
+    /// <paramref name="regroup"/> as in <see cref="Compact(string, JazminKey, bool, DateTimeOffset?)"/>.
+    /// </summary>
+    public static JazminCompactResult Compact(string path, JazminUpdate update, bool regroup = false) => WithLock(path, () =>
     {
         var before = new FileInfo(path).Length;
-        var result = UpdateUnlocked(path, new JazminUpdate { Key = key, Password = password, Now = now }, regroup);
+        var result = UpdateUnlocked(path, update, regroup);
         return new JazminCompactResult(result.RowCount, before, new FileInfo(path).Length) { ExpiredGrantsRemoved = result.ExpiredGrantsRemoved };
     });
 
