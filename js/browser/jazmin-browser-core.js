@@ -282,6 +282,18 @@
 
   const sealAad = (id, contentId) => utf8.encode(`JAZMIN/1/lock/${id}/${contentId}`);
 
+  /** A key service's address (spec 6.8.2): an https URL without a user name, password or fragment; else undefined. */
+  function keyServiceAddress(value) {
+    if (typeof value !== 'string') return undefined;
+    let url;
+    try {
+      url = new URL(value);
+    } catch {
+      return undefined;
+    }
+    return url.protocol === 'https:' && !url.username && !url.password && !url.hash ? url.href : undefined;
+  }
+
   // ---- binary readers -----------------------------------------------------------------------------
 
   /** Little-endian reader over a Uint8Array, mirroring the library's ByteReader. */
@@ -3118,7 +3130,9 @@
           const directory = checkFileDirectory(parseJson(fromUtf8.decode(await file.section(dir.section, sectionId, key, { requireDigest })), 'An embedded-file directory', true));
           for (const c of directory.contents) contents.set(c.id, c);
           for (const l of directory.locks ?? []) {
-            if (!locks.has(l.id)) locks.set(l.id, { id: l.id, kind: l.kind, salt: base64ToBytes(l.salt), iterations: l.iterations, keys: new Map() });
+            if (!locks.has(l.id)) {
+              locks.set(l.id, { id: l.id, kind: l.kind, salt: base64ToBytes(l.salt), iterations: l.iterations, keys: new Map(), keyService: keyServiceAddress(l.keyService) });
+            }
             const lock = locks.get(l.id);
             for (const [id, sealed] of Object.entries(l.keys)) if (!lock.keys.has(id)) lock.keys.set(id, sealed);
           }
@@ -3138,13 +3152,25 @@
         }
         for (const e of entries.values()) if (!contents.has(e.content)) throw new JazminFormatError(`Embedded file '${e.path}' refers to missing content`);
       }
-      return (fileIndex = { entries, contents, shapes, locks, contentKeys: new Map() });
+      // The key service of the file's online locks that don't name their own (spec 6.8.2).
+      let keyService;
+      try {
+        keyService = member?.package ? keyServiceAddress(JSON.parse(member.package)?.keyService) : undefined;
+      } catch {
+        keyService = undefined;
+      }
+      return (fileIndex = { entries, contents, shapes, locks, contentKeys: new Map(), keyService });
     }
 
     // Locks opened, with every table of this file: id -> lock key. The browser never holds a shared file's owner key.
     file.unlocked ??= new Map();
 
-    const lockInfo = (locks, id) => ({ id, ...(locks.get(id) ? { kind: locks.get(id).kind } : {}), unlocked: file.unlocked.has(id) });
+    // Where an online lock's unlock token comes from (spec 6.8.2): the lock's own key service, else the file's.
+    const lockInfo = ({ locks, keyService }, id) => {
+      const lock = locks.get(id);
+      const service = lock && lock.kind !== 'password' ? lock.keyService ?? keyService : undefined;
+      return { id, ...(lock ? { kind: lock.kind } : {}), unlocked: file.unlocked.has(id), ...(service ? { keyService: service } : {}) };
+    };
 
     /** A stored content's key: from its directory, or (locked) unsealed with its lock's key; throws while locked. */
     async function contentKey(content, path) {
@@ -3342,19 +3368,20 @@
       },
       /** Embedded files this key can see: [{ path, type, size, sha256, actions?, lock? }] (lock: { id, kind, unlocked }). */
       async files() {
-        const { entries, contents, locks } = await files();
+        const index = await files();
+        const { entries, contents } = index;
         return [...entries.values()].map((e) => {
           const c = contents.get(e.content);
           return {
             path: e.path, type: e.type, size: c.size, sha256: c.sha256, ...(e.actions ? { actions: JSON.parse(JSON.stringify(e.actions)) } : {}),
-            ...(c.lock !== undefined ? { lock: lockInfo(locks, c.lock) } : {}),
+            ...(c.lock !== undefined ? { lock: lockInfo(index, c.lock) } : {}),
           };
         }).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
       },
       /** Locks of the stored files this key can see (spec 6.8.1): [{ id, kind, unlocked }]. */
       async locks() {
-        const { locks } = await files();
-        return [...locks.keys()].sort().map((id) => lockInfo(locks, id));
+        const index = await files();
+        return [...index.locks.keys()].sort().map((id) => lockInfo(index, id));
       },
       /**
        * Opens a lock for as long as the file is open: { password }, { unlockToken } (jzf1-..., from the file owner's key
@@ -3662,5 +3689,5 @@
 
   global.JazminBrowser = { ...API_CORE };
   // For the add-ons: the core's functions, and the hooks through which the core reaches them.
-  Object.defineProperty(global.JazminBrowser, Symbol.for('jazmin.browser.internals'), { value: { PREAMBLE, TRAILER, ENVELOPE, FLAG_ENCRYPTED, FLAG_PASSWORD, FLAG_ACCESS, KNOWN_FLAGS, CODEC_NONE, CODEC_DEFLATE, CODEC_BROTLI, MIN_KDF_ITERATIONS, MAX_KDF_ITERATIONS, TYPE_NAMES, ENCODING, NESTED_COLUMNS, MAX_NESTING_DEPTH, isNested, HAS_NULLS, POW10, SLOT_ID, SLOT_ENTRY, PAGE_ENTRY, ONLINE_SLOT, WHOLE_TABLE, EVERYONE, subtle, utf8, fromUtf8, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminFileLockedError, CRC_TABLE, crc32, hexToBytes, toHex, concat, equal, compareBytes, base64ToBytes, base64UrlToBytes, bytesToBase64Url, view, sha256, hkdf, hmacSha256, pbkdf2, decrypt, inflateRaw, verifySignature, MASTER_KEY_REFUSED, checksum, parseKey, keyText, parseUnlockToken, slotId, LOCK_KINDS, parseFileUnlockToken, lockNeeds, lockKey, sealAad, Reader, text, num, bytesOf, parseJson, repeatsName, dateFromMs, msFromFile, readMessage, readPacked, cumulative, readRef, readColumn, readPartition, readIndexRef, readTable, readHeader, readDirectory, readStatistics, FILE_FLAGS, fileActions, mergeActions, readIndexDirectory, readPartitionList, readDelta, readPostings, readPostingsSection, directoryShapes, checkFileDirectory, formatDecimal, readDecimal, readPlain, skipPlain, MADE_PER_ROW, decodeColumnar, decodeColumnarAt, skipValue, decodeAt, streamType, decodeStream, partEnd, decodeNested, OPS, STRING_OPS, keyOf, keyHash, inKeys, compare, compileFilter, condition, ORDERED_TYPES, RANGE_OPS, FEW_ROWS, SMALL_LOOKUP_BYTES, PAGES_CACHED, keyCompare, readKey, decodeBound, planOf, planLeaf, answeredExactly, setField, columnCollector, planColumns, filterReads, leafType, nestedMayMatch, leafMayMatch, mayMatch, leafMustMatch, mustMatch, sortBounds, unionAll, intersectSorted, PageKeys, readRowIds, PagedIndex, trigramsOf, trigramAnswers, skipPostings, intersectPostings, GRAM_HIGH, TrigramSegment, COMMON_SHARE, LazyTrigramIndex, CompositeIndex, leafLookup, indexPlan, sourceOf, BLOCK_SIZE, BLOCKS_CACHED, urlSource, openUrl, openScript, scriptBytes, open, openFile, locateTrailer, findPage, findSlot, openTable, EXPORT_TYPES, XML_NAME, XML_UNWRITABLE, bytesToBase64, exportText, exportJson, exportNested, csvQuote, xmlEscape, xmlElement, exportPieces, exportTo, ENOUGH, exportString, exportBlob, JazminValidationError, normalizeBigInt, MAX_SAFE_BIG, compareDecimalKeys, decimalKeyOf, parseDecimalText, DECIMAL_TEXT, validation, hooks, addOn } });
+  Object.defineProperty(global.JazminBrowser, Symbol.for('jazmin.browser.internals'), { value: { PREAMBLE, TRAILER, ENVELOPE, FLAG_ENCRYPTED, FLAG_PASSWORD, FLAG_ACCESS, KNOWN_FLAGS, CODEC_NONE, CODEC_DEFLATE, CODEC_BROTLI, MIN_KDF_ITERATIONS, MAX_KDF_ITERATIONS, TYPE_NAMES, ENCODING, NESTED_COLUMNS, MAX_NESTING_DEPTH, isNested, HAS_NULLS, POW10, SLOT_ID, SLOT_ENTRY, PAGE_ENTRY, ONLINE_SLOT, WHOLE_TABLE, EVERYONE, subtle, utf8, fromUtf8, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminFileLockedError, CRC_TABLE, crc32, hexToBytes, toHex, concat, equal, compareBytes, base64ToBytes, base64UrlToBytes, bytesToBase64Url, view, sha256, hkdf, hmacSha256, pbkdf2, decrypt, inflateRaw, verifySignature, MASTER_KEY_REFUSED, checksum, parseKey, keyText, parseUnlockToken, slotId, LOCK_KINDS, parseFileUnlockToken, lockNeeds, lockKey, sealAad, keyServiceAddress, Reader, text, num, bytesOf, parseJson, repeatsName, dateFromMs, msFromFile, readMessage, readPacked, cumulative, readRef, readColumn, readPartition, readIndexRef, readTable, readHeader, readDirectory, readStatistics, FILE_FLAGS, fileActions, mergeActions, readIndexDirectory, readPartitionList, readDelta, readPostings, readPostingsSection, directoryShapes, checkFileDirectory, formatDecimal, readDecimal, readPlain, skipPlain, MADE_PER_ROW, decodeColumnar, decodeColumnarAt, skipValue, decodeAt, streamType, decodeStream, partEnd, decodeNested, OPS, STRING_OPS, keyOf, keyHash, inKeys, compare, compileFilter, condition, ORDERED_TYPES, RANGE_OPS, FEW_ROWS, SMALL_LOOKUP_BYTES, PAGES_CACHED, keyCompare, readKey, decodeBound, planOf, planLeaf, answeredExactly, setField, columnCollector, planColumns, filterReads, leafType, nestedMayMatch, leafMayMatch, mayMatch, leafMustMatch, mustMatch, sortBounds, unionAll, intersectSorted, PageKeys, readRowIds, PagedIndex, trigramsOf, trigramAnswers, skipPostings, intersectPostings, GRAM_HIGH, TrigramSegment, COMMON_SHARE, LazyTrigramIndex, CompositeIndex, leafLookup, indexPlan, sourceOf, BLOCK_SIZE, BLOCKS_CACHED, urlSource, openUrl, openScript, scriptBytes, open, openFile, locateTrailer, findPage, findSlot, openTable, EXPORT_TYPES, XML_NAME, XML_UNWRITABLE, bytesToBase64, exportText, exportJson, exportNested, csvQuote, xmlEscape, xmlElement, exportPieces, exportTo, ENOUGH, exportString, exportBlob, JazminValidationError, normalizeBigInt, MAX_SAFE_BIG, compareDecimalKeys, decimalKeyOf, parseDecimalText, DECIMAL_TEXT, validation, hooks, addOn } });
 })(globalThis);

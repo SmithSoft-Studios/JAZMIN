@@ -105,6 +105,8 @@ export interface LockOptions {
   online?: boolean;
   /** PBKDF2 iterations for the password (default 600000; 1000 to 10,000,000). */
   iterations?: number;
+  /** Online locks: this lock's own key service (spec 6.8.2), over the file's package.keyService; null: the file's. */
+  keyService?: string | null;
 }
 
 /** A lock as a reader lists it: `unlocked` once unlock() opened it (always for the owner). */
@@ -112,6 +114,8 @@ export interface LockInfo {
   id: string;
   kind: 'password' | 'online' | 'both';
   unlocked: boolean;
+  /** Online kinds: where the unlock token comes from (spec 6.8.2): the lock's own key service, else the file's. */
+  keyService?: string;
 }
 
 /**
@@ -199,6 +203,8 @@ export interface PackageSettings {
   pdf?: PdfSettings;
   /** What the document may change (format 1.4; docs/design/editable-documents.md). */
   edit?: EditSettings;
+  /** The owner's key service for the file's online locks (1.7, spec 6.8.2): an https address viewers sign in at. */
+  keyService?: string;
 }
 
 /** What a file's document may change: rows of one table, by their key. */
@@ -846,6 +852,8 @@ export function append(path: string, options: AppendOptions): AppendResult;
  * { unlockToken }), after the service's own checks (owner key required). It stays the same across updates and appends.
  */
 export function issueFileUnlockToken(path: string, ownerKey: KeyInput, lockId: string): string;
+/** Key service: the unlock tokens of the file's online locks, for services that store them (owner key required). */
+export function listFileUnlockTokens(path: string, ownerKey: KeyInput): { lockId: string; kind: 'online' | 'both'; keyService?: string; token: string }[];
 /** Key service: the unlock token for an online grant, if it exists and has not expired (owner key required). */
 export function issueUnlockToken(path: string, ownerKey: KeyInput, accessKey: JazminAccessKey | string, options?: { now?: Date | number }): string;
 /** The access key a shared file grants, by its id or the key itself, from the grant list (owner key required). */

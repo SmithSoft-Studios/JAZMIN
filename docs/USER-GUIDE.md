@@ -3146,6 +3146,15 @@ reader.Unlock("medical", unlockToken: JazminFile.IssueFileUnlockToken("claim.jzm
   issued still work.
 - **A wrong password or token** throws `JazminKeyError`. An unlock lasts
   while the reader is open.
+- **Key services** (spec 6.8.2): `package: { keyService: 'https://keys.owner.example' }`
+  names the service that gives out the file's online locks' tokens, and a
+  lock can name its own (`medical: { online: true, keyService:
+  'https://keys.medicalaid.example' }`), so one owner can lock attachments
+  for several providers, each signing its people in with its own 2FA and
+  holding only its own lock's token. `reader.locks[i].keyService` (.NET
+  `JazminLockInfo.KeyService`) says where each lock's token comes from.
+  A service that stores tokens instead of the owner key lists them with
+  `listFileUnlockTokens(path, owner)` (.NET `JazminFile.ListFileUnlockTokens`).
 - **Only shared files have locks.** In a file with one key or password, that
   key would open every lock, so the writer refuses them.
 - **Password locks can be guessed offline** by whoever has the file and a key

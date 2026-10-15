@@ -1256,6 +1256,18 @@ public static class JazminFile
     }
 
     /// <summary>
+    /// Key service: the unlock tokens of the file's online locks (spec 6.8.1), for a service that stores them instead of
+    /// the owner key, each with the lock's own key service (spec 6.8.2) when it names one. Owner key required.
+    /// </summary>
+    public static IReadOnlyList<JazminFileUnlockTokenInfo> ListFileUnlockTokens(string path, JazminKey ownerKey)
+    {
+        using var reader = JazminReader.Open(path, new JazminReadOptions { Key = ownerKey });
+        var locks = reader.OwnerLockStates() ?? throw new JazminValidationException("File unlock tokens exist only for access-controlled files, and need the owner key");
+        return locks.Values.Where(l => l.Secret is not null).OrderBy(l => l.Id, StringComparer.Ordinal)
+            .Select(l => new JazminFileUnlockTokenInfo(l.Id, l.Kind, l.KeyService, Locks.EncodeToken(l.Secret!))).ToList();
+    }
+
+    /// <summary>
     /// Key service: the unlock token (jzf1-...) of an online lock of the file's stored files (spec 6.8.1), for
     /// <see cref="JazminReader.Unlock"/>, handed out after the service's own checks (sign-in, 2FA, the person's grant).
     /// Owner key required. The token stays the same across updates and appends, and when the lock's password changes.

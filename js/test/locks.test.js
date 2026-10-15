@@ -4,7 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { JazminFileLockedError, JazminKey, JazminKeyError, append, compact, issueFileUnlockToken, open, update, write } from '../src/index.js';
+import {
+  JazminFileLockedError, JazminKey, JazminKeyError, append, compact, issueFileUnlockToken, listFileUnlockTokens, open, update, write,
+} from '../src/index.js';
 import { crc32 } from '../src/binary.js';
 import { decodeHeader, encodeHeader } from '../src/catalog.js';
 import { MAGIC, TRAILER_SIZE } from '../src/constants.js';
@@ -229,4 +231,53 @@ test('a writer feature the library does not know stops appends and rewrites, not
   assert.throws(() => append(file, { insert: [{ id: 1, group: 'A' }] }), refused);
   assert.throws(() => update(file, { insert: [{ id: 1, group: 'A' }] }), refused);
   assert.throws(() => compact(file), refused);
+});
+
+test("key services (spec 6.8.2): the file's for its online locks, a lock's own over it, kept by rewrites", () => {
+  const owner = JazminKey.generate();
+  const a = owner.createAccessKey();
+  const file = path.join(tmpDir(), 'services.jzm');
+  const base = {
+    columns, key: owner, access: { partitionBy: 'group', grants: [{ key: a, rows: '*' }] },
+    files: [
+      { path: 'contract.pdf', content: 'contract', groups: ['A'], lock: 'contracts' },
+      { path: 'scan.png', content: 'scan', groups: ['A'], lock: 'medical' },
+      { path: 'statement.pdf', content: 'statement', groups: ['A'], lock: 'bank' },
+    ],
+    package: { keyService: 'https://keys.owner.example/unlock' },
+  };
+  for (const [keyService, refused] of [['http://keys.example.com', 'package.keyService'], ['https://user:pw@keys.example.com', 'package.keyService'], ['https://keys.example.com/#x', 'package.keyService']]) {
+    assert.throws(() => write(null, rows, { ...base, package: { keyService }, locks: { contracts: { online: true }, medical: { online: true }, bank: { online: true } } }), new RegExp(`${refused.replace('.', '\.')} must be an https address`));
+  }
+  assert.throws(() => write(null, rows, { ...base, locks: { contracts: { password: 'pw', keyService: 'https://k.example' }, medical: { online: true }, bank: { online: true } } }),
+    /Lock 'contracts': keyService is for online locks \(online: true\)/);
+  write(file, rows, {
+    ...base,
+    locks: {
+      contracts: { password: 'pw', iterations: ITERATIONS },
+      medical: { online: true, keyService: 'https://keys.medicalaid.example/jazmin' },
+      bank: { online: true },
+    },
+  });
+  const services = () => {
+    const r = asKey(file, a);
+    const found = Object.fromEntries(r.locks.map((l) => [l.id, l.keyService ?? null]));
+    assert.equal(r.files.find((f) => f.path === 'scan.png').lock.keyService, found.medical, 'files[i].lock says the same');
+    r.close();
+    return found;
+  };
+  const expected = { bank: 'https://keys.owner.example/unlock', contracts: null, medical: 'https://keys.medicalaid.example/jazmin' };
+  assert.deepEqual(services(), expected, "a lock's own, else the file's; a password lock has none");
+  assert.deepEqual(listFileUnlockTokens(file, owner).map((t) => [t.lockId, t.kind, t.keyService ?? null]),
+    [['bank', 'online', null], ['medical', 'online', 'https://keys.medicalaid.example/jazmin']], "the tokens of the online locks, each with its own service");
+  assert.equal(listFileUnlockTokens(file, owner).find((t) => t.lockId === 'medical').token, issueFileUnlockToken(file, owner, 'medical'));
+  compact(file, { key: owner });
+  assert.deepEqual(services(), expected, 'compacted');
+  append(file, { key: owner, insert: [{ id: 500, group: 'B' }] });
+  assert.deepEqual(services(), expected, 'appended');
+  // A changed lock keeps its service unless given one; null gives it back to the file's.
+  update(file, { key: owner, locks: { medical: { online: true, password: 'm', iterations: ITERATIONS } } });
+  assert.deepEqual(services(), expected, 'a password added: the service stays');
+  update(file, { key: owner, locks: { medical: { online: true, keyService: null } } });
+  assert.deepEqual(services(), { ...expected, medical: 'https://keys.owner.example/unlock' }, "null: the file's");
 });

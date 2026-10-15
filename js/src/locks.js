@@ -3,6 +3,7 @@
 import crypto from 'node:crypto';
 import { DEFAULTS, MAX_KDF_ITERATIONS, MIN_KDF_ITERATIONS } from './constants.js';
 import { JazminFormatError, JazminKeyError, JazminValidationError } from './errors.js';
+import { checkKeyService, keyServiceAddress } from './files.js';
 import { decrypt, deriveFromPassword, encrypt, hkdf } from './keys.js';
 
 export const LOCK_KINDS = ['password', 'online', 'both'];
@@ -11,7 +12,7 @@ const SALT_SIZE = 16;
 const SECRET_SIZE = 32;
 const CHECKSUM_SIZE = 4;
 const TOKEN_PREFIX = 'jzf1-';
-const OPTIONS = new Set(['password', 'online', 'iterations']);
+const OPTIONS = new Set(['password', 'online', 'iterations', 'keyService']);
 
 const lockInfo = (id) => `JAZMIN/1/lock/${id}`;
 const sealAad = (id, contentId) => Buffer.from(`JAZMIN/1/lock/${id}/${contentId}`, 'utf8');
@@ -88,9 +89,10 @@ export function writerLocks(given, kept = []) {
       continue;
     }
     const where = `Lock '${id}'`;
-    if (typeof options !== 'object' || Array.isArray(options)) throw new JazminValidationError(`${where}: give { password, online, iterations }, or null to remove it`);
-    for (const name of Object.keys(options)) if (!OPTIONS.has(name)) throw new JazminValidationError(`${where}: unknown option '${name}' (password, online, iterations)`);
-    const { password, online = false, iterations = DEFAULTS.kdfIterations } = options;
+    if (typeof options !== 'object' || Array.isArray(options)) throw new JazminValidationError(`${where}: give { password, online, iterations, keyService }, or null to remove it`);
+    for (const name of Object.keys(options)) if (!OPTIONS.has(name)) throw new JazminValidationError(`${where}: unknown option '${name}' (password, online, iterations, keyService)`);
+    const { password, online = false, iterations = DEFAULTS.kdfIterations, keyService } = options;
+    if (keyService != null && online !== true) throw new JazminValidationError(`${where}: keyService is for online locks (online: true)`);
     if (password !== undefined && (typeof password !== 'string' || password.length === 0)) throw new JazminValidationError(`${where}: the password must be a non-empty string`);
     if (typeof online !== 'boolean') throw new JazminValidationError(`${where}: online must be true or false`);
     if (password === undefined && !online) throw new JazminValidationError(`${where}: give a password, online: true, or both`);
@@ -99,7 +101,13 @@ export function writerLocks(given, kept = []) {
     }
     const kind = password !== undefined && online ? 'both' : online ? 'online' : 'password';
     const secret = needsSecret(kind) ? (locks.get(id)?.secret ?? crypto.randomBytes(SECRET_SIZE)) : undefined;
-    const lock = { id, kind, salt: crypto.randomBytes(SALT_SIZE), ...(needsPassword(kind) ? { iterations } : {}), ...(secret ? { secret } : {}) };
+    // Its own key service (spec 6.8.2): as given (null: none, the file's), else the one it had.
+    const service = !needsSecret(kind) || keyService === null ? undefined
+      : keyService !== undefined ? checkKeyService(keyService, `${where}: keyService`) : locks.get(id)?.keyService;
+    const lock = {
+      id, kind, salt: crypto.randomBytes(SALT_SIZE), ...(needsPassword(kind) ? { iterations } : {}), ...(secret ? { secret } : {}),
+      ...(service ? { keyService: service } : {}),
+    };
     lock.key = lockKey(lock, { password, secret });
     locks.set(id, lock);
     removed.delete(id);
@@ -112,6 +120,7 @@ export function ownerLockList(locks) {
   return [...locks.values()].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)).map((l) => ({
     id: l.id, kind: l.kind, salt: l.salt.toString('base64'), ...(l.iterations === undefined ? {} : { iterations: l.iterations }),
     key: l.key.toString('base64'), ...(l.secret ? { secret: l.secret.toString('base64') } : {}),
+    ...(l.keyService ? { keyService: l.keyService } : {}),
   }));
 }
 
@@ -131,6 +140,7 @@ export function readOwnerLocks(list) {
     locks.set(l.id, {
       id: l.id, kind: l.kind, salt: Buffer.from(l.salt, 'base64'), ...(l.iterations === undefined ? {} : { iterations: l.iterations }), key,
       ...(needsSecret(l.kind) ? { secret: Buffer.from(l.secret, 'base64') } : {}),
+      ...(keyServiceAddress(l.keyService) ? { keyService: keyServiceAddress(l.keyService) } : {}),
     });
   }
   return locks;

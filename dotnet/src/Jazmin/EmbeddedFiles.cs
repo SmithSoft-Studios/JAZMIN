@@ -166,6 +166,9 @@ public sealed class JazminPackage
 
     /// <summary>What the document may change (format 1.4, spec 7.9).</summary>
     public JazminEditSettings? Edit { get; init; }
+
+    /// <summary>The owner's key service for the file's online locks (1.7, spec 6.8.2): an https address viewers sign in at.</summary>
+    public string? KeyService { get; init; }
 }
 
 /// <summary>Validation, media types and the stored-content model for embedded files (spec 6.8).</summary>
@@ -230,8 +233,21 @@ internal static class EmbeddedFiles
         if (package.AllowWasm is { } wasm) json["allowWasm"] = wasm;
         if (package.Pdf is { } pdf) json["pdf"] = PdfJson(pdf, "package.pdf");
         if (package.Edit is { } edit) json["edit"] = Changes.EditJson(edit);
+        if (package.KeyService is { } keyService) json["keyService"] = CheckKeyService(keyService, "package.keyService");
         return json;
     }
+
+    /// <summary>A key service's address (spec 6.8.2): an https URL without a user name, password or fragment; else null.</summary>
+    public static string? KeyServiceAddress(JsonNode? value) =>
+        value is JsonValue v && v.TryGetValue<string>(out var text) ? KeyServiceAddress(text) : null;
+
+    public static string? KeyServiceAddress(string? text) =>
+        Uri.TryCreate(text, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps && uri.UserInfo.Length == 0 && uri.Fragment.Length == 0
+            && !text!.Contains('#') ? uri.AbsoluteUri : null;
+
+    /// <summary>Checks a key service's address given to a writer; returns it as a URL's text.</summary>
+    public static string CheckKeyService(string value, string where) => KeyServiceAddress(value)
+        ?? throw new JazminValidationException($"{where} must be an https address without a user name, password or #fragment, such as https://keys.example.com/unlock");
 
     public static JazminPackage? PackageFrom(JsonNode? json) => json is not JsonObject o ? null : new JazminPackage
     {
@@ -241,6 +257,7 @@ internal static class EmbeddedFiles
         AllowWasm = (bool?)o["allowWasm"],
         Pdf = o["pdf"] is JsonObject pdf ? PdfFrom(pdf, strict: false) : null,
         Edit = Changes.EditFrom(o["edit"]),
+        KeyService = KeyServiceAddress(o["keyService"]),
     };
 
     private static readonly string[] PdfFormats = ["A0", "A1", "A2", "A3", "A4", "A5", "A6", "Letter", "Legal", "Tabloid", "Ledger"];

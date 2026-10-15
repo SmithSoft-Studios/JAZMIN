@@ -1217,7 +1217,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                     if (!_fileLocks.TryGetValue(id, out var known))
                     {
                         _fileLocks[id] = known = new DirectoryLock(id, Jazmin.Locks.KindFrom((string?)l["kind"])!.Value, Convert.FromBase64String((string)l["salt"]!),
-                            (int?)l["iterations"], new Dictionary<string, string>(StringComparer.Ordinal));
+                            (int?)l["iterations"], new Dictionary<string, string>(StringComparer.Ordinal), EmbeddedFiles.KeyServiceAddress(l["keyService"]));
                     }
                     foreach (var (contentId, sealedKey) in l["keys"]!.AsObject()) known.Keys.TryAdd(contentId, (string)sealedKey!);
                 }
@@ -1323,7 +1323,15 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         }
     }
 
-    private JazminLockInfo LockInfo(string id) => new(id, _fileLocks.TryGetValue(id, out var l) ? l.Kind : null, LockKeyOf(id) is not null);
+    private JazminLockInfo LockInfo(string id)
+    {
+        var l = _fileLocks.GetValueOrDefault(id);
+        // Where an online lock's unlock token comes from (spec 6.8.2): the lock's own key service, else the file's.
+        var keyService = l is null || l.Kind == JazminLockKind.Password ? null : l.KeyService ?? (_fileKeyService ??= EmbeddedFiles.KeyServiceAddress(PackageJson?["keyService"]) ?? "");
+        return new(id, l?.Kind, LockKeyOf(id) is not null, keyService is { Length: > 0 } ? keyService : null);
+    }
+
+    private string? _fileKeyService; // the package's key service, worked out once ("" when it has none)
 
     /// <summary>The key of a lock this reader has opened (or, for the owner, the owner directory's), else null.</summary>
     private byte[]? LockKeyOf(string id) => _access switch
