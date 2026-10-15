@@ -1175,8 +1175,9 @@ token, or both: the locks of 6.8.1.
   doesn't verify means a wrong password or token), and read the group as any
   granted group. An unlock lasts while the reader is open.
 - **The owner** derives `C(g)` as for any group. The owner directory's
-  `masks` lists `[ { "group", "lock", "table", "column", "shown",
-  "unmasked", "show", "rows" } ]`, so rewrites keep them (`show`: the rule
+  `masks` lists `[ { "group", "lock", "table", "position", "column", "type",
+  "shown", "unmasked", "show", "rows" } ]`, so rewrites and appends keep them
+  and write every key slot again (`show`: the rule
   the shown column is made by; `rows`: the filter (9) of the rows masked, for
   rows added later; both writer conventions); its `locks` holds the locks
   (6.8.1).
