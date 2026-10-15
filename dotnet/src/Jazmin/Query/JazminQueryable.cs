@@ -219,6 +219,7 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
         long? limit = null;
         var pushed = new bool[calls.Count];
         var projected = false; // a Select has run (in memory): only Skip/Take, which commute with it, still push down
+        var reverse = false; // Reverse after the filters (or the file's own order): the reader reads last first
         // Rows that refer to objects earlier rows define: every row is read, in order, and the whole query runs in memory.
         var pushable = !_map.PreservesReferences;
         for (var i = 0; pushable && i < calls.Count; i++)
@@ -243,7 +244,12 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
                 else limit = Math.Min(limit ?? long.MaxValue, n);
                 pushed[i] = true;
             }
-            else if (name == "OrderBy" && !projected && SortedAsStored(calls, i) is var run and > 0)
+            else if (name == "Reverse" && !projected && !reverse && offset == 0 && limit is null)
+            {
+                reverse = true;
+                pushed[i] = true;
+            }
+            else if (name == "OrderBy" && !projected && !reverse && SortedAsStored(calls, i) is var run and > 0)
             {
                 for (var k = i; k < i + run; k++) pushed[k] = true;
                 i += run - 1;
@@ -257,9 +263,9 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
         if (pushable && checks.Count == 0 && tail.Count is 1 or 2 && tail[^1] is { Arguments.Count: 1, Method.Name: "Count" or "LongCount" or "Any" } last
             && (tail.Count == 1 || tail[0].Method.Name == "Select"))
         {
-            var (where, skip, take) = (filter, offset, limit);
+            var (where, skip, take, last1) = (filter, offset, limit, reverse);
             Func<object> answer = last.Method.Name == "Any"
-                ? () => take != 0 && _reader.Find(where, new JazminQueryOptions { Offset = skip, Limit = 1, Select = [] }).Any()
+                ? () => take != 0 && _reader.Find(where, new JazminQueryOptions { Offset = skip, Limit = 1, Select = [], Reverse = last1 }).Any()
                 : () =>
                 {
                     var n = Math.Min(Math.Max(0, _reader.Count(where) - skip), take ?? long.MaxValue);
@@ -278,7 +284,7 @@ internal sealed class JazminQueryProvider<TRow> : IJazminQueryProvider
         var operators = tail.Count == 0 ? null : tail.Aggregate((Expression)Expression.Parameter(typeof(IQueryable<TRow>), "rows"),
             (source, call) => Expression.Call(call.Method, [source, .. call.Arguments.Skip(1)]));
         var (columns, trimmed) = ColumnsUsed(checks, operators, hint);
-        var rows = _reader.TypedRows(_map, _settings, filter, check, offset, limit, columns?.ToList(), trimmed);
+        var rows = _reader.TypedRows(_map, _settings, filter, check, offset, limit, columns?.ToList(), trimmed, reverse);
         if (tail.Count == 0) return new QueryPlan(rows, null, null);
         Expression rest = Expression.Constant(rows.AsQueryable(), typeof(IQueryable<TRow>));
         var decorrelator = new Decorrelator(provider => SubQueryColumns(provider, operators!)); // sub-queries inside lambdas: read once

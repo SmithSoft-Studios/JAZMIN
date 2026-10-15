@@ -575,6 +575,21 @@ using (var claimView = JazminReader.Open(claimPath, new JazminReadOptions { Acce
     // 30. JazminFileLockedException (Password) -> The contract / The scan
 }
 
+// --- 31. The newest rows first (USER-GUIDE 9.7): a file sorted by time, read from its end as fast as from its start.
+var journalPath = Path.Combine(dir, "ledger.jzm");
+using (var writer = JazminWriter.Create(journalPath,
+    [new JazminColumn("id", JazminType.Int), new JazminColumn("at", JazminType.DateTime), new JazminColumn("account", JazminType.String) { Indexes = [JazminIndexKind.Sorted] }],
+    new JazminWriteOptions { SortedBy = ["at"] }))
+{
+    for (var i = 0; i < 10000; i++) writer.WriteValues((long)i, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddMinutes(i), $"A{i % 50}");
+}
+using (var journal = JazminReader.Open(journalPath))
+{
+    var newest = journal.Find(JazminFilter.Eq("account", "A7"), new JazminQueryOptions { Reverse = true, Limit = 3 }).Select(r => (long)r["id"]!);
+    Console.WriteLine($"31. [{string.Join(", ", newest)}]");
+    // 31. [9957, 9907, 9857]
+}
+
 Directory.Delete(dir, true);
 
 public readonly record struct Money(long Cents, string Currency);

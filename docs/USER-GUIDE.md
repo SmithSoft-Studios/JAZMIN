@@ -977,8 +977,15 @@ const spent = from(clients)
   .orderBy((x) => x.spent)
   .toArray();
 
+// The newest first, read from the end of the file (1.7): reverse() straight after the where functions, or after
+// orderBy on the file's own sort order. Elsewhere it reverses in memory, as LINQ's Reverse does.
+const latest = from(transactions).where((t) => t.category === 'Travel').reverse().take(20).toArray();
+
 // In the browser the same, awaited: await JazminBrowser.from(reader).where(…).toArray()
 ```
+
+In .NET, LINQ's `Reverse()` in the same places reads last first:
+`reader.AsQueryable<Txn>().Where(t => t.Category == "Travel").Reverse().Take(20)`.
 
 **How a function becomes a filter.** JavaScript doesn't tell a library what a
 function does, as C# does for LINQ, so `where` reads the function's text and
@@ -1263,6 +1270,30 @@ On 200,000 transactions (`npm run bench:proposals`):
 |---|---:|---:|
 | Deep page (offset 150,000) | 3,563 KB, 59 ms | 97 KB, 1.7 ms |
 | Newest 50 | 4,709 KB, 78 ms | 82 KB, 1.5 ms |
+
+**Last first: `reverse: true`** (1.7). The reader starts at the last chunk,
+so in a file sorted by date the newest rows come first, as fast as the
+oldest; `offset` and `limit` count from the end. It works with any filter,
+an index lookup and an access key, and in `findAsync`, `findBatchesAsync`,
+exports (`toJSON(reader, { reverse: true, limit: 20 })`) and the browser
+reader (`find`, `query`). .NET: `new JazminQueryOptions { Reverse = true }`.
+
+```js
+reader.rows({ reverse: true, limit: 50 });                    // the newest 50, newest first
+reader.find({ account: 'A7' }, { reverse: true, limit: 20 }); // one account's latest 20
+```
+
+On 1,000,000 rows sorted by time (the newest 20 that match; before, the
+matches were counted and the last page read):
+
+| Query | Count, then the last page | `reverse: true` |
+|---|---:|---:|
+| One account (an index) | 46.5 ms | 5.2 ms |
+| `amount > 999` (a scan) | 159 ms | 2.2 ms |
+| No filter (newest 50) | 0.4 ms | 0.3 ms |
+
+Rows with the same sort value come last first too. To keep them in file
+order, sort instead (`orderByDescending`), which reads every match.
 
 - **Float columns:** a filter on a float column can't skip chunks this way.
   Its statistics leave out `NaN` values, so they can't prove that every row

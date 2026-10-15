@@ -736,6 +736,11 @@
       return this._with({ op: 'order', fn: queryFn(key, 'thenByDescending'), desc: true, then: true });
     }
 
+    /** The rows in the other order; after the where functions (or the file's own order) the reader reads last first. */
+    reverse() {
+      return this._with({ op: 'reverse' });
+    }
+
     skip(n) {
       return this._with({ op: 'skip', n: queryCount(n, 'skip') });
     }
@@ -807,7 +812,7 @@
     }
 
     explain() {
-      return { filter: null, exact: true, columns: null, offset: 0, limit: null, fileOrder: false, inMemory: querySorts(this._steps, null).map((s) => s.op), notes: [] };
+      return { filter: null, exact: true, columns: null, offset: 0, limit: null, fileOrder: false, reverse: false, inMemory: querySorts(this._steps, null).map((s) => s.op), notes: [] };
     }
   }
 
@@ -848,6 +853,9 @@
     },
     sort(rows, step) {
       return sortQueryRows([...rows], step);
+    },
+    reverse(rows) {
+      return [...rows].reverse();
     },
     *skip(rows, step) {
       let left = step.n;
@@ -916,7 +924,7 @@
     _plan(terminal) {
       const reader = this._source;
       const steps = this._steps;
-      const plan = { filter: null, exact: true, notes: [], select: null, offset: 0, limit: Infinity, fileOrder: false, rest: [] };
+      const plan = { filter: null, exact: true, notes: [], select: null, offset: 0, limit: Infinity, fileOrder: false, reverse: false, rest: [] };
       let k = 0;
       const filters = [];
       const checks = [];
@@ -937,6 +945,12 @@
       if (j > k && inOrder) {
         plan.fileOrder = true;
         k = j;
+      }
+      // The file's order backwards: the reader reads last first.
+      if (steps[k]?.op === 'reverse') {
+        plan.reverse = true;
+        plan.fileOrder = true;
+        k++;
       }
       let rest = steps.slice(k);
       let r = 0;
@@ -964,7 +978,10 @@
 
     async *_rows(terminal) {
       const plan = this._plan(terminal);
-      const options = { ...(plan.select ? { select: plan.select } : {}), ...(plan.offset ? { offset: plan.offset } : {}), ...(plan.limit !== Infinity ? { limit: plan.limit } : {}) };
+      const options = {
+        ...(plan.select ? { select: plan.select } : {}), ...(plan.offset ? { offset: plan.offset } : {}), ...(plan.limit !== Infinity ? { limit: plan.limit } : {}),
+        ...(plan.reverse ? { reverse: true } : {}),
+      };
       let rows = plan.limit === 0 ? [] : this._source.find(plan.filter, options);
       for (const step of plan.rest) rows = READER_STEPS[step.op](rows, step);
       yield* rows;
@@ -1039,6 +1056,7 @@
         offset: plan.offset,
         limit: plan.limit === Infinity ? null : plan.limit,
         fileOrder: plan.fileOrder,
+        reverse: plan.reverse,
         inMemory: plan.rest.map((s) => s.op),
         notes: [...new Set(plan.notes)],
       };
@@ -1096,6 +1114,11 @@
       const list = [];
       for await (const row of rows) list.push(row);
       yield* sortQueryRows(list, step);
+    },
+    async *reverse(rows) {
+      const list = [];
+      for await (const row of rows) list.push(row);
+      yield* list.reverse();
     },
     async *skip(rows, step) {
       let left = step.n;

@@ -187,11 +187,15 @@ function compareValues(type, a, b) {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/** jazmin.query(filter, { select, orderBy ('col' or '-col'), offset, limit }): a page, sorted keeping offset + limit rows. */
-function templateQuery(reader, filter, { select, orderBy, offset = 0, limit = 100 } = {}) {
+/**
+ * jazmin.query(filter, { select, orderBy ('col' or '-col'), reverse, offset, limit }): a page, sorted keeping offset +
+ * limit rows; reverse: true (without orderBy) reads the file last first.
+ */
+function templateQuery(reader, filter, { select, orderBy, reverse = false, offset = 0, limit = 100 } = {}) {
   const types = new Map(reader.columns.map((c) => [c.name, c.type]));
   const pick = (row) => (select ? Object.fromEntries(select.map((s) => [s, row[s]])) : row);
-  if (!orderBy) return [...reader.find(filter, { select, offset, limit })].map(pick);
+  if (orderBy && reverse) throw new JazminValidationError('orderBy and reverse go separately: reverse reads the file last first');
+  if (!orderBy) return [...reader.find(filter, { select, offset, limit, reverse: reverse === true })].map(pick);
   const descending = orderBy.startsWith('-');
   const name = descending ? orderBy.slice(1) : orderBy;
   const type = types.get(name);

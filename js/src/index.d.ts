@@ -535,6 +535,8 @@ export interface QueryOptions extends ProgressOptions {
   select?: string[];
   limit?: number;
   offset?: number;
+  /** Last row first (1.7): in a file sorted by date, the newest first, as fast as the oldest. offset and limit count from the end. */
+  reverse?: boolean;
 }
 
 export interface ExportOptions extends QueryOptions {
@@ -1089,6 +1091,8 @@ export interface JazminQueryPlan {
   limit: number | null;
   /** The rows come in the file's own order (sortedBy): no sort. */
   fileOrder: boolean;
+  /** The reader reads the file last first (reverse() after the filters or the file's own order). */
+  reverse: boolean;
   /** The steps that run in memory. */
   inMemory: string[];
   /** What wasn't translated, and why. */
@@ -1110,6 +1114,8 @@ export declare class JazminQuery<T = JazminRow> implements Iterable<T> {
   select<R>(selector: (row: T, index: number) => R): JazminQuery<R>;
   orderBy(key: (row: T) => unknown): JazminQuery<T>;
   orderByDescending(key: (row: T) => unknown): JazminQuery<T>;
+  /** The rows in the other order; after the filters (or the file's own order) the reader reads the file last first. */
+  reverse(): JazminQuery<T>;
   thenBy(key: (row: T) => unknown): JazminQuery<T>;
   thenByDescending(key: (row: T) => unknown): JazminQuery<T>;
   skip(count: number): JazminQuery<T>;

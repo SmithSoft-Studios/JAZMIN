@@ -412,4 +412,13 @@ console.log('29.', refused29, '->', claimView.readFile('contract.pdf').toString(
 claimView.close();
 // 29. JazminFileLockedError (password) -> The contract / The scan
 
+// 30. The newest rows first (USER-GUIDE 9.7): a file sorted by time, read from its end as fast as from its start.
+const journalRows = Array.from({ length: 10000 }, (_, i) => ({ id: i, at: new Date(Date.UTC(2026, 0, 1) + i * 60000), account: `A${i % 50}` }));
+const journal = open(write(null, journalRows, {
+  columns: [{ name: 'id', type: 'int' }, { name: 'at', type: 'datetime' }, { name: 'account', type: 'string', index: ['sorted'] }], sortedBy: ['at'],
+}));
+console.log('30.', [...journal.find({ account: 'A7' }, { reverse: true, limit: 3 })].map((t) => t.id), from(journal).reverse().first().id);
+journal.close();
+// 30. [ 9957, 9907, 9857 ] 9999
+
 fs.rmSync(dir, { recursive: true, force: true });

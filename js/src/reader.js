@@ -2092,16 +2092,54 @@ export class JazminReader {
   }
 
   /**
-   * Streams visible rows matching a filter, in row order.
-   * Uses indexes to read only candidate chunks; otherwise scans chunks, skipping
-   * those whose statistics prove they cannot match.
+   * Streams visible rows matching a filter, in row order, or the last row first with `reverse: true` (in a file sorted
+   * by date, the newest first, as fast as the oldest: the reader starts at the last chunk). `offset` and `limit` count
+   * in that order. Uses indexes to read only candidate chunks; otherwise scans chunks, skipping those whose statistics
+   * prove they cannot match.
    */
   find(filter, options) {
     const watch = this.#watch(filter, options);
-    if (!watch) return this.#find(filter, options, false);
+    if (!watch) return this.#scan(filter, options, false);
     return (function* rows(scan) {
       for (const item of scan) if (item !== NEXT_CHUNK) yield item;
-    })(this.#watched(this.#find(filter, options, true), watch));
+    })(this.#watched(this.#scan(filter, options, true), watch));
+  }
+
+  /** #find, or with `reverse: true` #findReversed. */
+  #scan(filter, options, ticks) {
+    const reverse = options?.reverse ?? false;
+    if (typeof reverse !== 'boolean') throw new JazminValidationError('reverse must be true or false');
+    return reverse ? this.#findReversed(filter, options, ticks) : this.#find(filter, options, ticks);
+  }
+
+  /**
+   * Rows last first: the chunks the query reads, from the last; each one's matching rows read as #find reads them and
+   * given last first, so memory is one chunk's rows. Chunks an offset passes over whole are counted, not read.
+   */
+  *#findReversed(filter, { select, limit = Infinity, offset = 0 } = {}, ticks) {
+    const plan = this.#plan(filter);
+    const rowIds = this.#candidates(plan);
+    const runs = [...this.#chunkRuns(plan, rowIds)];
+    const whole = this.#wholeChunkTest(plan);
+    let skipped = 0;
+    let yielded = 0;
+    for (let i = runs.length - 1; i >= 0 && yielded < limit; i--) {
+      const { ordinal } = runs[i];
+      if (rowIds === null && skipped < offset && offset - skipped >= this.#liveRows(ordinal) && whole(ordinal)) {
+        skipped += this.#liveRows(ordinal);
+        continue;
+      }
+      if (ticks) yield NEXT_CHUNK;
+      const rows = [...this.#find(filter, { select }, false, undefined, { plan, rowIds, runs: [runs[i]] })];
+      for (let k = rows.length - 1; k >= 0 && yielded < limit; k--) {
+        if (skipped < offset) {
+          skipped++;
+          continue;
+        }
+        yielded++;
+        yield rows[k];
+      }
+    }
   }
 
   /**
@@ -2145,7 +2183,7 @@ export class JazminReader {
   async *#findAsync(filter, options, batched) {
     const source = this.#source;
     const watch = this.#watch(filter, options);
-    const scan = watch ? this.#watched(this.#find(filter, options, true), watch) : this.#find(filter, options, true);
+    const scan = watch ? this.#watched(this.#scan(filter, options, true), watch) : this.#scan(filter, options, true);
     let batch = [];
     if (!source.load) {
       // In memory: nothing to read, but still let other work run between chunks.
@@ -2164,7 +2202,7 @@ export class JazminReader {
       if (batch.length) yield batch;
       return;
     }
-    const planned = this.#plannedChunks(filter, options?.offset ?? 0);
+    const planned = this.#plannedChunks(filter, options?.offset ?? 0, options?.reverse === true);
     const position = new Map(Array.from(planned, (ordinal, i) => [this.#span(ordinal).offset, i]));
     const loads = new Map(); // planned index -> pending read
     let requested = 0;
@@ -2274,13 +2312,14 @@ export class JazminReader {
    * The chunks a query reads, in the order it reads them (for reading ahead): leading chunks an offset skips whole
    * (see #iterate) are left out.
    */
-  #plannedChunks(filter, offset = 0) {
+  #plannedChunks(filter, offset = 0, reverse = false) {
     const plan = this.#plan(filter);
     const rowIds = this.#candidates(plan);
     const whole = this.#wholeChunkTest(plan);
     const ordinals = [];
     let skipped = 0;
-    for (const { ordinal } of this.#chunkRuns(plan, rowIds)) {
+    const runs = reverse ? [...this.#chunkRuns(plan, rowIds)].reverse() : this.#chunkRuns(plan, rowIds);
+    for (const { ordinal } of runs) {
       if (!ordinals.length && rowIds === null && offset - skipped >= this.#liveRows(ordinal) && whole(ordinal)) skipped += this.#liveRows(ordinal);
       else ordinals.push(ordinal);
     }
@@ -2293,14 +2332,16 @@ export class JazminReader {
    * position (dates as milliseconds where the chunk is decoded for this query alone), which is all columnArrays()
    * needs. A full read passes each chunk's unbroken runs of rows at once.
    */
-  *#find(filter, { select, limit = Infinity, offset = 0 } = {}, ticks, sink) {
-    const plan = this.#plan(filter);
+  // `only` (internal, #findReversed): the query's plan and candidates, worked out already, and the chunk runs to read.
+  *#find(filter, { select, limit = Infinity, offset = 0 } = {}, ticks, sink, only) {
+    const plan = only ? only.plan : this.#plan(filter);
     const selection = this.#selection(select);
     const singleGroup = !this.#access;
-    const rowIds = this.#candidates(plan);
+    const rowIds = only ? only.rowIds : this.#candidates(plan);
+    const runs = only?.runs;
     if (singleGroup && plan) {
       // Decode only the filter's and the selected columns, of the chunks the index candidates (or the scan) name.
-      yield* this.#scanColumns(plan, selection, offset, limit, ticks, rowIds, sink);
+      yield* this.#scanColumns(plan, selection, offset, limit, ticks, rowIds, sink, runs);
       return;
     }
     const wanted = this.#wantedColumns(plan, selection); // only the filter's and the selected columns are decoded
@@ -2312,7 +2353,7 @@ export class JazminReader {
       let skipped = 0;
       let yielded = 0;
       let deleted = 0;
-      for (const ordinal of this.#decodeAhead(this.#visibleChunks, (o) => o, wanted)) {
+      for (const ordinal of this.#decodeAhead(runs ? runs.map((run) => run.ordinal) : this.#visibleChunks, (o) => o, wanted)) {
         if (yielded >= limit) return;
         if (skipped < offset && offset - skipped >= this.#liveRows(ordinal)) {
           skipped += this.#liveRows(ordinal);
@@ -2359,7 +2400,7 @@ export class JazminReader {
       return;
     }
     const make = sink ? null : this.#maker(selection);
-    for (const item of this.#iterate(plan, offset, limit, ticks, wanted, rowIds, sink)) yield item === NEXT_CHUNK ? item : make(item[1]);
+    for (const item of this.#iterate(plan, offset, limit, ticks, wanted, rowIds, sink, runs)) yield item === NEXT_CHUNK ? item : make(item[1]);
   }
 
   /**
@@ -2392,7 +2433,7 @@ export class JazminReader {
    * are decoded first. The others are decoded only for chunks with matching rows, and of those only the matching rows'
    * text, decimal, json and binary values, so a selective scan makes few values it would throw away.
    */
-  *#scanColumns(plan, selection, offset, limit, ticks, rowIds, sink) {
+  *#scanColumns(plan, selection, offset, limit, ticks, rowIds, sink, runs) {
     const wanted = this.#wantedColumns(plan, selection);
     const make = sink ? null : this.#maker(selection);
     const row = new Array(this.#columns.length);
@@ -2407,7 +2448,7 @@ export class JazminReader {
     let skipped = 0;
     let yielded = 0;
     let deleted = 0;
-    for (const { ordinal, from, to } of this.#decodeAhead(this.#chunkRuns(plan, rowIds), (run) => run.ordinal, wanted)) {
+    for (const { ordinal, from, to } of this.#decodeAhead(runs ?? this.#chunkRuns(plan, rowIds), (run) => run.ordinal, wanted)) {
       if (yielded >= limit) return;
       if (rowIds === null && skipped < offset && offset - skipped >= this.#liveRows(ordinal) && whole(ordinal)) {
         skipped += this.#liveRows(ordinal); // every row matches and lies before the offset: no need to read it
@@ -2546,7 +2587,7 @@ export class JazminReader {
    * candidate `rowIds` (see #candidates) or of a scan when null. `wanted` (by column position, null: all) limits
    * the columns decoded. The row array is reused for the next row: copy what you keep.
    */
-  *#iterate(plan, offset, limit, ticks, wanted, rowIds, sink) {
+  *#iterate(plan, offset, limit, ticks, wanted, rowIds, sink, runs) {
     let skipped = 0;
     let yielded = 0;
     const row = new Array(this.#columns.length).fill(null);
@@ -2563,7 +2604,7 @@ export class JazminReader {
     };
 
     const whole = this.#wholeChunkTest(plan);
-    for (const { ordinal, from, to } of this.#chunkRuns(plan, rowIds)) {
+    for (const { ordinal, from, to } of runs ?? this.#chunkRuns(plan, rowIds)) {
       if (yielded >= limit) return;
       if (rowIds === null && skipped < offset && offset - skipped >= this.#liveRows(ordinal) && whole(ordinal)) {
         skipped += this.#liveRows(ordinal); // every row matches and lies before the offset: no need to read it

@@ -255,14 +255,16 @@ const EXPORTERS = { json: jsonPieces, csv: csvPieces, xml: xmlPieces };
 function exportTo(reader, format, options, write) {
   const exporter = EXPORTERS[format];
   if (!exporter) throw new JazminValidationError(`Unknown export format '${format}'`);
-  const { filter, select, limit, offset, shape, onProgress, signal, ...formatOptions } = options ?? {};
+  const { filter, select, limit, offset, reverse, shape, onProgress, signal, ...formatOptions } = options ?? {};
   if (shape !== undefined) {
-    if (select || limit !== undefined || offset !== undefined) throw new JazminValidationError('With a shape, use $rows/$limit in the shape instead of select, limit or offset');
+    if (select || limit !== undefined || offset !== undefined || reverse !== undefined) {
+      throw new JazminValidationError('With a shape, use $rows/$limit in the shape instead of select, limit, offset or reverse');
+    }
     writeShape(reader, shape, format, { filter, ...formatOptions }, write);
     return;
   }
   const columns = select ? reader.columns.filter((c) => select.includes(c.name)) : reader.columns;
-  for (const piece of exporter(columns, reader.find(filter, { select, limit, offset, onProgress, signal }), formatOptions)) write(piece);
+  for (const piece of exporter(columns, reader.find(filter, { select, limit, offset, reverse, onProgress, signal }), formatOptions)) write(piece);
 }
 
 /** Converts (optionally filtered) rows to a JSON / CSV / XML string. */
