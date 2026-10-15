@@ -28,8 +28,12 @@ internal sealed class RowSorter : IDisposable
     private readonly List<JazminReader> _readers = new();
     private string? _dir;
 
-    public RowSorter(IReadOnlyList<JazminColumn> columns, Func<object?[], object?[]> sortKey, int runRows, JazminCodec codec)
+    private readonly Action<int>? _onSorted;
+
+    /// <summary><paramref name="onSorted"/>: called with the number of rows each time a run of them is sorted (progress).</summary>
+    public RowSorter(IReadOnlyList<JazminColumn> columns, Func<object?[], object?[]> sortKey, int runRows, JazminCodec codec, Action<int>? onSorted = null)
     {
+        _onSorted = onSorted;
         if (runRows < 1) throw new JazminValidationException("The sort needs at least 1 row in memory");
         _columns = columns.Select(c => c.With([])).ToList(); // the runs need no indexes
         _sortKey = sortKey;
@@ -63,6 +67,7 @@ internal sealed class RowSorter : IDisposable
         if (_buffer.Count == 0) return;
         _dir ??= Directory.CreateTempSubdirectory("jazmin-sort-").FullName;
         var file = Path.Combine(_dir, $"run-{_runs.Count}.jzm");
+        var count = _buffer.Count;
         var key = JazminKey.Generate();
         // Small chunks, light compression and one thread: the merge holds one decoded chunk per run, read once.
         using (var writer = JazminWriter.Create(file, _columns, new JazminWriteOptions
@@ -73,6 +78,7 @@ internal sealed class RowSorter : IDisposable
             foreach (var (_, values) in Sorted()) writer.WriteValues(values);
         }
         _runs.Add((file, key));
+        _onSorted?.Invoke(count);
     }
 
     /// <summary>Every row added, in the new order. Call once, then dispose.</summary>
@@ -80,7 +86,9 @@ internal sealed class RowSorter : IDisposable
     {
         if (_runs.Count == 0)
         {
-            foreach (var (_, values) in Sorted()) yield return values;
+            var sorted = Sorted();
+            _onSorted?.Invoke(sorted.Count);
+            foreach (var (_, values) in sorted) yield return values;
             yield break;
         }
         Spill();
