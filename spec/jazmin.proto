@@ -98,6 +98,14 @@ message Table {
   SectionRef partition_table = 10;        // ...and/or in a PartitionTable section
   repeated IndexRef indexes = 11;         // files that are not access-controlled (else: the owner catalog)
   SectionRef deletes = 12;                // sorted ids of deleted rows, section "<t>/deletes/<deleted_count>" (spec 11.2)
+  repeated SortKey sort = 13;             // the order with other text comparisons (spec 6.7); sorted_by keeps its plain leading keys
+}
+
+// A key of a table's order (spec 6.7): text compared ignoring case and accents, and/or with numbers by value.
+message SortKey {
+  string column = 1;
+  bool nocase = 2;
+  bool natural = 3;
 }
 
 // A partition: the rows of one partition-column value (or all rows, in a table without partitions).
