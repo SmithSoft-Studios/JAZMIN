@@ -4,6 +4,13 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **Masked columns: shown masked until a password or 2FA (#190, JavaScript; spec 7.6.8).** In a shared file a column's
+  `mask: { lock, show, rows }` keeps its values from keys granted it until `reader.unlock(lock, ...)` (the locks of
+  stored files): `reader.masked` lists them with what they show (`<column>_shown`, made by a rule: the last characters,
+  the first and last, the format kept, or a column the owner fills) and, for masking only some rows,
+  `<column>_unmasked`. Rewrites and appends keep them. `package.masks` says how viewers show revealed values (one at a
+  time or the column, for how long, and masked again when the window is hidden or idle). Releases 1.0 to 1.6 read such
+  files without the masked columns; if they rewrite one, keys lose those columns, never getting them unmasked.
 - **Other text orders: ignoring case and accents, numbers by value (#189 E3, both libraries; spec 6.7).** A key of a
   table's order can be `{ column, nocase, natural }` (`sortedBy` in JS; .NET `Sort` with `JazminSortKey`): `apple`,
   `Banana`, `Émile` with `nocase`, `A2` before `A10` with `natural`. Writers check rows against it; appends, updates

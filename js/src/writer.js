@@ -22,7 +22,8 @@ import { JazminValidationError } from './errors.js';
 import { LINKS_KEY, checkLinkDefinitions, normalizeLinks } from './links.js';
 import { INDEX_BUILDERS, INDEX_PAGE_BYTES, INDEX_SPILL_ENTRIES, encodePostingsSection } from './indexes.js';
 import { JazminKey, KeySchedule, deriveFromPassword, fingerprint, hkdf, parseAnyKey } from './keys.js';
-import { ownerLockList, sealContentKey, writerLocks } from './locks.js';
+import { ownerLockList, readOwnerLocks, sealContentKey, sealGroupSecret, writerLocks } from './locks.js';
+import { MASKED_COLUMNS, ownerMasks, rowMasker, tableMasks } from './masks.js';
 import { checkPriority, writeThreads } from './priority.js';
 import { checkShapeList, checkShapes, normalizeShapes } from './saved-shapes.js';
 import { normalizeColumns } from './schema.js';
@@ -152,6 +153,9 @@ export const PROGRESS_TOTAL = Symbol('jazmin.progressTotal');
 /** Internal: the locks a rewrite keeps, as the owner directory has them (update(); an append has them in CONTINUE). */
 export const KEPT_LOCKS = Symbol('jazmin.keptLocks');
 
+/** Internal: the masked columns a rewrite keeps, as the owner directory has them, each with its table's `tableName`. */
+export const KEPT_MASKS = Symbol('jazmin.keptMasks');
+
 /** Where the writer keeps a stored content: by its bytes and its lock. */
 const contentSlot = (c) => (c.lock === undefined ? c.sha256 : `${c.sha256}/${c.lock}`);
 
@@ -190,10 +194,15 @@ const sha256 = (...parts) => {
  * partitionBy, partitionCol, columnGroups }; `order` is its sort order (sort-keys.js normalizeOrder), `sortedBy` its
  * plain leading keys (the catalog's sorted_by). Partition columns and column groups belong to access-controlled files.
  */
-function tableDefinition(t, { named, access, chunkRows, chunkBytes }) {
+function tableDefinition(t, { named, access, chunkRows, chunkBytes, kept = [] }) {
   if (t === null || typeof t !== 'object') throw new JazminValidationError('Each table must be an object');
   if (named && (typeof t.name !== 'string' || t.name === '')) throw new JazminValidationError('Each table needs a name');
-  const columns = normalizeColumns(t.columns);
+  // Masked columns (spec 7.6.8): each in a group of its own, with its shown and unmasked columns added.
+  const masked = Array.isArray(t.columns) ? tableMasks(t.columns, kept) : { columns: t.columns, masks: [], groups: {} };
+  if (masked.masks.length && !access) {
+    throw new JazminValidationError(`Column '${masked.masks[0].column}': masked columns need an access-controlled file (spec 7.6.8): only its keys can be given a column masked`);
+  }
+  const columns = normalizeColumns(masked.columns);
   const rows = t.chunkRows ?? chunkRows;
   if (!Number.isInteger(rows) || rows < 1) throw new JazminValidationError('chunkRows must be a positive integer');
   let sortCols = null;
@@ -204,7 +213,7 @@ function tableDefinition(t, { named, access, chunkRows, chunkBytes }) {
   }
   let layout = { partitionBy: null, partitionCol: -1, columnGroups: [{ name: DEFAULT_COLUMN_GROUP, cols: columns.map((_, i) => i) }] };
   if (access) {
-    layout = normalizeTableAccess(t, columns);
+    layout = normalizeTableAccess(masked.masks.length ? { ...t, columnGroups: { ...(t.columnGroups ?? {}), ...masked.groups } } : t, columns);
     for (const i of sortCols ?? []) {
       if (layout.columnGroups[0].name !== DEFAULT_COLUMN_GROUP || !layout.columnGroups[0].cols.includes(i)) {
         throw new JazminValidationError(`The sortedBy column '${columns[i].name}' must stay in the default column group`);
@@ -215,6 +224,7 @@ function tableDefinition(t, { named, access, chunkRows, chunkBytes }) {
   }
   return {
     name: t.name ?? '', columns, sortedBy: order ? order.plain : undefined, sortCols, order, chunkRows: rows, chunkBytes: t.chunkBytes ?? chunkBytes, ...layout,
+    masks: masked.masks,
   };
 }
 
@@ -290,6 +300,8 @@ export class JazminWriter {
   #shapes = new Map(); // saved export shapes (spec 6.8): name -> entry
   #fileGroupNames = []; // access mode: names of the file groups written
   #locks = new Map(); // locks of stored files (spec 6.8.1): id -> { id, kind, salt, iterations, key, secret }
+  #otherMasks = []; // an append: the file's other tables' masked columns, as the owner directory has them
+  #masker = null; // the table's masked columns: makes a row's shown values and moves its unmasked values
   #parallelism; // threads encoding chunk sections (1 = this thread only)
   #indexDeltas = false; // sorted index pages with keys and first row ids as differences (reader feature 'index-deltas')
   #usesIndexDeltas = false; // a page was written that way: the header names the feature
@@ -338,7 +350,8 @@ export class JazminWriter {
     if (locks !== undefined && !access) {
       throw new JazminValidationError('Locks need an access-controlled file (spec 6.8.1): with one key or password, that key would open every lock');
     }
-    const lockChanges = writerLocks(locks, cont?.files?.locks ?? options[KEPT_LOCKS]);
+    // An append keeps the owner directory's locks (masked columns may use them with no file stored).
+    const lockChanges = writerLocks(locks, cont ? [...readOwnerLocks(cont.directory?.locks).values()] : options[KEPT_LOCKS]);
     this.#locks = lockChanges.locks;
     if (tables !== undefined) {
       if (!Array.isArray(tables) || tables.length === 0) throw new JazminValidationError('tables must be a non-empty array of table definitions');
@@ -347,7 +360,22 @@ export class JazminWriter {
       }
     }
     const definitions = tables ?? [{ name: cont?.table.name ?? '', columns, sortedBy, partitionBy: access?.partitionBy, columnGroups: access?.columnGroups }];
-    this.#tableDefs = definitions.map((t) => tableDefinition(t, { named: tables !== undefined, access: Boolean(access), chunkRows, chunkBytes }));
+    // The masked columns a rewrite or an append keeps: the file's, for the table they are of.
+    const keptMasks = (t) => (cont ? (cont.directory?.masks ?? []).filter((m) => m.table === cont.tableIndex)
+      : (options[KEPT_MASKS] ?? []).filter((m) => m.tableName === (t.name ?? '')));
+    this.#otherMasks = cont ? (cont.directory?.masks ?? []).filter((m) => m.table !== cont.tableIndex) : [];
+    this.#tableDefs = definitions.map((t) => tableDefinition(t, { named: tables !== undefined, access: Boolean(access), chunkRows, chunkBytes, kept: keptMasks(t) }));
+    const maskGroups = new Set(this.#otherMasks.map((m) => m.group));
+    for (const m of [...this.#otherMasks, ...this.#tableDefs.flatMap((t) => t.masks)]) {
+      if (!this.#locks.has(m.lock)) {
+        const known = this.#locks.size ? `locks: ${[...this.#locks.keys()].join(', ')}` : 'no locks given';
+        throw new JazminValidationError(`Column '${m.column}': mask: no lock '${m.lock}' (${known})`);
+      }
+    }
+    for (const m of this.#tableDefs.flatMap((t) => t.masks)) {
+      if (maskGroups.has(m.group)) throw new JazminValidationError(`Column '${m.column}': a masked column group is of one table ('${m.group}' is in two)`);
+      maskGroups.add(m.group);
+    }
     const names = new Set();
     for (const t of tables ? this.#tableDefs : []) {
       if (names.has(t.name)) throw new JazminValidationError(`Table '${t.name}' is declared twice`);
@@ -517,6 +545,7 @@ export class JazminWriter {
     this.#values = new Array(def.columns.length);
     this.#sortCols = def.sortCols;
     this.#lastSortKey = null;
+    this.#masker = def.masks?.length ? rowMasker(def.masks, def.columns) : null;
     this.#orderKey = def.order ? orderKeyMaker(def.order.keys) : null;
     this.#orderCompare = def.order ? orderComparer(def.order.keys) : null;
     this.#groups = def.columnGroups.map((g) => ({ name: g.name, cols: g.cols }));
@@ -665,6 +694,7 @@ export class JazminWriter {
   writeRow(row) {
     if (this.#finished) throw new JazminValidationError('Writer is already finished');
     if (row === null || typeof row !== 'object') throw new JazminValidationError('Each row must be an object');
+    if (this.#masker) row = this.#masker(row); // shown values made, unmasked values moved (spec 7.6.8)
     const rowNumber = this.#rowCount;
     for (const name in row) {
       if (!this.#names.has(name)) throw new JazminValidationError(`Row ${rowNumber}: unknown column '${name}'`);
@@ -860,7 +890,10 @@ export class JazminWriter {
     const header = {
       readerFeatures: [...readerFeatures],
       // file-locks while the file has a lock: writers that would not keep them must not modify it (spec 6.8.1, 12).
-      writerFeatures: [...(cont ? cont.header.writerFeatures.filter((f) => f !== FILE_LOCKS) : []), ...(this.#locks.size ? [FILE_LOCKS] : [])],
+      writerFeatures: [
+        ...(cont ? cont.header.writerFeatures.filter((f) => f !== FILE_LOCKS && f !== MASKED_COLUMNS) : []),
+        ...(this.#locks.size ? [FILE_LOCKS] : []), ...(this.#allMasks().length ? [MASKED_COLUMNS] : []),
+      ],
       created: cont ? cont.header.created : this.#options.now,
       modified: cont ? this.#options.now : 0,
       appendCount: segment,
@@ -1143,11 +1176,20 @@ export class JazminWriter {
    * re-issue them). Clients never read it, so its size does not affect them.
    */
   #ownerDirectoryText() {
+    // A grant names masked groups in maskedColumns, and every group as those listed with allColumns (spec 7.6.8): a
+    // writer that doesn't know masks (1.0-1.6) then grants no one a masked group when it rewrites the file.
+    const maskedGroups = new Set(this.#allMasks().map((m) => m.group));
+    const grantColumns = (g) => {
+      if (!maskedGroups.size) return { columns: g.columns };
+      const names = g.columns === '*' ? this.#allGroupNames : g.columns;
+      const masked = names.filter((n) => maskedGroups.has(n));
+      return { columns: names.filter((n) => !maskedGroups.has(n)), ...(masked.length ? { maskedColumns: masked } : {}), ...(g.columns === '*' ? { allColumns: true } : {}) };
+    };
     return JSON.stringify({
       partitions: [...this.#secrets.names],
       ...(this.#fileGroupNames.length ? { fileGroups: this.#fileGroupNames } : {}),
       grants: this.#access.grants.map((g) => ({
-        key: g.key.export(), rows: g.rows, columns: g.columns, ...(g.label === undefined ? {} : { label: g.label }),
+        key: g.key.export(), rows: g.rows, ...grantColumns(g), ...(g.label === undefined ? {} : { label: g.label }),
         ...(g.files.length || g.files === '*' ? { files: g.files } : {}),
         ...(g.expires === undefined ? {} : { expires: new Date(g.expires).toISOString() }),
         mode: g.mode,
@@ -1155,7 +1197,18 @@ export class JazminWriter {
       })),
       // Every lock with its key and secret: the owner opens locked files, and rewrites keep the locks (spec 6.8.1).
       ...(this.#locks.size ? { locks: ownerLockList(this.#locks) } : {}),
+      // Every masked column, so rewrites and appends keep them and write each key slot again (spec 7.6.8).
+      ...(this.#allMasks().length ? { masks: this.#allMasks() } : {}),
     });
+  }
+
+  /** Every masked column of the file, as the owner directory keeps them (spec 7.6.8). */
+  #allMasks() {
+    const cont = this.#continue;
+    return [
+      ...this.#otherMasks,
+      ...this.#tableDefs.flatMap((def, i) => ownerMasks(def.masks ?? [], cont ? cont.tableIndex : i, def.columns)),
+    ].sort((a, b) => a.table - b.table || a.position - b.position);
   }
 
   /** The key slots: one small slot for the owner, one per grant (spec 7.6.4). */
@@ -1166,6 +1219,7 @@ export class JazminWriter {
     const header = b64(s.header);
 
     const slots = [sealSlot(this.#ownerKey.bytes, this.#salt, this.#fileId, { header, owner: b64(s.owner) })];
+    const maskedGroups = new Map(this.#allMasks().map((m) => [m.group, m]));
     const ownerFingerprint = fingerprint(this.#ownerKey.ownerPublicKey);
     for (const g of this.#access.grants) {
       if (!g.key.ownerFingerprint.equals(ownerFingerprint)) {
@@ -1180,7 +1234,28 @@ export class JazminWriter {
         partitions[id] = b64(s.partitionSecret(id));
         partitionNames[id] = name;
       }
-      const columns = Object.fromEntries((g.columns === '*' ? allColumns : g.columns).map((n) => [n, b64(s.columnSecret(n))]));
+      // A masked column's group (spec 7.6.8): its secret sealed under its lock, with the column, under `masks`.
+      const granted = g.columns === '*' ? allColumns : g.columns;
+      const columns = Object.fromEntries(granted.filter((n) => !maskedGroups.has(n)).map((n) => [n, b64(s.columnSecret(n))]));
+      const maskGroups = {};
+      const maskLocks = {};
+      for (const n of granted) {
+        const m = maskedGroups.get(n);
+        if (!m) continue;
+        const lock = this.#locks.get(m.lock);
+        maskLocks[lock.id] = {
+          kind: lock.kind, salt: b64(lock.salt), ...(lock.iterations === undefined ? {} : { iterations: lock.iterations }),
+          ...(lock.keyService ? { keyService: lock.keyService } : {}),
+        };
+        maskGroups[n] = {
+          lock: lock.id, sealed: b64(sealGroupSecret(lock, n, s.columnSecret(n))),
+          column: {
+            table: m.table, position: m.position, name: m.column, type: m.type,
+            ...(m.shown ? { shown: m.shown } : {}), ...(m.unmasked ? { unmasked: m.unmasked } : {}),
+          },
+        };
+      }
+      const masks = Object.keys(maskGroups).length ? { masks: { locks: maskLocks, groups: maskGroups } } : {};
       const files = {};
       for (const name of this.#fileGroupNames) {
         const id = s.partitionId(name);
@@ -1192,7 +1267,7 @@ export class JazminWriter {
       };
       const fileSecrets = Object.keys(files).length ? { files } : {};
       const submission = b64(this.#ownerKey.submissionKey(g.key.id).bytes); // the key of what this holder sends back (spec 7.8)
-      slots.push(sealSlot(g.key.secret, this.#salt, this.#fileId, { header, partitions, partitionNames, columns, submission, ...fileSecrets, ...limits }, g.share));
+      slots.push(sealSlot(g.key.secret, this.#salt, this.#fileId, { header, partitions, partitionNames, columns, submission, ...fileSecrets, ...masks, ...limits }, g.share));
     }
     return slots;
   }

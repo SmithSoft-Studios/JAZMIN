@@ -24,7 +24,9 @@ import { EVERYONE, keyServiceAddress, mergeActions, readActions } from './files.
 import { answeredExactly, evaluate, filterReads, indexPlan, mayMatch, mustMatch, normalizeFilter } from './filter.js';
 import { CompositeIndex, LazyTrigramIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
 import { JazminAccessKey, JazminKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
-import { LOCK_KINDS, checkLockIterations, lockKey, lockNeeds, openContentKey, parseFileUnlockToken, readOwnerLocks } from './locks.js';
+import {
+  LOCK_KINDS, checkLockIterations, lockKey, lockNeeds, openContentKey, openGroupSecret, parseFileUnlockToken, readOwnerLocks,
+} from './locks.js';
 import { checkPriority, readThreads } from './priority.js';
 import { directoryShapes, shapeFits } from './saved-shapes.js';
 import { setField } from './schema.js';
@@ -216,6 +218,9 @@ export const FILE_STATE = Symbol('jazmin.fileState');
 
 /** Internal: the owner directory's locks (spec 6.8.1), Map(id -> lock), or null when the key is not the owner's. */
 export const OWNER_LOCKS = Symbol('jazmin.ownerLocks');
+
+/** Internal: the owner directory's masked columns (spec 7.6.8), as it keeps them, or null when the key is not the owner's. */
+export const OWNER_MASKS = Symbol('jazmin.ownerMasks');
 
 /**
  * Refuses a file with a writer feature this library does not support (spec 12): modifying it could lose what the
@@ -447,6 +452,30 @@ function plainSection(section, sectionId) {
   return section;
 }
 
+/**
+ * A key slot's masked columns (spec 7.6.8): { locks: Map(id -> lock), groups: Map(group -> { lock, sealed, column }) };
+ * empty when the slot has none. A member that isn't well-formed is refused.
+ */
+function readBundleMasks(masks) {
+  const out = { locks: new Map(), groups: new Map() };
+  if (masks === undefined) return out;
+  const ok = (test) => {
+    if (!test) throw new JazminFormatError("The key slot's masked columns are malformed");
+  };
+  ok(masks && typeof masks === 'object' && masks.locks && typeof masks.locks === 'object' && masks.groups && typeof masks.groups === 'object');
+  for (const [id, l] of Object.entries(masks.locks)) {
+    ok(l && LOCK_KINDS.includes(l.kind) && typeof l.salt === 'string');
+    out.locks.set(id, { id, kind: l.kind, salt: Buffer.from(l.salt, 'base64'), iterations: l.iterations, keyService: keyServiceAddress(l.keyService) });
+  }
+  for (const [group, g] of Object.entries(masks.groups)) {
+    const c = g?.column;
+    ok(g && out.locks.has(g.lock) && typeof g.sealed === 'string' && c && Number.isSafeInteger(c.table) && Number.isSafeInteger(c.position)
+      && typeof c.name === 'string' && typeof c.type === 'string');
+    out.groups.set(group, { lock: g.lock, sealed: g.sealed, column: c });
+  }
+  return out;
+}
+
 /** Checks the shape of an embedded-file directory (JSON, spec 6.8) before it is used. */
 function checkFileDirectory(d) {
   const ok = (test) => {
@@ -654,6 +683,7 @@ export class JazminReader {
   /** A reader of another table that shares `from`'s open file, keys and checks (see openTable). */
   #share(from, table) {
     this.#source = from.#source;
+    if (from.#access) from.#access.reopen?.add(this.#reopen);
     this.#source.refs = (this.#source.refs ?? 1) + 1;
     this.#readOptions = { ...from.#readOptions, table };
     this.#header = from.#header;
@@ -765,7 +795,9 @@ export class JazminReader {
       expires: bundle.expires,
       online: bundle.online === true,
       submission: typeof bundle.submission === 'string' ? b(bundle.submission) : null,
+      masks: readBundleMasks(bundle.masks),
       keySecret: secret,
+      reopen: new Set(), // readers of the file's other tables, built again when a masked column is unlocked
       directory: null,
       keySlots: { ...trailer.keySlots, section: slotsSection },
       signature: trailer.signature,
@@ -1557,12 +1589,42 @@ export class JazminReader {
    * 'both'. unlock() opens one; the owner key opens every lock.
    */
   get locks() {
-    return [...this.#files().locks.keys()].sort().map((id) => this.#lockInfo(id));
+    const ids = new Set([...this.#files().locks.keys(), ...(this.#access?.masks?.locks.keys() ?? [])]);
+    return [...ids].sort().map((id) => this.#lockInfo(id));
   }
+
+  /** A lock, from the file directories (stored files) or the key slot's masked columns (spec 7.6.8). */
+  #lockRecord(id) {
+    return this.#files().locks.get(id) ?? this.#access?.masks?.locks.get(id);
+  }
+
+  /**
+   * Masked columns of this table (spec 7.6.8): [{ column, type, group, lock: { id, kind, unlocked, keyService? },
+   * shown?, unmasked? }]. Until its lock is unlocked a masked column isn't in `columns`: rows don't have it. `shown` names
+   * the column with what its values show; `unmasked`, the column with its values in the rows that aren't masked.
+   */
+  get masked() {
+    if (!this.#access) return [];
+    const extra = (c) => ({ ...(c.shown ? { shown: c.shown } : {}), ...(c.unmasked ? { unmasked: c.unmasked } : {}) });
+    if (this.#access.isOwner) {
+      return (this.#ownerDirectory().masks ?? []).filter((m) => m.table === this.#tableIndex).sort((a, b) => a.position - b.position)
+        .map((m) => ({ column: m.column, type: m.type, group: m.group, lock: this.#lockInfo(m.lock), ...extra(m) }));
+    }
+    return [...this.#access.masks.groups].filter(([, e]) => e.column.table === this.#tableIndex).sort(([, a], [, b]) => a.column.position - b.column.position)
+      .map(([group, e]) => ({ column: e.column.name, type: e.column.type, group, lock: this.#lockInfo(e.lock), ...extra(e.column) }));
+  }
+
+  /** Builds the columns again (a masked column unlocked): every reader of the file's tables. */
+  #reopen = () => {
+    this.#openColumns();
+    this.#makers.clear();
+    this.#cachedChunk = { ordinal: -1, wanted: null, types: null, chunk: null };
+    this.#shapeList = null;
+  };
 
   #lockInfo(id) {
     const index = this.#files();
-    const lock = index.locks.get(id);
+    const lock = this.#lockRecord(id) ?? (this.#access?.isOwner ? this.#ownerLocks().get(id) : undefined);
     // Where an online lock's unlock token comes from (spec 6.8.2): the lock's own key service, else the file's.
     const keyService = lock && lock.kind !== 'password' ? lock.keyService ?? index.keyService : undefined;
     return { id, ...(lock ? { kind: lock.kind } : {}), unlocked: this.#lockKeyOf(id) !== undefined, ...(keyService ? { keyService } : {}) };
@@ -1580,6 +1642,11 @@ export class JazminReader {
     return this.#access.ownerLocks;
   }
 
+  /** Internal: the owner directory's masked columns (owner key only), else null. */
+  get [OWNER_MASKS]() {
+    return this.#access?.isOwner ? structuredClone(this.#ownerDirectory().masks ?? []) : null;
+  }
+
   /** Internal: the owner directory's locks (owner key only), else null. */
   get [OWNER_LOCKS]() {
     return this.#access?.isOwner ? this.#ownerLocks() : null;
@@ -1591,7 +1658,7 @@ export class JazminReader {
    * both for one of both kinds. Throws JazminKeyError when they are wrong.
    */
   unlock(id, { password, unlockToken } = {}) {
-    const lock = this.#files().locks.get(id);
+    const lock = this.#lockRecord(id);
     if (!lock) throw new JazminValidationError(`No lock '${id}' is visible with this key`);
     if ((lock.kind !== 'online' && password === undefined) || (lock.kind !== 'password' && unlockToken === undefined)) {
       throw new JazminValidationError(`Lock '${id}' needs ${lockNeeds(lock.kind)}`);
@@ -1600,15 +1667,25 @@ export class JazminReader {
     checkLockIterations(lock);
     const secret = lock.kind === 'password' ? undefined : parseFileUnlockToken(unlockToken);
     const key = lockKey(lock, { password, secret });
-    const [contentId, sealed] = lock.keys.entries().next().value ?? [];
-    if (sealed === undefined) throw new JazminFormatError(`Lock '${id}' has no sealed keys`);
+    // Checked by opening what it seals: a stored file's key, or a masked column group's secret (spec 7.6.8).
+    const masked = [...(this.#access.masks?.groups ?? [])].filter(([, e]) => e.lock === id);
+    const [contentId, sealed] = lock.keys?.entries().next().value ?? [];
+    if (sealed === undefined && !masked.length) throw new JazminFormatError(`Lock '${id}' has no sealed keys`);
+    const opened = new Map();
     try {
-      openContentKey(key, id, contentId, Buffer.from(sealed, 'base64'));
+      if (sealed !== undefined) openContentKey(key, id, contentId, Buffer.from(sealed, 'base64'));
+      for (const [group, e] of masked) opened.set(group, openGroupSecret(key, id, group, Buffer.from(e.sealed, 'base64')));
     } catch {
       const what = lock.kind === 'password' ? 'password' : lock.kind === 'online' ? 'unlock token' : 'password or unlock token';
       throw new JazminKeyError(`Wrong ${what} for lock '${id}'`);
     }
     (this.#access.unlocked ??= new Map()).set(id, key);
+    if (opened.size) {
+      // The masked columns become columns the key sees, in every reader of the file's tables.
+      for (const [group, groupSecret] of opened) this.#access.columns.set(group, groupSecret);
+      this.#reopen();
+      for (const reopen of this.#access.reopen ?? []) reopen();
+    }
   }
 
   #fileContent(path) {
@@ -1724,7 +1801,12 @@ export class JazminReader {
     const columnGroups = Object.fromEntries(this.#groups.map((g) => [g.name, g.cols.map((i) => this.#columns[i].name)]));
     // Each grant with its key parsed (accessKey: its id is worked out when first asked for), so callers need not parse
     // every key again.
-    const grants = this.#ownerDirectory().grants.map((g) => ({ ...g, accessKey: this.#grantKey(g.key) }));
+    const grants = this.#ownerDirectory().grants.map(({ maskedColumns, allColumns, ...g }) => ({
+      ...g,
+      // Masked groups are listed apart, and a grant of every group says so (spec 7.6.8).
+      ...(allColumns === true ? { columns: '*' } : Array.isArray(maskedColumns) && Array.isArray(g.columns) ? { columns: [...g.columns, ...maskedColumns] } : {}),
+      accessKey: this.#grantKey(g.key),
+    }));
     return { partitionBy: this.#table.partitionBy || undefined, columnGroups, grants };
   }
 
@@ -3123,6 +3205,7 @@ export class JazminReader {
   close() {
     if (this.#closed) return;
     this.#closed = true;
+    this.#access?.reopen?.delete(this.#reopen);
     this.#ahead?.pool?.close();
     this.#ahead = null;
     release(this.#source);

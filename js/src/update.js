@@ -8,13 +8,13 @@ import { compileFilter } from './filter.js';
 import { grantExpiry, toMs } from './expiry.js';
 import { JazminAccessKey, parseAnyKey } from './keys.js';
 import { FILE_SOURCE } from './files.js';
-import { COMPACT_INDEXES, FILE_STATE, JazminReader, OWNER_GRANTS, OWNER_LOCKS, ROWS_BY_PARTITION, checkWriterFeatures } from './reader.js';
+import { COMPACT_INDEXES, FILE_STATE, JazminReader, OWNER_GRANTS, OWNER_LOCKS, OWNER_MASKS, ROWS_BY_PARTITION, checkWriterFeatures } from './reader.js';
 import { INDEX_KINDS, keyId, normalizeValue, toKey } from './types.js';
 import { withLock } from './lock.js';
 import { RowSorter, SORT_RUN_ROWS } from './sort-rows.js';
 import { normalizeOrder, orderComparer, orderKeyMaker } from './sort-keys.js';
 import { linksAfter } from './links.js';
-import { JazminWriter, KEPT_LOCKS, PROGRESS_TOTAL } from './writer.js';
+import { JazminWriter, KEPT_LOCKS, KEPT_MASKS, PROGRESS_TOTAL } from './writer.js';
 
 /**
  * Atomically replaces `path` with `temp`: readers never see a half-written file. Readers that have the file open keep
@@ -218,6 +218,11 @@ export function updateUnlocked(path, options = {}) {
       // The file's locks, changed by those given (the writer refuses locks in a file that is not shared).
       ...(locks !== undefined ? { locks } : {}),
       ...(owner ? { [KEPT_LOCKS]: [...reader[OWNER_LOCKS].values()] } : {}),
+      // The masked columns of the tables kept, by their names afterwards (spec 7.6.8).
+      ...(owner ? {
+        [KEPT_MASKS]: reader[OWNER_MASKS].map((m) => ({ ...m, tableName: (reader.tables.length ? reader.tables : [reader.table])[m.table] }))
+          .filter((m) => !tablePlan.removed.has(m.tableName)).map((m) => ({ ...m, tableName: finalName(m.tableName) })),
+      } : {}),
       package: packageAfter(packageSettings !== undefined ? packageSettings : reader.package, tablePlan),
       shapes: [...keptShapes(reader[FILE_STATE]?.shapes ?? [], addShapes, removeShapes).map((shape) => shapeAfter(shape, tablePlan)), ...addShapes],
       // The links: as given, or the file's, following renames (checked against the tables by the writer).
