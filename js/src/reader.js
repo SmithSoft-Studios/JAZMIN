@@ -231,6 +231,22 @@ const READ_AHEAD_GAP = 4 * 1024;
 const READ_AHEAD_MAX = 8 * 1024 * 1024;
 const nextTurn = () => new Promise((resolve) => setImmediate(resolve)); // lets timers and I/O callbacks run
 
+/**
+ * Progress and stopping for a long read (`onProgress`, `signal`), as the browser reader has them: before each chunk is
+ * read, the chunks finished so far are reported as { done, total, matches } and the signal is checked, so a stop takes
+ * effect before the next chunk. `total` is the chunks the read plans to read.
+ */
+function chunkStarts(watch, matches) {
+  if (watch.started > 0) watch.onProgress?.({ done: watch.started, total: watch.total, matches });
+  watch.signal?.throwIfAborted();
+  watch.started++;
+}
+
+/** The last report, once the read is done (or a limit ended it): the chunks it read. */
+function chunksDone(watch, matches) {
+  if (watch.started > 0) watch.onProgress?.({ done: watch.started, total: watch.total, matches });
+}
+
 /** Internal: openTable() passes this as the source, with the reader it shares the open file with. */
 const SHARED = Symbol('jazmin.shared');
 /** Internal: the priority a reader was opened with ('memory', 'balanced' or 'speed'), for exports that batch. */
@@ -1931,7 +1947,32 @@ export class JazminReader {
    * those whose statistics prove they cannot match.
    */
   find(filter, options) {
-    return this.#find(filter, options, false);
+    const watch = this.#watch(filter, options);
+    if (!watch) return this.#find(filter, options, false);
+    return (function* rows(scan) {
+      for (const item of scan) if (item !== NEXT_CHUNK) yield item;
+    })(this.#watched(this.#find(filter, options, true), watch));
+  }
+
+  /**
+   * Progress and stopping for a read, when its options ask for them (`onProgress`, `signal`): null otherwise, so a
+   * read without them is as before. A signal already aborted stops the read before it starts.
+   */
+  #watch(filter, { onProgress, signal, offset = 0 } = {}) {
+    if (!onProgress && !signal) return null;
+    signal?.throwIfAborted();
+    return { onProgress, signal, total: onProgress ? this.#plannedChunks(filter, offset).length : 0, started: 0 };
+  }
+
+  /** A scan with ticks (NEXT_CHUNK before each chunk), passed through with progress and stopping. */
+  *#watched(scan, watch, matched = null) {
+    let matches = 0;
+    for (const item of scan) {
+      if (item === NEXT_CHUNK) chunkStarts(watch, matched ? matched() : matches);
+      else matches++;
+      yield item;
+    }
+    chunksDone(watch, matched ? matched() : matches);
   }
 
   /**
@@ -1953,7 +1994,8 @@ export class JazminReader {
 
   async *#findAsync(filter, options, batched) {
     const source = this.#source;
-    const scan = this.#find(filter, options, true);
+    const watch = this.#watch(filter, options);
+    const scan = watch ? this.#watched(this.#find(filter, options, true), watch) : this.#find(filter, options, true);
     let batch = [];
     if (!source.load) {
       // In memory: nothing to read, but still let other work run between chunks.
@@ -2610,8 +2652,30 @@ export class JazminReader {
    * exactly (one condition, or a range on one column), their row count is the answer and no rows are read. Otherwise
    * chunks whose statistics prove every row matches are counted by their row counts without being read, and in the
    * others only the filter's columns are decoded.
+   * `onProgress` and `signal` (an AbortSignal) report each chunk and stop the count, as for find(); a count that
+   * chunk statistics or indexes answer reads no chunk and reports nothing.
    */
-  count(filter) {
+  count(filter, options) {
+    const counting = this.#counting(filter, options);
+    let step;
+    while (!(step = counting.next()).done); // eslint-disable-line no-empty
+    return step.value;
+  }
+
+  /**
+   * count() for async code: other work gets the event loop between chunks, so a long count does not hold up a server,
+   * and a signal aborted meanwhile (a Stop button, a timeout) stops it before its next chunk.
+   */
+  async countAsync(filter, options) {
+    const counting = this.#counting(filter, options);
+    let step;
+    while (!(step = counting.next()).done) await nextTurn();
+    return step.value;
+  }
+
+  /** count(), yielding between the chunks it reads; returns the count. */
+  *#counting(filter, { onProgress, signal } = {}) {
+    signal?.throwIfAborted();
     if (filter == null) return this.rowCount;
     const plan = this.#plan(filter);
     if (!plan) return this.rowCount;
@@ -2622,20 +2686,33 @@ export class JazminReader {
     const types = this.#filterTypes(plan, []);
     const row = new Array(this.#columns.length).fill(null);
     let n = 0;
-    for (const { ordinal, from, to } of this.#chunkRuns(plan, rowIds)) {
+    const runs = onProgress ? [...this.#chunkRuns(plan, rowIds)] : this.#chunkRuns(plan, rowIds);
+    const watch = onProgress || signal ? { onProgress, signal, total: onProgress ? runs.length : 0, started: 0 } : null;
+    for (const { ordinal, from, to } of runs) {
+      if (watch) chunkStarts(watch, n);
       if (rowIds === null && whole(ordinal)) {
         n += this.#liveRows(ordinal);
         continue;
       }
-      const chunk = this.#chunk(ordinal, wanted, types);
-      const start = this.#rowStart[ordinal];
-      const count = rowIds === null ? chunk.rowCount : to - from;
-      for (let k = 0; k < count; k++) {
-        const r = rowIds === null ? k : rowIds[from + k] - start;
-        if (chunk.deleted?.has(r)) continue;
-        chunkRow(chunk, r, row);
-        if (evaluate(plan, row)) n++;
-      }
+      n += this.#countIn(ordinal, from, to, rowIds, plan, wanted, types, row);
+      yield NEXT_CHUNK;
+    }
+    if (watch) chunksDone(watch, n);
+    return n;
+  }
+
+  /** The matching rows of one chunk (of its candidates `from`..`to`, with index candidates). Kept out of the
+   * generator above: V8 optimizes the per-row loop better in a plain method. */
+  #countIn(ordinal, from, to, rowIds, plan, wanted, types, row) {
+    const chunk = this.#chunk(ordinal, wanted, types);
+    const start = this.#rowStart[ordinal];
+    const count = rowIds === null ? chunk.rowCount : to - from;
+    let n = 0;
+    for (let k = 0; k < count; k++) {
+      const r = rowIds === null ? k : rowIds[from + k] - start;
+      if (chunk.deleted?.has(r)) continue;
+      chunkRow(chunk, r, row);
+      if (evaluate(plan, row)) n++;
     }
     return n;
   }
@@ -2648,7 +2725,7 @@ export class JazminReader {
    * `nulls[column]`, present when the column has nulls, is a bitmap with bit i & 7 of byte i >> 3 set for row i.
    * Integers beyond ±2^53 are refused: a Float64Array cannot hold them exactly.
    */
-  columnArrays(filter, { select, offset, limit } = {}) {
+  columnArrays(filter, { select, offset, limit, onProgress, signal } = {}) {
     const names = select ?? this.columns.map((c) => c.name);
     const positions = this.#selection(names);
     const collectors = positions.map((i) => columnCollector(this.#columns[i]));
@@ -2658,7 +2735,10 @@ export class JazminReader {
       for (let i = 0; i < positions.length; i++) collectors[i].add(columns[positions[i]], from, to);
       rowCount += to - from;
     };
-    for (const _ of this.#find(filter, { select: names, offset, limit }, false, sink)); // eslint-disable-line no-unused-vars
+    const options = { select: names, offset, limit };
+    const watch = this.#watch(filter, { offset, onProgress, signal });
+    const scan = watch ? this.#watched(this.#find(filter, options, true, sink), watch, () => rowCount) : this.#find(filter, options, false, sink);
+    for (const _ of scan); // eslint-disable-line no-unused-vars
     const values = {};
     const nulls = {};
     names.forEach((name, i) => {

@@ -3741,6 +3741,34 @@ against 252 ms with `find`. Summing two of 41 columns took 123 ms with
 Run one async query at a time per reader. To read in parallel, open the
 file once per task, which is cheap.
 
+**Progress and Stop** (JavaScript, 1.7). A long read can say how far it has
+got and be stopped, as the browser reader can: pass `onProgress`, which is
+called after each chunk with `{ done, total, matches }` (chunks read and
+planned, matching rows so far), and `signal`, an `AbortSignal` that stops the
+read before its next chunk. `count`, `countAsync`, `find`, `findAsync`,
+`findBatchesAsync`, `columnArrays`, `explain({ analyze: true })` and the
+exports (`exportFile`, `exportString`, without a shape) take both. A read
+that indexes or statistics answer without reading a chunk reports nothing.
+
+```js
+const stop = new AbortController();                          // stopButton.onclick = () => stop.abort();
+const started = performance.now();
+const matches = await reader.countAsync({ city: 'Durban' }, {
+  signal: stop.signal,
+  onProgress: ({ done, total, matches }) => {
+    const ms = performance.now() - started;
+    const left = (ms / done) * (total - done);                 // time left, from the speed so far
+    showProgress(done / total, `${matches.toLocaleString()} so far, about ${Math.ceil(left / 1000)} s left`);
+  },
+});
+```
+
+A stopped read throws (or rejects with) the signal's reason, an
+`AbortError`. Use the async forms when something else must be able to stop
+the read: `count` and `find` hold the thread until they finish, so only
+`onProgress` itself could abort them. Without the two options, reads take the
+same time as before.
+
 ### 22.2 Writing from async sources
 
 ```js

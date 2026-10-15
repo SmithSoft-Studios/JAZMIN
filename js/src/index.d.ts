@@ -443,7 +443,21 @@ export type Filter = {
   not?: Filter;
 } & { [column: string]: Condition | string | number | bigint | boolean | Date | null | Filter[] | Filter | undefined };
 
-export interface QueryOptions {
+/** Progress of a long read, reported after each chunk: chunks finished and planned, and matching rows so far. */
+export interface ReadProgress {
+  done: number;
+  total: number;
+  matches: number;
+}
+
+export interface ProgressOptions {
+  /** Called after each chunk is read (not at all when no chunk needs reading). */
+  onProgress?: (progress: ReadProgress) => void;
+  /** Stops the read before its next chunk: it throws (or rejects with) the signal's reason, an AbortError. */
+  signal?: AbortSignal;
+}
+
+export interface QueryOptions extends ProgressOptions {
   select?: string[];
   limit?: number;
   offset?: number;
@@ -871,12 +885,14 @@ export class JazminReader implements Iterable<JazminRow> {
    * Matching rows. Exact index answers and chunks whose statistics prove every row matches are counted without
    * reading rows; elsewhere only the filter's columns are decoded.
    */
-  count(filter?: Filter): number;
+  count(filter?: Filter | null, options?: ProgressOptions): number;
+  /** count() for async code: the event loop gets a turn between chunks, so a signal aborted meanwhile stops it. */
+  countAsync(filter?: Filter | null, options?: ProgressOptions): Promise<number>;
   /**
    * Column values as arrays, for charts and totals: far less memory than an object per row. Integers beyond ±2^53 are
    * refused (a Float64Array cannot hold them exactly).
    */
-  columnArrays(filter?: Filter | null, options?: { select?: string[]; offset?: number; limit?: number }): ColumnArrays;
+  columnArrays(filter?: Filter | null, options?: { select?: string[]; offset?: number; limit?: number } & ProgressOptions): ColumnArrays;
   /** Layout advice for lookups of these columns (chunk directories and statistics only). */
   advise(options?: { columns?: string[] }): LayoutAdvice;
   /**
