@@ -663,6 +663,14 @@ for (const name of chosen) {
       const columns = [{ name: 'id', type: 'int' }, { name: 'note', type: 'string' }, { name: 'at', type: 'datetime' }, { name: 'amount', type: 'float' }];
       const photo = new Uint8Array(600000);
       for (let i = 0; i < photo.length; i++) photo[i] = i < 3 ? [0xff, 0xd8, 0xff][i] : (i * 31 + 7) & 255;
+      // The viewer loads the reader's core; the writer is an add-on, loaded after it.
+      await new Promise((resolve, reject) => {
+        const script = document.createElement('script');
+        script.src = '../browser/jazmin-browser-writer.js';
+        script.onload = resolve;
+        script.onerror = () => reject(new Error('the writer add-on did not load'));
+        document.head.append(script);
+      });
       const writer = await JazminBrowser.createWriter({ columns, key, chunkRows: 64 });
       await writer.writeRows(rows);
       await writer.addFile({ path: 'r0/photo.jpg', content: new File([photo], 'photo.jpg', { type: 'image/jpeg' }) });

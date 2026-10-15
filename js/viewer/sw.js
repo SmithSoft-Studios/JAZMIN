@@ -1,6 +1,7 @@
 // Service worker of the installed viewer: keeps the app (not the files you open) for offline use.
-const CACHE = 'jazmin-viewer-2';
-const APP = ['./', 'index.html', 'viewer.css', 'viewer.js', 'sandbox.js', 'manifest.webmanifest', 'icon-32.png', 'icon-192.png', 'icon-512.png', '../browser/jazmin-browser.js'];
+const CACHE = 'jazmin-viewer-3';
+const APP = ['./', 'index.html', 'viewer.css', 'viewer.js', 'sandbox.js', 'manifest.webmanifest', 'icon-32.png', 'icon-192.png', 'icon-512.png',
+  '../browser/jazmin-browser-core.js', '../browser/jazmin-browser-shapes.js', '../browser/jazmin-browser-writer.js'];
 
 self.addEventListener('install', (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(APP)).then(() => self.skipWaiting()));
