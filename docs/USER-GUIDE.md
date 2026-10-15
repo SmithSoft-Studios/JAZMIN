@@ -2362,6 +2362,14 @@ column.
   the masks, make the shown values of new rows, and put new rows in the
   masked or the unmasked column by `rows`. Both libraries read and change
   each other's masked files.
+- **In the web viewer** a masked column shows in its place, as one column:
+  the row's unmasked value, else what it shows (`••••` when nothing).
+  **Unlock…** in its header asks for the lock's password or token (or signs
+  in at its key service); then each value has **Reveal**, which shows it with
+  a countdown and **Hide**. Printing shows the masked text. The browser
+  reader lists them with `await reader.masked()` (each with `at`, its place in
+  `columns`), and `unlock()` builds every open table reader again with the
+  column.
 - **Viewers** (the web viewer, Scout) show a revealed value for a while and
   mask it again: by default one value at a time, for 30 seconds, and as soon
   as the window is hidden or there is no input for 60 seconds. The file's
@@ -4813,6 +4821,11 @@ There are three ways:
   `'https://viewer.example.com'`.
 - **What your page hears:** how the file opens, and nothing else. The key is
   typed in the viewer, and the data stays there.
+- **Reveals of masked values** (section 15.7), for systems that log them: add
+  `reportReveals: true` to the `jazmin:open` message, and your page also hears
+  `{ type: 'jazmin:revealed', name, table, column, lock, scope }` each time a
+  value (`scope: 'value'`) or a whole column (`'column'`) is revealed. It
+  never carries the value or which row.
 - **Who can pass files:** only the page that holds the viewer's iframe. A
   document inside a `.jzm` can't, and a viewer that isn't in a frame takes no
   files this way.

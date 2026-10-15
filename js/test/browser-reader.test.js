@@ -453,6 +453,44 @@ test('locked files: the browser reader lists them and opens them as the library 
   library.close();
 });
 
+test('masked columns: the browser reader lists them, unlocks them in every table reader, and gives the rows the library gives (spec 7.6.8)', async () => {
+  const owner = JazminKey.generate();
+  const key = owner.createAccessKey();
+  const columns = [
+    { name: 'id', type: 'int' }, { name: 'account', type: 'string', mask: { lock: 'pay', show: { keepFormat: true, last: 4 } } },
+    { name: 'name', type: 'string' }, { name: 'salary', type: 'decimal', mask: { lock: 'hr', rows: { id: { gte: 2 } } } },
+  ];
+  const people = [{ id: 1, account: '4821 0393 7712 4821', name: 'Ann', salary: '1.00' }, { id: 2, account: '9', name: 'Ben', salary: '2.00' }];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-browser-masks-'));
+  const file = path.join(dir, 'staff.jzm');
+  write(file, { notes: [{ n: 1 }], people }, {
+    tables: [{ name: 'notes', columns: [{ name: 'n', type: 'int' }] }, { name: 'people', columns }],
+    key: owner, access: { grants: [{ key }] },
+    locks: { pay: { password: 'pw', iterations: 1000 }, hr: { online: true, keyService: 'https://keys.example/hr' } },
+  });
+  const library = open(file, { key: key.toString(), accessState: false, table: 'people' });
+  const notes = await JazminBrowser.open(new Uint8Array(fs.readFileSync(file)), { key: key.toString() });
+  const browser = await notes.openTable('people');
+  const rowsOf = async (reader) => (await reader.query(null)).rows;
+  assert.deepEqual(await notes.masked(), []);
+  assert.deepEqual((await browser.masked()).map(({ at, ...m }) => m), library.masked);
+  assert.deepEqual((await browser.masked()).map((m) => m.at), [1, 2], 'account between id and name; salary after name');
+  assert.deepEqual(await browser.locks(), library.locks);
+  assert.deepEqual(browser.columns.map((c) => c.name), library.columns.map((c) => c.name));
+  assert.deepEqual(await rowsOf(browser), [...library.rows()]);
+  await assert.rejects(browser.unlock('pay', { password: 'nope' }), /Wrong password for lock 'pay'/);
+  await notes.unlock('pay', { password: 'pw' }); // through another table's reader: this one is built again in place
+  library.unlock('pay', { password: 'pw' });
+  assert.deepEqual(browser.columns.map((c) => c.name), ['id', 'account', 'name', 'account_shown', 'salary_unmasked']);
+  assert.deepEqual(await rowsOf(browser), [...library.rows()]);
+  assert.deepEqual((await browser.query({ account: '9' })).rows.map((r) => r.id), [2], 'unlocked, a column like any other');
+  await browser.unlock('hr', { unlockToken: issueFileUnlockToken(file, owner, 'hr') });
+  library.unlock('hr', { unlockToken: issueFileUnlockToken(file, owner, 'hr') });
+  assert.deepEqual(await rowsOf(browser), [...library.rows()]);
+  assert.deepEqual((await browser.masked()).map((m) => [m.lock.unlocked, m.at]), [[true, 1], [true, 3]]);
+  library.close();
+});
+
 test('reverse: the browser reader reads last first as the library does, in find, query and the query add-on', async () => {
   const columns = [{ name: 'id', type: 'int' }, { name: 'at', type: 'datetime' }, { name: 'account', type: 'string', index: ['sorted'] }];
   const rows = Array.from({ length: 3000 }, (_, i) => ({ id: i, at: new Date(Date.UTC(2026, 0, 1) + i * 60_000), account: `A${i % 23}` }));

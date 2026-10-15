@@ -351,6 +351,24 @@ write(servicePath, [{ n: 1 }], {
   package: { entry: 'index.html', title: 'Service' },
 });
 const serviceToken = issueFileUnlockToken(servicePath, serviceOwner, 'medical');
+
+// Masked columns (spec 7.6.8): account masked with its format kept, salary masked only from id 2. Revealed account
+// values show for 2 seconds here (30 by default).
+const maskedOwner = JazminKey.generate();
+const maskedReader = maskedOwner.createAccessKey();
+keys.maskedReader = maskedReader.toString();
+write(path.join(temp, 'masked.jzm'), [
+  { id: 1, name: 'Ann', account: '4821 0393 7712 4821', salary: '52000.00' },
+  { id: 2, name: 'Ben', account: '1111 2222 3333 4444', salary: '61000.50' },
+], {
+  columns: [
+    { name: 'id', type: 'int' }, { name: 'account', type: 'string', mask: { lock: 'pay', show: { keepFormat: true, last: 4 } } },
+    { name: 'name', type: 'string' }, { name: 'salary', type: 'decimal', mask: { lock: 'pay', rows: { id: { gte: 2 } } } },
+  ],
+  key: maskedOwner, access: { grants: [{ key: maskedReader }] }, locks: { pay: { password: 'pw', iterations: 1000 } },
+  files: [{ path: 'index.html', content: '<!doctype html><title>Staff</title><body><p>Staff</p></body>' }],
+  package: { entry: 'index.html', title: 'Staff', masks: { account: { seconds: 2 } } },
+});
 fs.writeFileSync(path.join(temp, 'key-service.html'), `<!doctype html><title>Key service</title><body><p>Signed in</p><script>
   const q = new URLSearchParams(location.search);
   const asked = q.get('jazmin') === 'unlock' && q.get('lock') === 'medical' && /^[0-9a-f]{32}$/.test(q.get('file') || '');
@@ -709,6 +727,41 @@ for (const name of chosen) {
     results.push({
       browser: name, label: "a lock's key service: Sign in opens its window, which posts the token back, and the file opens; other origins are ignored", ok: serviceOk,
       problems: serviceOk ? [] : [JSON.stringify({ signInButton, forgedIgnored, serviceUnlocked, scan })],
+    });
+
+    // Masked columns: each in its place showing its masked text; Unlock… in its header; then Reveal one value at a time,
+    // masked again when its time is up; the page that asked hears of each reveal, without the value.
+    await page.navigate(`${base}/js/viewer/index.html`);
+    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+    await page.evaluate(`fetch('/e2e/masked.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'masked.jzm')).then(() => true)`);
+    await unlock(page, { file: 'masked.jzm', key: 'maskedReader' });
+    const table = `({ head: [...document.querySelectorAll('#jz-rows th')].map((th) => th.textContent).join(' | '),
+      rows: [...document.querySelectorAll('#jz-rows tbody tr')].map((tr) => [...tr.cells].map((td) => td.textContent).join(' | ')) })`;
+    const maskedBefore = await page.evaluate(table);
+    await page.evaluate(`([...document.querySelectorAll('#jz-rows th button')][0].click(), true)`);
+    await waitFor(page, `document.getElementById('jz-lock').open`, 'the unlock dialog for a masked column');
+    await page.evaluate(`(document.getElementById('jz-lock-password').value = 'pw', document.getElementById('jz-lock-form').requestSubmit(), true)`);
+    await waitFor(page, `!document.getElementById('jz-lock').open && document.querySelectorAll('#jz-rows td .reveal').length === 3`, 'the masked columns unlocked');
+    const maskedUnlocked = await page.evaluate(table);
+    await page.evaluate(`(JazminViewer.state.reportReveals = true, JazminViewer.state.answerTo = location.origin, window.jzReveals = [],
+      addEventListener('message', (e) => e.data && e.data.type === 'jazmin:revealed' && window.jzReveals.push(e.data)), true)`);
+    const revealAt = (row, col) => `(document.querySelectorAll('#jz-rows tbody tr')[${row}].cells[${col}].querySelector('.reveal').click(), true)`;
+    await page.evaluate(revealAt(0, 1));
+    const firstShown = await page.evaluate(table);
+    await page.evaluate(revealAt(1, 1));
+    const secondShown = await page.evaluate(table);
+    await waitFor(page, `!document.querySelector('#jz-rows td.revealed')`, 'the revealed value masked again after 2 seconds');
+    const reveals = await page.evaluate(`JSON.stringify(window.jzReveals.map((m) => [m.column, m.lock, m.scope, 'value' in m]))`);
+    const maskedOk = maskedBefore.head === 'id | account 🔒 Unlock… | name | salary 🔒 Unlock…'
+      && maskedBefore.rows.join(' / ') === '1 | •••• •••• •••• 4821 | Ann | 52000.00 / 2 | •••• •••• •••• 4444 | Ben | ••••'
+      && maskedUnlocked.head === 'id | account | name | salary'
+      && maskedUnlocked.rows.join(' / ') === '1 | •••• •••• •••• 4821 Reveal | Ann | 52000.00 / 2 | •••• •••• •••• 4444 Reveal | Ben | •••• Reveal'
+      && firstShown.rows[0] === '1 | 4821 0393 7712 4821 Hide (2 s) | Ann | 52000.00'
+      && secondShown.rows.join(' / ') === '1 | •••• •••• •••• 4821 Reveal | Ann | 52000.00 / 2 | 1111 2222 3333 4444 Hide (2 s) | Ben | •••• Reveal'
+      && reveals === JSON.stringify([['account', 'pay', 'value', false], ['account', 'pay', 'value', false]]);
+    results.push({
+      browser: name, label: 'masked columns: masked text in place, Unlock… in the header, Reveal one value at a time, masked again after its time, reveals reported', ok: maskedOk,
+      problems: maskedOk ? [] : [JSON.stringify({ maskedBefore, maskedUnlocked, firstShown, secondShown, reveals })],
     });
 
     // A document's changes: checked by the viewer, shown in its dialog, saved as a change file the library applies.
