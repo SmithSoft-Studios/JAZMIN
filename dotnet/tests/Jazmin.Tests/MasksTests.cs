@@ -198,6 +198,78 @@ public class MasksTests
     }
 
     [Fact]
+    public void An_update_unmasks_a_column_for_the_keys_that_had_it_masked_folding_its_shown_and_unmasked_columns_back()
+    {
+        var owner = JazminKey.Generate();
+        var (staff, noMask) = (owner.CreateAccessKey(), owner.CreateAccessKey());
+        var path = System.IO.Path.Combine(Directory.CreateTempSubdirectory("jazmin-masks-").FullName, "staff.jzm");
+        File.WriteAllBytes(path, Write(Columns(), Staff, new JazminWriteOptions
+        {
+            Key = owner, Locks = Locks(),
+            Access = new JazminAccessOptions { PartitionBy = "dept", Grants = [new JazminGrant(staff), new JazminGrant(noMask) { Columns = ["*"] }] },
+        }));
+        JazminFile.Update(path, new JazminUpdate { Key = owner, Masks = new Dictionary<string, JazminMask?> { ["account"] = null, ["salary"] = null } });
+        using (var r = AsKey(path, staff))
+        {
+            Assert.Equal(["id", "dept", "name", "account", "salary", "email_shown"], r.Columns.Select(c => c.Name));
+            Assert.Equal(["email"], r.Masked.Select(m => m.Column));
+            Assert.Equal([("4821 0393 7712 4821", "52000.00"), ("1111 2222 3333 4444", "61000.50"), ("9", null)],
+                r.Rows().Select(x => ((string?)x["account"], x["salary"]?.ToString())));
+        }
+        using (var n = AsKey(path, noMask))
+            Assert.DoesNotContain(n.Columns, c => c.Name is "account" or "salary"); // a key that never had them still hasn't
+        Assert.Contains("column 'account' isn't masked", Assert.Throws<JazminValidationException>(() =>
+            JazminFile.Update(path, new JazminUpdate { Key = owner, Masks = new Dictionary<string, JazminMask?> { ["account"] = null } })).Message);
+    }
+
+    [Fact]
+    public void An_update_masks_a_column_anew_for_the_keys_that_saw_it_in_a_named_group_or_the_default_one()
+    {
+        var owner = JazminKey.Generate();
+        var (contact, other) = (owner.CreateAccessKey(), owner.CreateAccessKey());
+        var path = System.IO.Path.Combine(Directory.CreateTempSubdirectory("jazmin-masks-").FullName, "people.jzm");
+        File.WriteAllBytes(path, Write(
+            [new("id", JazminType.Int), new("name", JazminType.String), new("phone", JazminType.String), new("email", JazminType.String)],
+            [
+                new Dictionary<string, object?> { ["id"] = 1L, ["name"] = "Ann", ["phone"] = "082 555 1234", ["email"] = "ann@example.com" },
+                new Dictionary<string, object?> { ["id"] = 2L, ["name"] = "Ben", ["phone"] = "083 555 9876", ["email"] = "ben@example.org" },
+            ],
+            new JazminWriteOptions
+            {
+                Key = owner,
+                Access = new JazminAccessOptions
+                {
+                    ColumnGroups = new() { ["contact"] = ["phone"] },
+                    Grants = [new JazminGrant(contact) { Columns = ["*", "contact"] }, new JazminGrant(other) { Columns = ["*"] }],
+                },
+            }));
+        JazminFile.Update(path, new JazminUpdate
+        {
+            Key = owner, Locks = new Dictionary<string, JazminLockOptions?> { ["pay"] = new() { Password = "pw", Iterations = Iterations } },
+            Masks = new Dictionary<string, JazminMask?>
+            {
+                ["phone"] = new("pay") { Show = JazminMaskShow.LastOf(4) },
+                ["email"] = new("pay") { Show = JazminMaskShow.KeepFormat() },
+            },
+        });
+        using (var a = AsKey(path, contact))
+        {
+            Assert.Equal(["phone", "email"], a.Masked.Select(m => m.Column));
+            Assert.Equal([("••••1234", "a••@example.com"), ("••••9876", "b••@example.org")], a.Rows().Select(x => ((string?)x["phone_shown"], (string?)x["email_shown"])));
+            a.Unlock("pay", password: "pw");
+            Assert.Equal(["082 555 1234", "083 555 9876"], a.Rows().Select(x => (string?)x["phone"]));
+        }
+        using (var b = AsKey(path, other))
+            Assert.Equal(["email"], b.Masked.Select(m => m.Column)); // phone stays out of reach; email was in the default group
+        // Given again with another rule: the shown values follow it.
+        JazminFile.Update(path, new JazminUpdate { Key = owner, Masks = new Dictionary<string, JazminMask?> { ["phone"] = new("pay") { Show = JazminMaskShow.FirstAndLast(3, 2) } } });
+        using (var again = AsKey(path, contact))
+            Assert.Equal(["082••••34", "083••••76"], again.Rows().Select(x => (string?)x["phone_shown"]));
+        Assert.Contains("Masks: no column 'nope'", Assert.Throws<JazminValidationException>(() =>
+            JazminFile.Update(path, new JazminUpdate { Key = owner, Masks = new Dictionary<string, JazminMask?> { ["nope"] = new("pay") } })).Message);
+    }
+
+    [Fact]
     public void Masks_are_checked()
     {
         var owner = JazminKey.Generate();

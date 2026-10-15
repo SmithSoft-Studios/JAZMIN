@@ -145,6 +145,56 @@ test("a row's value goes where the rows filter says, each time it is written", (
   assert.deepEqual(written({ id: 2, salary: '5.00', salary_unmasked: 'old' }), ['5.00', null], 'a masked value wins');
 });
 
+test('an update unmasks a column for the keys that had it masked, folding its shown and unmasked columns back', () => {
+  const { keys, file, owner } = staffFile();
+  update(file, { key: owner, masks: { account: null, salary: null } });
+  const r = asKey(file, keys.staff);
+  assert.deepEqual(r.columns.map((c) => c.name), ['id', 'dept', 'name', 'account', 'salary', 'email_shown']);
+  assert.deepEqual(r.masked.map((m) => m.column), ['email']);
+  assert.deepEqual([...r.rows()].map((x) => [x.account, x.salary]), [['4821 0393 7712 4821', '52000.00'], ['1111 2222 3333 4444', '61000.50'], ['9', null]]);
+  r.close();
+  const noMask = asKey(file, keys.noMask);
+  assert.ok(!noMask.columns.some((c) => ['account', 'salary'].includes(c.name)), 'a key that never had the columns still has not');
+  noMask.close();
+  const o = open(file, { key: owner });
+  assert.deepEqual(o.masked.map((m) => m.column), ['email']);
+  assert.deepEqual(o.writerFeatures.sort(), ['file-locks', 'masked-columns']);
+  o.close();
+  assert.throws(() => update(file, { key: owner, masks: { account: null } }), /column 'account' isn't masked/);
+});
+
+test('an update masks a column anew for the keys that saw it, in a named group or the default one', () => {
+  const owner = JazminKey.generate();
+  const [contact, other] = [owner.createAccessKey(), owner.createAccessKey()];
+  const file = path.join(tmpDir(), 'people.jzm');
+  write(file, [{ id: 1, name: 'Ann', phone: '082 555 1234', email: 'ann@example.com' }, { id: 2, name: 'Ben', phone: '083 555 9876', email: 'ben@example.org' }], {
+    columns: [{ name: 'id', type: 'int' }, { name: 'name', type: 'string' }, { name: 'phone', type: 'string' }, { name: 'email', type: 'string' }],
+    key: owner, access: { columnGroups: { contact: ['phone'] }, grants: [{ key: contact, columns: ['*', 'contact'] }, { key: other, columns: ['*'] }] },
+  });
+  update(file, {
+    key: owner, locks: { pay: { password: 'pw', iterations: ITERATIONS } },
+    masks: { phone: { lock: 'pay', show: { last: 4 } }, email: { lock: 'pay', show: { keepFormat: true } } },
+  });
+  const a = asKey(file, contact);
+  assert.deepEqual(a.masked.map((m) => m.column), ['phone', 'email']);
+  assert.deepEqual([...a.rows()].map((x) => [x.phone_shown, x.email_shown]), [['••••1234', 'a••@example.com'], ['••••9876', 'b••@example.org']]);
+  a.unlock('pay', { password: 'pw' });
+  assert.deepEqual([...a.rows()].map((x) => x.phone), ['082 555 1234', '083 555 9876']);
+  a.close();
+  const b = asKey(file, other);
+  assert.deepEqual(b.masked.map((m) => m.column), ['email'], 'phone stays out of reach of a key without its group; email was in the default group');
+  b.close();
+  // Given again with another rule: the shown values follow it.
+  update(file, { key: owner, masks: { phone: { lock: 'pay', show: { first: 3, last: 2 } } } });
+  const again = asKey(file, contact);
+  assert.deepEqual([...again.rows()].map((x) => x.phone_shown), ['082••••34', '083••••76']);
+  again.close();
+  assert.throws(() => update(file, { key: owner, masks: { nope: { lock: 'pay' } } }), /masks: no column 'nope'/);
+  const plain = path.join(tmpDir(), 'plain.jzm');
+  write(plain, [{ id: 1 }], { columns: [{ name: 'id', type: 'int' }] });
+  assert.throws(() => update(plain, { masks: {} }), /masks need a shared file/);
+});
+
 test('masks are checked', () => {
   const owner = JazminKey.generate();
   const access = { grants: [{ key: owner.createAccessKey() }] };

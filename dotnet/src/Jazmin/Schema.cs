@@ -112,6 +112,12 @@ public sealed class JazminColumn
         Fields = Fields,
     };
 
+    /// <summary>The column with <paramref name="mask"/> (a rewrite masking it, spec 7.6.8).</summary>
+    internal JazminColumn WithMask(JazminMask mask) => new(Name, Type)
+    {
+        Nullable = Nullable, Description = Description, Attributes = Attributes, Indexes = Indexes, Item = Item, Fields = Fields, Mask = mask,
+    };
+
     public override string ToString() => $"{Name}: {TypeNames.Describe(this)}{(Nullable ? "?" : "")}";
 }
 
