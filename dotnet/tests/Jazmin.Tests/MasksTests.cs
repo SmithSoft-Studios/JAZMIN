@@ -76,6 +76,20 @@ public class MasksTests
     }
 
     [Fact]
+    public void The_fast_shown_text_is_the_same_as_by_code_points_for_every_rule()
+    {
+        string[] pieces = ["4821", " ", "-", ".", "@", "é", "ß", "Ж", "٣", "½", "x", "Z", "0", "/", "••", "名"];
+        var random = new Random(7);
+        JazminMaskShow[] rules = [JazminMaskShow.LastOf(0), JazminMaskShow.LastOf(4), JazminMaskShow.FirstAndLast(2, 3), JazminMaskShow.KeepFormat(0),
+            JazminMaskShow.KeepFormat(4), JazminMaskShow.KeepFormat(64)];
+        for (var i = 0; i < 3000; i++)
+        {
+            var text = string.Concat(Enumerable.Range(0, random.Next(12)).Select(_ => pieces[random.Next(pieces.Length)]));
+            foreach (var rule in rules) Assert.True(Masks.ShownText(rule, text) == Masks.ShownRunes(rule, text), $"{rule.Kind} {rule.Last} '{text}'");
+        }
+    }
+
+    [Fact]
     public void A_key_granted_a_masked_column_sees_it_masked_with_its_shown_and_unmasked_columns_until_it_unlocks()
     {
         var f = WriteStaff();
