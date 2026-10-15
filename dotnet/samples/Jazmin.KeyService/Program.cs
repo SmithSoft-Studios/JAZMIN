@@ -6,7 +6,8 @@
 //   Jazmin__OwnerKey        the owner's master key (jzk1-...) - load it from your secret store in production
 //   Jazmin__FilesDir        folder containing the .jzm files the owner key unlocks
 //   Jazmin__Issuer          name shown in the authenticator app (default "JAZMIN")
-//   Jazmin__AllowedOrigins  web pages that may call the service, comma separated (none by default)
+//   Jazmin__AllowedOrigins  web pages that may call the service, and viewers the lock sign-in page answers, comma
+//                           separated (none by default; "null" for a viewer opened from disk, only for demos)
 //
 // IMPORTANT: this sample identifies the user with the X-User-Id header to stay short. In production
 // take the user id from your authentication (for example a validated JWT) - never trust it from the client.
@@ -59,6 +60,13 @@ app.MapPost("/admin/2fa/reset", (ResetRequest body, KeyService service) =>
     return Results.NoContent();
 });
 
+// Admin: record which locks of stored files a user may open (spec 6.8.1; protect this endpoint in production).
+app.MapPost("/admin/locks", (LockRequest body, KeyService service) =>
+{
+    service.RegisterLock(body.UserId, body.FileId, body.LockId);
+    return Results.NoContent();
+});
+
 // Enrolment: show the QR code (data URI) / manual key, then confirm with the first code. Once confirmed, a new
 // authenticator needs the admin reset above: otherwise anyone past the first factor could replace it.
 app.MapPost("/2fa/setup", (HttpRequest request, KeyService service) =>
@@ -88,6 +96,30 @@ app.MapPost("/unlock", (HttpRequest request, UnlockRequest body, KeyService serv
     };
 });
 
+// A viewer's sign-in window for a locked file (spec 6.8.2): the person signs in and gives a code; the page posts the token
+// to the viewer. It is never shown in a frame, so another page can't dress it up.
+app.MapGet("/jazmin/unlock", (HttpContext context, string? origin) =>
+{
+    context.Response.Headers.XFrameOptions = "DENY";
+    context.Response.Headers.ContentSecurityPolicy = "frame-ancestors 'none'";
+    return Results.Content(SignInPage.Html(origin ?? "", origins), "text/html; charset=utf-8");
+});
+
+// The page's request: a lock's token, after the code, for a lock the user was given.
+app.MapPost("/unlock-lock", (HttpRequest request, LockUnlockRequest body, KeyService service) =>
+{
+    if (UserId(request) is not { } user) return Results.Unauthorized();
+    var result = service.RequestFileUnlockToken(user, body.FileId, body.LockId, body.Code);
+    return result.Status switch
+    {
+        UnlockStatus.Issued => Results.Ok(new { token = result.Token }),
+        UnlockStatus.InvalidCode or UnlockStatus.NotEnrolled => Results.Unauthorized(),
+        UnlockStatus.LockedOut => Results.Problem($"Too many wrong codes; try again after {result.RetryAfter:u}", statusCode: 429),
+        UnlockStatus.KeyNotOwnedByUser => Results.Forbid(),
+        _ => Results.NotFound(),
+    };
+});
+
 app.Run();
 
 public sealed record RegisterRequest(string UserId, string KeyId);
@@ -97,3 +129,7 @@ public sealed record ResetRequest(string UserId);
 public sealed record CodeRequest(string Code);
 
 public sealed record UnlockRequest(string FileId, string KeyId, string Code);
+
+public sealed record LockRequest(string UserId, string FileId, string LockId);
+
+public sealed record LockUnlockRequest(string FileId, string LockId, string Code);

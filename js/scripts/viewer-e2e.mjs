@@ -11,7 +11,9 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { JazminAccessKey, JazminKey, applyChanges, exportString, issueUnlockToken, open, portableHtml, portableScript, write } from '../src/index.js';
+import {
+  JazminAccessKey, JazminKey, applyChanges, exportString, issueFileUnlockToken, issueUnlockToken, open, portableHtml, portableScript, write,
+} from '../src/index.js';
 import { TEMPLATE_READY, writeTemplate } from '../test/template-fixture.js';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
@@ -333,6 +335,29 @@ const otherServer = http.createServer(serve);
 await new Promise((r) => otherServer.listen(0, '127.0.0.1', r));
 const otherBase = `http://127.0.0.1:${otherServer.address().port}`;
 
+// A locked file whose lock names a key service (spec 6.8.2) on the other origin: a page that, as a service would after
+// its sign-in and 2FA, posts the token back to the viewer, for the file and lock the viewer asked about.
+const serviceOwner = JazminKey.generate();
+const serviceReader = serviceOwner.createAccessKey();
+keys.serviceReader = serviceReader.toString();
+const servicePath = path.join(temp, 'locked-service.jzm');
+write(servicePath, [{ n: 1 }], {
+  key: serviceOwner, access: { grants: [{ key: serviceReader }] },
+  files: [
+    { path: 'index.html', content: '<!doctype html><title>Service</title><body><p>A file with a locked scan</p></body>' },
+    { path: 'scan.png', content: 'The scan', lock: 'medical' },
+  ],
+  locks: { medical: { online: true, keyService: `${otherBase}/e2e/key-service.html` } },
+  package: { entry: 'index.html', title: 'Service' },
+});
+const serviceToken = issueFileUnlockToken(servicePath, serviceOwner, 'medical');
+fs.writeFileSync(path.join(temp, 'key-service.html'), `<!doctype html><title>Key service</title><body><p>Signed in</p><script>
+  const q = new URLSearchParams(location.search);
+  const asked = q.get('jazmin') === 'unlock' && q.get('lock') === 'medical' && /^[0-9a-f]{32}$/.test(q.get('file') || '');
+  opener.postMessage({ type: 'jazmin:file-unlock', file: q.get('file'), lock: asked ? 'medical' : 'not asked so',
+    token: ${JSON.stringify(serviceToken)} }, q.get('origin') === 'null' ? '*' : q.get('origin'));
+</script></body>`);
+
 // ---- browser drivers: navigate and evaluate (an expression whose value is returned as JSON) ----------------
 async function launchChromium(exe) {
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-viewer-e2e-'));
@@ -375,7 +400,8 @@ async function launchChromium(exe) {
       await sleep(300);
     },
     async evaluate(expression) {
-      const { result, exceptionDetails } = await send('Runtime.evaluate', { expression: `(async () => JSON.stringify(await (${expression})))()`, awaitPromise: true, returnByValue: true });
+      // As the person's own action (userGesture), so a page may open a window (a key service's sign-in).
+      const { result, exceptionDetails } = await send('Runtime.evaluate', { expression: `(async () => JSON.stringify(await (${expression})))()`, awaitPromise: true, returnByValue: true, userGesture: true });
       if (exceptionDetails) throw new Error(exceptionDetails.exception?.description ?? exceptionDetails.text);
       return result.value === undefined ? undefined : JSON.parse(result.value);
     },
@@ -433,7 +459,7 @@ async function launchFirefox(exe) {
     },
     async evaluate(expression) {
       const r = await send('script.evaluate', {
-        expression: `(async () => JSON.stringify(await (${expression})))()`, target: { context }, awaitPromise: true, resultOwnership: 'none',
+        expression: `(async () => JSON.stringify(await (${expression})))()`, target: { context }, awaitPromise: true, resultOwnership: 'none', userActivation: true,
       });
       if (r.type === 'exception') throw new Error(r.exceptionDetails.text);
       return r.result.type === 'string' ? JSON.parse(r.result.value) : undefined;
@@ -657,6 +683,32 @@ for (const name of chosen) {
     results.push({
       browser: name, label: 'a locked file: a padlock and Unlock…, a wrong password refused, then its Download; the page gets it once unlocked', ok: lockOk,
       problems: lockOk ? [] : [JSON.stringify({ lockedBefore, wrongPassword, lockedAfter, contract, pageBefore, pageAfter })],
+    });
+
+    // A lock with a key service: Sign in opens it in a window, which posts the token back; the file opens.
+    await page.navigate(`${base}/js/viewer/index.html`);
+    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+    await page.evaluate(`fetch('/e2e/locked-service.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'locked-service.jzm')).then(() => true)`);
+    await unlock(page, { file: 'locked-service.jzm', key: 'serviceReader' });
+    await page.evaluate(`([...document.querySelectorAll('#jz-files li')].find((li) => li.querySelector('.locked')).querySelector('button').click(), true)`);
+    await waitFor(page, `document.getElementById('jz-lock').open`, 'the unlock dialog');
+    const signInButton = await page.evaluate(`document.getElementById('jz-lock-service').hidden ? '' : document.getElementById('jz-lock-service').textContent`);
+    // The right token from another origin (here the viewer's own) is not the key service's answer: it is ignored.
+    await page.evaluate(`(window.postMessage({ type: 'jazmin:file-unlock', file: JazminViewer.state.reader.fileId, lock: 'medical', token: ${JSON.stringify(serviceToken)} }, '*'),
+      new Promise((r) => setTimeout(r, 400)).then(() => true))`);
+    const forgedIgnored = await page.evaluate(`document.getElementById('jz-lock').open && document.getElementById('jz-lock-token').value === ''`);
+    await page.evaluate(`(document.getElementById('jz-lock-service').click(), true)`);
+    let serviceUnlocked = true;
+    try {
+      await waitFor(page, `!document.getElementById('jz-lock').open && !document.querySelector('#jz-files .locked')`, 'the token from the key service');
+    } catch {
+      serviceUnlocked = await page.evaluate(`document.getElementById('jz-lock-error').textContent`);
+    }
+    const scan = serviceUnlocked === true ? await page.evaluate(`JazminViewer.state.reader.readFile('scan.png').then((b) => new TextDecoder().decode(b))`) : null;
+    const serviceOk = signInButton === `Sign in at ${new URL(otherBase).host}` && forgedIgnored === true && serviceUnlocked === true && scan === 'The scan';
+    results.push({
+      browser: name, label: "a lock's key service: Sign in opens its window, which posts the token back, and the file opens; other origins are ignored", ok: serviceOk,
+      problems: serviceOk ? [] : [JSON.stringify({ signInButton, forgedIgnored, serviceUnlocked, scan })],
     });
 
     // A document's changes: checked by the viewer, shown in its dialog, saved as a change file the library applies.

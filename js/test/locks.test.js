@@ -246,7 +246,11 @@ test("key services (spec 6.8.2): the file's for its online locks, a lock's own o
     ],
     package: { keyService: 'https://keys.owner.example/unlock' },
   };
-  for (const [keyService, refused] of [['http://keys.example.com', 'package.keyService'], ['https://user:pw@keys.example.com', 'package.keyService'], ['https://keys.example.com/#x', 'package.keyService']]) {
+  // http only on a loopback host (development and tests): the sample key service runs on http://localhost.
+  for (const local of ['http://localhost:5000/jazmin/unlock', 'http://127.0.0.1:8080', 'http://[::1]:5000']) {
+    assert.equal(open(write(null, rows, { ...base, package: { keyService: local }, locks: { contracts: { online: true }, medical: { online: true }, bank: { online: true } } }), { key: owner }).package.keyService, new URL(local).href);
+  }
+  for (const [keyService, refused] of [['http://keys.example.com', 'package.keyService'], ['http://localhost.evil.example', 'package.keyService'], ['https://user:pw@keys.example.com', 'package.keyService'], ['https://keys.example.com/#x', 'package.keyService']]) {
     assert.throws(() => write(null, rows, { ...base, package: { keyService }, locks: { contracts: { online: true }, medical: { online: true }, bank: { online: true } } }), new RegExp(`${refused.replace('.', '\.')} must be an https address`));
   }
   assert.throws(() => write(null, rows, { ...base, locks: { contracts: { password: 'pw', keyService: 'https://k.example' }, medical: { online: true }, bank: { online: true } } }),

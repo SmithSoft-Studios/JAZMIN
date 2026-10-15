@@ -568,13 +568,46 @@
     $('jz-lock-password').value = '';
     $('jz-lock-token').value = '';
     $('jz-lock-error').textContent = '';
+    // The lock's key service (spec 6.8.2), which the file names (signed by its owner in shared files): the person signs
+    // in there, in a window of its own, and it posts the token back. Only its answers about this file and lock count.
+    const service = needsToken && lock.keyService ? new URL(lock.keyService) : null;
+    $('jz-lock-service').hidden = !service;
+    $('jz-lock-service').textContent = service ? `Sign in at ${service.host}` : '';
+    $('jz-lock-token-hint').textContent = service
+      ? `${service.host} gives you the token after you sign in there. Or paste one it gave you.`
+      : "The file owner's key service gives it to you, after its own checks (signing in, a code from your authenticator app).";
+    let signIn = null;
     return new Promise((resolve) => {
       const finish = (done) => {
         form.removeEventListener('submit', submit);
         $('jz-lock-cancel').removeEventListener('click', cancel);
+        $('jz-lock-service').removeEventListener('click', openService);
+        removeEventListener('message', answered);
         dialog.removeEventListener('cancel', cancel);
         dialog.close();
         resolve(done);
+      };
+      const openService = () => {
+        const url = new URL(service.href);
+        url.searchParams.set('jazmin', 'unlock');
+        url.searchParams.set('file', state.reader.fileId);
+        url.searchParams.set('lock', lock.id);
+        url.searchParams.set('origin', location.origin); // "null" for a viewer opened from disk
+        signIn = window.open(url.href, 'jazmin-key-service', 'popup,width=480,height=680');
+        $('jz-lock-error').textContent = signIn ? `Sign in at ${service.host} in the window that opened…` : 'The browser blocked the sign-in window: allow pop-ups for this page.';
+      };
+      const answered = (event) => {
+        const m = event.data;
+        if (!service || event.origin !== service.origin || !m || m.type !== 'jazmin:file-unlock') return;
+        if (m.file !== state.reader.fileId || m.lock !== lock.id || typeof m.token !== 'string') return;
+        signIn?.close();
+        $('jz-lock-token').value = m.token;
+        if (needsPassword && !$('jz-lock-password').value) {
+          $('jz-lock-error').textContent = `Signed in at ${service.host}: now the password.`;
+          $('jz-lock-password').focus();
+        } else {
+          form.requestSubmit();
+        }
       };
       const cancel = (event) => {
         event.preventDefault();
@@ -594,6 +627,10 @@
       };
       form.addEventListener('submit', submit);
       $('jz-lock-cancel').addEventListener('click', cancel);
+      if (service) {
+        $('jz-lock-service').addEventListener('click', openService);
+        addEventListener('message', answered);
+      }
       dialog.addEventListener('cancel', cancel);
       dialog.showModal();
       (needsPassword ? $('jz-lock-password') : $('jz-lock-token')).focus();

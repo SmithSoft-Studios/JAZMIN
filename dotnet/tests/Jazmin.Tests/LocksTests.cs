@@ -293,7 +293,13 @@ public class LocksTests
             Package = package, Locks = locks,
         };
         var allOnline = new Dictionary<string, JazminLockOptions?> { ["contracts"] = new() { Online = true }, ["medical"] = new() { Online = true }, ["bank"] = new() { Online = true } };
-        foreach (var bad in new[] { "http://keys.example.com", "https://user:pw@keys.example.com", "https://keys.example.com/#x" })
+        // http only on a loopback host (development and tests): the sample key service runs on http://localhost.
+        foreach (var local in new[] { "http://localhost:5000/jazmin/unlock", "http://127.0.0.1:8080/", "http://[::1]:5000/" })
+        {
+            using var r = JazminReader.Open(Write(Options(new JazminPackage { KeyService = local }, allOnline)), new JazminReadOptions { Key = owner });
+            Assert.Equal(local, r.Package!.KeyService);
+        }
+        foreach (var bad in new[] { "http://keys.example.com", "http://localhost.evil.example", "http://127.0.0.2", "https://user:pw@keys.example.com", "https://keys.example.com/#x" })
             Assert.Contains("package.keyService must be an https address", Assert.Throws<JazminValidationException>(() => Write(Options(new JazminPackage { KeyService = bad }, allOnline))).Message);
         var fileService = new JazminPackage { KeyService = "https://keys.owner.example/unlock" };
         Assert.Contains("Lock 'contracts': KeyService is for online locks", Assert.Throws<JazminValidationException>(() => Write(Options(fileService,

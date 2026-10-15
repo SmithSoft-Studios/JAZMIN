@@ -806,7 +806,9 @@ service itself, so the person signs in there and passes its checks (2FA)
 instead of copying a token.
 
 - **Where:** a lock's `keyService`, else the package's `keyService` (6.8):
-  an https URL without user name, password or fragment. In access-controlled
+  an https URL without user name, password or fragment (or an http one on
+  a loopback host, `localhost`, `127.0.0.1` or `[::1]`, for development and
+  tests). In access-controlled
   files both are inside sections the owner signs (7.6.5), so a viewer
   contacts only a service the owner chose. Readers MUST ignore an address
   that is not such a URL.

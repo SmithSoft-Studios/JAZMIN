@@ -20,6 +20,9 @@ public sealed class UserRecord
     /// <summary>Ids of the JAZMIN access keys issued to this user (<see cref="JazminAccessKey.Id"/>).</summary>
     public HashSet<string> AccessKeyIds { get; } = new(StringComparer.Ordinal);
 
+    /// <summary>Locks of stored files (spec 6.8.1) this user may open, as "file id/lock id".</summary>
+    public HashSet<string> Locks { get; } = new(StringComparer.Ordinal);
+
     /// <summary>Wrong codes since the last accepted one; every <see cref="KeyService.MaxFailedAttempts"/> lock the user out for longer.</summary>
     public int FailedAttempts { get; set; }
 
@@ -95,6 +98,9 @@ public interface IUnlockTokens
 {
     /// <summary>The token for the access key's online grant in the file: Issued, or FileNotFound, NotOnlineGrant or Expired.</summary>
     UnlockResult Issue(string fileId, string keyId, DateTimeOffset now);
+
+    /// <summary>The token of an online lock of the file's stored files (spec 6.8.1): Issued, or FileNotFound or NotOnlineGrant.</summary>
+    UnlockResult IssueLock(string fileId, string lockId);
 }
 
 /// <summary>Makes tokens from the files with the owner key. Short to set up; a service holding the owner key can read every file if it is broken into.</summary>
@@ -122,16 +128,36 @@ public sealed class OwnerKeyUnlockTokens(IFileCatalog files, JazminKey ownerKey)
             return new UnlockResult(UnlockStatus.FileNotFound); // damaged, or not this owner's file
         }
     }
+
+    public UnlockResult IssueLock(string fileId, string lockId)
+    {
+        var path = files.FindPath(fileId);
+        if (path is null) return new UnlockResult(UnlockStatus.FileNotFound);
+        try
+        {
+            return new UnlockResult(UnlockStatus.Issued, JazminFile.IssueFileUnlockToken(path, ownerKey, lockId));
+        }
+        catch (JazminValidationException)
+        {
+            return new UnlockResult(UnlockStatus.NotOnlineGrant); // no such lock, or a password lock (no token)
+        }
+        catch (Exception e) when (e is JazminFormatException or JazminKeyException)
+        {
+            return new UnlockResult(UnlockStatus.FileNotFound);
+        }
+    }
 }
 
 /// <summary>
-/// Tokens listed beforehand on a trusted machine with <see cref="JazminFile.ListUnlockTokens"/>, so this service never
-/// holds the owner key: <c>{ "files": [ { "fileId", "tokens": [ { "keyId", "label", "expires", "token" } ] } ] }</c>.
+/// Tokens listed beforehand on a trusted machine with <see cref="JazminFile.ListUnlockTokens"/> (and the locks' with
+/// <see cref="JazminFile.ListFileUnlockTokens"/>), so this service never holds the owner key:
+/// <c>{ "files": [ { "fileId", "tokens": [ { "keyId", "label", "expires", "token" } ], "locks": [ { "lockId", "token" } ] } ] }</c>.
 /// A token alone opens nothing (it takes the access key as well), but keep the file encrypted at rest all the same.
 /// </summary>
 public sealed class StoredUnlockTokens : IUnlockTokens
 {
     private readonly Dictionary<string, Dictionary<string, StoredToken>> _files = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Dictionary<string, string>> _locks = new(StringComparer.Ordinal); // file id -> lock id -> token
 
     /// <summary>Reads the tokens file; a missing or unreadable one fails here, when the service starts.</summary>
     public StoredUnlockTokens(string path)
@@ -149,8 +175,14 @@ public sealed class StoredUnlockTokens : IUnlockTokens
         {
             var tokens = _files.TryGetValue(file.FileId, out var known) ? known : _files[file.FileId] = new(StringComparer.Ordinal);
             foreach (var token in file.Tokens ?? []) tokens[token.KeyId] = token;
+            var locks = _locks.TryGetValue(file.FileId, out var knownLocks) ? knownLocks : _locks[file.FileId] = new(StringComparer.Ordinal);
+            foreach (var lockToken in file.Locks ?? []) locks[lockToken.LockId] = lockToken.Token;
         }
     }
+
+    public UnlockResult IssueLock(string fileId, string lockId) =>
+        !_locks.TryGetValue(fileId, out var locks) ? new UnlockResult(UnlockStatus.FileNotFound)
+        : locks.TryGetValue(lockId, out var token) ? new UnlockResult(UnlockStatus.Issued, token) : new UnlockResult(UnlockStatus.NotOnlineGrant);
 
     public UnlockResult Issue(string fileId, string keyId, DateTimeOffset now)
     {
@@ -162,7 +194,9 @@ public sealed class StoredUnlockTokens : IUnlockTokens
 
     private sealed record StoredTokensFile(IReadOnlyList<StoredFileTokens>? Files);
 
-    private sealed record StoredFileTokens(string FileId, IReadOnlyList<StoredToken>? Tokens);
+    private sealed record StoredFileTokens(string FileId, IReadOnlyList<StoredToken>? Tokens, IReadOnlyList<StoredLockToken>? Locks);
+
+    private sealed record StoredLockToken(string LockId, string Token);
 
     private sealed record StoredToken(string KeyId, string Token, DateTimeOffset? Expires, string? Label);
 }
@@ -199,6 +233,39 @@ public sealed class KeyService(IUserStore users, IUnlockTokens tokens, TimeProvi
     private readonly ConcurrentDictionary<string, object> _userLocks = new(StringComparer.Ordinal);
 
     private object LockFor(string userId) => _userLocks.GetOrAdd(userId, _ => new object());
+
+    /// <summary>Owner/admin: records that a user may open a lock of a file's stored files (spec 6.8.1).</summary>
+    public void RegisterLock(string userId, string fileId, string lockId)
+    {
+        var user = users.Find(userId) ?? new UserRecord { UserId = userId };
+        user.Locks.Add($"{fileId}/{lockId}");
+        users.Save(user);
+    }
+
+    /// <summary>
+    /// The token of an online lock (spec 6.8.1), for the viewer the user unlocks a stored file in: after the code from the
+    /// user's authenticator app, and only for a lock the user was given (<see cref="RegisterLock"/>).
+    /// </summary>
+    public UnlockResult RequestFileUnlockToken(string userId, string fileId, string lockId, string code)
+    {
+        if (CheckSecondFactor(userId) is { } refused) return refused;
+        if (!users.Find(userId)!.Locks.Contains($"{fileId}/{lockId}")) return new UnlockResult(UnlockStatus.KeyNotOwnedByUser);
+        return tokens.IssueLock(fileId, lockId);
+
+        UnlockResult? CheckSecondFactor(string id)
+        {
+            var now = clock.GetUtcNow();
+            lock (LockFor(id))
+            {
+                if (users.Find(id) is not { TotpConfirmed: true, TotpSecret: not null } user) return new UnlockResult(UnlockStatus.NotEnrolled);
+                if (user.LockedUntil is { } until && until > now) return new UnlockResult(UnlockStatus.LockedOut, RetryAfter: until);
+                if (TryAcceptCode(user, code)) return null;
+                return user.LockedUntil is { } lockedUntil && lockedUntil > now
+                    ? new UnlockResult(UnlockStatus.LockedOut, RetryAfter: lockedUntil)
+                    : new UnlockResult(UnlockStatus.InvalidCode);
+            }
+        }
+    }
 
     /// <summary>Owner/admin: records that an access key was issued to a user.</summary>
     public void RegisterAccessKey(string userId, string keyId)

@@ -3165,7 +3165,12 @@ reader.Unlock("medical", unlockToken: JazminFile.IssueFileUnlockToken("claim.jzm
   open a file; actions (19.3) decide what viewers offer.
 - **In a browser**, the browser reader has the same `files()`, `locks()` and
   `unlock()` (section 24.2), and the web viewer shows a locked file with a
-  padlock and an **Unlock…** button that asks for what the lock needs. A
+  padlock and an **Unlock…** button that asks for what the lock needs. When
+  the lock (or the file) names a key service, **Sign in at …** opens the
+  service in a window of its own: the person signs in there and passes its
+  2FA, and the service sends the token back, so nothing is copied. The
+  sample service (`dotnet/samples/Jazmin.KeyService`, its README) shows it
+  working. A
   document's page doesn't get a locked file (`jazmin.file()` gives `null`)
   until it is unlocked; the viewer then shows the document again with it.
 - **Older libraries** (1.0-1.6) read the rows and every unlocked file, and
