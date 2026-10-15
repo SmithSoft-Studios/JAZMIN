@@ -748,7 +748,10 @@ needs, besides a key that sees it, a password, an unlock token from the
 owner's key service, or both. A key that sees a locked content's file learns
 its path, type and size, not its bytes. Locks are named; one lock MAY cover
 several contents, so one password or token opens them all. Files that are not
-access-controlled MUST NOT hold locks.
+access-controlled MUST NOT hold locks. A file with a lock (in its owner
+directory) names the **writer feature** `file-locks` (12): a writer that
+rewrote its directories without the locks would lose the locked contents'
+keys.
 
 - A locked content's entry in `contents` has `lock` (the lock's id, 1 to 64
   characters) and no `key`. Every directory that lists the content locks it
@@ -1636,7 +1639,8 @@ fresh secrets. The result has `append_count` 0 and the APPENDED flag clear.
   Reader features are also writer features.
 - Feature names are lowercase ASCII letters, digits and `-`. Format 1.0
   defined none. Defined since: the reader features `index-deltas` (8.1) and
-  `nested-columns` (5.4). A file that uses none has empty lists.
+  `nested-columns` (5.4), and the writer feature `file-locks` (6.8.1). A
+  file that uses none has empty lists.
 - The magic `JZM1` changes only if the container itself changes
   incompatibly.
 
@@ -1808,7 +1812,11 @@ indexes, embedded files) written by both reference implementations.
   don't know them read the rows and every unlocked file, and refuse a locked
   one as having no key (releases 1.0 to 1.6: "Embedded content ... has no
   key"). No reader feature: one would make those readers refuse the whole
-  file.
+  file. Such files name the writer feature `file-locks`, but the libraries of
+  releases 1.0 to 1.6 don't check writer features: an append with them
+  writes the directories without the locks, and the locked contents' keys
+  are lost (their rewrites fail, as they can't read locked contents). Modify
+  files with locks with release 1.7 or later.
 - **Since format 1.0, a new action and actions by file group (6.8):** the
   action `list`, and in access-controlled files each file group's directory
   with its own actions, merged for a key that sees several groups. Readers
