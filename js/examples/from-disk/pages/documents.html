@@ -42,6 +42,18 @@
       </ul>
       <button id="open-tasks" type="button" class="primary">Open the task list</button>
     </article>
+    <article class="panel choice">
+      <h2>A dashboard from the internet</h2>
+      <p>The page inside <code>dashboard.jzm</code> uses the <strong>Inter</strong> font from Google Fonts, and
+        <strong>Chart.js</strong> and icons from jsDelivr. The file says it needs to be online, so the viewer says so,
+        and offline waits for the network instead of showing half a page.</p>
+      <ul>
+        <li>Needs to be online: <code>online: 'required'</code></li>
+        <li>Chart.js at an exact version, with an <code>integrity</code> hash: a changed file is refused</li>
+        <li>Without the charts, the page shows the figures as a table</li>
+      </ul>
+      <button id="open-dashboard" type="button" class="primary">Open the dashboard</button>
+    </article>
   </section>
   <p id="note" class="error" role="alert"></p>
 
@@ -95,6 +107,7 @@ applyChanges('tasks.jzm', changeFile, { password });
   }
   $('open-report').addEventListener('click', () => show(data.report, 'report.jzm'));
   $('open-tasks').addEventListener('click', () => show(data.tasks, 'tasks.jzm'));
+  $('open-dashboard').addEventListener('click', () => show(data.dashboard, 'dashboard.jzm'));
 </script>
 </body>
 </html>

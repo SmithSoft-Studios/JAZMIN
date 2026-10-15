@@ -1130,7 +1130,9 @@ for (const name of chosen) {
     await page.evaluate(`(window.statuses = [], addEventListener('message', (e) => e.data?.type === 'jazmin:status' && statuses.push(e.data.state + ' ' + e.data.name)), document.getElementById('open-report').click(), true)`);
     await waitFor(page, `statuses.length > 0`, 'the report in the viewer', 30000);
     await page.evaluate(`(document.getElementById('open-tasks').click(), true)`);
-    const documentStatuses = await waitFor(page, `statuses.length > 1 && statuses`, 'the task list in the viewer', 30000);
+    await waitFor(page, `statuses.length > 1`, 'the task list in the viewer', 30000);
+    await page.evaluate(`(document.getElementById('open-dashboard').click(), true)`);
+    const documentStatuses = await waitFor(page, `statuses.length > 2 && statuses`, 'the dashboard in the viewer', 30000);
     const galleryOk = shapesShown.status.startsWith(`${SAMPLE.statementRows} transactions · 4 saved shapes · opened in `) && shapesShown.bars === SAMPLE.categories
       && JSON.stringify(shapesShown.saved) === JSON.stringify(['Chart data', 'Merchants', 'Spending by category', 'Statement']) && shapesShown.output === '['
       && labMistake === "Shape at categories[].spent.$sum: unknown or hidden column 'amont'"
@@ -1140,7 +1142,7 @@ for (const name of chosen) {
         { who: 'Johannesburg team lead', rows: '10 of 30', columns: ['branch', 'name', 'role', 'since'], shapes: ['Headcount by role', 'Team list'], files: 2, table: ['name', 'role'], shown: 6, hint: '(the first 6)', branches: null },
         { who: 'HR', rows: '30 of 30', columns: ['branch', 'name', 'role', 'since', 'salary', 'bonus'], shapes: ['Cape Town pay', 'Headcount by role', 'Pay by branch', 'Team list'], files: 5, table: ['branch', 'name', 'role', 'salary'], shown: 6, hint: '(2 from each branch)', branches: ['Cape Town', 'Johannesburg', 'Durban'] },
       ])
-      && JSON.stringify(documentStatuses) === JSON.stringify(['opened report.jzm', 'locked tasks.jzm']);
+      && JSON.stringify(documentStatuses) === JSON.stringify(['opened report.jzm', 'locked tasks.jzm', 'opened dashboard.jzm']);
     results.push({ browser: name, label: `the demo gallery: export shapes, several tables, one file with three keys, documents in the viewer${fromDisk ? ', from disk' : ' (over HTTP)'}`, ok: galleryOk, problems: galleryOk ? [] : [JSON.stringify({ shapesShown, labMistake, tablesShown, perSegment, people, documentStatuses, SAMPLE })] });
     if (page.problems.length) results.push({ browser: name, label: 'page errors', ok: false, problems: page.problems });
   } catch (error) {
