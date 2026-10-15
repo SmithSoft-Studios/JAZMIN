@@ -37,7 +37,7 @@ dialog.changes ul { max-height: 40vh; overflow: auto; padding-left: 20px; }
 dialog.changes .buttons { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
 .unlock h1 { font-size: 20px; margin: 0 0 6px; }
 .unlock label { display: block; margin: 12px 0 4px; font-weight: 600; }
-.unlock input, .filter input { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; font: 13px ui-monospace, monospace; }
+.unlock input, .filter input, #jz-lock input { width: 100%; padding: 9px 11px; border: 1px solid var(--line); border-radius: 8px; font: 13px ui-monospace, monospace; }
 .unlock button { margin-top: 14px; width: 100%; }
 #jz-content { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .tabs { display: flex; align-items: center; gap: 4px; padding: 8px 16px 0; border-bottom: 1px solid var(--line); background: var(--panel); }
@@ -91,6 +91,9 @@ button.small { padding: 3px 10px; font-size: 12.5px; }
 .files { list-style: none; margin: 0; padding: 0; }
 .files li { display: flex; align-items: center; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
 .files .path { flex: 1; font-family: ui-monospace, monospace; }
+.files .locked { color: var(--muted); white-space: nowrap; }
+#jz-lock label { display: block; margin: 12px 0 4px; font-weight: 600; }
+#jz-lock input { box-sizing: border-box; }
 @media print {
   .bar, .tabs, .status { display: none; }
 }

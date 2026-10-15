@@ -16,6 +16,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   both libraries. `new JazminFileInput(path, new FileInfo(...)) { Lock = ..., GroupActions = ... }` gives a file read from
   disk the settings `FromFile` has no parameters for. Releases 1.0 to 1.6 read such files and refuse only the locked ones; **don't
   append to them with 1.0 to 1.6**, which would lose the locked files' keys (their update and compact fail safely).
+- **Locked files in the browser and the web viewer (#188).** The browser reader lists locked files (`files()`, each
+  with `lock`, and `locks()`) and opens them with `unlock(id, { password, unlockToken })`; reading one before throws
+  `JazminFileLockedError`. The viewer's Files tab shows a locked file with a padlock and **Unlock…**, which asks for what
+  the lock needs and refuses a wrong password or token; a document's page gets the file once it is unlocked (the viewer
+  shows the document again), and a locked file no longer stops the document from showing.
 - **Writer features are checked (spec 12).** Append, update, compact and `rotateKey` refuse a file with a writer feature
   this library doesn't know, and `reader.writerFeatures` (.NET `WriterFeatures`) lists them; reading is unchanged. The
   first is `file-locks`.

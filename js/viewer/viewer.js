@@ -523,6 +523,23 @@
       size.className = 'hint';
       size.textContent = `${f.type}, ${f.size.toLocaleString()} bytes`;
       li.append(name, size);
+      if (f.lock && !f.lock.unlocked) {
+        // Locked (spec 6.8.1): a password, an unlock token from the owner's key service, or both open it.
+        const locked = document.createElement('span');
+        locked.className = 'locked';
+        locked.textContent = '\u{1F512} Locked';
+        locked.title = `Lock '${f.lock.id}'`;
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.textContent = 'Unlock…';
+        button.addEventListener('click', () => unlockFile(f.lock).then(async (done) => {
+          if (!done) return;
+          await showFiles();
+          if (frameReader) await showDocument(frameReader); // the document's page gets the files just unlocked
+        }).catch((e) => status(e.message)));
+        li.append(locked, button);
+        return li;
+      }
       if (f.actions?.save !== false) { // the file's writer may keep viewers from offering it as a download
         const button = document.createElement('button');
         button.type = 'button';
@@ -532,6 +549,55 @@
       }
       return li;
     }));
+  }
+
+  /**
+   * Asks for what a lock needs (its password, an unlock token, or both) and opens it for as long as the file is open.
+   * Resolves true once unlocked, false when cancelled; a wrong password or token is shown and asked again.
+   */
+  function unlockFile(lock) {
+    const dialog = $('jz-lock');
+    const form = $('jz-lock-form');
+    const needsPassword = lock.kind !== 'online';
+    const needsToken = lock.kind !== 'password';
+    $('jz-lock-title').textContent = `Unlock '${lock.id}'`;
+    $('jz-lock-what').textContent = `The files of this lock need ${needsPassword && needsToken ? 'a password and an unlock token'
+      : needsPassword ? 'a password' : 'an unlock token'} as well as your key. Nothing leaves this device.`;
+    $('jz-lock-password-row').hidden = !needsPassword;
+    $('jz-lock-token-row').hidden = !needsToken;
+    $('jz-lock-password').value = '';
+    $('jz-lock-token').value = '';
+    $('jz-lock-error').textContent = '';
+    return new Promise((resolve) => {
+      const finish = (done) => {
+        form.removeEventListener('submit', submit);
+        $('jz-lock-cancel').removeEventListener('click', cancel);
+        dialog.removeEventListener('cancel', cancel);
+        dialog.close();
+        resolve(done);
+      };
+      const cancel = (event) => {
+        event.preventDefault();
+        finish(false);
+      };
+      const submit = async (event) => {
+        event.preventDefault();
+        $('jz-lock-error').textContent = 'Unlocking…';
+        try {
+          await state.reader.unlock(lock.id, {
+            ...(needsPassword ? { password: $('jz-lock-password').value } : {}), ...(needsToken ? { unlockToken: $('jz-lock-token').value } : {}),
+          });
+          finish(true);
+        } catch (error) {
+          $('jz-lock-error').textContent = error.message;
+        }
+      };
+      form.addEventListener('submit', submit);
+      $('jz-lock-cancel').addEventListener('click', cancel);
+      dialog.addEventListener('cancel', cancel);
+      dialog.showModal();
+      (needsPassword ? $('jz-lock-password') : $('jz-lock-token')).focus();
+    });
   }
 
   /**
@@ -587,7 +653,8 @@
 
   async function showDocument(reader) {
     const settings = reader.package;
-    const list = await reader.files();
+    // A locked file (spec 6.8.1) reaches the page once it is unlocked (Files tab): the document is then shown again.
+    const list = (await reader.files()).filter((f) => !f.lock || f.lock.unlocked);
     const files = [];
     for (const f of list) files.push({ path: f.path, blob: await reader.fileBlob(f.path), actions: f.actions });
     const rows = [];

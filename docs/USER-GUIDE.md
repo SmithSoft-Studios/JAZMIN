@@ -3154,6 +3154,11 @@ reader.Unlock("medical", unlockToken: JazminFile.IssueFileUnlockToken("claim.jzm
   can't be guessed this way, because their secret isn't in the file.
 - **Once a file is open, its bytes can be copied.** A lock decides who can
   open a file; actions (19.3) decide what viewers offer.
+- **In a browser**, the browser reader has the same `files()`, `locks()` and
+  `unlock()` (section 24.2), and the web viewer shows a locked file with a
+  padlock and an **Unlock…** button that asks for what the lock needs. A
+  document's page doesn't get a locked file (`jazmin.file()` gives `null`)
+  until it is unlocked; the viewer then shows the document again with it.
 - **Older libraries** (1.0-1.6) read the rows and every unlocked file, and
   refuse a locked one ("has no key"). Don't let them **append** to a file with
   locks: they don't check the file's writer feature (`file-locks`), write the
@@ -4507,6 +4512,8 @@ await reader.columnArrays(null, { select: ['at', 'amount'] }); // arrays for cha
 reader.submissionKey;                                  // the key to send records back with (section 15.6)
 await reader.explain({ id: 7 }, { analyze: true });    // as in the library (section 9.6)
 const pdf = await reader.readFile('terms.pdf');
+// A locked file (section 19.6): files() and locks() say which; unlock with its password and/or unlock token first.
+await reader.unlock('contracts', { password });        // or { unlockToken: 'jzf1-…' } from the owner's key service
 ```
 
 **It plans queries as the library does** (sections 9.7 and 9.8):

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { JazminAccessKey, JazminKey, append, issueUnlockToken, open, write } from '../src/index.js';
+import { JazminAccessKey, JazminKey, append, issueFileUnlockToken, issueUnlockToken, open, write } from '../src/index.js';
 import '../browser/jazmin-browser.js';
 
 const { JazminBrowser } = globalThis;
@@ -409,4 +409,44 @@ test('actions by file group: the browser reader takes what the library takes, fo
   }
   const all = await JazminBrowser.open(new Uint8Array(bytes), { key: keys.all.toString() });
   assert.deepEqual((await all.files()).find((f) => f.path === 'terms.pdf').actions, { save: true }, 'through both groups: what either allows');
+});
+
+test('locked files: the browser reader lists them and opens them as the library does (spec 6.8.1)', async () => {
+  const owner = JazminKey.generate();
+  const key = owner.createAccessKey();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-browser-locks-'));
+  const file = path.join(dir, 'claim.jzm');
+  write(file, [{ id: 1, group: 'A' }, { id: 2, group: 'B' }], {
+    columns: [{ name: 'id', type: 'int' }, { name: 'group', type: 'string' }], key: owner,
+    access: { partitionBy: 'group', grants: [{ key, rows: '*' }] },
+    files: [
+      { path: 'p.txt', content: 'password file', lock: 'p' }, { path: 'o.txt', content: 'online file', lock: 'o' },
+      { path: 'b.bin', content: Buffer.alloc(300 * 1024, 7), lock: 'b' }, { path: 'open.txt', content: 'open' },
+    ],
+    locks: { p: { password: 'pw', iterations: 1000 }, o: { online: true }, b: { password: 'bp', online: true, iterations: 1000 } },
+  });
+  const library = open(file, { key: key.toString(), accessState: false });
+  const browser = await JazminBrowser.open(new Uint8Array(fs.readFileSync(file)), { key: key.toString() });
+  const plainFiles = (files) => files.map((f) => ({ path: f.path, lock: f.lock ?? null })).sort((a, b) => (a.path < b.path ? -1 : 1));
+  assert.deepEqual(plainFiles(await browser.files()), plainFiles(library.files));
+  assert.deepEqual(await browser.locks(), library.locks);
+  assert.equal(new TextDecoder().decode(await browser.readFile('open.txt')), 'open');
+  await assert.rejects(browser.readFile('p.txt'), (e) => e instanceof JazminBrowser.JazminFileLockedError && e.kind === 'password' && /unlock it with its password/.test(e.message));
+  await assert.rejects(browser.unlock('p', { password: 'wrong' }), /Wrong password for lock 'p'/);
+  await assert.rejects(browser.unlock('o', { unlockToken: 'jzf1-AAAA' }), /Unlock token has the wrong length/);
+  await assert.rejects(browser.unlock('b', { password: 'bp' }), /needs its password and an unlock token/);
+  const token = (id) => issueFileUnlockToken(file, owner, id);
+  await browser.unlock('p', { password: 'pw' });
+  await browser.unlock('o', { unlockToken: token('o') });
+  await assert.rejects(browser.unlock('b', { password: 'nope', unlockToken: token('b') }), /Wrong password or unlock token/);
+  await browser.unlock('b', { password: 'bp', unlockToken: token('b') });
+  library.unlock('p', { password: 'pw' });
+  library.unlock('o', { unlockToken: token('o') });
+  library.unlock('b', { password: 'bp', unlockToken: token('b') });
+  for (const p of ['p.txt', 'o.txt', 'b.bin']) assert.ok(Buffer.from(await browser.readFile(p)).equals(library.readFile(p)), p);
+  assert.deepEqual(await browser.locks(), library.locks, 'every lock open in both');
+  // Another table of the same file shares the unlocks.
+  const other = await browser.openTable(browser.table);
+  assert.equal(new TextDecoder().decode(await other.readFile('p.txt')), 'password file');
+  library.close();
 });
