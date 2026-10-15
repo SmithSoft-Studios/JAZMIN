@@ -632,9 +632,10 @@ text) and `segment` when an append wrote the directories.
 - `package` holds the entry path (which MUST be a stored path), a title, the
   https origins the page may contact, whether WebAssembly is allowed, `pdf`,
   the page settings for the document's PDFs (below), and `edit`, what the
-  document may change (7.9). Viewers MUST treat stored files as untrusted
-  content and SHOULD derive the page's security policy from these settings
-  only.
+  document may change (7.9), and `keyService`, the https address of the
+  owner's key service for the file's online locks (6.8.2). Viewers MUST
+  treat stored files as untrusted content and SHOULD derive the page's
+  security policy from these settings only.
 - Writers MUST NOT reuse a content id within a file, so block section ids
   stay unique across appends.
 
@@ -759,8 +760,9 @@ keys.
 - A directory that lists a locked content has a member `locks`, an array of
   the locks its contents use: `{ "id": "<id>", "kind": "password" |
   "online" | "both", "salt": "<base64, 16 bytes>", "iterations": n,
-  "keys": { "<content id>": "<base64>" } }`. `iterations` is present for the
-  password kinds. `keys` holds, for each content of the directory with this
+  "keys": { "<content id>": "<base64>" }, "keyService": "https://..." }`.
+  `iterations` is present for the password kinds; `keyService` (optional,
+  online kinds) is the lock's own key service (6.8.2). `keys` holds, for each content of the directory with this
   lock, its key `K` sealed under the lock key: `nonce (12) || AES-256-GCM(K)
   || tag (16)`, with additional data `"JAZMIN/1/lock/" || id || "/" ||
   content id` (decimal).
@@ -773,10 +775,11 @@ keys.
     where `P` is the password's PBKDF2 output as for `password`.
 - **The owner holds every lock** (7.6.5): the owner directory's `locks` is
   `[ { "id", "kind", "salt", "iterations", "key": "<base64 L>", "secret":
-  "<base64 S>" } ]`, with the lock's `salt` and `iterations` as in its
-  directories and `secret` for the online kinds. With the owner key a reader opens locked contents
-  without a password or token, and writers that rewrite the file (11.2,
-  compaction) keep each lock's id, kind, salt, `L` and `S`, sealing each
+  "<base64 S>", "keyService" } ]`, with the lock's `salt`, `iterations`
+  and `keyService` as in its directories and `secret` for the online
+  kinds. With the owner key a reader opens locked contents without a
+  password or token, and writers that rewrite the file (11.2, compaction)
+  keep each lock's id, kind, salt, `L`, `S` and `keyService`, sealing each
   content's key again in the new version's directories. Changing a lock's
   password changes `L` and the sealed keys, not the contents.
 - **An unlock token** gives `S` to a reader of an online lock:
@@ -795,6 +798,32 @@ keys.
   can't, as `S` is not in the file. Once a locked file is open, its bytes can
   be copied: a lock decides who can open, as actions (6.8) decide what
   viewers offer.
+
+#### 6.8.2. Unlocking with a Key Service
+
+A viewer can get an online lock's unlock token (6.8.1) from the owner's key
+service itself, so the person signs in there and passes its checks (2FA)
+instead of copying a token.
+
+- **Where:** a lock's `keyService`, else the package's `keyService` (6.8):
+  an https URL without user name, password or fragment. In access-controlled
+  files both are inside sections the owner signs (7.6.5), so a viewer
+  contacts only a service the owner chose. Readers MUST ignore an address
+  that is not such a URL.
+- **The request:** the viewer opens, in a new top-level window (so the
+  service's own sign-in works), the address with the query parameters
+  `jazmin=unlock`, `file` (the file id, hex), `lock` (the lock id) and
+  `origin` (the viewer's origin, `null` for a page opened from disk), added
+  to any it has. It sends no key, password or file content.
+- **The answer:** after its checks, the service's page posts to
+  `window.opener` the message `{ "type": "jazmin:file-unlock", "file",
+  "lock", "token": "jzf1-..." }` with target origin `origin` (`*` when it is
+  `null`). The viewer MUST accept it only from the key service's origin and
+  for the file and lock it asked for, and then unlocks as with a pasted
+  token. A token opens nothing without a key that sees the locked content.
+- Online access keys (7.7) need their token before any of the file can be
+  read, so a file can't name their service: their tokens are given as
+  before.
 
 ## 7. Encryption and Keys
 
@@ -1805,6 +1834,10 @@ indexes, embedded files) written by both reference implementations.
   Readers that don't know them ignore them, as they do other members; the
   libraries of releases 1.0 to 1.3 also leave them out when they rewrite a
   file's directories (append, update, compaction).
+- **Since format 1.0, key services for locks (6.8.2):** `keyService` in the
+  package settings and in directory and owner-directory locks. Readers that
+  don't know it ignore it; writers of releases 1.0 to 1.6 leave it out when
+  they rewrite the package settings, and viewers then ask for a pasted token.
 - **Since format 1.0, locked files (6.8.1):** a stored content of an
   access-controlled file can need a password, an unlock token from the
   owner's key service, or both. New optional members: `lock` in a directory's

@@ -77,6 +77,13 @@ The same in .NET (`JazminFileInput.Lock`, `JazminWriteOptions.Locks`, `reader.Un
 or starts the 2FA check with the key service the file names (an https origin in the package's settings, so a viewer
 only ever contacts a service the file's owner chose). An unlock lasts while the file is open.
 
+**Key services (owner, 2026-10-15; spec 6.8.2):** the file's `package.keyService` is the default, and each lock may
+name its own (`locks: { medical: { online: true, keyService: 'https://keys.medicalaid.co.za' } }`): one owner can lock
+attachments for several providers, each signing its people in with its own 2FA and holding only its own lock's secret.
+Most files use one. The viewer opens the service in a sign-in window with the file id and lock id; the service posts
+the `jzf1-` token back. Online access keys (needed before any of the file can be read) can't take their service from
+the file, so their tokens are still pasted (the owner's choice).
+
 ## Decisions for the owner
 
 1. **Can the owner key open locked files without the password?** (the main choice)
