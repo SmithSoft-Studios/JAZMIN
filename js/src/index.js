@@ -23,14 +23,14 @@ export { portableHtml, portableScript } from './portable.js';
 export { checkPageSettings } from './files.js';
 export { applyChanges, writeChanges } from './changes.js';
 export { SUBMISSION_FILE_TYPES, fileSubmission } from './submissions.js';
-export { accessKeyOf, inspect, issueUnlockToken, listUnlockTokens } from './online.js';
+export { accessKeyOf, inspect, issueFileUnlockToken, issueUnlockToken, listUnlockTokens } from './online.js';
 export { inferSchema } from './schema.js';
 export { compileShape, shapeSchema } from './shape.js';
 export { from, JazminQuery } from './query.js';
 export { TYPES } from './types.js';
 export {
-  JazminAccessExpiredError, JazminError, JazminFormatError, JazminKeyError, JazminSubmissionRejectedError, JazminUnlockRequiredError,
-  JazminValidationError,
+  JazminAccessExpiredError, JazminError, JazminFileLockedError, JazminFormatError, JazminKeyError, JazminSubmissionRejectedError,
+  JazminUnlockRequiredError, JazminValidationError,
 } from './errors.js';
 
 /** Opens a .jzm file path or Buffer for reading. Options: { key } or { password }. */

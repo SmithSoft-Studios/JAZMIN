@@ -8,12 +8,12 @@ import { compileFilter } from './filter.js';
 import { grantExpiry, toMs } from './expiry.js';
 import { JazminAccessKey, parseAnyKey } from './keys.js';
 import { FILE_SOURCE } from './files.js';
-import { COMPACT_INDEXES, FILE_STATE, JazminReader, OWNER_GRANTS, ROWS_BY_PARTITION } from './reader.js';
+import { COMPACT_INDEXES, FILE_STATE, JazminReader, OWNER_GRANTS, OWNER_LOCKS, ROWS_BY_PARTITION, checkWriterFeatures } from './reader.js';
 import { INDEX_KINDS, compareKeys, keyId, normalizeValue, toKey } from './types.js';
 import { withLock } from './lock.js';
 import { RowSorter, SORT_RUN_ROWS } from './sort-rows.js';
 import { linksAfter } from './links.js';
-import { JazminWriter, PROGRESS_TOTAL } from './writer.js';
+import { JazminWriter, KEPT_LOCKS, PROGRESS_TOTAL } from './writer.js';
 
 /**
  * Atomically replaces `path` with `temp`: readers never see a half-written file. Readers that have the file open keep
@@ -88,6 +88,9 @@ function compareTuples(a, b) {
  *   codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority   output settings (defaults as for a new file)
  *   compactIndexes      sorted indexes with keys as differences (default: as the file has them)
  *   addFiles, removeFiles, package        embedded files: add or replace, remove (by path), viewer settings
+ *   locks: { id: { password, online, iterations } | null }   locks of stored files (shared files, spec 6.8.1): add one,
+ *                       change one (a new password; an online lock keeps its secret), or remove one (null: its files stay,
+ *                       unlocked); the file's other locks are kept
  *   addShapes, removeShapes               saved export shapes: add or replace, remove (by name)
  *   indexes: { column: kinds }  the indexes a column has afterwards ('sorted', 'trigram', both, or [] for none);
  *                       columns not named keep theirs (the table being updated). The first sortedBy column keeps no
@@ -138,7 +141,7 @@ export function updateUnlocked(path, options = {}) {
     key, password, metadata,
     grant = [], revoke = [], codec, level, chunkRows, chunkBytes, maxDegreeOfParallelism, priority, compactIndexes, now, layout,
     addFiles = [], removeFiles = [], package: packageSettings, table, regroup = false, addShapes = [], removeShapes = [],
-    sortRunRows, addTables = [], removeTables = [], renameTables = {}, links, tables: tableChanges, onProgress, signal,
+    sortRunRows, addTables = [], removeTables = [], renameTables = {}, links, tables: tableChanges, onProgress, signal, locks,
   } = options;
   signal?.throwIfAborted();
   if (tableChanges !== undefined && (tableChanges === null || typeof tableChanges !== 'object' || Array.isArray(tableChanges))) {
@@ -151,6 +154,7 @@ export function updateUnlocked(path, options = {}) {
   let writer;
   const sorters = []; // rows put in a new sort order within a memory budget, closed at the end
   try {
+    checkWriterFeatures(reader);
     const owner = reader[OWNER_GRANTS];
     if (!owner && reader.access) throw new JazminKeyError("Only the file owner's master key can modify this file");
     if (!owner && (grant.length || revoke.length)) throw new JazminValidationError('grant/revoke apply only to access-controlled files');
@@ -220,7 +224,10 @@ export function updateUnlocked(path, options = {}) {
       key: newOwner ? newOwner.key : key, password, kdfIterations: reader.kdfIterations, onProgress, signal, [PROGRESS_TOTAL]: totalRows,
       access: access && named ? { grants: access.grants } : access,
       now, // expired grants are dropped, and the new version's fresh secrets lock them out
-      files: [...carriedFiles(reader, addFiles, removeFiles), ...addFiles],
+      files: [...carriedFiles(reader, addFiles, removeFiles, locks), ...addFiles],
+      // The file's locks, changed by those given (the writer refuses locks in a file that is not shared).
+      ...(locks !== undefined ? { locks } : {}),
+      ...(owner ? { [KEPT_LOCKS]: [...reader[OWNER_LOCKS].values()] } : {}),
       package: packageAfter(packageSettings !== undefined ? packageSettings : reader.package, tablePlan),
       shapes: [...keptShapes(reader[FILE_STATE]?.shapes ?? [], addShapes, removeShapes).map((shape) => shapeAfter(shape, tablePlan)), ...addShapes],
       // The links: as given, or the file's, following renames (checked against the tables by the writer).
@@ -540,9 +547,9 @@ function tableLayout(owner) {
 
 /**
  * The embedded files a rewrite keeps: every file except removed or replaced ones, read block by
- * block from the old version while the new one is written (bounded memory).
+ * block from the old version while the new one is written (bounded memory). Each keeps its lock, unless `locks` removes it.
  */
-export function carriedFiles(reader, addFiles, removeFiles) {
+export function carriedFiles(reader, addFiles, removeFiles, locks) {
   const state = reader[FILE_STATE];
   const existing = new Map((state?.entries ?? []).map((e) => [e.path, e]));
   for (const p of removeFiles) if (!existing.has(p)) throw new JazminValidationError(`removeFiles: no file '${p}'`);
@@ -552,7 +559,8 @@ export function carriedFiles(reader, addFiles, removeFiles) {
     const c = contents.get(e.content);
     return {
       [FILE_SOURCE]: true, path: e.path, type: e.type, groups: e.groups, ...(e.actions ? { actions: e.actions } : {}),
-      ...(e.groupActions ? { groupActions: e.groupActions } : {}), size: c.size, sha256: c.sha256,
+      ...(e.groupActions ? { groupActions: e.groupActions } : {}), ...(c.lock !== undefined && locks?.[c.lock] !== null ? { lock: c.lock } : {}),
+      size: c.size, sha256: c.sha256,
       read: (offset, length) => reader.readFileRange(e.path, offset, offset + length),
     };
   });

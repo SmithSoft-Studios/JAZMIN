@@ -15,14 +15,16 @@ import {
 import { decodeColumnar, decodeColumnarAt } from './columnar.js';
 import {
   CODEC, DRAFT_MAGIC, ENVELOPE_SIZE, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, KEYRING_GROUPS,
-  INDEX_DELTAS, KNOWN_FLAGS, MAGIC, MAX_KDF_ITERATIONS, MIN_KDF_ITERATIONS, PREAMBLE_SIZE, SUPPORTED_READER_FEATURES, TRAILER_SIZE, WHOLE_TABLE,
+  INDEX_DELTAS, KNOWN_FLAGS, MAGIC, MAX_KDF_ITERATIONS, MIN_KDF_ITERATIONS, PREAMBLE_SIZE, SUPPORTED_READER_FEATURES,
+  SUPPORTED_WRITER_FEATURES, TRAILER_SIZE, WHOLE_TABLE,
 } from './constants.js';
-import { JazminFormatError, JazminKeyError, JazminValidationError } from './errors.js';
+import { JazminFileLockedError, JazminFormatError, JazminKeyError, JazminValidationError } from './errors.js';
 import { enforceExpiry, toMs } from './expiry.js';
 import { EVERYONE, mergeActions, readActions } from './files.js';
 import { answeredExactly, evaluate, filterReads, indexPlan, mayMatch, mustMatch, normalizeFilter } from './filter.js';
 import { CompositeIndex, LazyTrigramIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
 import { JazminAccessKey, JazminKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
+import { LOCK_KINDS, checkLockIterations, lockKey, lockNeeds, openContentKey, parseFileUnlockToken, readOwnerLocks } from './locks.js';
 import { checkPriority, readThreads } from './priority.js';
 import { directoryShapes, shapeFits } from './saved-shapes.js';
 import { setField } from './schema.js';
@@ -211,6 +213,21 @@ export const ROWS_BY_PARTITION = Symbol('jazmin.rowsByPartition');
 
 /** Internal: lets update() and append() carry a file's embedded files into its next version. */
 export const FILE_STATE = Symbol('jazmin.fileState');
+
+/** Internal: the owner directory's locks (spec 6.8.1), Map(id -> lock), or null when the key is not the owner's. */
+export const OWNER_LOCKS = Symbol('jazmin.ownerLocks');
+
+/**
+ * Refuses a file with a writer feature this library does not support (spec 12): modifying it could lose what the
+ * feature keeps. Called before an append or a rewrite.
+ */
+export function checkWriterFeatures(reader) {
+  for (const feature of reader.writerFeatures) {
+    if (!SUPPORTED_WRITER_FEATURES.has(feature) && !SUPPORTED_READER_FEATURES.has(feature)) {
+      throw new JazminFormatError(`This file needs the writer feature '${feature}' to be modified, which this JAZMIN library does not support`);
+    }
+  }
+}
 
 const NEXT_CHUNK = Symbol('jazmin.nextChunk'); // yielded by internal scans before each chunk is read (findAsync)
 const READ_AHEAD = 2; // chunks read ahead by findAsync
@@ -441,11 +458,17 @@ function checkFileDirectory(d) {
     ok(c && count(c.id) && count(c.size) && typeof c.sha256 === 'string' && Array.isArray(c.blocks));
     ok(count(c.blockSize) && c.blockSize > 0 && c.blocks.length === Math.ceil(c.size / c.blockSize));
     ok(c.key === undefined || typeof c.key === 'string');
+    ok(c.lock === undefined || (typeof c.lock === 'string' && c.key === undefined));
     for (const b of c.blocks) ok(b && count(b.offset) && count(b.length) && (b.digest === undefined || typeof b.digest === 'string'));
   }
   for (const f of d.files) {
     ok(f && typeof f.path === 'string' && typeof f.type === 'string' && count(f.content));
     ok(f.groups === undefined || (Array.isArray(f.groups) && f.groups.every((g) => typeof g === 'string')));
+  }
+  ok(d.locks === undefined || Array.isArray(d.locks));
+  for (const l of d.locks ?? []) {
+    ok(l && typeof l.id === 'string' && LOCK_KINDS.includes(l.kind) && typeof l.salt === 'string');
+    ok(l.keys && typeof l.keys === 'object' && Object.values(l.keys).every((k) => typeof k === 'string'));
   }
   return d;
 }
@@ -1224,6 +1247,14 @@ export class JazminReader {
     return [...this.#header.readerFeatures];
   }
 
+  /**
+   * The writer features of the file (spec 12), such as 'file-locks': a library that doesn't know one refuses to modify
+   * the file (append, update, compact), and still reads it.
+   */
+  get writerFeatures() {
+    return [...this.#header.writerFeatures];
+  }
+
   /** True when the end of the file held an interrupted append, and the previous version was used. */
   get recovered() {
     return this.#recovered;
@@ -1388,7 +1419,8 @@ export class JazminReader {
   /** Loads the file directories this key can open, merged by path (once). */
   #files() {
     if (this.#fileIndex) return this.#fileIndex;
-    const index = { entries: new Map(), contents: new Map(), shapes: new Map() };
+    // locks: id -> { id, kind, salt, iterations, keys: Map(content id -> sealed key) }; contentKeys: id -> K, once opened.
+    const index = { entries: new Map(), contents: new Map(), shapes: new Map(), locks: new Map(), contentKeys: new Map() };
     const member = this.#header.files;
     if (member) {
       const suffix = member.segment ? `/${member.segment}` : '';
@@ -1409,6 +1441,11 @@ export class JazminReader {
         }
         const directory = checkFileDirectory(parseJsonText(this.#read(dir.section, sectionId, key).toString('utf8'), 'An embedded-file directory', true));
         for (const c of directory.contents) index.contents.set(c.id, c);
+        for (const l of directory.locks ?? []) {
+          if (!index.locks.has(l.id)) index.locks.set(l.id, { id: l.id, kind: l.kind, salt: Buffer.from(l.salt, 'base64'), iterations: l.iterations, keys: new Map() });
+          const lock = index.locks.get(l.id);
+          for (const [id, sealed] of Object.entries(l.keys)) if (!lock.keys.has(id)) lock.keys.set(id, sealed);
+        }
         for (const f of directory.files) {
           const known = index.entries.get(f.path);
           const groups = f.groups ?? (ownerNames ? [ownerNames.get(dir.group)] : undefined);
@@ -1462,6 +1499,7 @@ export class JazminReader {
       return {
         path: e.path, type: e.type, size: c.size, sha256: c.sha256, ...(e.groups ? { groups: [...e.groups] } : {}),
         ...(e.actions ? { actions: structuredClone(e.actions) } : {}),
+        ...(c.lock !== undefined ? { lock: this.#lockInfo(c.lock) } : {}),
         // The owner sees each group's actions when they differ (actions above: what any of them allows).
         ...(e.groupActions && new Set(Object.values(e.groupActions).map((a) => JSON.stringify(a))).size > 1 ? { groupActions: structuredClone(e.groupActions) } : {}),
       };
@@ -1500,6 +1538,62 @@ export class JazminReader {
     return settings ? parseJsonText(settings, 'Package settings', true) : undefined;
   }
 
+  /**
+   * Locks of the stored files this key can see (spec 6.8.1): [{ id, kind, unlocked }], kind 'password', 'online' or
+   * 'both'. unlock() opens one; the owner key opens every lock.
+   */
+  get locks() {
+    return [...this.#files().locks.keys()].sort().map((id) => this.#lockInfo(id));
+  }
+
+  #lockInfo(id) {
+    const kind = this.#files().locks.get(id)?.kind;
+    return { id, ...(kind ? { kind } : {}), unlocked: this.#lockKeyOf(id) !== undefined };
+  }
+
+  /** The key of a lock this reader has opened (or, for the owner, the owner directory's), else undefined. */
+  #lockKeyOf(id) {
+    if (!this.#access) return undefined;
+    if (this.#access.isOwner) return this.#ownerLocks().get(id)?.key;
+    return this.#access.unlocked?.get(id);
+  }
+
+  #ownerLocks() {
+    this.#access.ownerLocks ??= readOwnerLocks(this.#ownerDirectory().locks);
+    return this.#access.ownerLocks;
+  }
+
+  /** Internal: the owner directory's locks (owner key only), else null. */
+  get [OWNER_LOCKS]() {
+    return this.#access?.isOwner ? this.#ownerLocks() : null;
+  }
+
+  /**
+   * Opens a lock of the stored files (spec 6.8.1) for as long as the file is open (with every table of this reader):
+   * { password } for a password lock, { unlockToken } (jzf1-..., from the file owner's key service) for an online one,
+   * both for one of both kinds. Throws JazminKeyError when they are wrong.
+   */
+  unlock(id, { password, unlockToken } = {}) {
+    const lock = this.#files().locks.get(id);
+    if (!lock) throw new JazminValidationError(`No lock '${id}' is visible with this key`);
+    if ((lock.kind !== 'online' && password === undefined) || (lock.kind !== 'password' && unlockToken === undefined)) {
+      throw new JazminValidationError(`Lock '${id}' needs ${lockNeeds(lock.kind)}`);
+    }
+    if (this.#lockKeyOf(id)) return;
+    checkLockIterations(lock);
+    const secret = lock.kind === 'password' ? undefined : parseFileUnlockToken(unlockToken);
+    const key = lockKey(lock, { password, secret });
+    const [contentId, sealed] = lock.keys.entries().next().value ?? [];
+    if (sealed === undefined) throw new JazminFormatError(`Lock '${id}' has no sealed keys`);
+    try {
+      openContentKey(key, id, contentId, Buffer.from(sealed, 'base64'));
+    } catch {
+      const what = lock.kind === 'password' ? 'password' : lock.kind === 'online' ? 'unlock token' : 'password or unlock token';
+      throw new JazminKeyError(`Wrong ${what} for lock '${id}'`);
+    }
+    (this.#access.unlocked ??= new Map()).set(id, key);
+  }
+
   #fileContent(path) {
     const { entries, contents } = this.#files();
     const entry = entries.get(path);
@@ -1507,11 +1601,37 @@ export class JazminReader {
     return contents.get(entry.content);
   }
 
-  #fileBlock(content, b) {
+  /** A stored content's key K: from its directory, or (locked) unsealed with its lock's key; throws while locked. */
+  #contentKey(content, path) {
+    if (content.lock === undefined) {
+      if (!content.key && (this.#keys || this.#access)) throw new JazminFormatError(`Embedded content ${content.id} has no key in an encrypted file`);
+      return content.key ? Buffer.from(content.key, 'base64') : undefined;
+    }
+    const index = this.#files();
+    const known = index.contentKeys.get(content.id);
+    if (known) return known;
+    const lock = index.locks.get(content.lock);
+    if (!lock) {
+      // Libraries before 1.7 don't check writer features: one that appended to the file wrote it without its locks.
+      throw new JazminFormatError(`File '${path}' names lock '${content.lock}', which the file no longer has: its key is lost `
+        + '(a JAZMIN library older than 1.7 may have appended to the file)');
+    }
+    const key = this.#lockKeyOf(content.lock);
+    if (!key) {
+      throw new JazminFileLockedError(`File '${path}' is locked (lock '${content.lock}'): unlock it with ${lockNeeds(lock.kind)}`,
+        { path, lock: content.lock, kind: lock.kind });
+    }
+    const sealed = lock.keys.get(String(content.id));
+    if (sealed === undefined) throw new JazminFormatError(`Embedded content ${content.id} has no key for lock '${content.lock}'`);
+    const contentKey = openContentKey(key, content.lock, content.id, Buffer.from(sealed, 'base64'));
+    index.contentKeys.set(content.id, contentKey);
+    return contentKey;
+  }
+
+  #fileBlock(content, b, contentKey) {
     const block = content.blocks[b];
     const sectionId = `file/${content.id}/${b}`;
-    if (!content.key && (this.#keys || this.#access)) throw new JazminFormatError(`Embedded content ${content.id} has no key in an encrypted file`);
-    const key = content.key ? hkdf(Buffer.from(content.key, 'base64'), this.#salt, `JAZMIN/1/${sectionId}`) : undefined;
+    const key = contentKey ? hkdf(contentKey, this.#salt, `JAZMIN/1/${sectionId}`) : undefined;
     const bytes = this.#read(block, sectionId, key);
     if (bytes.length !== Math.min(content.blockSize, content.size - b * content.blockSize)) {
       throw new JazminFormatError(`Section '${sectionId}' has the wrong length for its embedded file`);
@@ -1522,7 +1642,8 @@ export class JazminReader {
   /** Reads a whole embedded file (checked against its SHA-256). */
   readFile(path) {
     const content = this.#fileContent(path);
-    const bytes = Buffer.concat(content.blocks.map((_, b) => this.#fileBlock(content, b)));
+    const key = this.#contentKey(content, path);
+    const bytes = Buffer.concat(content.blocks.map((_, b) => this.#fileBlock(content, b, key)));
     if (crypto.createHash('sha256').update(bytes).digest('hex') !== content.sha256) {
       throw new JazminFormatError(`File '${path}' does not match its SHA-256`);
     }
@@ -1532,12 +1653,13 @@ export class JazminReader {
   /** Reads bytes [start, end) of an embedded file, decoding only the blocks involved. */
   readFileRange(path, start = 0, end) {
     const content = this.#fileContent(path);
+    const key = this.#contentKey(content, path);
     const stop = Math.min(end ?? content.size, content.size);
     if (!Number.isInteger(start) || start < 0 || start > stop) throw new JazminValidationError('Invalid file range');
     const size = content.blockSize;
     const parts = [];
     for (let b = Math.floor(start / size); b * size < stop; b++) {
-      const block = this.#fileBlock(content, b);
+      const block = this.#fileBlock(content, b, key);
       parts.push(block.subarray(Math.max(0, start - b * size), Math.min(block.length, stop - b * size)));
     }
     return Buffer.concat(parts);
@@ -1546,7 +1668,8 @@ export class JazminReader {
   /** Streams an embedded file block by block (bounded memory); the stream errors if the SHA-256 does not match. */
   openFile(path) {
     const content = this.#fileContent(path);
-    const read = (b) => this.#fileBlock(content, b);
+    const key = this.#contentKey(content, path);
+    const read = (b) => this.#fileBlock(content, b, key);
     return Readable.from((function* blocks() {
       const hash = crypto.createHash('sha256');
       for (let b = 0; b < content.blocks.length; b++) {
@@ -1562,9 +1685,16 @@ export class JazminReader {
   get [FILE_STATE]() {
     if (!this.#header.files) return null;
     const { entries, contents } = this.#files();
+    const owner = this.#access?.isOwner;
+    // The owner's locked contents with their keys, which the writer seals again (spec 6.8.1). One whose lock is lost
+    // keeps none: an append refuses it, a rewrite can remove it.
+    const opens = (c) => owner && c.lock !== undefined && this.#files().locks.has(c.lock) && this.#ownerLocks().has(c.lock);
+    let paths;
+    const pathOf = (id) => (paths ??= new Map([...entries.values()].map((e) => [e.content, e.path]))).get(id);
     return {
       entries: [...entries.values()].map((e) => ({ ...e, groups: e.groups ?? [EVERYONE] })),
-      contents: [...contents.values()],
+      contents: [...contents.values()].map((c) => (opens(c) ? { ...c, key: this.#contentKey(c, pathOf(c.id)).toString('base64') } : c)),
+      locks: owner ? [...this.#ownerLocks().values()] : [],
       nextId: this.#header.files.nextContent,
       package: this.package,
       shapes: [...this.#files().shapes.values()].map((s) => ({ ...s, groups: s.groups ?? [EVERYONE] })),

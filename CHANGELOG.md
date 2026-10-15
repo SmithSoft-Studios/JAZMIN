@@ -4,6 +4,16 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **Locked stored files: a password, an unlock token from your key service, or both (#188, JavaScript; spec 6.8.1).**
+  In a shared file, `locks: { contracts: { password } | { online: true } | both }` and a file's `lock: 'contracts'`
+  keep the file shut for a key that sees it until `reader.unlock('contracts', { password, unlockToken })`; `readFile`
+  throws `JazminFileLockedError` before. `reader.locks` and `files[i].lock` say what is locked;
+  `issueFileUnlockToken(path, owner, lockId)` gives a key service the `jzf1-` token. The owner key opens every lock;
+  update, compact and append keep locks, and `locks` there adds, changes (a new password) or removes (`null`) them.
+  Files that aren't shared refuse locks. Releases 1.0 to 1.6 read such files and refuse only the locked ones; **don't
+  append to them with 1.0 to 1.6**, which would lose the locked files' keys (their update and compact fail safely).
+- **Writer features are checked (spec 12).** Append, update, compact and `rotateKey` refuse a file with a writer feature
+  this library doesn't know, and `reader.writerFeatures` lists them; reading is unchanged. The first is `file-locks`.
 - **Stored files: `list: false`, and actions by file group (#188, both libraries, spec 6.8).** The action `list: false`
   keeps a stored file out of viewers' lists of files (one the document page uses, such as a script or a font; the page
   still loads it); the web viewer's Files tab leaves such files out. In access-controlled files a file can have its own

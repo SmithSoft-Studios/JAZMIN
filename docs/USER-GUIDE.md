@@ -2865,7 +2865,7 @@ JazminFile.Append("statements.jzm", new JazminAppend { Key = owner, AddFiles = [
 
   - **They steer viewers, they don't lock the file.** Someone with a key that
     sees a file can always read it with the library. To keep a file from a
-    key, use groups (above).
+    key, use groups (above), or a lock (19.6).
   - **Actions by group** (1.7, access-controlled files): `groupActions` gives
     some of a file's groups their own actions, for example downloads for one
     group and not another. A key that sees the file through several groups may
@@ -3077,6 +3077,68 @@ foreach (var c in result.Conflicts) Console.WriteLine($"{c.Kind}: {string.Join("
   names the sender when you know it (otherwise each grant is tried), and
   **`receivedAt`** is when the change file arrived, checked against the
   sender's expiry as in section 15.6.
+
+### 19.6 Locked files: a password or 2FA as well as the key
+
+In a shared file (section 15), a stored file can be **locked** (1.7). A key
+that sees it learns its name, type and size, but opening it also needs a
+**password**, an **unlock token** from your key service (which can ask for
+2FA first), or **both**. If an access key leaks, its locked files stay shut.
+
+One lock can cover several files: one unlock opens them all. The owner key
+opens every lock without a password, so the owner can always read, change and
+rewrite the file.
+
+```js
+import { write, open, issueFileUnlockToken } from '@smithsoft-studios/jazmin';
+
+write('claim.jzm', rows, {
+  key: owner, access: { partitionBy: 'region', grants },
+  files: [
+    { path: 'contract.pdf', file: './contract.pdf', lock: 'contracts' },
+    { path: 'scan.png', file: './scan.png', lock: 'medical' },
+  ],
+  locks: {
+    contracts: { password: 'correct horse battery staple' },
+    medical: { online: true },                 // an unlock token from your key service
+    // vault: { password: '...', online: true }  // both
+  },
+});
+
+const reader = open('claim.jzm', { key: accessKey });
+reader.files;   // [{ path: 'contract.pdf', ..., lock: { id: 'contracts', kind: 'password', unlocked: false } }, ...]
+reader.readFile('contract.pdf');   // throws JazminFileLockedError (e.lock, e.kind say what to ask for)
+reader.unlock('contracts', { password: 'correct horse battery staple' });
+reader.readFile('contract.pdf');   // the bytes; every file of the lock is open now
+
+// Your key service, after its own checks (sign-in, 2FA, the person's grant):
+const unlockToken = issueFileUnlockToken('claim.jzm', owner, 'medical');   // 'jzf1-...'
+reader.unlock('medical', { unlockToken });
+```
+
+- **Changing locks** (`update` or `append`, owner key): `locks: { contracts:
+  { password: 'new' } }` changes a password without storing the files again;
+  `{ password, online: true }` adds a password to an online lock;
+  `contracts: null` removes the lock and its files stay, unlocked. Locks you
+  don't name are kept. An online lock keeps its secret, so tokens already
+  issued still work.
+- **A wrong password or token** throws `JazminKeyError`. An unlock lasts
+  while the reader is open.
+- **Only shared files have locks.** In a file with one key or password, that
+  key would open every lock, so the writer refuses them.
+- **Password locks can be guessed offline** by whoever has the file and a key
+  that sees the file, as fast as PBKDF2 allows (600,000 iterations by
+  default, `iterations` to change it): use long passphrases. Online locks
+  can't be guessed this way, because their secret isn't in the file.
+- **Once a file is open, its bytes can be copied.** A lock decides who can
+  open a file; actions (19.3) decide what viewers offer.
+- **Older libraries** (1.0-1.6) read the rows and every unlocked file, and
+  refuse a locked one ("has no key"). Don't let them **append** to a file with
+  locks: they don't check the file's writer feature (`file-locks`), write the
+  file without its locks, and the locked files can't be opened again (1.7 says
+  so, and `update({ removeFiles })` takes them out). Their `update` and
+  `compact` fail without changing the file. 1.7 refuses to modify any file
+  with a writer feature it doesn't know.
 
 ## 20. Speed and memory: practical recipes
 

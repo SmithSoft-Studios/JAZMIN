@@ -87,6 +87,31 @@ export interface FileInput {
   groups?: '*' | string[];
   /** What viewers may do with the file (format 1.4): each allowed when left out. */
   actions?: FileActions;
+  /**
+   * Shared files: actions for some of the file's groups, instead of `actions` (1.7). A key that sees the file through
+   * several groups may do what any of them allows.
+   */
+  groupActions?: Record<string, FileActions>;
+  /** Shared files: the id of the lock (one of WriteOptions.locks) that must be opened before the file is (1.7, spec 6.8.1). */
+  lock?: string;
+}
+
+/**
+ * A lock of stored files (spec 6.8.1): a password, an unlock token from the owner's key service (online: true), or both.
+ * One lock can cover several files: one unlock opens them all. The owner key opens every lock.
+ */
+export interface LockOptions {
+  password?: string;
+  online?: boolean;
+  /** PBKDF2 iterations for the password (default 600000; 1000 to 10,000,000). */
+  iterations?: number;
+}
+
+/** A lock as a reader lists it: `unlocked` once unlock() opened it (always for the owner). */
+export interface LockInfo {
+  id: string;
+  kind: 'password' | 'online' | 'both';
+  unlocked: boolean;
 }
 
 /**
@@ -131,6 +156,8 @@ export interface FileActions {
   pdf?: boolean | PdfSettings;
   /** Save the page as an image. */
   image?: boolean;
+  /** List the file among the file's files; false keeps one the document page uses out of viewers' lists (1.7). */
+  list?: boolean;
 }
 
 /** Page settings for a document's PDFs, each optional; checked when written. */
@@ -153,8 +180,12 @@ export interface FileInfo {
   sha256: string;
   /** Present for the owner and for single-key files. */
   groups?: string[];
-  /** What viewers may do with the file, when its writer set it. */
+  /** What viewers may do with the file, when its writer set it (seen through several groups: what any of them allows). */
   actions?: FileActions;
+  /** The owner of a shared file: each group's actions, when they differ (1.7). */
+  groupActions?: Record<string, FileActions>;
+  /** The file's lock, when it has one (1.7): readFile() throws JazminFileLockedError until unlock() opens it. */
+  lock?: LockInfo;
 }
 
 /** Settings for viewers that render a file's embedded website. */
@@ -398,6 +429,12 @@ export interface WriteOptions extends RewriteProgressOptions {
   package?: PackageSettings;
   /** Export shapes saved in the file, offered by name. */
   shapes?: SavedShapeInput[];
+  /**
+   * Shared files: locks of stored files by id (1 to 64 characters), named by FileInput.lock (spec 6.8.1). In
+   * update/append: add or change a lock (a new password; an online lock keeps its secret, so issued tokens still work),
+   * or null to remove one (its files stay, unlocked); the file's other locks are kept.
+   */
+  locks?: Record<string, LockOptions | null>;
   key?: KeyInput;
   password?: string;
   /** PBKDF2 iterations for password encryption (default 600000). */
@@ -736,6 +773,8 @@ export interface UpdateOptions extends RewriteProgressOptions {
   /** Paths of embedded files to remove. */
   removeFiles?: string[];
   package?: PackageSettings;
+  /** Shared files: locks to add, change, or remove (null), as WriteOptions.locks; the file's other locks are kept. */
+  locks?: Record<string, LockOptions | null>;
   /** Saved export shapes to add (a name that exists is replaced). */
   addShapes?: SavedShapeInput[];
   /** Names of saved export shapes to remove. */
@@ -802,6 +841,11 @@ export interface AppendResult extends UpdateResult {
  */
 export function append(path: string, options: AppendOptions): AppendResult;
 
+/**
+ * Key service: the unlock token (jzf1-...) of an online lock of the file's stored files, for reader.unlock(lockId,
+ * { unlockToken }), after the service's own checks (owner key required). It stays the same across updates and appends.
+ */
+export function issueFileUnlockToken(path: string, ownerKey: KeyInput, lockId: string): string;
 /** Key service: the unlock token for an online grant, if it exists and has not expired (owner key required). */
 export function issueUnlockToken(path: string, ownerKey: KeyInput, accessKey: JazminAccessKey | string, options?: { now?: Date | number }): string;
 /** The access key a shared file grants, by its id or the key itself, from the grant list (owner key required). */
@@ -879,6 +923,11 @@ export class JazminReader implements Iterable<JazminRow> {
    */
   readonly readerFeatures: string[];
   /**
+   * The writer features of the file (spec 12), such as 'file-locks': a library that doesn't know one refuses to modify
+   * the file, and still reads it.
+   */
+  readonly writerFeatures: string[];
+  /**
    * The submission key (spec 7.8): lock the files you send back to the owner with it. Only an access key that opened
    * this file has it; null for the owner and for files written before submission keys existed.
    */
@@ -895,6 +944,13 @@ export class JazminReader implements Iterable<JazminRow> {
   readonly package: PackageSettings | undefined;
   /** Saved export shapes this key can use (by name); use one with toJSON(reader, { shape: name }). */
   readonly shapes: SavedShape[];
+  /** Locks of the stored files this key can see (1.7). */
+  readonly locks: LockInfo[];
+  /**
+   * Opens a lock for as long as the reader is open: { password }, { unlockToken } (from the file owner's key service), or
+   * both, as its kind needs. Throws JazminKeyError when they are wrong.
+   */
+  unlock(lockId: string, secrets: { password?: string; unlockToken?: string }): void;
   /** A whole embedded file (checked against its SHA-256). */
   readFile(path: string): Buffer;
   /** Bytes [start, end) of an embedded file; only the blocks involved are read. */
@@ -979,6 +1035,12 @@ export class JazminUnlockRequiredError extends JazminKeyError {
 }
 export class JazminFormatError extends JazminError {}
 export class JazminKeyError extends JazminError {}
+/** A stored file is locked: reader.unlock(lock, ...) with what `kind` needs opens it. */
+export class JazminFileLockedError extends JazminKeyError {
+  readonly path: string;
+  readonly lock: string;
+  readonly kind: 'password' | 'online' | 'both';
+}
 export class JazminValidationError extends JazminError {}
 /** A submission that must not be filed (fileSubmission): the message says why. */
 export class JazminSubmissionRejectedError extends JazminError {}
