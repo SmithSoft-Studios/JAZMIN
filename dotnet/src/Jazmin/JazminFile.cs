@@ -16,6 +16,9 @@ public sealed class JazminUpdate
 
     public string? Password { get; set; }
 
+    /// <summary>The main table's masks changed (1.7, spec 7.6.8; see <see cref="JazminTableChanges.Masks"/>).</summary>
+    public IReadOnlyDictionary<string, JazminMask?>? Masks { get; set; }
+
     /// <summary>New rows.</summary>
     public IReadOnlyList<IReadOnlyDictionary<string, object?>> Insert { get; set; } = Array.Empty<IReadOnlyDictionary<string, object?>>();
 
@@ -180,14 +183,21 @@ public sealed class JazminTableChanges
     /// <summary>Nested columns given fields at the end of their objects (see <see cref="JazminUpdate.Columns"/>).</summary>
     public IReadOnlyList<JazminColumn>? Columns { get; set; }
 
+    /// <summary>
+    /// Masks changed (1.7, spec 7.6.8): a column masked (again) for the keys that see it, or unmasked (null) for the
+    /// keys that had it masked. Shared files, with the owner key.
+    /// </summary>
+    public IReadOnlyDictionary<string, JazminMask?>? Masks { get; set; }
+
     /// <summary>Whether anything changes (empty lists don't).</summary>
-    internal bool Any => Insert.Count > 0 || Upsert.Count > 0 || Delete is not null || Set is not null || Indexes is not null || SortedBy is not null || Sort is not null || Columns is not null;
+    internal bool Any => Insert.Count > 0 || Upsert.Count > 0 || Delete is not null || Set is not null || Indexes is not null || SortedBy is not null || Sort is not null
+        || Columns is not null || Masks is not null;
 
     /// <summary>The main table's changes, from the update's own options.</summary>
     internal static JazminTableChanges Of(JazminUpdate u) => new()
     {
         Insert = u.Insert, Upsert = u.Upsert, KeyColumns = u.KeyColumns, Delete = u.Delete, Set = u.Set, Where = u.Where,
-        Indexes = u.Indexes, SortedBy = u.SortedBy, Sort = u.Sort, Columns = u.Columns,
+        Indexes = u.Indexes, SortedBy = u.SortedBy, Sort = u.Sort, Columns = u.Columns, Masks = u.Masks,
     };
 }
 
@@ -542,6 +552,18 @@ public static class JazminFile
 
             // The other tables of the file are copied as they are: a new version has fresh secrets throughout (spec 7.6.7).
             var access = ownerGrants is null ? null : AccessFor(reader, ownerGrants, update);
+            // A column masked anew moves into a masked group of its own, which every grant that had its group gets (spec 7.6.8).
+            var moves = rewrites.SelectMany(w => w.Value.MaskedAnew.Select(c => new GroupMove(w.Key, c,
+                w.Key.AccessLayout.ColumnGroups.FirstOrDefault(g => g.Columns.Contains(c)).Name ?? FormatConstants.DefaultColumnGroup, Masks.GroupName(c)))).ToList();
+            if (access is not null && moves.Count > 0)
+            {
+                // A group whose every column is masked anew is gone: grants no longer name it.
+                var emptied = moves.Where(m => m.From != FormatConstants.DefaultColumnGroup
+                        && m.Reader.AccessLayout.ColumnGroups.First(g => g.Name == m.From).Columns.All(c => moves.Any(n => n.Reader == m.Reader && n.Column == c)))
+                    .Select(m => m.From).ToHashSet(StringComparer.Ordinal);
+                access.Grants = access.Grants.Select(g => GrantAfterMoves(g, moves, emptied)).ToList();
+                access.ColumnGroups = MoveColumns(access.ColumnGroups, moves.Where(m => m.Reader == reader));
+            }
             if (access is not null && newOwner is { } change) access.Grants = change.Grants(access.Grants);
             // Named tables (several, or one with a name) are written as tables, which keeps their names.
             var named = kept.Count + update.AddTables.Count > 1 || kept.Any(r => FinalName(r.TableName).Length > 0) || update.AddTables.Count > 0;
@@ -565,7 +587,9 @@ public static class JazminFile
                 Locks = update.Locks,
                 KeptLocks = ownerGrants is not null ? reader.OwnerLockStates()!.Values.ToList() : null,
                 // The masked columns of the tables kept, by their names afterwards (spec 7.6.8).
-                KeptMasks = ownerGrants is not null ? KeptMasks(reader, plan.Removed, FinalName) : null,
+                KeptMasks = ownerGrants is not null
+                    ? KeptMasks(reader, plan.Removed, FinalName, (table, column) => rewrites.Any(w => w.Key.TableName == table && w.Value.MasksReplaced.Contains(column)))
+                    : null,
                 Now = update.Now, // expired grants are dropped; the new version's fresh secrets lock them out
                 Priority = update.Priority,
                 CompactIndexes = update.CompactIndexes ?? reader.CompactIndexes,
@@ -573,7 +597,7 @@ public static class JazminFile
                 CancellationToken = update.CancellationToken,
                 ProgressTotal = totalRows,
                 Tables = named
-                    ? kept.Select(r => rewrites.TryGetValue(r, out var w) ? TableFor(r, w.Columns, w.Target, FinalName(r.TableName)) : TableFor(r, null, r.Order, FinalName(r.TableName)))
+                    ? kept.Select(r => rewrites.TryGetValue(r, out var w) ? TableFor(r, w.Columns, w.Target, FinalName(r.TableName), moves) : TableFor(r, null, r.Order, FinalName(r.TableName)))
                         .Concat(update.AddTables.Select(a => a.Table)).ToList()
                     : null,
             };
@@ -662,7 +686,7 @@ public static class JazminFile
         private readonly int[] _setCols = [];
         private readonly object?[] _setValues = [];
 
-        public IReadOnlyList<JazminColumn> Columns { get; }
+        public IReadOnlyList<JazminColumn> Columns { get; private set; }
 
         /// <summary>The order afterwards (spec 6.7: keys with other text comparisons included); null for none.</summary>
         public IReadOnlyList<JazminSortKey>? Target { get; }
@@ -736,6 +760,73 @@ public static class JazminFile
             _setsOrder = Target is not null && changes.Set is not null && changes.Set.Keys.Any(c => Target.Any(k => k.Column == c));
             _whereFilter = changes.Where;
             Columns = Grown(_shape.Columns, changes.Insert.Concat(changes.Upsert).Select(_shape.ValuesOf).Append(_setValues).Where(v => v.Length > 0).ToList(), changes.Columns);
+            if (changes.Masks is { } masks) PlanMasks(masks, name);
+        }
+
+        /// <summary>The columns whose file mask goes: removed, or given again (spec 7.6.8).</summary>
+        public HashSet<string> MasksReplaced { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>Columns masked anew: they leave their column group for a masked one of their own.</summary>
+        public List<string> MaskedAnew { get; } = [];
+
+        private Func<object?[], object?[]>? _fold; // a row with the masks removed or given again folded back
+
+        /// <summary>
+        /// Masks added, given again or removed (spec 7.6.8): the file's mask is folded back first (its made shown column
+        /// goes, its unmasked values return to the column), then the writer masks the column again as given.
+        /// </summary>
+        private void PlanMasks(IReadOnlyDictionary<string, JazminMask?> masks, string name)
+        {
+            if (_reader.OwnerGrants is null) throw new JazminValidationException($"{name}: Masks need a shared file and its owner key (spec 7.6.8)");
+            var index = Math.Max(0, _reader.Tables.ToList().IndexOf(_reader.TableName));
+            var file = _reader.OwnerMasks().Where(m => (int?)m["table"] == index).ToDictionary(m => (string)m["column"]!, StringComparer.Ordinal);
+            var folds = new List<(int Column, int Unmasked)>();
+            var made = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var (column, mask) in masks)
+            {
+                var was = file.GetValueOrDefault(column);
+                if (mask is null && was is null) throw new JazminValidationException($"{name}: Masks: column '{column}' isn't masked");
+                if (mask is not null && !Columns.Any(c => c.Name == column)) throw new JazminValidationException($"{name}: Masks: no column '{column}'");
+                if (was is not null)
+                {
+                    MasksReplaced.Add(column);
+                    // The shown column the writer made goes; one the owner fills (show: { column }) stays.
+                    if (was["show"] is not JsonObject { } show || show["column"] is null) if ((string?)was["shown"] is { } shown) made.Add(shown);
+                    if ((string?)was["unmasked"] is { } unmasked)
+                    {
+                        made.Add(unmasked);
+                        folds.Add((_shape.Ordinal(column), _shape.Ordinal(unmasked)));
+                    }
+                }
+                else if (mask is not null) MaskedAnew.Add(column);
+            }
+            var keep = Enumerable.Range(0, _shape.Columns.Count).Where(i => !made.Contains(_shape.Columns[i].Name)).ToArray();
+            Columns = Columns.Where(c => !made.Contains(c.Name))
+                .Select(c => masks.TryGetValue(c.Name, out var mask) && mask is not null ? c.WithMask(mask) : c).ToList();
+            if (keep.Length == _shape.Columns.Count) return;
+            _fold = values =>
+            {
+                foreach (var (column, unmasked) in folds) values[column] ??= values[unmasked];
+                var output = new object?[keep.Length];
+                for (var k = 0; k < keep.Length; k++) output[k] = values[keep[k]];
+                return output;
+            };
+        }
+
+        /// <summary>
+        /// Writes a row, its masks folded back when some go (spec 7.6.8). A column masked adds its shown and unmasked
+        /// columns at the end, which the writer fills: the row gets empty values for them.
+        /// </summary>
+        private void WriteOut(JazminWriter writer, object?[] values)
+        {
+            var row = _fold is null ? values : _fold((object?[])values.Clone());
+            if (row.Length < writer.Columns.Count)
+            {
+                var padded = new object?[writer.Columns.Count];
+                Array.Copy(row, padded, row.Length);
+                row = padded;
+            }
+            writer.WriteValues(row);
         }
 
         /// <summary>Writes the table's rows with the changes applied.</summary>
@@ -770,7 +861,7 @@ public static class JazminFile
             void Emit(object?[] values)
             {
                 if (sorter is not null) sorter.Add(values);
-                else writer.WriteValues(values);
+                else WriteOut(writer, values);
             }
             object?[] Changed(object?[] values)
             {
@@ -794,7 +885,7 @@ public static class JazminFile
                 {
                     var values = row.RawValues;
                     var rowKey = _shape.KeyTuple(values, _sortCols, _order);
-                    while (next < incoming.Count && SortKeys.Compare(incoming[next].Key, rowKey) < 0) writer.WriteValues(incoming[next++].Values);
+                    while (next < incoming.Count && SortKeys.Compare(incoming[next].Key, rowKey) < 0) WriteOut(writer, incoming[next++].Values);
                     var key = _pending.Count > 0 ? _shape.KeyText(values, _keyCols) : null;
                     if (key is not null && _pending.TryGetValue(key, out var hit))
                     {
@@ -808,9 +899,9 @@ public static class JazminFile
                         updated++; // written at its new place, from incoming
                         movedOut++;
                     }
-                    else writer.WriteValues(Changed(values)); // the writer copies into its own buffer
+                    else WriteOut(writer, Changed(values)); // the writer copies into its own buffer
                 }
-                while (next < incoming.Count) writer.WriteValues(incoming[next++].Values);
+                while (next < incoming.Count) WriteOut(writer, incoming[next++].Values);
                 // Every row taken out was one gathered, or a row would be lost or doubled (nothing is written then).
                 if (moved is not null && movedOut != moved.Count)
                     throw new InvalidOperationException($"{_name}: {moved.Count} rows to move were found, but {movedOut} were taken out");
@@ -840,7 +931,7 @@ public static class JazminFile
                     if (!matched) Emit(values);
                 if (sorter is not null)
                 {
-                    foreach (var values in sorter.Rows()) writer.WriteValues(values);
+                    foreach (var values in sorter.Rows()) WriteOut(writer, values);
                     sorter.Dispose(); // its temporary files go now, not after every table
                 }
             }
@@ -991,11 +1082,12 @@ public static class JazminFile
     }
 
     /// <summary>The owner directory's masked columns of the tables a rewrite keeps, each with its table's name afterwards ("tableName").</summary>
-    private static List<JsonObject> KeptMasks(JazminReader reader, ICollection<string> removed, Func<string, string> finalName)
+    private static List<JsonObject> KeptMasks(JazminReader reader, ICollection<string> removed, Func<string, string> finalName, Func<string, string, bool> replaced)
     {
         var names = reader.Tables;
         return reader.OwnerMasks().Select(m => (Mask: m, Table: (int?)m["table"] is int i && i >= 0 && i < names.Count ? names[i] : null))
-            .Where(m => m.Table is not null && !removed.Contains(m.Table))
+            // A mask removed or given again goes: an update's masks replace the file's.
+            .Where(m => m.Table is not null && !removed.Contains(m.Table) && !replaced(m.Table, (string)m.Mask["column"]!))
             .Select(m =>
             {
                 var entry = (JsonObject)m.Mask.DeepClone();
@@ -1009,14 +1101,40 @@ public static class JazminFile
 
     private static JazminTable TableFor(JazminReader reader, IReadOnlyList<JazminColumn>? columns) => TableFor(reader, columns, reader.Order, reader.TableName);
 
-    private static JazminTable TableFor(JazminReader reader, IReadOnlyList<JazminColumn>? columns, IReadOnlyList<JazminSortKey>? order, string name)
+    private static JazminTable TableFor(JazminReader reader, IReadOnlyList<JazminColumn>? columns, IReadOnlyList<JazminSortKey>? order, string name,
+        IReadOnlyList<GroupMove>? moves = null)
     {
         var (partitionBy, groups) = reader.AccessLayout;
+        var named = groups.Where(g => g.Name != FormatConstants.DefaultColumnGroup).ToDictionary(g => g.Name, g => g.Columns.ToArray());
         return new JazminTable(name, columns ?? ColumnsWithIndexes(reader))
         {
             Sort = order,
             PartitionBy = partitionBy,
-            ColumnGroups = groups.Where(g => g.Name != FormatConstants.DefaultColumnGroup).ToDictionary(g => g.Name, g => g.Columns.ToArray()),
+            ColumnGroups = moves is null ? named : MoveColumns(named, moves.Where(m => m.Reader == reader)),
+        };
+    }
+
+    /// <summary>A column masked anew (spec 7.6.8): of a table's reader, from its column group to its masked one.</summary>
+    private sealed record GroupMove(JazminReader Reader, string Column, string From, string To);
+
+    /// <summary>Named column groups with the columns masked anew taken out (an emptied group goes).</summary>
+    private static Dictionary<string, string[]> MoveColumns(Dictionary<string, string[]> groups, IEnumerable<GroupMove> moves)
+    {
+        var list = moves.ToList();
+        return groups.Select(g => (g.Key, Columns: g.Value.Where(c => !list.Any(m => m.From == g.Key && m.Column == c)).ToArray()))
+            .Where(g => g.Columns.Length > 0).ToDictionary(g => g.Key, g => g.Columns, StringComparer.Ordinal);
+    }
+
+    /// <summary>A grant after columns are masked anew: every grant that had a column's group gets its masked group too.</summary>
+    private static JazminGrant GrantAfterMoves(JazminGrant g, IReadOnlyList<GroupMove> moves, HashSet<string> emptied)
+    {
+        if (g.Columns is null) return g; // every group: the masked ones too
+        var columns = g.Columns.ToList();
+        foreach (var m in moves) if (columns.Contains(m.From) && !columns.Contains(m.To)) columns.Add(m.To);
+        columns.RemoveAll(emptied.Contains);
+        return new JazminGrant(g.Key)
+        {
+            Rows = g.Rows, Columns = columns, Label = g.Label, Expires = g.Expires, ExpiresIn = g.ExpiresIn, Mode = g.Mode, Files = g.Files, Share = g.Share,
         };
     }
 

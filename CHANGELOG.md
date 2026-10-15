@@ -4,6 +4,9 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **Masks changed by an update (#190, spec 7.6.8).** `update(file, { masks: { column: { lock, show, rows } | null } })`
+  (.NET `JazminUpdate.Masks`, and per table): mask a column for the keys that saw it, unmask one for the keys that had
+  it masked (its made shown column and unmasked column fold back), or give it a new mask. No key gains access.
 - **An online dashboard in the demo gallery (#218).** The from-disk sample's Documents page has a third document,
   `dashboard.jzm`: the Inter font from Google Fonts, Chart.js (an exact version, with its `integrity` hash) and icons
   from jsDelivr, with `online: 'required'`; without the charts it shows the figures as a table.

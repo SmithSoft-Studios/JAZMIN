@@ -2370,6 +2370,14 @@ column.
   reader lists them with `await reader.masked()` (each with `at`, its place in
   `columns`), and `unlock()` builds every open table reader again with the
   column.
+- **Masking or unmasking later** (an update, owner key): `update(file, {
+  key: owner, masks: { phone: { lock: 'pay', show: { last: 4 } }, salary:
+  null } })` (.NET `Masks = new Dictionary<string, JazminMask?> { ... }`; per
+  table in `tables`). Nobody gains access: a column masked goes to the keys
+  that saw it, now masked; a column unmasked goes to the keys that had it
+  masked, now plain, and its shown column (when the writer made it) and
+  unmasked column fold back into it. Giving a masked column a new mask
+  replaces the old one (a new rule or lock).
 - **Viewers** (the web viewer, Scout) show a revealed value for a while and
   mask it again: by default one value at a time, for 30 seconds, and as soon
   as the window is hidden or there is no input for 60 seconds. The file's

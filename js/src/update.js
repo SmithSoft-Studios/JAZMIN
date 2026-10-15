@@ -14,6 +14,7 @@ import { withLock } from './lock.js';
 import { RowSorter, SORT_RUN_ROWS } from './sort-rows.js';
 import { normalizeOrder, orderComparer, orderKeyMaker } from './sort-keys.js';
 import { linksAfter } from './links.js';
+import { maskGroupName } from './masks.js';
 import { JazminWriter, KEPT_LOCKS, KEPT_MASKS, PROGRESS_TOTAL } from './writer.js';
 
 /**
@@ -121,10 +122,10 @@ export const NEW_OWNER = Symbol('jazmin.newOwner');
 const SCALAR_TYPES = new Set(['bool', 'int', 'float', 'decimal', 'string', 'datetime', 'binary', 'json']);
 
 /** The changes a table can be given (the top-level options for the main table; `tables` for others). */
-const CHANGE_KEYS = ['insert', 'upsert', 'keyColumns', 'delete', 'set', 'where', 'indexes', 'sortedBy', 'columns'];
+const CHANGE_KEYS = ['insert', 'upsert', 'keyColumns', 'delete', 'set', 'where', 'indexes', 'sortedBy', 'columns', 'masks'];
 const changesOf = (source) => Object.fromEntries(CHANGE_KEYS.filter((k) => source[k] !== undefined).map((k) => [k, source[k]]));
 /** Whether changes change anything (empty lists don't). */
-const anyChanges = (c) => Boolean(c.insert?.length || c.upsert?.length || c.delete || c.set || c.sortedBy !== undefined || c.indexes || c.columns);
+const anyChanges = (c) => Boolean(c.insert?.length || c.upsert?.length || c.delete || c.set || c.sortedBy !== undefined || c.indexes || c.columns || c.masks);
 
 export function updateUnlocked(path, options = {}) {
   const {
@@ -191,6 +192,20 @@ export function updateUnlocked(path, options = {}) {
     // The other tables of the file are copied as they are: a new version has fresh secrets throughout (spec 7.6.7).
     let access = owner ? accessFor(owner, grant, revoke) : undefined;
     if (newOwner) access = { ...access, grants: newOwner.grants(access.grants) };
+    // A column masked moves into a masked group of its own, which every grant that had its group gets (spec 7.6.8).
+    const groupMoves = [...plans].flatMap(([r, p]) => p.masks?.moves(r[OWNER_GRANTS].columnGroups) ?? []);
+    const layoutOf = (r) => {
+      const layout = tableLayout(r[OWNER_GRANTS]);
+      const moves = groupMoves.filter((m) => m.reader === r);
+      return moves.length ? { ...layout, columnGroups: moveColumns(layout.columnGroups, moves) } : layout;
+    };
+    if (access && groupMoves.length) {
+      // A group whose every column is masked anew is gone: grants no longer name it.
+      const emptied = new Set(groupMoves.filter((m) => m.from !== '*' && m.reader[OWNER_GRANTS].columnGroups[m.from]
+        .every((c) => groupMoves.some((n) => n.reader === m.reader && n.column === c))).map((m) => m.from));
+      access = { ...access, grants: access.grants.map((g) => grantAfterMoves(g, groupMoves, emptied)) };
+      if (access.columnGroups) access = { ...access, columnGroups: layoutOf(reader).columnGroups };
+    }
     // Named tables (several, or one with a name) are written as tables, which keeps their names.
     const named = kept.length + addTables.length > 1 || kept.some((r) => finalName(r.table) !== '') || addTables.length > 0;
     writer = new JazminWriter(temp, {
@@ -199,7 +214,7 @@ export function updateUnlocked(path, options = {}) {
           tables: [
             ...kept.map((r) => ({
               name: finalName(r.table), columns: plans.get(r)?.columns ?? columnsWithIndexes(r), sortedBy: plans.has(r) ? plans.get(r).sortedBy : r.sort ?? r.sortedBy,
-              ...(owner ? tableLayout(r[OWNER_GRANTS]) : {}),
+              ...(owner ? layoutOf(r) : {}),
             })),
             ...addTables.map((t) => ({
               name: t.name, columns: t.columns, sortedBy: t.sortedBy, chunkRows: t.chunkRows, chunkBytes: t.chunkBytes,
@@ -221,7 +236,10 @@ export function updateUnlocked(path, options = {}) {
       // The masked columns of the tables kept, by their names afterwards (spec 7.6.8).
       ...(owner ? {
         [KEPT_MASKS]: reader[OWNER_MASKS].map((m) => ({ ...m, tableName: (reader.tables.length ? reader.tables : [reader.table])[m.table] }))
-          .filter((m) => !tablePlan.removed.has(m.tableName)).map((m) => ({ ...m, tableName: finalName(m.tableName) })),
+          .filter((m) => !tablePlan.removed.has(m.tableName))
+          // A mask removed or given again goes: an update's masks replace the file's.
+          .filter((m) => ![...plans].some(([r, p]) => r.table === m.tableName && p.masks?.replaced.has(m.column)))
+          .map((m) => ({ ...m, tableName: finalName(m.tableName) })),
       } : {}),
       package: packageAfter(packageSettings !== undefined ? packageSettings : reader.package, tablePlan),
       shapes: [...keptShapes(reader[FILE_STATE]?.shapes ?? [], addShapes, removeShapes).map((shape) => shapeAfter(shape, tablePlan)), ...addShapes],
@@ -291,7 +309,7 @@ const sorterOptions = ({ sortRunRows, priority, codec, level, maxDegreeOfParalle
  * delete (a filter), set + where (columns set on the rows a filter matches), indexes, sortedBy, columns (nested fields).
  */
 function planTableChanges(reader, changes, context) {
-  const { insert = [], upsert = [], keyColumns, delete: deleteWhere, set, where, indexes, sortedBy: newSortedBy, columns: given } = changes;
+  const { insert = [], upsert = [], keyColumns, delete: deleteWhere, set, where, indexes, sortedBy: newSortedBy, columns: given, masks: maskChanges } = changes;
   const { owner, regroup } = context;
   const name = reader.table ? `table '${reader.table}'` : 'the table';
   if (upsert.length && (!Array.isArray(keyColumns) || keyColumns.length === 0)) {
@@ -323,7 +341,11 @@ function planTableChanges(reader, changes, context) {
   const keepLookup = resortAsked && was && targetNames?.[0] !== was.name && !(indexes && Object.hasOwn(indexes, was.name))
     && INDEX_KINDS.sorted.has(was.type) && !was.index.includes('sorted');
   const wanted = keepLookup ? { ...(indexes ?? {}), [was.name]: [...was.index, 'sorted'] } : indexes;
-  const { columns } = growColumns(withIndexes(current, wanted), given, normalizeColumns);
+  // Masks added, given again or removed (spec 7.6.8): the file's mask is folded back first (its made shown column goes,
+  // its unmasked values return to the column), then the writer masks the column again as given.
+  const masks = planMasks(reader, maskChanges, owner, name);
+  const { columns: grown } = growColumns(withIndexes(current, wanted), given, normalizeColumns);
+  const columns = masks ? masks.columns(grown) : grown;
   const byName = new Map(columns.map((c) => [c.name, c]));
   for (const k of keyColumns ?? []) if (!byName.has(k)) throw new JazminValidationError(`keyColumns: unknown column '${k}'`);
 
@@ -375,7 +397,7 @@ function planTableChanges(reader, changes, context) {
     // Counted first (by the indexes, or the filter's columns only), so too many are never gathered.
     if (setsOrder && !resortAsked && !regroup && reader.count(where) <= runRows) {
       moved = [];
-      for (const row of reader.find(where)) {
+      for (const row of folded(reader.find(where))) {
         if ((pending.size && pending.has(keyOf(row))) || isDeleted?.(row)) continue; // upserted or deleted instead
         moved.push({ ...row, ...set });
       }
@@ -395,7 +417,7 @@ function planTableChanges(reader, changes, context) {
       incoming.sort((a, b) => compareTuples(a.key, b.key));
       let next = 0;
       let movedOut = 0;
-      for (const row of reader.rows()) {
+      for (const row of folded(reader.rows())) {
         const rowKey = sortKeyOf(row);
         while (next < incoming.length && compareTuples(incoming[next].key, rowKey) < 0) writer.writeRow(incoming[next++].row);
         const hit = pending.size ? pending.get(keyOf(row)) : undefined;
@@ -416,7 +438,7 @@ function planTableChanges(reader, changes, context) {
       // Every row taken out was one gathered, or a row would be lost or doubled (nothing is written then).
       if (moved && movedOut !== moved.length) throw new Error(`${name}: ${moved.length} rows to move were found, but ${movedOut} were taken out`);
     } else {
-      for (const row of regroup ? reader[ROWS_BY_PARTITION]() : reader.rows()) {
+      for (const row of folded(regroup ? reader[ROWS_BY_PARTITION]() : reader.rows())) {
         const hit = pending.size ? pending.get(keyOf(row)) : undefined;
         if (hit && !hit.matched) {
           hit.matched = true;
@@ -438,7 +460,83 @@ function planTableChanges(reader, changes, context) {
     stats.inserted = insert.length + [...pending.values()].filter((p) => !p.matched).length;
     return { rowCount: writer.rowCount, ...stats };
   };
-  return { columns, sortedBy: target, write };
+  // The file's rows with the masks removed or given again folded back (they are read as the old columns).
+  function* folded(rows) {
+    if (!masks?.fold) {
+      yield* rows;
+      return;
+    }
+    for (const row of rows) yield masks.fold(row);
+  }
+  // The writer gets the columns with the masks given (it adds their shown and unmasked columns).
+  return { columns: masks ? masks.withMasks(columns) : columns, sortedBy: target, write, masks };
+}
+
+/**
+ * An update's masks for a table (spec 7.6.8): { column: { lock, show, rows } } masks a column (again), { column: null }
+ * unmasks one. Returns null without them, else { columns(columns), withMasks(columns), fold(row), replaced, moves() }:
+ * the columns without the folded masks' made columns, the columns with the masks given, a row folded back, the columns
+ * whose file mask goes, and the group moves of columns masked anew.
+ */
+function planMasks(reader, given, owner, where) {
+  if (given === undefined) return null;
+  if (given === null || typeof given !== 'object' || Array.isArray(given)) throw new JazminValidationError(`${where}: masks: { column: { lock, show, rows } } to mask a column, { column: null } to unmask it`);
+  if (!owner) throw new JazminValidationError(`${where}: masks need a shared file and its owner key (spec 7.6.8)`);
+  const index = Math.max(0, reader.tables.indexOf(reader.table));
+  const file = new Map(reader[OWNER_MASKS].filter((m) => m.table === index).map((m) => [m.column, m]));
+  const fold = [];
+  const add = new Map();
+  for (const [column, mask] of Object.entries(given)) {
+    const was = file.get(column);
+    if (mask === null && !was) throw new JazminValidationError(`${where}: masks: column '${column}' isn't masked`);
+    // The shown column the writer made goes; one the owner fills (show: { column }) stays.
+    if (was) fold.push({ column, shown: was.show?.column === undefined ? was.shown : undefined, unmasked: was.unmasked });
+    if (mask !== null) add.set(column, mask);
+  }
+  const made = new Set(fold.flatMap((f) => [f.shown, f.unmasked]).filter(Boolean));
+  return {
+    replaced: new Set(fold.map((f) => f.column)),
+    columns: (columns) => {
+      for (const column of add.keys()) if (!columns.some((c) => c.name === column)) throw new JazminValidationError(`${where}: masks: no column '${column}'`);
+      return columns.filter((c) => !made.has(c.name));
+    },
+    withMasks: (columns) => columns.map((c) => (add.has(c.name) ? { ...c, mask: add.get(c.name) } : c)),
+    fold: fold.length ? (row) => {
+      const out = { ...row };
+      for (const f of fold) {
+        if (f.unmasked) {
+          if (out[f.column] == null && out[f.unmasked] != null) out[f.column] = out[f.unmasked];
+          delete out[f.unmasked];
+        }
+        if (f.shown) delete out[f.shown];
+      }
+      return out;
+    } : null,
+    // Columns masked anew leave their group for their masked one; a column masked again keeps its masked group.
+    moves: (groups) => [...add.keys()].filter((column) => !file.has(column)).map((column) => ({
+      reader, column, to: maskGroupName(column),
+      from: Object.entries(groups).find(([, cols]) => cols.includes(column))?.[0] ?? '*',
+    })),
+  };
+}
+
+/** Named column groups with the columns masked anew taken out (an emptied group goes). */
+function moveColumns(groups, moves) {
+  const out = {};
+  for (const [name, cols] of Object.entries(groups)) {
+    const left = cols.filter((c) => !moves.some((m) => m.from === name && m.column === c));
+    if (left.length) out[name] = left;
+  }
+  return out;
+}
+
+/** A grant after columns are masked anew: every grant that had a column's group gets its masked group too. */
+function grantAfterMoves(g, moves, emptied) {
+  if (!Array.isArray(g.columns)) return g; // every group: the masked ones too
+  const columns = new Set(g.columns);
+  for (const m of moves) if (columns.has(m.from)) columns.add(m.to);
+  for (const name of emptied) columns.delete(name);
+  return { ...g, columns: [...columns] };
 }
 
 /**

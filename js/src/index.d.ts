@@ -810,12 +810,19 @@ export interface TableChanges {
   sortedBy?: SortOrder | null;
   /** Nested columns given fields at the end of their objects: their new definitions (USER-GUIDE 4.2). */
   columns?: JazminColumnInput[];
+  /**
+   * Masks changed (1.7, spec 7.6.8): a column masked (again) for the keys that see it, or unmasked (null) for the
+   * keys that had it masked. Shared files, with the owner key.
+   */
+  masks?: Record<string, MaskOptions | null>;
 }
 
 export interface UpdateOptions extends RewriteProgressOptions {
   /** Required for encrypted files; the OWNER key for access-controlled files. */
   key?: KeyInput;
   password?: string;
+  /** The main table's masks changed (see TableChanges.masks). */
+  masks?: Record<string, MaskOptions | null>;
   insert?: Record<string, unknown>[];
   /** Replace rows whose keyColumns match; insert the rest. */
   upsert?: Record<string, unknown>[];
