@@ -97,6 +97,22 @@ write(path.join(temp, 'origins.jzm'), [{ n: 1 }], {
   package: { entry: 'index.html', title: 'Origins', allowedOrigins: ['https://fonts.example.com'] },
 });
 
+// A shared file with a locked file (spec 6.8.1): its reader's key lists it, and opens it with the lock's password.
+const lockedOwner = JazminKey.generate();
+const lockedReader = lockedOwner.createAccessKey();
+keys.lockedReader = lockedReader.toString();
+write(path.join(temp, 'locked.jzm'), [{ n: 1 }], {
+  key: lockedOwner, access: { grants: [{ key: lockedReader }] },
+  files: [
+    { path: 'index.html', content: '<!doctype html><title>Locked</title><body><p>A file with a locked contract</p><script src="app.js"></script></body>' },
+    // The page asks for the locked file: null until it is unlocked, when the viewer shows the document again.
+    { path: 'app.js', actions: { list: false }, content: "jazmin.file('contract.pdf').then(async (b) => jazmin.ready({ contract: b ? await b.text() : null }));" },
+    { path: 'contract.pdf', content: 'The contract', lock: 'contracts' },
+  ],
+  locks: { contracts: { password: 'pw', iterations: 1000 } },
+  package: { entry: 'index.html', title: 'Locked' },
+});
+
 // A page whose file refuses PDFs (actions, format 1.4): it turns Print off and back on, and can't turn PDFs on.
 write(path.join(temp, 'actions.jzm'), [{ n: 1 }], {
   key: templateKey,
@@ -615,6 +631,33 @@ for (const name of chosen) {
     // The page loaded app.js, which is list: false: the Files tab shows only index.html.
     const inFiles = await page.evaluate(`[...document.querySelectorAll('#jz-files .path')].map((e) => e.textContent).join(',')`);
     results.push({ browser: name, label: 'a file marked list: false: the page loads it, the Files tab leaves it out', ok: inFiles === 'index.html', problems: inFiles === 'index.html' ? [] : [`listed: ${inFiles}`] });
+
+    // A locked file: listed with a padlock and no Download; Unlock… refuses a wrong password, then opens it.
+    await page.navigate(`${base}/js/viewer/index.html`);
+    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+    await page.evaluate(`fetch('/e2e/locked.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'locked.jzm')).then(() => true)`);
+    await unlock(page, { file: 'locked.jzm', key: 'lockedReader' });
+    const fileRows = `[...document.querySelectorAll('#jz-files li')].map((li) => [li.querySelector('.path').textContent, li.querySelector('.locked') ? 'locked' : 'open',
+      li.querySelector('button') ? li.querySelector('button').textContent : ''].join(':')).join(', ')`;
+    const pageBefore = await waitFor(page, 'JazminViewer.state.lastReady && JazminViewer.state.lastReady.info', 'the locked page to call jazmin.ready()');
+    const lockedBefore = await page.evaluate(fileRows);
+    await page.evaluate(`([...document.querySelectorAll('#jz-files li')].find((li) => li.querySelector('.locked')).querySelector('button').click(), true)`);
+    await waitFor(page, `document.getElementById('jz-lock').open`, 'the unlock dialog');
+    await page.evaluate(`(document.getElementById('jz-lock-password').value = 'wrong', document.getElementById('jz-lock-form').requestSubmit(), true)`);
+    const wrongPassword = await waitFor(page, `/Wrong password/.test(document.getElementById('jz-lock-error').textContent) && document.getElementById('jz-lock').open`, 'the wrong password refused');
+    await page.evaluate(`(document.getElementById('jz-lock-password').value = 'pw', document.getElementById('jz-lock-form').requestSubmit(), true)`);
+    await waitFor(page, `!document.getElementById('jz-lock').open && !document.querySelector('#jz-files .locked')`, 'the file unlocked');
+    const lockedAfter = await page.evaluate(fileRows);
+    const pageAfter = await waitFor(page, `JazminViewer.state.lastReady && JazminViewer.state.lastReady.info && JazminViewer.state.lastReady.info.contract
+      && JazminViewer.state.lastReady.info`, 'the page shown again with the unlocked file');
+    const contract = await page.evaluate(`JazminViewer.state.reader.readFile('contract.pdf').then((b) => new TextDecoder().decode(b))`);
+    const lockOk = lockedBefore === 'contract.pdf:locked:Unlock…, index.html:open:Download' && wrongPassword === true
+      && lockedAfter === 'contract.pdf:open:Download, index.html:open:Download' && contract === 'The contract'
+      && pageBefore.contract === null && pageAfter.contract === 'The contract';
+    results.push({
+      browser: name, label: 'a locked file: a padlock and Unlock…, a wrong password refused, then its Download; the page gets it once unlocked', ok: lockOk,
+      problems: lockOk ? [] : [JSON.stringify({ lockedBefore, wrongPassword, lockedAfter, contract, pageBefore, pageAfter })],
+    });
 
     // A document's changes: checked by the viewer, shown in its dialog, saved as a change file the library applies.
     await page.navigate(`${base}/js/viewer/index.html`);

@@ -58,6 +58,17 @@
     }
   }
 
+  /** A stored file is locked (spec 6.8.1): reader.unlock(lock, { password, unlockToken }) opens it. */
+  class JazminFileLockedError extends JazminKeyError {
+    constructor(message, path, lock, kind) {
+      super(message);
+      this.name = 'JazminFileLockedError';
+      this.path = path;
+      this.lock = lock;
+      this.kind = kind;
+    }
+  }
+
   // ---- bytes -------------------------------------------------------------------------------------
 
   const CRC_TABLE = (() => {
@@ -229,6 +240,35 @@
   }
 
   const slotId = async (secret) => (await sha256(utf8.encode('JAZMIN/1/slot-id'), secret)).subarray(0, SLOT_ID);
+
+  // ---- locked stored files (spec 6.8.1) ------------------------------------------------------------
+
+  const LOCK_KINDS = ['password', 'online', 'both'];
+
+  /** An online lock's secret from its unlock token: "jzf1-" + base64url(S || SHA-256(S)[0..3]). */
+  async function parseFileUnlockToken(text) {
+    const t = typeof text === 'string' ? text.trim() : '';
+    if (!t.startsWith('jzf1-')) throw new JazminKeyError("A file unlock token starts with 'jzf1-'");
+    const raw = base64UrlToBytes(t.slice(5));
+    if (raw.length !== 36) throw new JazminKeyError('Unlock token has the wrong length');
+    if (!equal(await checksum(raw.subarray(0, 32)), raw.subarray(32))) throw new JazminKeyError('Unlock token checksum mismatch - the token is mistyped or corrupted');
+    return raw.slice(0, 32);
+  }
+
+  /** What a lock needs to open, in words. */
+  function lockNeeds(kind) {
+    const token = "an unlock token from the file owner's key service";
+    return kind === 'password' ? 'its password' : kind === 'online' ? token : `its password and ${token}`;
+  }
+
+  /** The lock key L from its password and/or secret S. */
+  async function lockKey(lock, password, secret) {
+    const fromPassword = lock.kind === 'online' ? null : await pbkdf2(password, lock.salt, lock.iterations);
+    if (lock.kind === 'password') return fromPassword;
+    return hkdf(lock.kind === 'online' ? secret : concat(fromPassword, secret), lock.salt, `JAZMIN/1/lock/${lock.id}`);
+  }
+
+  const sealAad = (id, contentId) => utf8.encode(`JAZMIN/1/lock/${id}/${contentId}`);
 
   // ---- binary readers -----------------------------------------------------------------------------
 
@@ -756,11 +796,17 @@
       ok(c && count(c.id) && count(c.size) && typeof c.sha256 === 'string' && Array.isArray(c.blocks));
       ok(count(c.blockSize) && c.blockSize > 0 && c.blocks.length === Math.ceil(c.size / c.blockSize));
       ok(c.key === undefined || typeof c.key === 'string');
+      ok(c.lock === undefined || (typeof c.lock === 'string' && c.key === undefined));
       for (const b of c.blocks) ok(b && count(b.offset) && count(b.length) && (b.digest === undefined || typeof b.digest === 'string'));
     }
     for (const f of d.files) {
       ok(f && typeof f.path === 'string' && typeof f.type === 'string' && count(f.content));
       ok(f.groups === undefined || (Array.isArray(f.groups) && f.groups.every((g) => typeof g === 'string')));
+    }
+    ok(d.locks === undefined || Array.isArray(d.locks));
+    for (const l of d.locks ?? []) {
+      ok(l && typeof l.id === 'string' && LOCK_KINDS.includes(l.kind) && typeof l.salt === 'string');
+      ok(l.keys && typeof l.keys === 'object' && Object.values(l.keys).every((k) => typeof k === 'string'));
     }
     return d;
   }
@@ -3041,6 +3087,7 @@
       const entries = new Map();
       const contents = new Map();
       const shapes = new Map();
+      const locks = new Map(); // id -> { id, kind, salt, iterations, keys: Map(content id -> sealed key) }
       const member = header.files;
       if (member) {
         const suffix = member.segment ? `/${member.segment}` : '';
@@ -3058,6 +3105,11 @@
           }
           const directory = checkFileDirectory(parseJson(fromUtf8.decode(await file.section(dir.section, sectionId, key, { requireDigest })), 'An embedded-file directory', true));
           for (const c of directory.contents) contents.set(c.id, c);
+          for (const l of directory.locks ?? []) {
+            if (!locks.has(l.id)) locks.set(l.id, { id: l.id, kind: l.kind, salt: base64ToBytes(l.salt), iterations: l.iterations, keys: new Map() });
+            const lock = locks.get(l.id);
+            for (const [id, sealed] of Object.entries(l.keys)) if (!lock.keys.has(id)) lock.keys.set(id, sealed);
+          }
           for (const f of directory.files) {
             const known = entries.get(f.path);
             // Seen through several groups: an action is allowed when any of them allows it.
@@ -3074,14 +3126,40 @@
         }
         for (const e of entries.values()) if (!contents.has(e.content)) throw new JazminFormatError(`Embedded file '${e.path}' refers to missing content`);
       }
-      return (fileIndex = { entries, contents, shapes });
+      return (fileIndex = { entries, contents, shapes, locks, contentKeys: new Map() });
     }
 
-    async function block(content, b) {
+    // Locks opened, with every table of this file: id -> lock key. The browser never holds a shared file's owner key.
+    file.unlocked ??= new Map();
+
+    const lockInfo = (locks, id) => ({ id, ...(locks.get(id) ? { kind: locks.get(id).kind } : {}), unlocked: file.unlocked.has(id) });
+
+    /** A stored content's key: from its directory, or (locked) unsealed with its lock's key; throws while locked. */
+    async function contentKey(content, path) {
+      if (content.lock === undefined) {
+        if (!content.key && (file.keys || access)) throw new JazminFormatError(`Embedded content ${content.id} has no key in an encrypted file`);
+        return content.key ? base64ToBytes(content.key) : null;
+      }
+      const index = await files();
+      if (index.contentKeys.has(content.id)) return index.contentKeys.get(content.id);
+      const lock = index.locks.get(content.lock);
+      if (!lock) {
+        throw new JazminFormatError(`File '${path}' names lock '${content.lock}', which the file no longer has: its key is lost `
+          + '(a JAZMIN library older than 1.7 may have appended to the file)');
+      }
+      const key = file.unlocked.get(content.lock);
+      if (!key) throw new JazminFileLockedError(`File '${path}' is locked (lock '${content.lock}'): unlock it with ${lockNeeds(lock.kind)}`, path, content.lock, lock.kind);
+      const sealed = lock.keys.get(String(content.id));
+      if (sealed === undefined) throw new JazminFormatError(`Embedded content ${content.id} has no key for lock '${content.lock}'`);
+      const opened = await decrypt(key, base64ToBytes(sealed), sealAad(content.lock, content.id));
+      index.contentKeys.set(content.id, opened);
+      return opened;
+    }
+
+    async function block(content, b, contentKeyBytes) {
       const ref = content.blocks[b];
       const sectionId = `file/${content.id}/${b}`;
-      if (!content.key && (file.keys || access)) throw new JazminFormatError(`Embedded content ${content.id} has no key in an encrypted file`);
-      const key = content.key ? await hkdf(base64ToBytes(content.key), file.salt, `JAZMIN/1/${sectionId}`) : null;
+      const key = contentKeyBytes ? await hkdf(contentKeyBytes, file.salt, `JAZMIN/1/${sectionId}`) : null;
       const bytes = await file.section({ offset: ref.offset, length: ref.length, digest: ref.digest ? base64ToBytes(ref.digest) : null }, sectionId, key, { requireDigest });
       if (bytes.length !== Math.min(content.blockSize, content.size - b * content.blockSize)) {
         throw new JazminFormatError(`Section '${sectionId}' has the wrong length for its embedded file`);
@@ -3250,13 +3328,46 @@
         }
         return JSON.parse(JSON.stringify(shapeList));
       },
-      /** Embedded files this key can see: [{ path, type, size, sha256 }]. */
+      /** Embedded files this key can see: [{ path, type, size, sha256, actions?, lock? }] (lock: { id, kind, unlocked }). */
       async files() {
-        const { entries, contents } = await files();
+        const { entries, contents, locks } = await files();
         return [...entries.values()].map((e) => {
           const c = contents.get(e.content);
-          return { path: e.path, type: e.type, size: c.size, sha256: c.sha256, ...(e.actions ? { actions: JSON.parse(JSON.stringify(e.actions)) } : {}) };
+          return {
+            path: e.path, type: e.type, size: c.size, sha256: c.sha256, ...(e.actions ? { actions: JSON.parse(JSON.stringify(e.actions)) } : {}),
+            ...(c.lock !== undefined ? { lock: lockInfo(locks, c.lock) } : {}),
+          };
         }).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+      },
+      /** Locks of the stored files this key can see (spec 6.8.1): [{ id, kind, unlocked }]. */
+      async locks() {
+        const { locks } = await files();
+        return [...locks.keys()].sort().map((id) => lockInfo(locks, id));
+      },
+      /**
+       * Opens a lock for as long as the file is open: { password }, { unlockToken } (jzf1-..., from the file owner's key
+       * service), or both, as its kind needs. A wrong one throws JazminKeyError.
+       */
+      async unlock(id, { password, unlockToken } = {}) {
+        const { locks } = await files();
+        const lock = locks.get(id);
+        if (!lock) throw new JazminError(`No lock '${id}' is visible with this key`);
+        if ((lock.kind !== 'online' && !password) || (lock.kind !== 'password' && !unlockToken)) throw new JazminError(`Lock '${id}' needs ${lockNeeds(lock.kind)}`);
+        if (file.unlocked.has(id)) return;
+        if (lock.kind !== 'online' && !(Number.isInteger(lock.iterations) && lock.iterations >= MIN_KDF_ITERATIONS && lock.iterations <= MAX_KDF_ITERATIONS)) {
+          throw new JazminFormatError(`Lock '${id}' has an iteration count outside ${MIN_KDF_ITERATIONS} to ${MAX_KDF_ITERATIONS}`);
+        }
+        const secret = lock.kind === 'password' ? null : await parseFileUnlockToken(unlockToken);
+        const key = await lockKey(lock, password, secret);
+        const [contentId, sealed] = lock.keys.entries().next().value ?? [];
+        if (sealed === undefined) throw new JazminFormatError(`Lock '${id}' has no sealed keys`);
+        try {
+          await decrypt(key, base64ToBytes(sealed), sealAad(id, contentId));
+        } catch {
+          const what = lock.kind === 'password' ? 'password' : lock.kind === 'online' ? 'unlock token' : 'password or unlock token';
+          throw new JazminKeyError(`Wrong ${what} for lock '${id}'`);
+        }
+        file.unlocked.set(id, key);
       },
       /** A whole embedded file, checked against its SHA-256. */
       async readFile(path) {
@@ -3264,8 +3375,9 @@
         const entry = entries.get(path);
         if (!entry) throw new JazminError(`No file '${path}' is visible with this key`);
         const content = contents.get(entry.content);
+        const key = await contentKey(content, path);
         const parts = [];
-        for (let b = 0; b < content.blocks.length; b++) parts.push(await block(content, b));
+        for (let b = 0; b < content.blocks.length; b++) parts.push(await block(content, b, key));
         const bytes = concat(...parts);
         if (toHex(await sha256(bytes)) !== content.sha256) throw new JazminFormatError(`File '${path}' does not match its SHA-256`);
         return bytes;
@@ -3531,6 +3643,7 @@
     JazminError,
     JazminFormatError,
     JazminKeyError,
+    JazminFileLockedError,
     JazminUnlockRequiredError,
     JazminValidationError,
   };
