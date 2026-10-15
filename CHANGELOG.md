@@ -4,6 +4,10 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **Estimates before a read (#185).** `reader.estimate(filter, { offset })` (.NET `reader.Estimate(filter, offset)`)
+  says what a read would cost without reading a row, from chunk directories, statistics and indexes: the chunks, rows
+  and stored bytes `find()` reads at most, and those `count()` reads (0 when indexes or statistics answer it). Both
+  libraries give the same figures. `explain()` is unchanged.
 - **Progress and Stop for rewrites (.NET, #184).** `JazminUpdate.Progress` and `JazminWriteOptions.Progress` (an
   `IProgress<JazminWriteProgress>`: `Stage` Sort, Write or Indexes, `Done`, `Total`), and a `CancellationToken` on both.
   New `JazminFile.Compact(path, JazminUpdate, regroup)` takes them for compacting. A stop leaves the file as it was after

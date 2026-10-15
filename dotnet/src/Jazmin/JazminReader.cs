@@ -146,6 +146,13 @@ public sealed record JazminPlan(string Strategy, long CandidateRows, int Chunks,
 }
 
 /// <summary>
+/// What a read would cost, known before it starts (<see cref="JazminReader.Estimate(Query.JazminFilter?, long)"/>): the chunks, rows and stored
+/// bytes Find reads at most (a limit can end it sooner; chunks an offset skips whole are left out), and the chunks, rows
+/// and bytes Count reads (0 when indexes or chunk statistics answer it).
+/// </summary>
+public sealed record JazminReadEstimate(int Chunks, long Rows, long Bytes, int CountChunks, long CountRows, long CountBytes);
+
+/// <summary>
 /// What a query read: the rows it returned, the bytes of the sections it read (chunks, index pages, statistics and
 /// directories), the chunks it read and decoded, the index sections it read, the column streams it decoded (one per
 /// column per chunk) and the time it took.
@@ -2501,6 +2508,44 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     }
 
     /// <summary>Describes how a filter executes: "index" (with the candidate row count) or "scan" (with chunks skipped).</summary>
+    /// <summary>
+    /// What a read would cost, known before it starts: from directories, chunk statistics and indexes only, no rows read
+    /// (see <see cref="JazminReadEstimate"/>). Bytes are the chunks' stored bytes, before decompressing.
+    /// </summary>
+    public JazminReadEstimate Estimate(JazminFilter? filter, long offset = 0)
+    {
+        var plan = Plan(filter);
+        var rowIds = Candidates(plan);
+        var whole = WholeChunkTest(plan);
+        var counted = plan is null || (rowIds is not null && FilterEngine.AnsweredExactly(plan)); // Count needs no chunk
+        int chunks = 0, countChunks = 0;
+        long rows = 0, bytes = 0, countRows = 0, countBytes = 0, skipped = 0;
+        foreach (var (ordinal, from, to) in ChunkRuns(plan, rowIds))
+        {
+            var live = LiveRows(ordinal);
+            long runRows = rowIds is null ? live : to - from;
+            var length = ChunkBytes(ordinal);
+            // As a read plans it: leading chunks an offset skips whole are counted, not read.
+            if (chunks == 0 && rowIds is null && offset - skipped >= live && whole(ordinal)) skipped += live;
+            else
+            {
+                chunks++;
+                rows += runRows;
+                bytes += length;
+            }
+            if (!counted && !(rowIds is null && whole(ordinal)))
+            {
+                countChunks++;
+                countRows += runRows;
+                countBytes += length;
+            }
+        }
+        return new JazminReadEstimate(chunks, rows, bytes, countChunks, countRows, countBytes);
+    }
+
+    /// <summary><see cref="Estimate(JazminFilter?, long)"/> with a filter in JSON ("where") form.</summary>
+    public JazminReadEstimate Estimate(string whereJson, long offset = 0) => Estimate(JazminFilter.Parse(whereJson), offset);
+
     public JazminPlan Explain(JazminFilter? filter)
     {
         var plan = Plan(filter);
