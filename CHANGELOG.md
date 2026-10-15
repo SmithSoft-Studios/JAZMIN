@@ -4,6 +4,12 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **Masked columns in the browser reader and the web viewer (#190).** `reader.masked()` (with `at`, the column's place),
+  `locks()` and `unlock()` for masked columns, which builds every open table reader again with them. The viewer shows
+  a masked column in its place with what it shows, Unlock… in its header, then Reveal one value at a time (or the
+  column, if the file says so) with a countdown and Hide, masked again after the file's seconds (30 by default), when
+  the window is hidden, or after 60 s without input; printing shows the masked text. A page around the viewer that
+  passes `reportReveals: true` hears `jazmin:revealed` (column, lock, scope; never the value or row).
 - **Masked columns in .NET (#190).** `JazminColumn.Mask` (`new JazminMask(lock) { Show = JazminMaskShow.KeepFormat(4),
   Rows = filter }`), `reader.Masked`, `Unlock` opening masked columns in every table reader of the file, and
   `JazminPackage.Masks` (`JazminMaskView`). Update, Compact and Append keep the masks; each library reads and changes the

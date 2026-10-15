@@ -281,6 +281,31 @@
   }
 
   const sealAad = (id, contentId) => utf8.encode(`JAZMIN/1/lock/${id}/${contentId}`);
+  const groupAad = (id, group) => utf8.encode(`JAZMIN/1/lock/${id}/column-group/${group}`);
+
+  /**
+   * A key slot's masked columns (spec 7.6.8): { locks: Map(id -> lock), groups: Map(group -> { lock, sealed, column }) };
+   * empty when the slot has none. A member that isn't well-formed is refused.
+   */
+  function readBundleMasks(masks) {
+    const out = { locks: new Map(), groups: new Map() };
+    if (masks === undefined) return out;
+    const ok = (test) => {
+      if (!test) throw new JazminFormatError("The key slot's masked columns are malformed");
+    };
+    ok(masks && typeof masks === 'object' && masks.locks && typeof masks.locks === 'object' && masks.groups && typeof masks.groups === 'object');
+    for (const [id, l] of Object.entries(masks.locks)) {
+      ok(l && LOCK_KINDS.includes(l.kind) && typeof l.salt === 'string');
+      out.locks.set(id, { id, kind: l.kind, salt: base64ToBytes(l.salt), iterations: l.iterations, keys: new Map(), keyService: keyServiceAddress(l.keyService) });
+    }
+    for (const [group, g] of Object.entries(masks.groups)) {
+      const c = g?.column;
+      ok(g && out.locks.has(g.lock) && typeof g.sealed === 'string' && c && Number.isSafeInteger(c.table) && Number.isSafeInteger(c.position)
+        && typeof c.name === 'string' && typeof c.type === 'string');
+      out.groups.set(group, { lock: g.lock, sealed: g.sealed, column: c });
+    }
+    return out;
+  }
 
   /** A key service's address (spec 6.8.2): an https URL without a user name, password or fragment; else undefined. */
   function keyServiceAddress(value) {
@@ -2472,6 +2497,7 @@
         online: Boolean(bundle.online),
         // The key of what this key's holder sends back to the owner (spec 7.8); files written before it have none.
         submission: typeof bundle.submission === 'string' ? await keyText(b(bundle.submission)) : null,
+        masks: readBundleMasks(bundle.masks),
       };
       if (access.expires !== undefined) {
         const expires = Date.parse(access.expires);
@@ -2526,7 +2552,9 @@
       async columnSecret(group) {
         return access.isOwner ? hkdf(access.owner, salt, `JAZMIN/1/column-group/${group}`) : access.columns.get(group) ?? null;
       },
-      table: (name) => openTable(file, name),
+      table: (name) => openTable(file, name, true),
+      // The table readers handed out (weakly held): unlocking a masked column builds them again (spec 7.6.8).
+      readers: new Set(),
     };
     return file;
   }
@@ -2600,8 +2628,15 @@
     return null;
   }
 
+  /** A table reader; `register`: one handed out, built again in place when a masked column is unlocked (spec 7.6.8). */
+  async function openTable(file, name, register = false) {
+    const reader = await tableReader(file, name);
+    if (register) file.readers.add(new WeakRef(reader));
+    return reader;
+  }
+
   /** One table of an open file: its columns (those this key may see), chunks and deleted rows. */
-  async function openTable(file, name) {
+  async function tableReader(file, name) {
     const { header, access } = file;
     const index = name === undefined ? 0 : header.tables.findIndex((t) => t.name === name);
     if (index < 0) throw new JazminError(`This file has no table '${name}' (tables: ${header.tables.map((t) => `'${t.name}'`).join(', ')})`);
@@ -3215,9 +3250,12 @@
     // Locks opened, with every table of this file: id -> lock key. The browser never holds a shared file's owner key.
     file.unlocked ??= new Map();
 
+    // A lock, from the file directories (stored files) or the key slot's masked columns (spec 7.6.8).
+    const lockRecord = (locks, id) => locks.get(id) ?? access?.masks.locks.get(id);
+
     // Where an online lock's unlock token comes from (spec 6.8.2): the lock's own key service, else the file's.
     const lockInfo = ({ locks, keyService }, id) => {
-      const lock = locks.get(id);
+      const lock = lockRecord(locks, id);
       const service = lock && lock.kind !== 'password' ? lock.keyService ?? keyService : undefined;
       return { id, ...(lock ? { kind: lock.kind } : {}), unlocked: file.unlocked.has(id), ...(service ? { keyService: service } : {}) };
     };
@@ -3289,7 +3327,7 @@
       submissionKey: access?.submission ?? null,
       package: header.files?.package ? parseJson(header.files.package, 'Package settings', true) : undefined,
       /** Another table of the same file (the file is not read again). */
-      openTable: (tableName) => openTable(file, tableName),
+      openTable: (tableName) => openTable(file, tableName, true),
       /**
        * Rows matching a filter (spec 9), chunk by chunk. options: { offset, limit, select, reverse } (reverse: last row
        * first, as fast as first first), and for long reads { signal, onProgress } (see count). Chunk statistics, the sort
@@ -3430,10 +3468,27 @@
           };
         }).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
       },
-      /** Locks of the stored files this key can see (spec 6.8.1): [{ id, kind, unlocked }]. */
+      /** Locks of the stored files and masked columns this key can see (spec 6.8.1, 7.6.8): [{ id, kind, unlocked, keyService? }]. */
       async locks() {
         const index = await files();
-        return [...index.locks.keys()].sort().map((id) => lockInfo(index, id));
+        return [...new Set([...index.locks.keys(), ...(access?.masks.locks.keys() ?? [])])].sort().map((id) => lockInfo(index, id));
+      },
+      /**
+       * Masked columns of this table (spec 7.6.8): [{ column, type, group, lock: { id, kind, unlocked, keyService? },
+       * shown?, unmasked?, at }], as the library's reader.masked. Until its lock is unlocked a masked column isn't in
+       * `columns`. `shown` names the column with what its values show; `unmasked`, the column with its values in the rows
+       * that aren't masked; `at`, where the column is (or will be, once unlocked) in `columns`, for viewers that show a
+       * masked column in its place.
+       */
+      async masked() {
+        if (!access) return [];
+        const known = await files();
+        return [...access.masks.groups].filter(([, e]) => e.column.table === index).sort(([, a], [, b]) => a.column.position - b.column.position)
+          .map(([group, e]) => ({
+            column: e.column.name, type: e.column.type, group, lock: lockInfo(known, e.lock),
+            ...(e.column.shown ? { shown: e.column.shown } : {}), ...(e.column.unmasked ? { unmasked: e.column.unmasked } : {}),
+            at: columns.slice(0, e.column.position).filter(Boolean).length,
+          }));
       },
       /**
        * Opens a lock for as long as the file is open: { password }, { unlockToken } (jzf1-..., from the file owner's key
@@ -3441,7 +3496,7 @@
        */
       async unlock(id, { password, unlockToken } = {}) {
         const { locks } = await files();
-        const lock = locks.get(id);
+        const lock = lockRecord(locks, id);
         if (!lock) throw new JazminError(`No lock '${id}' is visible with this key`);
         if ((lock.kind !== 'online' && !password) || (lock.kind !== 'password' && !unlockToken)) throw new JazminError(`Lock '${id}' needs ${lockNeeds(lock.kind)}`);
         if (file.unlocked.has(id)) return;
@@ -3450,15 +3505,27 @@
         }
         const secret = lock.kind === 'password' ? null : await parseFileUnlockToken(unlockToken);
         const key = await lockKey(lock, password, secret);
+        // Checked by opening what it seals: a stored file's key, or a masked column group's secret (spec 7.6.8).
+        const masked = [...(access?.masks.groups ?? [])].filter(([, e]) => e.lock === id);
         const [contentId, sealed] = lock.keys.entries().next().value ?? [];
-        if (sealed === undefined) throw new JazminFormatError(`Lock '${id}' has no sealed keys`);
+        if (sealed === undefined && !masked.length) throw new JazminFormatError(`Lock '${id}' has no sealed keys`);
+        const opened = new Map();
         try {
-          await decrypt(key, base64ToBytes(sealed), sealAad(id, contentId));
+          if (sealed !== undefined) await decrypt(key, base64ToBytes(sealed), sealAad(id, contentId));
+          for (const [group, e] of masked) opened.set(group, await decrypt(key, base64ToBytes(e.sealed), groupAad(id, group)));
         } catch {
           const what = lock.kind === 'password' ? 'password' : lock.kind === 'online' ? 'unlock token' : 'password or unlock token';
           throw new JazminKeyError(`Wrong ${what} for lock '${id}'`);
         }
         file.unlocked.set(id, key);
+        if (!opened.size) return;
+        // The masked columns become columns the key sees: every table reader of the file is built again, in place.
+        for (const [group, groupSecret] of opened) access.columns.set(group, groupSecret);
+        for (const ref of [...file.readers]) {
+          const reader = ref.deref();
+          if (!reader) file.readers.delete(ref);
+          else Object.assign(reader, await tableReader(file, reader.table));
+        }
       },
       /** A whole embedded file, checked against its SHA-256. */
       async readFile(path) {
@@ -3741,5 +3808,5 @@
 
   global.JazminBrowser = { ...API_CORE };
   // For the add-ons: the core's functions, and the hooks through which the core reaches them.
-  Object.defineProperty(global.JazminBrowser, Symbol.for('jazmin.browser.internals'), { value: { PREAMBLE, TRAILER, ENVELOPE, FLAG_ENCRYPTED, FLAG_PASSWORD, FLAG_ACCESS, KNOWN_FLAGS, CODEC_NONE, CODEC_DEFLATE, CODEC_BROTLI, MIN_KDF_ITERATIONS, MAX_KDF_ITERATIONS, TYPE_NAMES, ENCODING, NESTED_COLUMNS, MAX_NESTING_DEPTH, isNested, HAS_NULLS, POW10, SLOT_ID, SLOT_ENTRY, PAGE_ENTRY, ONLINE_SLOT, WHOLE_TABLE, EVERYONE, subtle, utf8, fromUtf8, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminFileLockedError, CRC_TABLE, crc32, hexToBytes, toHex, concat, equal, compareBytes, base64ToBytes, base64UrlToBytes, bytesToBase64Url, view, sha256, hkdf, hmacSha256, pbkdf2, decrypt, inflateRaw, verifySignature, MASTER_KEY_REFUSED, checksum, parseKey, keyText, parseUnlockToken, slotId, LOCK_KINDS, parseFileUnlockToken, lockNeeds, lockKey, sealAad, keyServiceAddress, Reader, text, num, bytesOf, parseJson, repeatsName, dateFromMs, msFromFile, readMessage, readPacked, cumulative, readRef, readColumn, readPartition, readIndexRef, readTable, readHeader, readDirectory, readStatistics, FILE_FLAGS, fileActions, mergeActions, readIndexDirectory, readPartitionList, readDelta, readPostings, readPostingsSection, directoryShapes, checkFileDirectory, formatDecimal, readDecimal, readPlain, skipPlain, MADE_PER_ROW, decodeColumnar, decodeColumnarAt, skipValue, decodeAt, streamType, decodeStream, partEnd, decodeNested, OPS, STRING_OPS, keyOf, keyHash, inKeys, compare, compileFilter, condition, ORDERED_TYPES, RANGE_OPS, FEW_ROWS, SMALL_LOOKUP_BYTES, PAGES_CACHED, keyCompare, readKey, decodeBound, planOf, planLeaf, answeredExactly, setField, columnCollector, planColumns, filterReads, leafType, nestedMayMatch, leafMayMatch, mayMatch, leafMustMatch, mustMatch, sortBounds, unionAll, intersectSorted, PageKeys, readRowIds, PagedIndex, trigramsOf, trigramAnswers, skipPostings, intersectPostings, GRAM_HIGH, TrigramSegment, COMMON_SHARE, LazyTrigramIndex, CompositeIndex, leafLookup, indexPlan, sourceOf, BLOCK_SIZE, BLOCKS_CACHED, urlSource, openUrl, openScript, scriptBytes, open, openFile, locateTrailer, findPage, findSlot, openTable, EXPORT_TYPES, XML_NAME, XML_UNWRITABLE, bytesToBase64, exportText, exportJson, exportNested, csvQuote, xmlEscape, xmlElement, exportPieces, exportTo, ENOUGH, exportString, exportBlob, JazminValidationError, normalizeBigInt, MAX_SAFE_BIG, compareDecimalKeys, decimalKeyOf, parseDecimalText, DECIMAL_TEXT, validation, hooks, addOn } });
+  Object.defineProperty(global.JazminBrowser, Symbol.for('jazmin.browser.internals'), { value: { PREAMBLE, TRAILER, ENVELOPE, FLAG_ENCRYPTED, FLAG_PASSWORD, FLAG_ACCESS, KNOWN_FLAGS, CODEC_NONE, CODEC_DEFLATE, CODEC_BROTLI, MIN_KDF_ITERATIONS, MAX_KDF_ITERATIONS, TYPE_NAMES, ENCODING, NESTED_COLUMNS, MAX_NESTING_DEPTH, isNested, HAS_NULLS, POW10, SLOT_ID, SLOT_ENTRY, PAGE_ENTRY, ONLINE_SLOT, WHOLE_TABLE, EVERYONE, subtle, utf8, fromUtf8, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminFileLockedError, CRC_TABLE, crc32, hexToBytes, toHex, concat, equal, compareBytes, base64ToBytes, base64UrlToBytes, bytesToBase64Url, view, sha256, hkdf, hmacSha256, pbkdf2, decrypt, inflateRaw, verifySignature, MASTER_KEY_REFUSED, checksum, parseKey, keyText, parseUnlockToken, slotId, LOCK_KINDS, parseFileUnlockToken, lockNeeds, lockKey, sealAad, groupAad, readBundleMasks, keyServiceAddress, Reader, text, num, bytesOf, parseJson, repeatsName, dateFromMs, msFromFile, readMessage, readPacked, cumulative, readRef, readColumn, readPartition, readIndexRef, readTable, readHeader, readDirectory, readStatistics, FILE_FLAGS, fileActions, mergeActions, readIndexDirectory, readPartitionList, readDelta, readPostings, readPostingsSection, directoryShapes, checkFileDirectory, formatDecimal, readDecimal, readPlain, skipPlain, MADE_PER_ROW, decodeColumnar, decodeColumnarAt, skipValue, decodeAt, streamType, decodeStream, partEnd, decodeNested, OPS, STRING_OPS, keyOf, keyHash, inKeys, compare, compileFilter, condition, ORDERED_TYPES, RANGE_OPS, FEW_ROWS, SMALL_LOOKUP_BYTES, PAGES_CACHED, keyCompare, readKey, decodeBound, planOf, planLeaf, answeredExactly, setField, columnCollector, planColumns, filterReads, leafType, nestedMayMatch, leafMayMatch, mayMatch, leafMustMatch, mustMatch, sortBounds, unionAll, intersectSorted, PageKeys, readRowIds, PagedIndex, trigramsOf, trigramAnswers, skipPostings, intersectPostings, GRAM_HIGH, TrigramSegment, COMMON_SHARE, LazyTrigramIndex, CompositeIndex, leafLookup, indexPlan, sourceOf, BLOCK_SIZE, BLOCKS_CACHED, urlSource, openUrl, openScript, scriptBytes, open, openFile, locateTrailer, findPage, findSlot, openTable, tableReader, EXPORT_TYPES, XML_NAME, XML_UNWRITABLE, bytesToBase64, exportText, exportJson, exportNested, csvQuote, xmlEscape, xmlElement, exportPieces, exportTo, ENOUGH, exportString, exportBlob, JazminValidationError, normalizeBigInt, MAX_SAFE_BIG, compareDecimalKeys, decimalKeyOf, parseDecimalText, DECIMAL_TEXT, validation, hooks, addOn } });
 })(globalThis);

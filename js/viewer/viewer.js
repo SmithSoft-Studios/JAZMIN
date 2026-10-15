@@ -9,7 +9,10 @@
   const PAGE_ROWS = 50;
   const ROWS_FOR_TEMPLATES = 20000; // jazmin.rows() is offered up to this many rows; beyond it, templates use query()
 
-  const state = { blob: null, name: '', options: null, reader: null, readers: new Map(), filter: null, page: 0, total: 0, shown: null, answerTo: null };
+  const state = {
+    blob: null, name: '', options: null, reader: null, readers: new Map(), filter: null, page: 0, total: 0, shown: null, answerTo: null,
+    reportReveals: false, // the page that passed the file asked to hear of reveals (jazmin:revealed)
+  };
 
   const status = (message) => { $('jz-status').textContent = message || ''; };
 
@@ -57,6 +60,7 @@
     state.options = options;
     state.readers.set(reader.table, reader);
     state.reader = reader;
+    await loadMasks(reader);
     await render(reader);
     status(describe(reader));
     tell('opened');
@@ -471,20 +475,26 @@
   }
 
   function showTable(reader, rows) {
+    hideRevealed(); // the cells revealed are about to go
+    const shown = shownColumns(reader);
     const head = document.createElement('tr');
-    for (const c of reader.columns) {
+    for (const d of shown) {
       const th = document.createElement('th');
-      th.textContent = c.name;
-      th.title = [typeName(c), c.description].filter(Boolean).join(' - ');
+      if (d.mask) maskHeader(th, d.mask);
+      else {
+        th.textContent = d.column.name;
+        th.title = [typeName(d.column), d.column.description].filter(Boolean).join(' - ');
+      }
       head.append(th);
     }
     $('jz-rows').tHead.replaceChildren(head);
     $('jz-rows').tBodies[0].replaceChildren(...rows.map((row) => {
       const tr = document.createElement('tr');
-      for (const c of reader.columns) {
+      for (const d of shown) {
         const td = document.createElement('td');
-        const text = cell(row[c.name]);
-        if (text === null) {
+        const text = d.mask ? null : cell(row[d.column.name]);
+        if (d.mask) maskCell(td, d.mask, row);
+        else if (text === null) {
           td.textContent = 'null';
           td.className = 'null';
         } else {
@@ -496,6 +506,152 @@
       return tr;
     }));
   }
+
+  // ---- masked columns (spec 7.6.8) --------------------------------------------------------------------------------
+  // A masked column shows as one column in its place: a row's value from its unmasked column when it has one, else
+  // what it shows (its shown column, or ••••). Once its lock is unlocked a value shows on Reveal, for a while, and is
+  // masked again when that time is up, when the window is hidden, or after a time without input: for people who walk
+  // away from an open screen. The file's package.masks sets these per column. A value is in the page only while shown.
+
+  const MASK_DEFAULTS = { reveal: 'value', seconds: 30, whenHidden: true, idleSeconds: 60 };
+  const DOTS = '••••';
+  const masking = { columns: [], revealed: new Set(), tick: null, lastInput: Date.now() };
+
+  async function loadMasks(reader) {
+    masking.columns = typeof reader.masked === 'function' ? await reader.masked() : [];
+  }
+
+  const maskSettings = (m) => ({ ...MASK_DEFAULTS, ...(state.reader.package?.masks?.[m.column] ?? {}) });
+
+  /** The columns as shown: each masked column in its place, its masked, shown and unmasked columns not shown apart. */
+  function shownColumns(reader) {
+    const masks = masking.columns;
+    if (!masks.length) return reader.columns.map((column) => ({ column }));
+    const apart = new Set(masks.flatMap((m) => [m.column, m.shown, m.unmasked]).filter(Boolean));
+    const out = [];
+    reader.columns.forEach((column, i) => {
+      for (const m of masks) if (m.at === i) out.push({ mask: m });
+      if (!apart.has(column.name)) out.push({ column });
+    });
+    for (const m of masks) if (m.at >= reader.columns.length) out.push({ mask: m });
+    return out;
+  }
+
+  function maskHeader(th, m) {
+    th.textContent = m.column;
+    th.title = `${m.type} - masked until lock '${m.lock.id}' is unlocked`;
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'small mask-head';
+    if (!m.lock.unlocked) {
+      button.textContent = '\u{1F512} Unlock…';
+      button.title = `Unlock '${m.lock.id}' to reveal ${m.column}`;
+      button.addEventListener('click', () => unlockFile(m.lock).then(async (done) => {
+        if (!done) return;
+        await loadMasks(state.reader); // the reader was built again with the column (spec 7.6.8)
+        await Promise.all([showRows(), showFiles()]);
+      }).catch((e) => status(e.message)));
+    } else if (maskSettings(m).reveal === 'column') {
+      button.textContent = 'Reveal column';
+      button.addEventListener('click', () => {
+        const cells = [...$('jz-rows').tBodies[0].querySelectorAll('td.masked')].filter((td) => td.jazminMask?.m === m && td.jazminMask.value != null);
+        for (const td of cells) reveal(td, false);
+        report(m, 'column');
+      });
+    } else return;
+    th.append(' ', button);
+  }
+
+  function maskCell(td, m, row) {
+    const open = m.unmasked ? row[m.unmasked] : null;
+    if (open !== null && open !== undefined) { // a row that isn't masked
+      td.textContent = cell(open);
+      td.title = td.textContent;
+      return;
+    }
+    const value = m.lock.unlocked ? row[m.column] : undefined;
+    if (value === null) { // unlocked, and empty
+      td.textContent = 'null';
+      td.className = 'null';
+      return;
+    }
+    td.className = 'masked';
+    const text = document.createElement('span');
+    text.className = 'mask-shown';
+    text.textContent = (m.shown && row[m.shown] != null ? cell(row[m.shown]) : null) ?? DOTS;
+    td.append(text);
+    if (value === undefined) {
+      td.title = `Masked: unlock '${m.lock.id}' to reveal it`;
+      return;
+    }
+    td.jazminMask = { m, value: cell(value), shown: text.textContent, timer: 0 };
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'small reveal';
+    button.textContent = 'Reveal';
+    button.addEventListener('click', () => (masking.revealed.has(td) ? hide(td) : reveal(td, true)));
+    td.append(' ', button);
+  }
+
+  /** Shows a masked value; one at a time in its column unless the column reveals whole. */
+  function reveal(td, one) {
+    const info = td.jazminMask;
+    const settings = maskSettings(info.m);
+    if (one && settings.reveal !== 'column') for (const other of [...masking.revealed]) if (other.jazminMask.m === info.m) hide(other);
+    td.querySelector('.mask-shown').textContent = info.value;
+    td.classList.add('revealed');
+    info.until = settings.seconds > 0 ? Date.now() + settings.seconds * 1000 : 0;
+    masking.revealed.add(td);
+    masking.lastInput = Date.now();
+    countdown(td);
+    if (one) report(info.m, 'value');
+    masking.tick ??= setInterval(tick, 1000);
+  }
+
+  function hide(td) {
+    const info = td.jazminMask;
+    td.querySelector('.mask-shown').textContent = info.shown;
+    td.classList.remove('revealed');
+    td.querySelector('.reveal').textContent = 'Reveal';
+    masking.revealed.delete(td);
+    if (!masking.revealed.size) {
+      clearInterval(masking.tick);
+      masking.tick = null;
+    }
+  }
+
+  function hideRevealed(when = () => true) {
+    for (const td of [...masking.revealed]) if (when(maskSettings(td.jazminMask.m))) hide(td);
+  }
+
+  function countdown(td) {
+    const left = td.jazminMask.until ? Math.max(0, Math.ceil((td.jazminMask.until - Date.now()) / 1000)) : 0;
+    td.querySelector('.reveal').textContent = left ? `Hide (${left} s)` : 'Hide';
+  }
+
+  /** Once a second while values show: their time, and the time without input. */
+  function tick() {
+    const now = Date.now();
+    for (const td of [...masking.revealed]) {
+      const { until, m } = td.jazminMask;
+      const idle = maskSettings(m).idleSeconds;
+      if ((until && now >= until) || (idle > 0 && now - masking.lastInput >= idle * 1000)) hide(td);
+      else countdown(td);
+    }
+  }
+
+  /** Tells the page that passed the file of a reveal, when it asked to hear of them: the column and lock, never the value or row. */
+  function report(m, scope) {
+    if (!state.reportReveals || !state.answerTo) return;
+    window.parent.postMessage({ type: 'jazmin:revealed', name: state.name, table: state.reader.table, column: m.column, lock: m.lock.id, scope }, state.answerTo);
+  }
+
+  for (const type of ['pointerdown', 'keydown', 'wheel', 'touchstart']) addEventListener(type, () => { masking.lastInput = Date.now(); }, { passive: true, capture: true });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) hideRevealed((s) => s.whenHidden);
+  });
+  addEventListener('blur', () => hideRevealed((s) => s.whenHidden));
+  addEventListener('beforeprint', () => hideRevealed()); // printed and saved as PDF masked
 
   async function applyFilter(event) {
     event.preventDefault();
@@ -561,7 +717,7 @@
     const needsPassword = lock.kind !== 'online';
     const needsToken = lock.kind !== 'password';
     $('jz-lock-title').textContent = `Unlock '${lock.id}'`;
-    $('jz-lock-what').textContent = `The files of this lock need ${needsPassword && needsToken ? 'a password and an unlock token'
+    $('jz-lock-what').textContent = `This lock needs ${needsPassword && needsToken ? 'a password and an unlock token'
       : needsPassword ? 'a password' : 'an unlock token'} as well as your key. Nothing leaves this device.`;
     $('jz-lock-password-row').hidden = !needsPassword;
     $('jz-lock-token-row').hidden = !needsToken;
@@ -850,6 +1006,7 @@
     state.filter = null;
     state.page = 0;
     $('jz-filter').value = '';
+    await loadMasks(reader);
     await showRows();
     status(describe(reader));
   }
@@ -1011,7 +1168,8 @@
   // The page that shows the viewer in an iframe can pass it a file it has (picked, dropped or made):
   // postMessage({ type: 'jazmin:open', file, name }). Only that page: not a document's sandbox below the viewer, and
   // nothing when the viewer isn't in a frame. It hears { type: 'jazmin:status', state, name, message } and no more:
-  // the key is typed here and the data stays here. A File stays on disk: the viewer reads the slices it needs.
+  // the key is typed here and the data stays here. With reportReveals: true it also hears of each masked value or
+  // column revealed (spec 7.6.8): { type: 'jazmin:revealed', name, table, column, lock, scope }, never the value. A File stays on disk: the viewer reads the slices it needs.
   // It can also show the rows matching a filter: { type: 'jazmin:filter', filter } (an object or JSON text), as typing
   // it in the Filter box and applying it does.
   addEventListener('message', (event) => {
@@ -1026,6 +1184,7 @@
     if (m.type !== 'jazmin:open' || !(m.file instanceof Blob)) return;
     // A page opened from disk has the origin "null" (Chrome: "file://"), which postMessage can't address.
     const answerTo = /^(null|file:)/.test(event.origin) ? '*' : event.origin;
+    state.reportReveals = m.reportReveals === true; // { type: 'jazmin:revealed', name, table, column, lock, scope } on each reveal
     choose(m.file, typeof m.name === 'string' && m.name ? m.name : m.file.name, answerTo);
   });
 
