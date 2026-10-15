@@ -3741,14 +3741,18 @@ against 252 ms with `find`. Summing two of 41 columns took 123 ms with
 Run one async query at a time per reader. To read in parallel, open the
 file once per task, which is cheap.
 
-**Progress and Stop** (JavaScript, 1.7). A long read can say how far it has
-got and be stopped, as the browser reader can: pass `onProgress`, which is
-called after each chunk with `{ done, total, matches }` (chunks read and
+**Progress and Stop** (1.7). A long read can say how far it has got and be
+stopped, as the browser reader can. In JavaScript, pass `onProgress`, which
+is called after each chunk with `{ done, total, matches }` (chunks read and
 planned, matching rows so far), and `signal`, an `AbortSignal` that stops the
 read before its next chunk. `count`, `countAsync`, `find`, `findAsync`,
 `findBatchesAsync`, `columnArrays`, `explain({ analyze: true })` and the
-exports (`exportFile`, `exportString`, without a shape) take both. A read
-that indexes or statistics answer without reading a chunk reports nothing.
+exports (`exportFile`, `exportString`, without a shape) take both. In .NET,
+`JazminQueryOptions.Progress` (an `IProgress<JazminReadProgress>`) and
+`JazminQueryOptions.CancellationToken` do the same for `Find`, `FindAsync`
+and `Explain(filter, true, options)`, and `Count` and `CountAsync` take both
+as arguments. A read that indexes or statistics answer without reading a
+chunk reports nothing.
 
 ```js
 const stop = new AbortController();                          // stopButton.onclick = () => stop.abort();
@@ -3763,8 +3767,20 @@ const matches = await reader.countAsync({ city: 'Durban' }, {
 });
 ```
 
+```csharp
+using var stop = new CancellationTokenSource();              // stopButton.Click += (_, _) => stop.Cancel();
+var started = Stopwatch.StartNew();
+var progress = new Progress<JazminReadProgress>(p =>
+{
+    var left = started.Elapsed / p.Done * (p.Total - p.Done);  // time left, from the speed so far
+    ShowProgress((double)p.Done / p.Total, $"{p.Matches:N0} so far, about {Math.Ceiling(left.TotalSeconds)} s left");
+});
+var matches = await reader.CountAsync(JazminFilter.Eq("city", "Durban"), progress, stop.Token);
+var rows = reader.Find(filter, new JazminQueryOptions { Progress = progress, CancellationToken = stop.Token });
+```
+
 A stopped read throws (or rejects with) the signal's reason, an
-`AbortError`. Use the async forms when something else must be able to stop
+`AbortError`; in .NET, an `OperationCanceledException`. Use the async forms when something else must be able to stop
 the read: `count` and `find` hold the thread until they finish, so only
 `onProgress` itself could abort them. Without the two options, reads take the
 same time as before.
