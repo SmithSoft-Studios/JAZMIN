@@ -29,6 +29,7 @@ npm run bench                  # node --expose-gc gives the memory rows
 npm run bench:proposals        # bytes read, rows and time per query (see below)
 npm run test:viewer            # the viewer in every browser found (Safari: run "sudo safaridriver --enable" once)
 npm run test:viewer -- --browser ios   # Safari in the iPhone simulator (a Mac with Xcode; boot a simulator first)
+node scripts/build-browser.mjs # after changing js/browser/src: writes jazmin-browser.js, the core and its add-ons
 node examples/quickstart.mjs
 
 # .NET (in dotnet/)

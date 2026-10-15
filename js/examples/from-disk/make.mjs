@@ -37,7 +37,10 @@ for (const file of ['index.html', 'viewer.js', 'viewer.css', 'sandbox.js', 'icon
 fs.copyFileSync(path.join(js, '../docs/images/jazmin-logo.png'), path.join(site, 'logo.png'));
 fs.copyFileSync(path.join(js, 'viewer/icon-32.png'), path.join(site, 'favicon.png'));
 fs.mkdirSync(path.join(site, 'browser'), { recursive: true });
-fs.copyFileSync(path.join(js, 'browser/jazmin-browser.js'), path.join(site, 'browser/jazmin-browser.js'));
+// The full script, and the core with its add-ons, which the demo pages load only as they need them.
+for (const name of ['jazmin-browser.js', 'jazmin-browser-core.js', 'jazmin-browser-shapes.js', 'jazmin-browser-writer.js', 'jazmin-browser-queries.js']) {
+  fs.copyFileSync(path.join(js, 'browser', name), path.join(site, 'browser', name));
+}
 fs.mkdirSync(path.join(site, 'data'), { recursive: true });
 
 // Export shapes saved in the files (USER-GUIDE 21.7): offered by name in the viewer's Export menu and in shapes.html.

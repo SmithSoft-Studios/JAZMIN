@@ -4,6 +4,7 @@
 // embedded files. Files are read in slices (a File or Blob is never loaded whole). Brotli sections cannot be read:
 // browsers have no Brotli decompressor.
 // A classic script (browsers block module scripts on file://): it defines globalThis.JazminBrowser.
+// Built by js/scripts/build-browser.mjs from js/browser/src: change those, then run it.
 (function (global) {
   'use strict';
 
@@ -3224,7 +3225,7 @@
           const first = header.tables[0].name;
           const columns = new Map([[table.name, visibleColumns]]);
           for (const s of shapes.values()) {
-            for (const name of [s.table ?? first, ...shapeTables(s.shape)]) {
+            for (const name of [s.table ?? first, ...addOn('shapes').shapeTables(s.shape)]) {
               if (!columns.has(name) && header.tables.some((t) => t.name === name)) columns.set(name, (await openTable(file, name)).columns);
             }
           }
@@ -3232,7 +3233,7 @@
             const own = columns.get(s.table ?? first);
             if (!own) return false;
             try {
-              compileShape(own, s.shape, (name) => columns.get(name));
+              addOn('shapes').compileShape(own, s.shape, (name) => columns.get(name));
               return true;
             } catch {
               return false;
@@ -3392,18 +3393,18 @@
   }
 
   /**
-   * An export, its text given to `write` in pieces. With { shape } (docs/design/export-shapes.md), the shape decides the
+   * An export, its text given to `put` in pieces. With { shape } (docs/design/export-shapes.md), the shape decides the
    * structure: JSON or XML, filter and the format's options; select, offset and limit belong in the shape.
    */
-  async function exportTo(reader, format, options, write) {
+  async function exportTo(reader, format, options, put) {
     const { shape, ...rest } = options ?? {};
     if (shape === undefined) {
-      for await (const piece of exportPieces(reader, format, rest)) write(piece);
+      for await (const piece of exportPieces(reader, format, rest)) put(piece);
       return;
     }
     if (!EXPORT_TYPES[format]) throw new JazminValidationError(`Unknown export format '${format}'`);
     if (rest.select || rest.limit !== undefined || rest.offset !== undefined) throw new JazminValidationError('With a shape, use $rows/$limit in the shape instead of select, limit or offset');
-    await writeShape(reader, shape, format, rest, write);
+    await addOn('shapes').writeShape(reader, shape, format, rest, put);
   }
 
   const ENOUGH = Symbol('jazmin.enough');
@@ -3450,6 +3451,81 @@
     if (buffer) parts.push(buffer);
     return new Blob(parts, { type: EXPORT_TYPES[format] });
   }
+
+
+  // ---- shared with the add-ons: errors and values the writer, shapes and queries all use ----------------------------
+
+  class JazminValidationError extends JazminError {
+    constructor(message) {
+      super(message);
+      this.name = 'JazminValidationError';
+    }
+  }
+
+  const normalizeBigInt = (v) => (v >= -MAX_SAFE_BIG && v <= MAX_SAFE_BIG ? Number(v) : v);
+
+  const MAX_SAFE_BIG = BigInt(Number.MAX_SAFE_INTEGER);
+
+  function compareDecimalKeys(a, b) {
+    const x = a.s < b.s ? a.m * 10n ** BigInt(b.s - a.s) : a.m;
+    const y = b.s < a.s ? b.m * 10n ** BigInt(a.s - b.s) : b.m;
+    return x < y ? -1 : x > y ? 1 : 0;
+  }
+
+  /** A decimal's key form: trailing zeros removed, compared numerically (12.5 and 12.50 are equal). */
+  function decimalKeyOf(text) {
+    let { m, s } = parseDecimalText(text, 'decimal');
+    while (s > 0 && m % 10n === 0n) {
+      m /= 10n;
+      s--;
+    }
+    return { m, s };
+  }
+
+  function parseDecimalText(value, column) {
+    const t = typeof value === 'number' ? String(value) : value;
+    const match = typeof t === 'string' ? DECIMAL_TEXT.exec(t) : null;
+    if (!match) throw validation(column, `expected a decimal string like '-12.50', got '${value}'`);
+    const [, sign, whole, fraction = ''] = match;
+    if (fraction.length > 255) throw validation(column, 'more than 255 digits after the point');
+    const digits = (whole + fraction).replace(/^0+(?=\d)/, '');
+    if (digits.length > 256) throw validation(column, 'more than 256 significant digits');
+    const m = BigInt(digits);
+    return { m: sign && m !== 0n ? -m : m, s: fraction.length };
+  }
+
+  const DECIMAL_TEXT = /^(-?)(\d+)(?:\.(\d+))?$/;
+
+  const validation = (column, message) => new JazminValidationError(`Column '${column}': ${message}`);
+
+  // ---- add-ons (jazmin-browser-shapes.js, -writer.js, -queries.js) ----------------------------------------------
+  // The full jazmin-browser.js has them all; with jazmin-browser-core.js, those loaded after it. The core reaches an
+  // add-on only through these hooks, which the add-on fills.
+  const hooks = {};
+
+  function addOn(name) {
+    const found = hooks[name];
+    if (!found) throw new JazminError(`This needs jazmin-browser-${name}.js, loaded after jazmin-browser-core.js (or load the full jazmin-browser.js)`);
+    return found;
+  }
+
+  const API_CORE = {
+    open,
+    openUrl,
+    openScript,
+    scriptBytes,
+    toJSON: (reader, options) => exportString(reader, 'json', options),
+    toCSV: (reader, options) => exportString(reader, 'csv', options),
+    toXML: (reader, options) => exportString(reader, 'xml', options),
+    exportBlob,
+    compileFilter,
+    base64ToBytes,
+    JazminError,
+    JazminFormatError,
+    JazminKeyError,
+    JazminUnlockRequiredError,
+    JazminValidationError,
+  };
 
   // ---- export shapes (docs/design/export-shapes.md): the library's js/src/shape.js, for this async reader ------------
   // The same templates, checks and output. Here the tables a shape links are opened before it is checked (openTable is
@@ -4462,6 +4538,10 @@
     return { $schema: 'https://json-schema.org/draft/2020-12/schema', ...schema(compiled, true) };
   }
 
+  hooks.shapes = { compileShape, shapeTables, writeShape };
+
+  const API_SHAPES = { shapeSchema };
+
   // ---- writing: files with one key, a password or no key ------------------------------------------------------
   // The library's writer (js/src/writer.js and the modules it uses) for this subset, on the browser's own crypto
   // (WebCrypto) and compression (CompressionStream). Shared files are never written in a browser: their master key
@@ -4482,11 +4562,9 @@
   const WRITE_TYPES = TYPE_NAMES.slice(1);
   const INT64_MIN = -(2n ** 63n);
   const INT64_MAX = 2n ** 63n - 1n;
-  const MAX_SAFE_BIG = BigInt(Number.MAX_SAFE_INTEGER);
   const MAX_WRITE_SCALE = 15;
   const MAX_STRING_STAT = 64;
   const TINY_SECTION = 256; // raw bytes below which catalog sections are stored uncompressed
-  const DECIMAL_TEXT = /^(-?)(\d+)(?:\.(\d+))?$/;
   const FILE_BLOCK_SIZE = 256 * 1024; // raw bytes per stored block of an embedded file, as the library writes
   const MIME = {
     '.html': 'text/html', '.htm': 'text/html', '.css': 'text/css', '.js': 'text/javascript', '.mjs': 'text/javascript',
@@ -4496,23 +4574,10 @@
     '.mp4': 'video/mp4', '.webm': 'video/webm', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.wav': 'audio/wav', '.zip': 'application/zip',
   };
 
-  class JazminValidationError extends JazminError {
-    constructor(message) {
-      super(message);
-      this.name = 'JazminValidationError';
-    }
-  }
-
   /** Secure random bytes: the browser's generator, never anything weaker. */
   function randomBytes(n) {
     if (typeof global.crypto?.getRandomValues !== 'function') throw new JazminError('This browser has no secure random generator (crypto.getRandomValues)');
     return global.crypto.getRandomValues(new Uint8Array(n));
-  }
-
-  function bytesToBase64(bytes) {
-    let bin = '';
-    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    return global.btoa(bin);
   }
 
   /** A file to store (the library's fileSource): { path, content: Blob | File | Uint8Array | ArrayBuffer | string, type?, groups? }. */
@@ -4690,37 +4755,6 @@
   }
 
   // -- values (the library's types.js and decimal.js) --
-
-  const validation = (column, message) => new JazminValidationError(`Column '${column}': ${message}`);
-  const normalizeBigInt = (v) => (v >= -MAX_SAFE_BIG && v <= MAX_SAFE_BIG ? Number(v) : v);
-
-  function parseDecimalText(value, column) {
-    const t = typeof value === 'number' ? String(value) : value;
-    const match = typeof t === 'string' ? DECIMAL_TEXT.exec(t) : null;
-    if (!match) throw validation(column, `expected a decimal string like '-12.50', got '${value}'`);
-    const [, sign, whole, fraction = ''] = match;
-    if (fraction.length > 255) throw validation(column, 'more than 255 digits after the point');
-    const digits = (whole + fraction).replace(/^0+(?=\d)/, '');
-    if (digits.length > 256) throw validation(column, 'more than 256 significant digits');
-    const m = BigInt(digits);
-    return { m: sign && m !== 0n ? -m : m, s: fraction.length };
-  }
-
-  /** A decimal's key form: trailing zeros removed, compared numerically (12.5 and 12.50 are equal). */
-  function decimalKeyOf(text) {
-    let { m, s } = parseDecimalText(text, 'decimal');
-    while (s > 0 && m % 10n === 0n) {
-      m /= 10n;
-      s--;
-    }
-    return { m, s };
-  }
-
-  function compareDecimalKeys(a, b) {
-    const x = a.s < b.s ? a.m * 10n ** BigInt(b.s - a.s) : a.m;
-    const y = b.s < a.s ? b.m * 10n ** BigInt(a.s - b.s) : b.m;
-    return x < y ? -1 : x > y ? 1 : 0;
-  }
 
   /** A decimal (text, or key form { m, s }): varint scale, then the integer as a zigzag varint (spec 5.1). */
   function writeDecimal(w, value) {
@@ -5628,6 +5662,8 @@
     };
     return write(rows, { columns: defs, metadata, ...seal });
   }
+
+  const API_WRITER = { createWriter, write, writeChanges };
 
   // ---- queries with arrow functions (docs/design/js-queries.md): js/src/lambda.js, as it is, and js/src/query.js ----
   // The translator reads where functions into filters; see lambda.js for how it stays exact or lets more rows through.
@@ -6773,26 +6809,7 @@
     throw queryFail('from() takes a reader, or something iterable such as an array');
   }
 
-  global.JazminBrowser = {
-    open,
-    openUrl,
-    openScript,
-    scriptBytes,
-    toJSON: (reader, options) => exportString(reader, 'json', options),
-    toCSV: (reader, options) => exportString(reader, 'csv', options),
-    toXML: (reader, options) => exportString(reader, 'xml', options),
-    exportBlob,
-    shapeSchema,
-    from: queryFrom,
-    createWriter,
-    write,
-    writeChanges,
-    compileFilter,
-    base64ToBytes,
-    JazminError,
-    JazminFormatError,
-    JazminKeyError,
-    JazminUnlockRequiredError,
-    JazminValidationError,
-  };
+  const API_QUERIES = { from: queryFrom };
+
+  global.JazminBrowser = { ...API_CORE, ...API_SHAPES, ...API_WRITER, ...API_QUERIES };
 })(globalThis);

@@ -4362,7 +4362,31 @@ const result = await jazmin.saveChanges({
 For developers, the browser reader on its own is `@smithsoft-studios/jazmin/browser`
 (`js/browser/jazmin-browser.js`). It is async and has no dependencies. It
 reads every kind of file, and writes files with one key or a password
-(section 24.3):
+(section 24.3).
+
+**Only what a page uses** (1.7). `jazmin-browser.js` holds everything. A page that
+only reads can load the core instead, and add what else it uses after it, as
+plain scripts (they work from `file://` too):
+
+| Script | What it has | Size (gzipped) |
+|---|---|---|
+| `jazmin-browser.js` | everything below | 308 KB (80 KB) |
+| `jazmin-browser-core.js` | opening, unlocking and reading files; JSON, CSV and XML exports | 168 KB (45 KB) |
+| `jazmin-browser-shapes.js` | export shapes, `reader.shapes()`, exports with `{ shape }` | 45 KB (12 KB) |
+| `jazmin-browser-writer.js` | `createWriter`, `write`, `writeChanges` | 53 KB (15 KB) |
+| `jazmin-browser-queries.js` | `JazminBrowser.from` (queries with arrow functions) | 47 KB (12 KB) |
+
+```html
+<script src="jazmin-browser-core.js"></script>
+<script src="jazmin-browser-shapes.js"></script>   <!-- add-ons after the core, in any order -->
+```
+
+A call that needs an add-on that isn't loaded says which one, for example "This needs
+jazmin-browser-shapes.js, loaded after jazmin-browser-core.js". The core alone loaded in about
+2.6 ms less than the full script, with about 360 KB less memory (Node 24: 10.8 against 13.3 ms,
+937 against 1,294 KB; the median of 15 loads). In npm they are
+`@smithsoft-studios/jazmin/browser/core`, `…/shapes`, `…/writer` and `…/queries`. The
+from-disk sample's pages each load only what they use.
 
 ```js
 const reader = await JazminBrowser.open(file, { key });   // a File, Blob or bytes

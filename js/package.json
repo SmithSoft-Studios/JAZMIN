@@ -30,7 +30,11 @@
       "types": "./src/index.d.ts",
       "default": "./src/index.js"
     },
-    "./browser": "./browser/jazmin-browser.js"
+    "./browser": "./browser/jazmin-browser.js",
+    "./browser/core": "./browser/jazmin-browser-core.js",
+    "./browser/shapes": "./browser/jazmin-browser-shapes.js",
+    "./browser/writer": "./browser/jazmin-browser-writer.js",
+    "./browser/queries": "./browser/jazmin-browser-queries.js"
   },
   "files": [
     "src",
