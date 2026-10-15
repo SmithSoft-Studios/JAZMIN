@@ -4500,9 +4500,9 @@ the key. It reads the data through `window.jazmin`:
 - **Say that it needs the internet** (1.7): `online: 'required'` (it doesn't
   work offline, such as a chart library from a CDN) or `'optional'` (it works
   with less, such as a font that falls back). The viewer then says the
-  document uses the internet, naming the origins, and with `'required'`,
-  offline, shows a message instead of a half-drawn page, and the document
-  once the device is back online. `online` needs `allowedOrigins`.
+  document needs to be online, and with `'required'`, offline, shows a
+  message instead of a half-drawn page, and the document once the device is
+  back online. `online` needs `allowedOrigins`.
 - **Pin what you load:** an exact version (`chart.js@4.4.6`, not `@4`) and
   an `integrity` hash on the `<script>` tag, so the browser refuses a file
   that changed.

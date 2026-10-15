@@ -880,15 +880,13 @@
 
   /** The document's network note (package.online); false when it needs the network and the device is offline. */
   function showOnline(settings, reader) {
-    const hosts = (settings.allowedOrigins || []).map((o) => new URL(o).host).join(', ');
     const online = settings.online === 'required' || settings.online === 'optional' ? settings.online : null;
-    $('jz-online').hidden = !online || !hosts;
-    $('jz-online').textContent = online === 'required' ? `This document loads what it needs from the internet (${hosts}).`
-      : `This document uses the internet for some parts (${hosts}); offline it shows with less.`;
+    $('jz-online').hidden = !online;
+    $('jz-online').textContent = online === 'required' ? 'This document needs to be online.' : 'Parts of this document need to be online.';
     const offline = online === 'required' && navigator.onLine === false;
     $('jz-offline').hidden = !offline;
     $('jz-frame').hidden = offline;
-    $('jz-offline-what').textContent = `This document needs the internet: it loads from ${hosts}.`;
+    $('jz-offline-what').textContent = 'This document needs to be online.';
     waitingForNetwork = offline ? reader : null;
     return !offline;
   }

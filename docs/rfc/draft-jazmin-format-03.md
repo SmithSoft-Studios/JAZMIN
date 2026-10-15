@@ -675,9 +675,8 @@ text) and `segment` when an append wrote the directories.
   from the https origins it may contact) or `"optional"` (it works offline
   with less, such as a font that falls back). Writers MUST refuse it without
   at least one such origin. Viewers SHOULD tell the person that the document
-  uses the internet, naming those origins, and with `"required"`, while the
-  device is offline, SHOULD say so instead of showing a document that can't
-  work. Readers that don't know `online` ignore it.
+  needs to be online, and with `"required"`, while the device is offline,
+  SHOULD say so instead of showing a document that can't work. Readers that don't know `online` ignore it.
 - Writers MUST NOT reuse a content id within a file, so block section ids
   stay unique across appends.
 

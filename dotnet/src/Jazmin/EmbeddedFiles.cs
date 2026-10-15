@@ -177,8 +177,8 @@ public sealed class JazminPackage
     public IReadOnlyDictionary<string, JazminMaskView>? Masks { get; init; }
 
     /// <summary>
-    /// The document needs the network (1.7, spec 6.8): viewers say so, naming <see cref="AllowedOrigins"/>, which it
-    /// needs. Null: not said.
+    /// The document needs the network (1.7, spec 6.8): viewers say it needs to be online. Needs <see cref="AllowedOrigins"/>,
+    /// the sites it loads from. Null: not said.
     /// </summary>
     public JazminOnline? Online { get; init; }
 }

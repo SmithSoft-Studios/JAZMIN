@@ -736,7 +736,7 @@ for (const name of chosen) {
       problems: serviceOk ? [] : [JSON.stringify({ signInButton, forgedIgnored, serviceUnlocked, scan })],
     });
 
-    // A document that needs the network: the note names its origins; offline it waits with a message, then shows.
+    // A document that needs the network: the note says so; offline it waits with a message, then shows.
     await page.navigate(`${base}/js/viewer/index.html`);
     await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
     await page.evaluate(`(Object.defineProperty(navigator, 'onLine', { get: () => window.jzOnline !== false, configurable: true }), window.jzOnline = false, true)`);
@@ -747,10 +747,10 @@ for (const name of chosen) {
     await page.evaluate(`(window.jzOnline = true, dispatchEvent(new Event('online')), true)`);
     await waitFor(page, `document.getElementById('jz-offline').hidden && !document.getElementById('jz-frame').hidden
       && JazminViewer.state.lastReady && JazminViewer.state.lastReady.info && JazminViewer.state.lastReady.info.shown`, 'the document once online');
-    const onlineOk = offlineState.note === 'This document loads what it needs from the internet (cdn.jsdelivr.net, fonts.googleapis.com).'
-      && offlineState.what === 'This document needs the internet: it loads from cdn.jsdelivr.net, fonts.googleapis.com.' && offlineState.frameHidden === true;
+    const onlineOk = offlineState.note === 'This document needs to be online.' && offlineState.what === 'This document needs to be online.'
+      && offlineState.frameHidden === true;
     results.push({
-      browser: name, label: 'a document that needs the network: its note names the origins; offline it waits with a message, and shows once online', ok: onlineOk,
+      browser: name, label: 'a document that needs the network: a note says so; offline it waits with a message, and shows once online', ok: onlineOk,
       problems: onlineOk ? [] : [JSON.stringify(offlineState)],
     });
 

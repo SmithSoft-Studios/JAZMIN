@@ -223,7 +223,7 @@ export interface PackageSettings {
   masks?: Record<string, MaskViewSettings>;
   /**
    * The document needs the network (1.7, spec 6.8): 'required' (it doesn't work offline) or 'optional' (it works with
-   * less). Viewers say so, naming allowedOrigins, which it needs.
+   * less). Viewers say it needs to be online. Needs allowedOrigins, the sites it loads from.
    */
   online?: 'required' | 'optional';
 }
