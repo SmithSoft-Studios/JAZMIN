@@ -97,6 +97,12 @@ public sealed class JazminUpdate
     /// </summary>
     public IReadOnlyList<string>? SortedBy { get; set; }
 
+    /// <summary>
+    /// A new order with other text comparisons (spec 6.7): keys whose text compares ignoring case and accents, or with the
+    /// numbers inside it by value. Instead of SortedBy.
+    /// </summary>
+    public IReadOnlyList<JazminSortKey>? Sort { get; set; }
+
     /// <summary>Rows sorted in memory at a time when re-sorting (default by <see cref="Priority"/>: 10,000, 25,000 or 100,000).</summary>
     public int? SortRunRows { get; set; }
 
@@ -165,17 +171,23 @@ public sealed class JazminTableChanges
     /// <summary>A new sort order (an empty list for none; null keeps the table's).</summary>
     public IReadOnlyList<string>? SortedBy { get; set; }
 
+    /// <summary>
+    /// A new order with other text comparisons (spec 6.7): keys whose text compares ignoring case and accents, or with the
+    /// numbers inside it by value. Instead of SortedBy.
+    /// </summary>
+    public IReadOnlyList<JazminSortKey>? Sort { get; set; }
+
     /// <summary>Nested columns given fields at the end of their objects (see <see cref="JazminUpdate.Columns"/>).</summary>
     public IReadOnlyList<JazminColumn>? Columns { get; set; }
 
     /// <summary>Whether anything changes (empty lists don't).</summary>
-    internal bool Any => Insert.Count > 0 || Upsert.Count > 0 || Delete is not null || Set is not null || Indexes is not null || SortedBy is not null || Columns is not null;
+    internal bool Any => Insert.Count > 0 || Upsert.Count > 0 || Delete is not null || Set is not null || Indexes is not null || SortedBy is not null || Sort is not null || Columns is not null;
 
     /// <summary>The main table's changes, from the update's own options.</summary>
     internal static JazminTableChanges Of(JazminUpdate u) => new()
     {
         Insert = u.Insert, Upsert = u.Upsert, KeyColumns = u.KeyColumns, Delete = u.Delete, Set = u.Set, Where = u.Where,
-        Indexes = u.Indexes, SortedBy = u.SortedBy, Columns = u.Columns,
+        Indexes = u.Indexes, SortedBy = u.SortedBy, Sort = u.Sort, Columns = u.Columns,
     };
 }
 
@@ -540,7 +552,7 @@ public static class JazminFile
                 Password = update.Password,
                 KdfIterations = reader.KdfIterations ?? FormatConstants.DefaultKdfIterations,
                 Metadata = MergeMetadata(reader.Metadata, update.Metadata),
-                SortedBy = main?.Target,
+                Sort = main?.Target,
                 Codec = update.Codec,
                 CompressionLevel = update.CompressionLevel,
                 ChunkRows = update.ChunkRows,
@@ -559,7 +571,7 @@ public static class JazminFile
                 CancellationToken = update.CancellationToken,
                 ProgressTotal = totalRows,
                 Tables = named
-                    ? kept.Select(r => rewrites.TryGetValue(r, out var w) ? TableFor(r, w.Columns, w.Target, FinalName(r.TableName)) : TableFor(r, null, r.SortedBy, FinalName(r.TableName)))
+                    ? kept.Select(r => rewrites.TryGetValue(r, out var w) ? TableFor(r, w.Columns, w.Target, FinalName(r.TableName)) : TableFor(r, null, r.Order, FinalName(r.TableName)))
                         .Concat(update.AddTables.Select(a => a.Table)).ToList()
                     : null,
             };
@@ -591,13 +603,14 @@ public static class JazminFile
                 if (!first) writer.StartTable(added.Table.Name);
                 first = false;
                 var addedShape = new RowShape(added.Table.Columns.ToList());
-                if (added.Table.SortedBy is not { Count: > 0 } addedOrder)
+                if (SortOrder.Of(added.Table.SortedBy, added.Table.Sort) is not { Count: > 0 } addedOrder)
                 {
                     foreach (var row in added.Rows) writer.WriteValues(addedShape.ValuesOf(row));
                     continue;
                 }
-                var orderCols = addedOrder.Select(addedShape.Ordinal).ToArray();
-                var sorter = new RowSorter(added.Table.Columns, values => addedShape.KeyTuple(values, orderCols), update.SortRunRows ?? RowSorter.RunRows(update.Priority, added.Rows.TryGetNonEnumeratedCount(out var addedRows) ? addedRows : 0), update.Codec, onSorted);
+                var orderCols = addedOrder.Select(k => addedShape.Ordinal(k.Column)).ToArray();
+                var addedKeys = addedOrder.ToArray();
+                var sorter = new RowSorter(added.Table.Columns, values => addedShape.KeyTuple(values, orderCols, addedKeys), update.SortRunRows ?? RowSorter.RunRows(update.Priority, added.Rows.TryGetNonEnumeratedCount(out var addedRows) ? addedRows : 0), update.Codec, onSorted);
                 sorters.Add(sorter);
                 foreach (var row in added.Rows) sorter.Add(addedShape.ValuesOf(row));
                 foreach (var values in sorter.Rows()) writer.WriteValues(values);
@@ -640,6 +653,7 @@ public static class JazminFile
         private readonly RowShape _shape;
         private readonly int[] _keyCols;
         private readonly int[]? _sortCols;
+        private readonly JazminSortKey[]? _order; // the table's order now (its sort keys, other text comparisons included)
         private readonly Dictionary<string, (object?[] Values, bool Matched)> _pending = new(StringComparer.Ordinal);
         private readonly BoundFilter? _delete;
         private readonly BoundFilter? _where;
@@ -648,7 +662,8 @@ public static class JazminFile
 
         public IReadOnlyList<JazminColumn> Columns { get; }
 
-        public IReadOnlyList<string>? Target { get; }
+        /// <summary>The order afterwards (spec 6.7: keys with other text comparisons included); null for none.</summary>
+        public IReadOnlyList<JazminSortKey>? Target { get; }
 
         public TableRewrite(JazminReader reader, JazminTableChanges changes, string? partitionBy, bool regroup, JazminUpdate update, List<RowSorter> sorters,
             Action<int>? onSorted = null)
@@ -662,17 +677,19 @@ public static class JazminFile
             if (changes.Set is { Count: 0 }) throw new JazminValidationException($"{name}: Set needs a column to set");
 
             // The sort order afterwards: the table's, or a new one (SortedBy; empty for none).
-            Target = changes.SortedBy is null ? reader.SortedBy : changes.SortedBy.Count == 0 ? null : changes.SortedBy;
-            var resortAsked = !(Target ?? []).SequenceEqual(reader.SortedBy ?? [], StringComparer.Ordinal);
+            var given = SortOrder.Of(changes.SortedBy, changes.Sort);
+            Target = given is null ? reader.Order : given.Count == 0 ? null : given;
+            var resortAsked = !SortOrder.Same(Target, reader.Order);
             if (regroup && partitionBy is null) throw new JazminValidationException("Regroup applies to access-controlled files with PartitionBy");
-            if (regroup && Target is { } order && order[0] != partitionBy)
-                throw new JazminValidationException($"Regroup would break the SortedBy order [{string.Join(", ", order)}]: it needs no SortedBy, " +
+            if (regroup && Target is { } order && order[0].Column != partitionBy)
+                throw new JazminValidationException($"Regroup would break the SortedBy order [{SortOrder.Describe(order)}]: it needs no SortedBy, " +
                     $"or one that starts with the partition column '{partitionBy}' (then rows are already grouped)");
 
-            _shape = new RowShape(WithIndexes(ColumnsWithIndexes(reader), changes.Indexes, reader.SortedBy, Target, resortAsked));
-            foreach (var n in Target ?? []) _shape.Ordinal(n); // an unknown sort column is refused before anything is written
+            _shape = new RowShape(WithIndexes(ColumnsWithIndexes(reader), changes.Indexes, reader.SortedBy, Target?.Select(k => k.Column).ToList(), resortAsked));
+            foreach (var k in Target ?? []) _shape.Ordinal(k.Column); // an unknown sort column is refused before anything is written
             _keyCols = changes.KeyColumns?.Select(_shape.Ordinal).ToArray() ?? [];
-            _sortCols = reader.SortedBy?.Select(_shape.Ordinal).ToArray();
+            _order = reader.Order?.ToArray();
+            _sortCols = _order?.Select(k => _shape.Ordinal(k.Column)).ToArray();
             foreach (var row in changes.Upsert)
             {
                 var values = _shape.ValuesOf(row);
@@ -714,7 +731,7 @@ public static class JazminFile
             // Rows whose sort columns are set move. When few match (up to the sort budget) they are found first, by the
             // file's indexes, held, and merged in at their new place as the table streams; more go through the sorter.
             _resortAsked = resortAsked;
-            _setsOrder = Target is not null && changes.Set is not null && changes.Set.Keys.Any(Target.Contains);
+            _setsOrder = Target is not null && changes.Set is not null && changes.Set.Keys.Any(c => Target.Any(k => k.Column == c));
             _whereFilter = changes.Where;
             Columns = Grown(_shape.Columns, changes.Insert.Concat(changes.Upsert).Select(_shape.ValuesOf).Append(_setValues).Where(v => v.Length > 0).ToList(), changes.Columns);
         }
@@ -742,8 +759,9 @@ public static class JazminFile
             RowSorter? sorter = null;
             if (resort && Target is not null)
             {
-                var targetCols = Target.Select(_shape.Ordinal).ToArray();
-                sorter = new RowSorter(Columns, values => _shape.KeyTuple(values, targetCols),
+                var targetCols = Target.Select(k => _shape.Ordinal(k.Column)).ToArray();
+                var targetKeys = Target.ToArray();
+                sorter = new RowSorter(Columns, values => _shape.KeyTuple(values, targetCols, targetKeys),
                     _update.SortRunRows ?? RowSorter.RunRows(_update.Priority, _reader.RowCount + _changes.Insert.Count + _changes.Upsert.Count), _update.Codec, _onSorted);
                 _sorters.Add(sorter);
             }
@@ -765,7 +783,7 @@ public static class JazminFile
                 // Upserted rows are re-inserted at their sorted position (their sort key may change),
                 // so the whole change set merges into the stream in one pass.
                 var incoming = _changes.Insert.Select(_shape.ValuesOf).Concat(_pending.Values.Select(p => p.Values)).Concat(moved ?? [])
-                    .Select(v => (Values: v, Key: _shape.KeyTuple(v, _sortCols)))
+                    .Select(v => (Values: v, Key: _shape.KeyTuple(v, _sortCols, _order)))
                     .OrderBy(x => x.Key, Comparer<object?[]>.Create(SortKeys.Compare))
                     .ToList();
                 var next = 0;
@@ -773,7 +791,7 @@ public static class JazminFile
                 foreach (var row in _reader.Rows())
                 {
                     var values = row.RawValues;
-                    var rowKey = _shape.KeyTuple(values, _sortCols);
+                    var rowKey = _shape.KeyTuple(values, _sortCols, _order);
                     while (next < incoming.Count && SortKeys.Compare(incoming[next].Key, rowKey) < 0) writer.WriteValues(incoming[next++].Values);
                     var key = _pending.Count > 0 ? _shape.KeyText(values, _keyCols) : null;
                     if (key is not null && _pending.TryGetValue(key, out var hit))
@@ -971,14 +989,14 @@ public static class JazminFile
     /// <summary>A table of the file as writer options for a rewrite: its columns with their indexes, sort order and layout.</summary>
     private static JazminTable TableFor(JazminReader reader) => TableFor(reader, null);
 
-    private static JazminTable TableFor(JazminReader reader, IReadOnlyList<JazminColumn>? columns) => TableFor(reader, columns, reader.SortedBy, reader.TableName);
+    private static JazminTable TableFor(JazminReader reader, IReadOnlyList<JazminColumn>? columns) => TableFor(reader, columns, reader.Order, reader.TableName);
 
-    private static JazminTable TableFor(JazminReader reader, IReadOnlyList<JazminColumn>? columns, IReadOnlyList<string>? sortedBy, string name)
+    private static JazminTable TableFor(JazminReader reader, IReadOnlyList<JazminColumn>? columns, IReadOnlyList<JazminSortKey>? order, string name)
     {
         var (partitionBy, groups) = reader.AccessLayout;
         return new JazminTable(name, columns ?? ColumnsWithIndexes(reader))
         {
-            SortedBy = sortedBy,
+            Sort = order,
             PartitionBy = partitionBy,
             ColumnGroups = groups.Where(g => g.Name != FormatConstants.DefaultColumnGroup).ToDictionary(g => g.Name, g => g.Columns.ToArray()),
         };
@@ -1072,11 +1090,13 @@ public static class JazminFile
             var allDeleted = state.Deleted.Concat(removed).Distinct().Order().ToArray();
             var incoming = append.Insert.Concat(append.Upsert).Select(shape.ValuesOf).ToList();
             var columns = Grown(shape.Columns, incoming, append.Columns);
-            var sortedBy = reader.SortedBy;
+            // The table's order, other text comparisons included (spec 6.7): appended rows are put in it.
+            var sortedBy = reader.Order;
             if (sortedBy is not null)
             {
-                var sortCols = sortedBy.Select(shape.Ordinal).ToArray();
-                incoming = incoming.Select(v => (Values: v, Key: shape.KeyTuple(v, sortCols)))
+                var sortCols = sortedBy.Select(k => shape.Ordinal(k.Column)).ToArray();
+                var keys = sortedBy.ToArray();
+                incoming = incoming.Select(v => (Values: v, Key: shape.KeyTuple(v, sortCols, keys)))
                     .OrderBy(x => x.Key, Comparer<object?[]>.Create(SortKeys.Compare)).Select(x => x.Values).ToList();
             }
             var accessOptions = ownerGrants is null ? null : AccessFor(reader, ownerGrants, new JazminUpdate { Grant = append.Grant });
@@ -1099,7 +1119,7 @@ public static class JazminFile
                 Grown = columns.Where((c, i) => !ReferenceEquals(c, shape.Columns[i])).Select(c => c.Name).ToHashSet(StringComparer.Ordinal),
                 Key = append.Key,
                 Metadata = MergeMetadata(metadata, append.Metadata),
-                SortedBy = sortedBy,
+                Sort = sortedBy,
                 Codec = append.Codec,
                 CompressionLevel = append.CompressionLevel,
                 ChunkRows = append.ChunkRows,
@@ -1433,6 +1453,13 @@ public static class JazminFile
         {
             var v = Values.Normalize(Columns[i].Type, values[i], Columns[i].Name);
             return v is null ? null : Values.ToKey(Columns[i].Type, v);
+        }).ToArray();
+
+        /// <summary>A row's key in a table's order: each key's sort key (spec 6.7), as the writer checks it.</summary>
+        public object?[] KeyTuple(object?[] values, int[] cols, JazminSortKey[]? order) => order is null ? KeyTuple(values, cols) : cols.Select((i, k) =>
+        {
+            var v = Values.Normalize(Columns[i].Type, values[i], Columns[i].Name);
+            return v is null ? null : SortOrder.Key(Columns[i].Type, v, order[k]);
         }).ToArray();
 
         public string KeyText(object?[] values, int[] cols) => string.Join('\u001f', KeyTuple(values, cols).Select(k => k switch

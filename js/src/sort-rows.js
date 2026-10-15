@@ -8,7 +8,8 @@ import path from 'node:path';
 import { JazminValidationError } from './errors.js';
 import { JazminKey } from './keys.js';
 import { JazminReader } from './reader.js';
-import { compareKeys, normalizeValue, toKey } from './types.js';
+import { normalizeOrder, orderComparer, orderKeyMaker } from './sort-keys.js';
+import { normalizeValue } from './types.js';
 import { JazminWriter } from './writer.js';
 
 /** Rows per chunk of a temporary run: the merge decodes one chunk of each run at a time. */
@@ -17,20 +18,10 @@ const RUN_CHUNK_ROWS = 512;
 /** Rows sorted in memory at a time, by the reader's priority. */
 export const SORT_RUN_ROWS = { memory: 10_000, balanced: 25_000, speed: 100_000 }; // larger runs gave no more speed, only memory
 
-function compareTuples(a, b) {
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] === b[i]) continue;
-    if (a[i] === null) return -1;
-    if (b[i] === null) return 1;
-    const c = compareKeys(a[i], b[i]);
-    if (c !== 0) return Number.isNaN(c) ? 0 : c;
-  }
-  return 0;
-}
-
 export class RowSorter {
   #columns;
   #sortKey;
+  #compare;
   #runRows;
   #writeOptions;
   #buffer = [];
@@ -40,22 +31,17 @@ export class RowSorter {
   #onSorted;
 
   /**
-   * columns: the table's column definitions; sortedBy: the column names to sort by; runRows: rows sorted in memory at
+   * columns: the table's column definitions; sortedBy: the order (column names, or keys { column, nocase, natural },
+   * spec 6.7); runRows: rows sorted in memory at
    * a time; writeOptions: codec, level, maxDegreeOfParallelism and priority for the temporary runs; onSorted(n): called
    * with the number of rows each time a run of them is sorted (for progress).
    */
   constructor(columns, sortedBy, { runRows = SORT_RUN_ROWS.balanced, writeOptions = {}, onSorted = null } = {}) {
     if (!Number.isInteger(runRows) || runRows < 1) throw new JazminValidationError('The sort needs at least 1 row in memory');
-    const byName = new Map(columns.map((c) => [c.name, c]));
-    const sortColumns = sortedBy.map((name) => {
-      const c = byName.get(name);
-      if (!c) throw new JazminValidationError(`sortedBy: unknown column '${name}'`);
-      return c;
-    });
-    this.#sortKey = (row) => sortColumns.map((c) => {
-      const v = normalizeValue(c.type, row[c.name], c.name);
-      return v === null ? null : toKey(c.type, v);
-    });
+    const { keys } = normalizeOrder(sortedBy, columns);
+    const key = orderKeyMaker(keys);
+    this.#sortKey = (row) => key((col) => normalizeValue(columns[col].type, row[columns[col].name], columns[col].name));
+    this.#compare = orderComparer(keys);
     this.#columns = columns.map(({ index, ...c }) => c); // the runs need no indexes
     this.#runRows = runRows;
     this.#writeOptions = writeOptions;
@@ -73,7 +59,7 @@ export class RowSorter {
     const buffer = this.#buffer;
     this.#buffer = [];
     buffer.forEach((entry, i) => { entry.seq = i; });
-    return buffer.sort((a, b) => compareTuples(a.key, b.key) || a.seq - b.seq);
+    return buffer.sort((a, b) => this.#compare(a.key, b.key) || a.seq - b.seq);
   }
 
   /** Writes the buffered rows, sorted, as a run in a temporary file locked with a key of its own. */
@@ -114,7 +100,7 @@ export class RowSorter {
       const first = rows.next();
       if (!first.done) heads.push({ run: i, rows, row: first.value, key: this.#sortKey(first.value) });
     }
-    const less = (a, b) => (compareTuples(a.key, b.key) || a.run - b.run) < 0;
+    const less = (a, b) => (this.#compare(a.key, b.key) || a.run - b.run) < 0;
     const down = (i) => {
       for (;;) {
         const l = 2 * i + 1;

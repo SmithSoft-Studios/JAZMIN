@@ -5,23 +5,13 @@ import { keptShapes, tableColumns } from './saved-shapes.js';
 import { normalizeColumns } from './schema.js';
 import { withLock } from './lock.js';
 import { APPEND_STATE, JazminReader, OWNER_GRANTS, ROWS_WITH_IDS, checkWriterFeatures } from './reader.js';
-import { compareKeys, normalizeValue, toKey } from './types.js';
+import { normalizeOrder, orderComparer, orderKeyMaker } from './sort-keys.js';
+import { normalizeValue, toKey } from './types.js';
 import { accessFor, checkAppendGrants, columnsWithIndexes, updateUnlocked } from './update.js';
 import { CONTINUE, JazminWriter } from './writer.js';
 
 function keyText(value) {
   return typeof value === 'bigint' ? `${value}n` : value;
-}
-
-function compareTuples(a, b) {
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] === b[i]) continue;
-    if (a[i] === null) return -1;
-    if (b[i] === null) return 1;
-    const c = compareKeys(a[i], b[i]);
-    if (c !== 0) return Number.isNaN(c) ? 0 : c;
-  }
-  return 0;
 }
 
 /**
@@ -129,12 +119,17 @@ function appendUnlocked(path, options) {
       })
       : undefined;
     const allDeleted = Float64Array.from(new Set([...state.deleted, ...removed])).sort();
-    const sortedBy = reader.sortedBy;
+    // The table's order, other text comparisons included (spec 6.7): appended rows are put in it.
+    const sortedBy = reader.sort ?? reader.sortedBy;
     const existingMetadata = reader.metadata;
     const before = { rowCount: reader.rowCount, appendCount: reader.appendCount };
     let incoming = [...insert, ...upsert];
     if (sortedBy) {
-      incoming = incoming.map((row) => ({ row, k: tuple(row, sortedBy) })).sort((a, b) => compareTuples(a.k, b.k)).map((x) => x.row);
+      const { keys } = normalizeOrder(sortedBy, columns);
+      const orderKey = orderKeyMaker(keys);
+      const compare = orderComparer(keys);
+      incoming = incoming.map((row) => ({ row, k: orderKey((col) => normalizeValue(columns[col].type, row[columns[col].name], columns[col].name)) }))
+        .sort((a, b) => compare(a.k, b.k)).map((x) => x.row);
     }
     reader.close();
 

@@ -156,13 +156,15 @@ function writeTable(t) {
     w.message(10, t.partitionTable ? writeRef(t.partitionTable) : null);
     for (const ix of t.indexes ?? []) w.message(11, writeIndexRef(ix), true);
     w.message(12, t.deletes ? writeRef(t.deletes) : null);
+    // Other text orders (spec 6.7): the whole order, when a key compares other than plainly.
+    for (const k of t.sort ?? []) w.message(13, (kw) => kw.string(1, k.column).uint(2, k.nocase ? 1 : 0).uint(3, k.natural ? 1 : 0), true);
   };
 }
 
 function readTable(buf) {
   const t = {
     name: '', columnCount: 0, columnGroups: [], sortedBy: [], partitionBy: '', rowCount: 0, deletedCount: 0, chunkCount: 0,
-    partitions: [], partitionTable: null, indexes: [], deletes: null,
+    partitions: [], partitionTable: null, indexes: [], deletes: null, sort: [],
   };
   readMessage(buf, (f, v) => {
     switch (f) {
@@ -188,6 +190,16 @@ function readTable(buf) {
       case 10: t.partitionTable = readRef(v); break;
       case 11: t.indexes.push(readIndexRef(v)); break;
       case 12: t.deletes = readRef(v); break;
+      case 13: {
+        const k = { column: '' };
+        readMessage(v, (kf, kv) => {
+          if (kf === 1) k.column = text(kv);
+          else if (kf === 2 && num(kv)) k.nocase = true;
+          else if (kf === 3 && num(kv)) k.natural = true;
+        });
+        t.sort.push(k);
+        break;
+      }
       default: break;
     }
   });

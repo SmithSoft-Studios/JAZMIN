@@ -62,6 +62,7 @@ internal sealed class TableDef
     public int ColumnCount { get; set; }
     public List<ColumnGroupDef> ColumnGroups { get; set; } = new();
     public List<string> SortedBy { get; set; } = new();
+    public List<JazminSortKey> Sort { get; set; } = new(); // other text orders (spec 6.7), field 13
     public string PartitionBy { get; set; } = "";
     public long RowCount { get; set; }
     public long DeletedCount { get; set; }
@@ -374,7 +375,25 @@ internal static class Catalog
         w.Message(10, t.PartitionTable is null ? null : WriteRef(t.PartitionTable));
         foreach (var ix in t.Indexes) w.Message(11, WriteIndexRef(ix), true);
         w.Message(12, t.Deletes is null ? null : WriteRef(t.Deletes));
+        foreach (var k in t.Sort) w.Message(13, kw => kw.String(1, k.Column).UInt(2, k.NoCase ? 1UL : 0).UInt(3, k.Natural ? 1UL : 0), true);
     };
+
+    private static JazminSortKey ReadSortKey(ArraySegment<byte> message)
+    {
+        var (column, nocase, natural) = ("", false, false);
+        var r = new ProtoReader(message);
+        while (r.Next(out var f))
+        {
+            switch (f)
+            {
+                case 1: column = r.String(); break;
+                case 2: nocase = r.Int64Value() != 0; break;
+                case 3: natural = r.Int64Value() != 0; break;
+                default: r.Skip(); break;
+            }
+        }
+        return new JazminSortKey(column) { NoCase = nocase, Natural = natural };
+    }
 
     private static TableDef ReadTable(ArraySegment<byte> message)
     {
@@ -416,6 +435,7 @@ internal static class Catalog
                 case 10: t.PartitionTable = ReadRef(r.Bytes()); break;
                 case 11: t.Indexes.Add(ReadIndexRef(r.Bytes())); break;
                 case 12: t.Deletes = ReadRef(r.Bytes()); break;
+                case 13: t.Sort.Add(ReadSortKey(r.Bytes())); break;
                 default: r.Skip(); break;
             }
         }

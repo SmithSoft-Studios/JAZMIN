@@ -193,6 +193,18 @@ export interface FileInfo {
 }
 
 /** Settings for viewers that render a file's embedded website. */
+/** A key of a table's order (spec 6.7): text compared ignoring case and accents, and/or with numbers by value. */
+export interface SortKey {
+  column: string;
+  /** apple, Banana, Émile: case and accents ignored. */
+  nocase?: boolean;
+  /** A2 before A10: the numbers inside the text by value. */
+  natural?: boolean;
+}
+
+/** A table's order: column names (compared as values), or keys with other text comparisons. */
+export type SortOrder = (string | SortKey)[];
+
 export interface PackageSettings {
   entry?: string;
   title?: string;
@@ -369,7 +381,7 @@ export interface TableDefinition {
   /** Unique and non-empty. */
   name: string;
   columns: JazminColumnInput[];
-  sortedBy?: string[];
+  sortedBy?: SortOrder;
   /** Access-controlled files: the partition column. Partition names are shared by every table of the file. */
   partitionBy?: string;
   /** Access-controlled files: this table's restricted column groups. Group names are shared too. */
@@ -449,8 +461,11 @@ export interface WriteOptions extends RewriteProgressOptions {
   indexes?: Record<string, JazminIndexKind | JazminIndexKind[]>;
   /** Detect ISO-8601 strings as datetime when inferring a schema. */
   detectDates?: boolean;
-  /** Rows must arrive in this column order; recorded so updates can merge in place. */
-  sortedBy?: string[];
+  /**
+   * Rows must arrive in this order; recorded so updates can merge in place. Column names, or keys whose text compares
+   * ignoring case and accents (nocase) or with the numbers inside it by value (natural), spec 6.7.
+   */
+  sortedBy?: SortOrder;
   access?: AccessOptions;
   /** Clock used for expiry calculations and file dates (default: the system clock). */
   now?: Date | number;
@@ -746,7 +761,7 @@ export interface TableChanges {
   set?: Record<string, unknown>;
   where?: Filter;
   indexes?: Record<string, JazminIndexKind | JazminIndexKind[] | null>;
-  sortedBy?: string[] | null;
+  sortedBy?: SortOrder | null;
   /** Nested columns given fields at the end of their objects: their new definitions (USER-GUIDE 4.2). */
   columns?: JazminColumnInput[];
 }
@@ -796,7 +811,7 @@ export interface UpdateOptions extends RewriteProgressOptions {
    */
   indexes?: Record<string, JazminIndexKind | JazminIndexKind[] | null>;
   /** A new sort order (null or [] for none): every row is put in it, within a memory budget. */
-  sortedBy?: string[] | null;
+  sortedBy?: SortOrder | null;
   /** Rows sorted in memory at a time when re-sorting (default by priority: 10,000, 25,000 or 100,000); more go through temporary files locked with a key of their own. */
   sortRunRows?: number;
   /** New tables, written after the others. rows: any iterable, read once (put in sortedBy's order within the memory budget). */
@@ -944,7 +959,10 @@ export class JazminReader implements Iterable<JazminRow> {
   readonly submissionKey: JazminKey | null;
   /** True when an interrupted append was found at the end of the file and the previous version was used. */
   readonly recovered: boolean;
+  /** The order's leading plain keys: those every reader relies on (see sort). */
   readonly sortedBy: string[] | undefined;
+  /** The whole order when a key compares text another way (1.7, spec 6.7); else undefined (the order is sortedBy). */
+  readonly sort: SortKey[] | undefined;
   readonly kdfIterations: number | undefined;
   /** Access-control details, or null for ordinary files. */
   readonly access: AccessInfo | null;

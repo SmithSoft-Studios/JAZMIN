@@ -590,6 +590,19 @@ using (var journal = JazminReader.Open(journalPath))
     // 31. [9957, 9907, 9857]
 }
 
+// --- 32. Text kept ignoring case and accents, with numbers by value (USER-GUIDE 16.1): Update puts the rows in that order.
+var namesPath = Path.Combine(dir, "names.jzm");
+using (var writer = JazminWriter.Create(namesPath, [new JazminColumn("name", JazminType.String)]))
+{
+    foreach (var name in new[] { "file10", "File2", "émile", "file1", "Apple" }) writer.WriteValues(name);
+}
+JazminFile.Update(namesPath, new JazminUpdate { Sort = [new JazminSortKey("name") { NoCase = true, Natural = true }] });
+using (var namesReader = JazminReader.Open(namesPath))
+{
+    Console.WriteLine($"32. [{string.Join(", ", namesReader.Rows().Select(r => r["name"]))}] {string.Join(", ", namesReader.Sort!)}");
+    // 32. [Apple, émile, file1, File2, file10] name (nocase, natural)
+}
+
 Directory.Delete(dir, true);
 
 public readonly record struct Money(long Cents, string Currency);

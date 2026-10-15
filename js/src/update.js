@@ -9,9 +9,10 @@ import { grantExpiry, toMs } from './expiry.js';
 import { JazminAccessKey, parseAnyKey } from './keys.js';
 import { FILE_SOURCE } from './files.js';
 import { COMPACT_INDEXES, FILE_STATE, JazminReader, OWNER_GRANTS, OWNER_LOCKS, ROWS_BY_PARTITION, checkWriterFeatures } from './reader.js';
-import { INDEX_KINDS, compareKeys, keyId, normalizeValue, toKey } from './types.js';
+import { INDEX_KINDS, keyId, normalizeValue, toKey } from './types.js';
 import { withLock } from './lock.js';
 import { RowSorter, SORT_RUN_ROWS } from './sort-rows.js';
+import { normalizeOrder, orderComparer, orderKeyMaker } from './sort-keys.js';
 import { linksAfter } from './links.js';
 import { JazminWriter, KEPT_LOCKS, PROGRESS_TOTAL } from './writer.js';
 
@@ -58,17 +59,6 @@ function replaceOpenFile(temp, path) {
 
 function keyText(value) {
   return typeof value === 'bigint' ? `${value}n` : value;
-}
-
-function compareTuples(a, b) {
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] === b[i]) continue;
-    if (a[i] === null) return -1;
-    if (b[i] === null) return 1;
-    const c = compareKeys(a[i], b[i]);
-    if (c !== 0) return Number.isNaN(c) ? 0 : c;
-  }
-  return 0;
 }
 
 /**
@@ -208,7 +198,7 @@ export function updateUnlocked(path, options = {}) {
         ? {
           tables: [
             ...kept.map((r) => ({
-              name: finalName(r.table), columns: plans.get(r)?.columns ?? columnsWithIndexes(r), sortedBy: plans.has(r) ? plans.get(r).sortedBy : r.sortedBy,
+              name: finalName(r.table), columns: plans.get(r)?.columns ?? columnsWithIndexes(r), sortedBy: plans.has(r) ? plans.get(r).sortedBy : r.sort ?? r.sortedBy,
               ...(owner ? tableLayout(r[OWNER_GRANTS]) : {}),
             })),
             ...addTables.map((t) => ({
@@ -307,22 +297,25 @@ function planTableChanges(reader, changes, context) {
     throw new JazminValidationError(`${name}: set: { column: value, ... }`);
   }
 
-  // The sort order afterwards: the file's, or a new one (sortedBy; null or [] for none).
-  const target = targetSortedBy(newSortedBy, reader.sortedBy);
+  // The sort order afterwards: the file's (other text comparisons included, spec 6.7), or a new one (sortedBy; null or
+  // [] for none).
+  const order = reader.sort ?? reader.sortedBy;
+  const target = targetSortedBy(newSortedBy, order);
+  const targetNames = target?.map(orderColumn);
   const partitionBy = owner ? reader[OWNER_GRANTS].partitionBy : null;
   if (regroup && !partitionBy) throw new JazminValidationError('regroup applies to access-controlled files with partitionBy');
-  if (regroup && target && target[0] !== partitionBy) {
-    throw new JazminValidationError(`regroup would break the sortedBy order [${target.join(', ')}]: `
+  if (regroup && target && targetNames[0] !== partitionBy) {
+    throw new JazminValidationError(`regroup would break the sortedBy order [${targetNames.join(', ')}]: `
       + `it needs no sortedBy, or one that starts with the partition column '${partitionBy}' (then rows are already grouped)`);
   }
 
   // Nested columns may gain fields at the end of their objects (spec 5.4): their new definitions are given; and
   // columns may get, change or lose indexes. The old first sort column found its values by the order, with no index
   // of its own: re-sorted away from it, it gets a sorted index, so lookups on it stay fast, unless `indexes` names it.
-  const resortAsked = !sameNames(target, reader.sortedBy);
+  const resortAsked = !sameOrder(target, order);
   const current = columnsWithIndexes(reader);
   const was = current.find((c) => c.name === reader.sortedBy?.[0]);
-  const keepLookup = resortAsked && was && target?.[0] !== was.name && !(indexes && Object.hasOwn(indexes, was.name))
+  const keepLookup = resortAsked && was && targetNames?.[0] !== was.name && !(indexes && Object.hasOwn(indexes, was.name))
     && INDEX_KINDS.sorted.has(was.type) && !was.index.includes('sorted');
   const wanted = keepLookup ? { ...(indexes ?? {}), [was.name]: [...was.index, 'sorted'] } : indexes;
   const { columns } = growColumns(withIndexes(current, wanted), given, normalizeColumns);
@@ -354,7 +347,7 @@ function planTableChanges(reader, changes, context) {
   const matches = set ? compileFilter(where, columns) : null;
   // Rows whose sort columns are set move. When few match (up to the sort budget) they are found first, by the file's
   // indexes, held, and merged in at their new place as the table streams; more go through the sorter.
-  const setsOrder = Boolean(target) && setColumns.some((c) => target.includes(c));
+  const setsOrder = Boolean(target) && setColumns.some((c) => targetNames.includes(c));
   const { runRows } = sorterOptions(context);
 
   const keyOf = (row) => JSON.stringify(keyColumns.map((k) => {
@@ -362,12 +355,11 @@ function planTableChanges(reader, changes, context) {
     const v = normalizeValue(c.type, row[k], k);
     return v === null ? null : keyText(keyId(toKey(c.type, v)));
   }));
-  const sortedBy = reader.sortedBy;
-  const sortKeyOf = (row) => sortedBy.map((k) => {
-    const c = byName.get(k);
-    const v = normalizeValue(c.type, row[k], k);
-    return v === null ? null : toKey(c.type, v);
-  });
+  const sortedBy = order;
+  const orderKeys = sortedBy ? normalizeOrder(sortedBy, columns).keys : null;
+  const orderKey = orderKeys ? orderKeyMaker(orderKeys) : null;
+  const compareTuples = orderKeys ? orderComparer(orderKeys) : null;
+  const sortKeyOf = (row) => orderKey((col) => normalizeValue(columns[col].type, row[columns[col].name], columns[col].name));
   const pending = new Map(); // upsert key -> { row, matched }
   for (const row of upsert) pending.set(keyOf(row), { row, matched: false });
   const isDeleted = deleteWhere ? compileFilter(deleteWhere, columns) : null;
@@ -513,15 +505,24 @@ function packageAfter(settings, { removed, names, first, changed }) {
   return { ...settings, edit: { ...settings.edit, table: names.get(table) ?? table } };
 }
 
-/** The sort order a rewrite gives a table: its own (`given` undefined), none (null or []), or the names given. */
+/** The sort order a rewrite gives a table: its own (`given` undefined), none (null or []), or the keys given. */
 function targetSortedBy(given, current) {
   if (given === undefined) return current;
   if (given === null || (Array.isArray(given) && given.length === 0)) return undefined;
-  if (!Array.isArray(given) || given.some((n) => typeof n !== 'string' || !n)) throw new JazminValidationError('sortedBy must be an array of column names, or null for none');
+  if (!Array.isArray(given) || given.some((k) => !(typeof k === 'string' ? k : k?.column))) {
+    throw new JazminValidationError('sortedBy must be an array of column names (or { column, nocase, natural }), or null for none');
+  }
   return given;
 }
 
-const sameNames = (a, b) => (a?.length ?? 0) === (b?.length ?? 0) && (a ?? []).every((n, i) => n === b[i]);
+/** An order key's column: the name, or { column }'s. */
+const orderColumn = (k) => (typeof k === 'string' ? k : k.column);
+
+/** Whether two orders are the same: the same columns, compared the same way. */
+const sameOrder = (a, b) => {
+  const text = (order) => JSON.stringify((order ?? []).map((k) => (typeof k === 'string' ? [k, false, false] : [k.column, k.nocase === true, k.natural === true])));
+  return text(a) === text(b);
+};
 
 /** Columns with the indexes `indexes` gives them ({ column: kind | [kinds] | [] }); columns not named keep theirs. */
 function withIndexes(columns, indexes) {
