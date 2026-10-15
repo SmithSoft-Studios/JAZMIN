@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { JazminKey, applyChanges, compact, open, update, write, writeChanges } from '../src/index.js';
+import { JazminKey, JazminWriter, applyChanges, compact, open, update, write, writeChanges } from '../src/index.js';
 import '../browser/jazmin-browser.js';
 
 const { JazminBrowser } = globalThis;
@@ -214,6 +214,62 @@ test('a shared file: the sender found by submission key, limited to its grant\'s
 
   // Not a change file of this file's senders at all.
   assert.throws(() => applyChanges(file, write(null, [{ a: 1 }], { key: JazminKey.generate() }), { key: owner }), /doesn't open with the submission key of any key granted/);
+});
+
+test("a shared file of several tables: the sender is checked against the document's table, not the file's first", () => {
+  const dir = tmp();
+  const file = path.join(dir, 'customers.jzm');
+  const owner = JazminKey.generate();
+  const bob = owner.createAccessKey();
+  const sally = owner.createAccessKey();
+  // The first table is partitioned by customer_id and has no groups; the editable one by customer, with a group.
+  const writer = new JazminWriter(file, {
+    key: owner,
+    tables: [
+      { name: 'catalogue', columns: [{ name: 'customer_id', type: 'string', nullable: false }, { name: 'sku', type: 'string' }], partitionBy: 'customer_id' },
+      {
+        name: 'requests',
+        columns: [{ name: 'request_id', type: 'string', nullable: false }, { name: 'customer', type: 'string' }, { name: 'kind', type: 'string' }, { name: 'note', type: 'string' }, { name: 'staff_note', type: 'string' }],
+        partitionBy: 'customer', columnGroups: { staff: ['staff_note'] },
+      },
+    ],
+    files: [doc],
+    package: { entry: 'index.html', edit: { table: 'requests', key: ['request_id'], columns: ['kind', 'note', 'staff_note'], add: true, delete: false } },
+    access: { grants: [{ key: bob, rows: ['C1'], columns: ['*'] }, { key: sally, rows: ['C2'], columns: '*' }] },
+  });
+  writer.writeRows([{ customer_id: 'C1', sku: 'A' }, { customer_id: 'C2', sku: 'B' }]);
+  writer.startTable('requests');
+  writer.writeRows([{ request_id: 'R-1', customer: 'C1', kind: 'order', note: null, staff_note: 'x' }, { request_id: 'R-2', customer: 'C2', kind: 'order', note: null, staff_note: 'y' }]);
+  writer.finish();
+
+  // Bob (customer C1, the default group only) changes his request and adds one: it goes into C1, his partition.
+  const asBob = open(file, { key: bob.export(), accessState: false });
+  const change = writeChanges(asBob, { update: [{ request_id: 'R-1', note: 'urgent' }], add: [{ request_id: 'R-9', kind: 'dispute', note: 'wrong price' }] });
+  asBob.close();
+  assert.deepEqual(applyChanges(file, change, { key: owner }), { sender: bob.id, fileChanged: false, updated: 1, added: 1, deleted: 0, conflicts: [], refused: [] });
+  const reader = open(file, { key: owner, table: 'requests' });
+  const rows = Object.fromEntries([...reader.rows()].map((r) => [r.request_id, r]));
+  reader.close();
+  assert.equal(rows['R-1'].note, 'urgent');
+  assert.deepEqual([rows['R-9'].customer, rows['R-9'].kind], ['C1', 'dispute']);
+
+  // Still limited by his grant on that table: not another customer's request, not the staff group's column.
+  const forged = write(null, [
+    { 'jazmin.op': 'update', 'jazmin.set': ['note'], request_id: 'R-2', kind: null, note: 'mine', 'jazmin.before.kind': null, 'jazmin.before.note': null, staff_note: null, 'jazmin.before.staff_note': null },
+    { 'jazmin.op': 'update', 'jazmin.set': ['staff_note'], request_id: 'R-1', kind: null, note: null, 'jazmin.before.kind': null, 'jazmin.before.note': null, staff_note: 'z', 'jazmin.before.staff_note': 'x' },
+  ], {
+    columns: [
+      { name: 'jazmin.op', type: 'string', nullable: false }, { name: 'jazmin.set', type: 'json' }, { name: 'request_id', type: 'string', nullable: false },
+      { name: 'kind', type: 'string' }, { name: 'note', type: 'string' }, { name: 'jazmin.before.kind', type: 'string' }, { name: 'jazmin.before.note', type: 'string' },
+      { name: 'staff_note', type: 'string' }, { name: 'jazmin.before.staff_note', type: 'string' },
+    ],
+    metadata: { 'jazmin.changes': { version: 1, file: 'x', table: 'requests', key: ['request_id'], columns: ['kind', 'note'], sender: bob.id } },
+    key: open(file, { key: bob.export(), accessState: false }).submissionKey,
+  });
+  assert.deepEqual(applyChanges(file, forged, { key: owner }).refused, [
+    { op: 'update', key: { request_id: 'R-2' }, reason: "the row is in partition 'C2', which this sender isn't granted" },
+    { op: 'update', key: { request_id: 'R-1' }, reason: "column 'staff_note' can't be changed by this sender" },
+  ]);
 });
 
 test("the browser reader makes the same change files (a viewer's), and the library applies them", async () => {

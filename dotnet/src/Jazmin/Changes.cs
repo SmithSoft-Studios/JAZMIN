@@ -445,9 +445,10 @@ internal static class Changes
             if (!SameType(mine, c)) throw new JazminValidationException($"Column '{baseName}' is {TypeName(c.Type)} in the change file, {TypeName(mine.Type)} in this file");
         }
 
-        var partitionBy = target.Access?.PartitionBy;
+        // The partitions and groups are the document's table's: another table of the file may have its own.
+        var partitionBy = table.Access?.PartitionBy;
         var own = grant?.Rows is { } rows ? rows.ToHashSet(StringComparer.Ordinal) : null;
-        var covered = grant?.Columns is { } groups ? groups.SelectMany(g => target.Access!.GroupColumns!.TryGetValue(g, out var cs) ? cs : []).ToHashSet(StringComparer.Ordinal) : null;
+        var covered = grant?.Columns is { } groups ? groups.SelectMany(g => table.Access!.GroupColumns!.TryGetValue(g, out var cs) ? cs : []).ToHashSet(StringComparer.Ordinal) : null;
         bool MayWrite(string name) => edit.Columns.Contains(name, StringComparer.Ordinal) && changeColumns.ContainsKey(name) && (covered is null || covered.Contains(name));
         bool OwnsPartition(IReadOnlyDictionary<string, object?> row) => partitionBy is null || own is null || own.Contains(Canonical(row[partitionBy]));
 
