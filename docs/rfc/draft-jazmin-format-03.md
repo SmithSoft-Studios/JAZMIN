@@ -665,10 +665,19 @@ text) and `segment` when an append wrote the directories.
   https origins the page may contact, whether WebAssembly is allowed, `pdf`,
   the page settings for the document's PDFs (below), and `edit`, what the
   document may change (7.9), `keyService`, the https address of the
-  owner's key service for the file's online locks (6.8.2), and `masks`, how
-  viewers show masked columns' revealed values (7.6.8). Viewers MUST
+  owner's key service for the file's online locks (6.8.2), `masks`, how
+  viewers show masked columns' revealed values (7.6.8), and `online`,
+  whether the document needs the network (below). Viewers MUST
   treat stored files as untrusted content and SHOULD derive the page's
   security policy from these settings only.
+- **Documents that need the network:** `online` is `"required"` (the
+  document does not work offline: it loads scripts, styles or data it needs
+  from the https origins it may contact) or `"optional"` (it works offline
+  with less, such as a font that falls back). Writers MUST refuse it without
+  at least one such origin. Viewers SHOULD tell the person that the document
+  uses the internet, naming those origins, and with `"required"`, while the
+  device is offline, SHOULD say so instead of showing a document that can't
+  work. Readers that don't know `online` ignore it.
 - Writers MUST NOT reuse a content id within a file, so block section ids
   stay unique across appends.
 
@@ -1170,8 +1179,9 @@ token, or both: the locks of 6.8.1.
   other's values); viewers that know masks show a row's value from the
   unmasked column when it is not null, else from the masked column once
   unlocked, else as masked.
-- **Readers** list a masked column (name, type, lock) and give no value for
-  it until its lock is unlocked: then they derive `L`, open `C(g)` (a tag that
+- **Readers** list a masked column (name, type, lock, and its place among
+  the columns they give, now or once unlocked, so viewers show it where it
+  was defined) and give no value for it until its lock is unlocked: then they derive `L`, open `C(g)` (a tag that
   doesn't verify means a wrong password or token), and read the group as any
   granted group. An unlock lasts while the reader is open.
 - **The owner** derives `C(g)` as for any group. The owner directory's
@@ -1200,6 +1210,10 @@ token, or both: the locks of 6.8.1.
   or loses focus; and after how long without input (0: never). Readers SHOULD
   default to `value`, 30, true and 60. These steer viewers: a key holder who
   unlocked a column can read its values with the library whatever they say.
+  Viewers SHOULD also mask revealed values in what they print. A viewer MAY
+  tell a page that embeds it, when that page asks, that a value or a column
+  was revealed (the column and the lock); it MUST NOT pass on the value or
+  which row it was.
 
 ### 7.7. Time-Limited Access
 
@@ -1947,6 +1961,11 @@ indexes, embedded files) written by both reference implementations.
   accents, or with the numbers inside it by value. `sorted_by` keeps the
   leading plain keys, so readers that don't know `sort` read the table
   correctly with the part of the order they know.
+- **Since format 1.0, documents that need the network (6.8):** `online` in
+  the package settings, `"required"` or `"optional"`. Readers that don't know
+  it ignore it; writers of releases 1.0 to 1.6 leave it out when they rewrite
+  the package settings, and viewers then show the document without saying it
+  needs the internet.
 - **Since format 1.0, key services for locks (6.8.2):** `keyService` in the
   package settings and in directory and owner-directory locks. Readers that
   don't know it ignore it; writers of releases 1.0 to 1.6 leave it out when

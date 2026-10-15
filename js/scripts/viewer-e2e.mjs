@@ -352,6 +352,13 @@ write(servicePath, [{ n: 1 }], {
 });
 const serviceToken = issueFileUnlockToken(servicePath, serviceOwner, 'medical');
 
+// A document that needs the network (spec 6.8): it names the origins it loads from (none is reached in this test).
+write(path.join(temp, 'online.jzm'), [{ n: 1 }], {
+  columns: [{ name: 'n', type: 'int' }],
+  files: [{ path: 'index.html', content: '<!doctype html><title>Online</title><body><p>Chart</p><script>jazmin.ready({ shown: true })</script></body>' }],
+  package: { entry: 'index.html', title: 'Online', allowedOrigins: ['https://cdn.jsdelivr.net', 'https://fonts.googleapis.com'], online: 'required' },
+});
+
 // Masked columns (spec 7.6.8): account masked with its format kept, salary masked only from id 2. Revealed account
 // values show for 2 seconds here (30 by default).
 const maskedOwner = JazminKey.generate();
@@ -727,6 +734,24 @@ for (const name of chosen) {
     results.push({
       browser: name, label: "a lock's key service: Sign in opens its window, which posts the token back, and the file opens; other origins are ignored", ok: serviceOk,
       problems: serviceOk ? [] : [JSON.stringify({ signInButton, forgedIgnored, serviceUnlocked, scan })],
+    });
+
+    // A document that needs the network: the note names its origins; offline it waits with a message, then shows.
+    await page.navigate(`${base}/js/viewer/index.html`);
+    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+    await page.evaluate(`(Object.defineProperty(navigator, 'onLine', { get: () => window.jzOnline !== false, configurable: true }), window.jzOnline = false, true)`);
+    await page.evaluate(`fetch('/e2e/online.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'online.jzm')).then(() => true)`);
+    await waitFor(page, `!document.getElementById('jz-offline').hidden`, 'the offline message');
+    const offlineState = await page.evaluate(`({ note: document.getElementById('jz-online').textContent, what: document.getElementById('jz-offline-what').textContent,
+      frameHidden: document.getElementById('jz-frame').hidden })`);
+    await page.evaluate(`(window.jzOnline = true, dispatchEvent(new Event('online')), true)`);
+    await waitFor(page, `document.getElementById('jz-offline').hidden && !document.getElementById('jz-frame').hidden
+      && JazminViewer.state.lastReady && JazminViewer.state.lastReady.info && JazminViewer.state.lastReady.info.shown`, 'the document once online');
+    const onlineOk = offlineState.note === 'This document loads what it needs from the internet (cdn.jsdelivr.net, fonts.googleapis.com).'
+      && offlineState.what === 'This document needs the internet: it loads from cdn.jsdelivr.net, fonts.googleapis.com.' && offlineState.frameHidden === true;
+    results.push({
+      browser: name, label: 'a document that needs the network: its note names the origins; offline it waits with a message, and shows once online', ok: onlineOk,
+      problems: onlineOk ? [] : [JSON.stringify(offlineState)],
     });
 
     // Masked columns: each in its place showing its masked text; Unlock… in its header; then Reveal one value at a time,

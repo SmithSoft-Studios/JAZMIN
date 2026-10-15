@@ -175,6 +175,22 @@ public sealed class JazminPackage
     /// column, for how long, and when they are masked again.
     /// </summary>
     public IReadOnlyDictionary<string, JazminMaskView>? Masks { get; init; }
+
+    /// <summary>
+    /// The document needs the network (1.7, spec 6.8): viewers say so, naming <see cref="AllowedOrigins"/>, which it
+    /// needs. Null: not said.
+    /// </summary>
+    public JazminOnline? Online { get; init; }
+}
+
+/// <summary>How much a document needs the network (spec 6.8).</summary>
+public enum JazminOnline
+{
+    /// <summary>It works offline with less, such as a font that falls back.</summary>
+    Optional,
+
+    /// <summary>It doesn't work offline: it loads what it needs from its allowed origins.</summary>
+    Required,
 }
 
 /// <summary>Validation, media types and the stored-content model for embedded files (spec 6.8).</summary>
@@ -241,6 +257,12 @@ internal static class EmbeddedFiles
         if (package.Edit is { } edit) json["edit"] = Changes.EditJson(edit);
         if (package.KeyService is { } keyService) json["keyService"] = CheckKeyService(keyService, "package.keyService");
         if (package.Masks is { } masks) json["masks"] = Jazmin.Masks.PackageJson(masks);
+        if (package.Online is { } online)
+        {
+            if (package.AllowedOrigins is not { Count: > 0 })
+                throw new JazminValidationException("package.online needs AllowedOrigins: the https origins the document loads from");
+            json["online"] = online == JazminOnline.Required ? "required" : "optional";
+        }
         return json;
     }
 
@@ -270,6 +292,8 @@ internal static class EmbeddedFiles
         Edit = Changes.EditFrom(o["edit"]),
         KeyService = KeyServiceAddress(o["keyService"]),
         Masks = Jazmin.Masks.PackageFrom(o["masks"]),
+        Online = (o["online"] as JsonValue)?.TryGetValue<string>(out var online) == true
+            ? online switch { "required" => JazminOnline.Required, "optional" => JazminOnline.Optional, _ => null } : null,
     };
 
     private static readonly string[] PdfFormats = ["A0", "A1", "A2", "A3", "A4", "A5", "A6", "Letter", "Legal", "Tabloid", "Ledger"];

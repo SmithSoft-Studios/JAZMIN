@@ -931,7 +931,9 @@ public static class JazminFile
         if (plan.Removed.Contains(table)) throw new JazminValidationException($"The document's edits change table '{table}', which is being removed: change Package.Edit first");
         return new JazminPackage
         {
+            // Every setting kept: only the edited table's name changes.
             Entry = package.Entry, Title = package.Title, AllowedOrigins = package.AllowedOrigins, AllowWasm = package.AllowWasm, Pdf = package.Pdf,
+            KeyService = package.KeyService, Masks = package.Masks, Online = package.Online,
             Edit = edit with { Table = plan.Names.TryGetValue(table, out var to) ? to : table },
         };
     }

@@ -221,6 +221,11 @@ export interface PackageSettings {
   keyService?: string;
   /** How viewers show masked columns' revealed values, by column (1.7, spec 7.6.8). */
   masks?: Record<string, MaskViewSettings>;
+  /**
+   * The document needs the network (1.7, spec 6.8): 'required' (it doesn't work offline) or 'optional' (it works with
+   * less). Viewers say so, naming allowedOrigins, which it needs.
+   */
+  online?: 'required' | 'optional';
 }
 
 /** How viewers show a masked column's revealed values (defaults: 'value', 30, true, 60). */
