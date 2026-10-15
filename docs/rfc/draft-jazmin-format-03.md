@@ -1184,6 +1184,11 @@ token, or both: the locks of 6.8.1.
 - **Older readers** don't know `masks`: to them the masked group is a group
   their key isn't granted, so the column is hidden; the shown and unmasked
   columns are ordinary columns.
+- **Grants in the owner directory** name masked groups in `maskedColumns`,
+  not in `columns`, and a grant of every group lists the groups that aren't
+  masked in `columns`, with `allColumns: true`. So a writer that doesn't know
+  masks grants no one a masked group when it rewrites the key slots: the
+  column is hidden from keys rather than given to them unmasked.
 - **Writer feature:** a file with a masked column names the writer feature
   `masked-columns` (12): a writer that rewrote its key slots without `masks`
   would leave keys without the column.
@@ -1933,9 +1938,10 @@ indexes, embedded files) written by both reference implementations.
   access-controlled file shown masked until its lock opens: `masks` in key
   slots, the owner directory and the package settings. Readers that don't
   know them see the column as one their key isn't granted. Writer feature
-  `masked-columns`; releases 1.0 to 1.6 don't check it, and an append with
-  them would write key slots without `masks`, so keys would lose the column
-  until a 1.7 rewrite (the owner keeps it).
+  `masked-columns`; releases 1.0 to 1.6 don't check it, and an append or
+  rewrite with them writes key slots and an owner directory without `masks`:
+  as grants list masked groups apart (7.6.8), keys then lose the column (it
+  is never given unmasked), and the owner keeps it, to mask again.
 - **Since format 1.0, other text orders (6.7):** a table's optional `sort`
   (catalog field 13 of `Table`): keys that compare text ignoring case and
   accents, or with the numbers inside it by value. `sorted_by` keeps the
