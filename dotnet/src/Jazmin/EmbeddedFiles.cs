@@ -24,6 +24,15 @@ public sealed class JazminFileInput
         FilePath = filePath;
     }
 
+    /// <summary>
+    /// A file read from disk (block by block, so it is never fully in memory), with any of the settings below:
+    /// <c>new JazminFileInput("contract.pdf", new FileInfo("./contract.pdf")) { Lock = "contracts" }</c>.
+    /// </summary>
+    public JazminFileInput(string path, FileInfo file)
+        : this(path, (file ?? throw new ArgumentNullException(nameof(file))).FullName)
+    {
+    }
+
     /// <summary>A file read from disk (block by block, so it is never fully in memory).</summary>
     public static JazminFileInput FromFile(string path, string filePath, IReadOnlyList<string>? groups = null, string? type = null) =>
         new(path, filePath) { Groups = groups, Type = type };
@@ -53,6 +62,12 @@ public sealed class JazminFileInput
     /// sees the file through several groups may do what any of them allows.
     /// </summary>
     public IReadOnlyDictionary<string, JazminFileActions>? GroupActions { get; init; }
+
+    /// <summary>
+    /// Shared files: the id of the lock (one of <see cref="JazminWriteOptions.Locks"/>) that must be opened before the
+    /// file is (1.7, spec 6.8.1).
+    /// </summary>
+    public string? Lock { get; init; }
 }
 
 /// <summary>An embedded file visible to the current key.</summary>
@@ -66,6 +81,12 @@ public sealed record JazminEmbeddedFile(string Path, string Type, long Size, str
 
     /// <summary>The owner of an access-controlled file: each group's actions, when they differ (1.7); else null.</summary>
     public IReadOnlyDictionary<string, JazminFileActions?>? GroupActions { get; init; }
+
+    /// <summary>
+    /// The file's lock, when it has one (1.7): reading it throws <see cref="JazminFileLockedException"/> until
+    /// <see cref="JazminReader.Unlock"/> opens the lock.
+    /// </summary>
+    public JazminLockInfo? Lock { get; init; }
 }
 
 /// <summary>
@@ -363,6 +384,7 @@ internal sealed class FileSource
     public required List<string> Groups { get; init; }
     public JsonObject? Actions { get; init; }
     public Dictionary<string, JsonObject?>? GroupActions { get; init; }
+    public string? Lock { get; init; }
     public required long Size { get; init; }
     public required string Sha256 { get; init; }
     public required Func<long, int, byte[]> Read { get; init; }
@@ -379,12 +401,14 @@ internal sealed class FileSource
             if (!groups.Contains(group)) throw new JazminValidationException($"File '{path}': GroupActions: '{group}' is not one of the file's groups ({string.Join(", ", groups)})");
             (groupActions ??= new(StringComparer.Ordinal))[group] = EmbeddedFiles.ActionsJson(given, path);
         }
+        if (input.Lock is { Length: < 1 or > 64 }) throw new JazminValidationException($"File '{path}': Lock must be a lock id (1 to 64 characters)");
+        var lockId = input.Lock;
         if ((input.Content is null) == (input.FilePath is null)) throw new JazminValidationException($"File '{path}': supply exactly one of content or file");
         if (input.Content is { } bytes)
         {
             return new FileSource
             {
-                Path = path, Type = type, Groups = groups, Actions = actions, GroupActions = groupActions, Size = bytes.Length,
+                Path = path, Type = type, Groups = groups, Actions = actions, GroupActions = groupActions, Lock = lockId, Size = bytes.Length,
                 Sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
                 Read = (offset, length) => bytes.AsSpan((int)offset, length).ToArray(),
             };
@@ -399,7 +423,7 @@ internal sealed class FileSource
         }
         return new FileSource
         {
-            Path = path, Type = type, Groups = groups, Actions = actions, GroupActions = groupActions, Size = size, Sha256 = sha,
+            Path = path, Type = type, Groups = groups, Actions = actions, GroupActions = groupActions, Lock = lockId, Size = size, Sha256 = sha,
             Read = (offset, length) =>
             {
                 using var stream = File.OpenRead(disk);
@@ -420,12 +444,17 @@ internal sealed class StoredContent
     public required string Sha256 { get; init; }
     public int BlockSize { get; init; } = EmbeddedFiles.BlockSize;
     public byte[]? Key { get; init; }
+
+    /// <summary>The content's lock (spec 6.8.1): directories then hold its key sealed under the lock's key, not <see cref="Key"/>.</summary>
+    public string? Lock { get; init; }
+
     public required List<(long Offset, int Length, string? Digest)> Blocks { get; init; }
 
     public JsonObject ToJson()
     {
         var json = new JsonObject { ["id"] = Id, ["size"] = Size, ["sha256"] = Sha256, ["blockSize"] = BlockSize };
-        if (Key is not null) json["key"] = Convert.ToBase64String(Key);
+        if (Lock is not null) json["lock"] = Lock;
+        else if (Key is not null) json["key"] = Convert.ToBase64String(Key);
         json["blocks"] = new JsonArray(Blocks.Select(b =>
         {
             var block = new JsonObject { ["offset"] = b.Offset, ["length"] = b.Length };
@@ -447,14 +476,18 @@ internal sealed class StoredContent
             if (o["blockSize"] is { } bs && !(Count(bs, int.MaxValue) && (long)bs > 0)) return false;
             var blockSize = (long?)o["blockSize"] ?? EmbeddedFiles.BlockSize;
             return (o["key"] is null || Base64(o["key"]))
+                && (o["lock"] is null || Text(o["lock"]) && o["key"] is null)
                 && blocks.Count == ((long)o["size"]! + blockSize - 1) / blockSize
                 && blocks.All(b => b is JsonObject bo && Count(bo["offset"]) && Count(bo["length"], int.MaxValue) && (bo["digest"] is null || Base64(bo["digest"])));
         }
         static bool Entry(JsonNode? f) => f is JsonObject o && Text(o["path"]) && Text(o["type"]) && Count(o["content"], int.MaxValue)
             && (o["groups"] is null || o["groups"] is JsonArray g && g.All(Text));
+        static bool Lock(JsonNode? l) => l is JsonObject o && Text(o["id"]) && Locks.KindFrom(o["kind"] is JsonValue k && k.TryGetValue<string>(out var kind) ? kind : null) is not null
+            && Base64(o["salt"]) && (o["iterations"] is null || Count(o["iterations"], int.MaxValue)) && o["keys"] is JsonObject keys && keys.All(p => Base64(p.Value));
 
         var json = Values.ParseJson(text, "An embedded-file directory", uniqueNames: true) as JsonObject;
-        if (json?["contents"] is not JsonArray contents || json["files"] is not JsonArray files || !contents.All(Content) || !files.All(Entry))
+        if (json?["contents"] is not JsonArray contents || json["files"] is not JsonArray files || !contents.All(Content) || !files.All(Entry)
+            || json["locks"] is not (null or JsonArray) || json["locks"] is JsonArray locks && !locks.All(Lock))
             throw new JazminFormatException("An embedded-file directory is malformed");
         return json;
     }
@@ -466,6 +499,7 @@ internal sealed class StoredContent
         Sha256 = (string)json["sha256"]!,
         BlockSize = (int?)json["blockSize"] ?? EmbeddedFiles.BlockSize,
         Key = json["key"] is { } key ? Convert.FromBase64String((string)key!) : null,
+        Lock = (string?)json["lock"],
         Blocks = json["blocks"]!.AsArray().Select(b => ((long)b!["offset"]!, (int)b["length"]!, (string?)b["digest"])).ToList(),
     };
 }
@@ -475,10 +509,11 @@ internal sealed record FileEntry(string Path, string Type, int Content, List<str
     Dictionary<string, JsonObject?>? GroupActions = null);
 
 /// <summary>The files and saved shapes carried from one version of a file to the next (append / update).</summary>
-internal sealed record FileState(List<FileEntry> Entries, List<StoredContent> Contents, int NextId, JsonObject? Package, List<SavedShape>? Shapes = null);
+internal sealed record FileState(List<FileEntry> Entries, List<StoredContent> Contents, int NextId, JsonObject? Package, List<SavedShape>? Shapes = null,
+    List<LockState>? Locks = null);
 
 /// <summary>Read-only, seekable view of an embedded file; decodes one block at a time.</summary>
-internal sealed class EmbeddedFileStream(JazminReader reader, StoredContent content) : Stream
+internal sealed class EmbeddedFileStream(JazminReader reader, StoredContent content, byte[]? contentKey) : Stream
 {
     private long _position;
     private int _blockIndex = -1;
@@ -503,7 +538,7 @@ internal sealed class EmbeddedFileStream(JazminReader reader, StoredContent cont
         var b = (int)(_position / content.BlockSize);
         if (b != _blockIndex)
         {
-            _block = reader.FileBlock(content, b);
+            _block = reader.FileBlock(content, b, contentKey);
             _blockIndex = b;
         }
         var within = (int)(_position - (long)b * content.BlockSize);

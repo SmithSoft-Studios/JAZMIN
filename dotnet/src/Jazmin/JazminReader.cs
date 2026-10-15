@@ -191,6 +191,12 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
         /// <summary>File-group id -> secret, for the embedded-file groups this key sees (spec 6.8).</summary>
         public Dictionary<string, byte[]> FileSecrets { get; init; } = new(StringComparer.Ordinal);
+
+        /// <summary>Lock id -> lock key, for the locks of stored files this reader opened (spec 6.8.1), with every table.</summary>
+        public Dictionary<string, byte[]> Unlocked { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>Owner only: the owner directory's locks, read once.</summary>
+        public Dictionary<string, LockState>? OwnerLocks { get; set; }
     }
 
     /// <summary>A column group: its columns (by position) and whether this key can open it.</summary>
@@ -1165,6 +1171,8 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     // ---- embedded files (spec 6.8) ---------------------------------------------------------------
 
     private (Dictionary<string, FileEntry> Entries, Dictionary<int, StoredContent> Contents, Dictionary<string, SavedShape> Shapes)? _fileIndex;
+    private readonly Dictionary<string, DirectoryLock> _fileLocks = new(StringComparer.Ordinal); // locks the directories list (spec 6.8.1)
+    private readonly Dictionary<int, byte[]> _contentKeys = new(); // locked contents' keys, once opened
     private List<SavedShape>? _shapeList; // saved shapes this key can use, worked out once
 
     /// <summary>Loads the file directories this key can open, merged by path (once), with their saved shapes merged by name.</summary>
@@ -1202,6 +1210,16 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 {
                     var content = StoredContent.FromJson(c!);
                     contents[content.Id] = content;
+                }
+                foreach (var l in json["locks"]?.AsArray() ?? [])
+                {
+                    var id = (string)l!["id"]!;
+                    if (!_fileLocks.TryGetValue(id, out var known))
+                    {
+                        _fileLocks[id] = known = new DirectoryLock(id, Jazmin.Locks.KindFrom((string?)l["kind"])!.Value, Convert.FromBase64String((string)l["salt"]!),
+                            (int?)l["iterations"], new Dictionary<string, string>(StringComparer.Ordinal));
+                    }
+                    foreach (var (contentId, sealedKey) in l["keys"]!.AsObject()) known.Keys.TryAdd(contentId, (string)sealedKey!);
                 }
                 foreach (var f in json["files"]!.AsArray())
                 {
@@ -1255,6 +1273,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             return entries.Values.Select(e => new JazminEmbeddedFile(e.Path, e.Type, contents[e.Content].Size, contents[e.Content].Sha256, e.Groups?.ToList())
             {
                 Actions = EmbeddedFiles.ActionsFrom(e.Actions),
+                Lock = contents[e.Content].Lock is { } lockId ? LockInfo(lockId) : null,
                 // The owner sees each group's actions when they differ.
                 GroupActions = e.GroupActions is { } byGroup && byGroup.Values.Select(a => a?.ToJsonString() ?? "{}").Distinct().Count() > 1
                     ? byGroup.ToDictionary(p => p.Key, p => EmbeddedFiles.ActionsFrom(p.Value), StringComparer.Ordinal)
@@ -1292,6 +1311,61 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         }
     }
 
+    /// <summary>
+    /// Locks of the stored files this key can see (spec 6.8.1). <see cref="Unlock"/> opens one; the owner key opens every lock.
+    /// </summary>
+    public IReadOnlyList<JazminLockInfo> Locks
+    {
+        get
+        {
+            FileIndex();
+            return _fileLocks.Keys.Order(StringComparer.Ordinal).Select(LockInfo).ToList();
+        }
+    }
+
+    private JazminLockInfo LockInfo(string id) => new(id, _fileLocks.TryGetValue(id, out var l) ? l.Kind : null, LockKeyOf(id) is not null);
+
+    /// <summary>The key of a lock this reader has opened (or, for the owner, the owner directory's), else null.</summary>
+    private byte[]? LockKeyOf(string id) => _access switch
+    {
+        null => null,
+        { IsOwner: true } => OwnerLockStates()!.GetValueOrDefault(id)?.Key,
+        _ => _access.Unlocked.GetValueOrDefault(id),
+    };
+
+    /// <summary>Internal: the owner directory's locks (owner key only), else null.</summary>
+    internal Dictionary<string, LockState>? OwnerLockStates() =>
+        _access is { IsOwner: true } ? _access.OwnerLocks ??= Jazmin.Locks.ReadOwner(OwnerDirectory()["locks"]) : null;
+
+    /// <summary>
+    /// Opens a lock of the stored files (spec 6.8.1) for as long as the file is open (with every table of this reader):
+    /// the password for a password lock, the unlock token (jzf1-..., from the file owner's key service) for an online one,
+    /// both for one of both kinds. Throws <see cref="JazminKeyException"/> when they are wrong.
+    /// </summary>
+    public void Unlock(string lockId, string? password = null, string? unlockToken = null)
+    {
+        FileIndex();
+        if (!_fileLocks.TryGetValue(lockId, out var l)) throw new JazminValidationException($"No lock '{lockId}' is visible with this key");
+        if ((Jazmin.Locks.NeedsPassword(l.Kind) && password is null) || (Jazmin.Locks.NeedsSecret(l.Kind) && unlockToken is null))
+            throw new JazminValidationException($"Lock '{lockId}' needs {Jazmin.Locks.Needs(l.Kind)}");
+        if (LockKeyOf(lockId) is not null) return;
+        Jazmin.Locks.CheckIterations(lockId, l.Kind, l.Iterations);
+        var secret = Jazmin.Locks.NeedsSecret(l.Kind) ? Jazmin.Locks.ParseToken(unlockToken!) : null;
+        var key = Jazmin.Locks.LockKey(lockId, l.Kind, l.Salt, l.Iterations, password, secret);
+        var (contentId, sealedKey) = l.Keys.FirstOrDefault();
+        if (sealedKey is null) throw new JazminFormatException($"Lock '{lockId}' has no sealed keys");
+        try
+        {
+            Jazmin.Locks.Open(key, lockId, int.Parse(contentId, System.Globalization.CultureInfo.InvariantCulture), Convert.FromBase64String(sealedKey));
+        }
+        catch (Exception e) when (e is JazminKeyException or FormatException or OverflowException)
+        {
+            var what = l.Kind switch { JazminLockKind.Password => "password", JazminLockKind.Online => "unlock token", _ => "password or unlock token" };
+            throw new JazminKeyException($"Wrong {what} for lock '{lockId}'");
+        }
+        _access!.Unlocked[lockId] = key;
+    }
+
     private StoredContent FileContent(string path)
     {
         var (entries, contents, _) = FileIndex();
@@ -1299,12 +1373,33 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         return contents[entry.Content];
     }
 
-    internal byte[] FileBlock(StoredContent content, int b)
+    /// <summary>A stored content's key: from its directory, or (locked) unsealed with its lock's key; throws while locked.</summary>
+    private byte[]? ContentKey(StoredContent content, string path)
+    {
+        if (content.Lock is not { } lockId)
+        {
+            if (content.Key is null && (_keys is not null || _access is not null)) throw new JazminFormatException($"Embedded content {content.Id} has no key in an encrypted file");
+            return content.Key;
+        }
+        if (_contentKeys.TryGetValue(content.Id, out var known)) return known;
+        if (!_fileLocks.TryGetValue(lockId, out var l))
+        {
+            // Libraries before 1.7 don't check writer features: one that appended to the file wrote it without its locks.
+            throw new JazminFormatException($"File '{path}' names lock '{lockId}', which the file no longer has: its key is lost "
+                + "(a JAZMIN library older than 1.7 may have appended to the file)");
+        }
+        var lockKey = LockKeyOf(lockId)
+            ?? throw new JazminFileLockedException($"File '{path}' is locked (lock '{lockId}'): unlock it with {Jazmin.Locks.Needs(l.Kind)}", path, lockId, l.Kind);
+        if (!l.Keys.TryGetValue(content.Id.ToString(System.Globalization.CultureInfo.InvariantCulture), out var sealedKey))
+            throw new JazminFormatException($"Embedded content {content.Id} has no key for lock '{lockId}'");
+        return _contentKeys[content.Id] = Jazmin.Locks.Open(lockKey, lockId, content.Id, Convert.FromBase64String(sealedKey));
+    }
+
+    internal byte[] FileBlock(StoredContent content, int b, byte[]? contentKey)
     {
         var block = content.Blocks[b];
         var sectionId = $"file/{content.Id}/{b}";
-        if (content.Key is null && (_keys is not null || _access is not null)) throw new JazminFormatException($"Embedded content {content.Id} has no key in an encrypted file");
-        var key = content.Key is null ? null : Crypto.Hkdf(content.Key, _salt, $"JAZMIN/1/{sectionId}");
+        var key = contentKey is null ? null : Crypto.Hkdf(contentKey, _salt, $"JAZMIN/1/{sectionId}");
         var bytes = ReadSection(new SectionRef(block.Offset, block.Length, block.Digest is null ? null : Convert.FromBase64String(block.Digest)), sectionId, key);
         if (bytes.Length != Math.Min(content.BlockSize, content.Size - (long)b * content.BlockSize))
             throw new JazminFormatException($"Section '{sectionId}' has the wrong length for its embedded file");
@@ -1315,9 +1410,10 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     public byte[] ReadFile(string path)
     {
         var content = FileContent(path);
+        var key = ContentKey(content, path);
         if (content.Size > Array.MaxLength) throw new JazminValidationException($"File '{path}' is too large to read into one array - use OpenFile");
         var bytes = new byte[content.Size];
-        for (var b = 0; b < content.Blocks.Count; b++) FileBlock(content, b).CopyTo(bytes, (long)b * content.BlockSize);
+        for (var b = 0; b < content.Blocks.Count; b++) FileBlock(content, b, key).CopyTo(bytes, (long)b * content.BlockSize);
         if (Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant() != content.Sha256)
             throw new JazminFormatException($"File '{path}' does not match its SHA-256");
         return bytes;
@@ -1327,12 +1423,13 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     public byte[] ReadFileRange(string path, long start, long? end = null)
     {
         var content = FileContent(path);
+        var key = ContentKey(content, path);
         var stop = Math.Min(end ?? content.Size, content.Size);
         if (start < 0 || start > stop) throw new JazminValidationException("Invalid file range");
         var result = new byte[stop - start];
         for (var b = (int)(start / content.BlockSize); (long)b * content.BlockSize < stop; b++)
         {
-            var block = FileBlock(content, b);
+            var block = FileBlock(content, b, key);
             var blockStart = (long)b * content.BlockSize;
             var from = (int)Math.Max(0, start - blockStart);
             var to = (int)Math.Min(block.Length, stop - blockStart);
@@ -1345,15 +1442,30 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// Opens an embedded file as a read-only, seekable stream that decodes one block at a time. Each block is
     /// verified as it is read (authenticated encryption or signed digest); <see cref="ReadFile"/> also checks the SHA-256.
     /// </summary>
-    public Stream OpenFile(string path) => new EmbeddedFileStream(this, FileContent(path));
+    public Stream OpenFile(string path)
+    {
+        var content = FileContent(path);
+        return new EmbeddedFileStream(this, content, ContentKey(content, path));
+    }
 
     /// <summary>Internal: what update/append need to carry the files over (owner / single key only).</summary>
     internal FileState? FileState()
     {
         if (_header.Files is not { } member) return null;
         var (entries, contents, shapes) = FileIndex();
-        return new FileState(entries.Values.Select(e => e with { Groups = e.Groups ?? [EmbeddedFiles.Everyone] }).ToList(), contents.Values.ToList(),
-            member.NextContent, PackageJson, shapes.Values.Select(s => s.Groups.Count > 0 ? s : s with { Groups = [EmbeddedFiles.Everyone] }).ToList());
+        // The owner's locked contents with their keys, which the writer seals again (spec 6.8.1). One whose lock is lost
+        // keeps none: an append refuses it, a rewrite can remove it.
+        var ownerLocks = OwnerLockStates();
+        Dictionary<int, string>? paths = null;
+        StoredContent Carried(StoredContent c)
+        {
+            if (ownerLocks is null || c.Lock is not { } lockId || !_fileLocks.ContainsKey(lockId) || !ownerLocks.ContainsKey(lockId)) return c;
+            paths ??= entries.Values.GroupBy(e => e.Content).ToDictionary(g => g.Key, g => g.First().Path);
+            return new StoredContent { Id = c.Id, Size = c.Size, Sha256 = c.Sha256, BlockSize = c.BlockSize, Key = ContentKey(c, paths[c.Id]), Lock = lockId, Blocks = c.Blocks };
+        }
+        return new FileState(entries.Values.Select(e => e with { Groups = e.Groups ?? [EmbeddedFiles.Everyone] }).ToList(), contents.Values.Select(Carried).ToList(),
+            member.NextContent, PackageJson, shapes.Values.Select(s => s.Groups.Count > 0 ? s : s with { Groups = [EmbeddedFiles.Everyone] }).ToList(),
+            ownerLocks?.Values.ToList() ?? []);
     }
 
     // ---- file properties -------------------------------------------------------------------------
@@ -1400,6 +1512,20 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <c>nested-columns</c>: a reader that doesn't know one refuses the file. Empty for files every 1.x release reads.
     /// </summary>
     public IReadOnlyList<string> ReaderFeatures => _header.ReaderFeatures.ToList();
+
+    /// <summary>
+    /// The writer features of the file (spec 12), such as "file-locks": a library that doesn't know one refuses to modify
+    /// the file (Append, Update, Compact), and still reads it.
+    /// </summary>
+    public IReadOnlyList<string> WriterFeatures => _header.WriterFeatures.ToList();
+
+    /// <summary>Refuses a file with a writer feature this library does not support (spec 12): called before modifying it.</summary>
+    internal void CheckWriterFeatures()
+    {
+        foreach (var feature in _header.WriterFeatures)
+            if (!FormatConstants.SupportedWriterFeatures.Contains(feature) && !FormatConstants.SupportedReaderFeatures.Contains(feature))
+                throw new JazminFormatException($"This file needs the writer feature '{feature}' to be modified, which this JAZMIN library does not support");
+    }
 
     /// <summary>
     /// The submission key (spec 7.8): lock the files you send back to the owner with it, such as records captured

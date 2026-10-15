@@ -3116,8 +3116,30 @@ const unlockToken = issueFileUnlockToken('claim.jzm', owner, 'medical');   // 'j
 reader.unlock('medical', { unlockToken });
 ```
 
-- **Changing locks** (`update` or `append`, owner key): `locks: { contracts:
-  { password: 'new' } }` changes a password without storing the files again;
+The same in .NET:
+
+```csharp
+var options = new JazminWriteOptions
+{
+    Key = owner, Access = new JazminAccessOptions { PartitionBy = "region", Grants = grants },
+    Files = [new JazminFileInput("contract.pdf", new FileInfo("./contract.pdf")) { Lock = "contracts" }],
+    Locks = new Dictionary<string, JazminLockOptions?>
+    {
+        ["contracts"] = new() { Password = "correct horse battery staple" },
+        ["medical"] = new() { Online = true },
+    },
+};
+
+using var reader = JazminReader.Open("claim.jzm", new JazminReadOptions { AccessKey = accessKey });
+reader.Files;                      // contract.pdf: Lock = JazminLockInfo("contracts", Password, Unlocked: false)
+reader.ReadFile("contract.pdf");   // throws JazminFileLockedException (Lock, Kind say what to ask for)
+reader.Unlock("contracts", password: "correct horse battery staple");
+reader.Unlock("medical", unlockToken: JazminFile.IssueFileUnlockToken("claim.jzm", owner, "medical"));
+```
+
+- **Changing locks** (`update` or `append`, owner key; .NET `JazminUpdate.Locks`
+  and `JazminAppend.Locks`): `locks: { contracts: { password: 'new' } }`
+  changes a password without storing the files again;
   `{ password, online: true }` adds a password to an online lock;
   `contracts: null` removes the lock and its files stay, unlocked. Locks you
   don't name are kept. An online lock keeps its secret, so tokens already

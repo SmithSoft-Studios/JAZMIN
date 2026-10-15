@@ -52,6 +52,12 @@ public sealed class JazminUpdate
     /// <summary>Paths of embedded files to remove.</summary>
     public IReadOnlyList<string> RemoveFiles { get; set; } = Array.Empty<string>();
 
+    /// <summary>
+    /// Shared files: locks of stored files to add or change (a new password; an online lock keeps its secret, so issued
+    /// tokens still work), or null to remove one (its files stay, unlocked). The file's other locks are kept (spec 6.8.1).
+    /// </summary>
+    public IReadOnlyDictionary<string, JazminLockOptions?>? Locks { get; set; }
+
     /// <summary>New package settings (default: keep the current ones).</summary>
     public JazminPackage? Package { get; set; }
 
@@ -265,6 +271,12 @@ public sealed class JazminAppend
     /// <summary>Paths of embedded files to remove (their blocks are dropped by the next Compact).</summary>
     public IReadOnlyList<string> RemoveFiles { get; set; } = Array.Empty<string>();
 
+    /// <summary>
+    /// Shared files: locks of stored files to add or change (a new password; an online lock keeps its secret, so issued
+    /// tokens still work), or null to remove one (its files stay, unlocked). The file's other locks are kept (spec 6.8.1).
+    /// </summary>
+    public IReadOnlyDictionary<string, JazminLockOptions?>? Locks { get; set; }
+
     /// <summary>New package settings (default: keep the current ones).</summary>
     public JazminPackage? Package { get; set; }
 
@@ -367,6 +379,7 @@ public static class JazminFile
         JazminReader.KeyRotationPlan plan;
         try
         {
+            reader.CheckWriterFeatures();
             plan = reader.KeyRotation();
             if ((plan.Flags & FormatConstants.FlagAppended) != 0 || plan.Recovered)
             {
@@ -469,6 +482,7 @@ public static class JazminFile
         var sorters = new List<RowSorter>(); // rows put in a new sort order within a memory budget, disposed at the end
         try
         {
+            reader.CheckWriterFeatures();
             var ownerGrants = reader.OwnerGrants;
             if (ownerGrants is null && reader.Access is not null) throw new JazminKeyException("Only the file owner's master key can modify this file");
             if (ownerGrants is null && (update.Grant.Count > 0 || update.Revoke.Count > 0))
@@ -535,6 +549,9 @@ public static class JazminFile
                 Shapes = SavedShapes.Kept(reader.FileState()?.Shapes ?? [], update.AddShapes, update.RemoveShapes)
                     .Select(s => ShapeAfter(s.ToPublic(withGroups: true), plan)).Concat(update.AddShapes).ToList(),
                 Access = access is null ? null : named ? new JazminAccessOptions { Grants = access.Grants } : access,
+                // The file's locks, changed by those given (the writer refuses locks in a file that is not shared).
+                Locks = update.Locks,
+                KeptLocks = ownerGrants is not null ? reader.OwnerLockStates()!.Values.ToList() : null,
                 Now = update.Now, // expired grants are dropped; the new version's fresh secrets lock them out
                 Priority = update.Priority,
                 CompactIndexes = update.CompactIndexes ?? reader.CompactIndexes,
@@ -1018,6 +1035,7 @@ public static class JazminFile
         JazminAppendResult result;
         try
         {
+            reader.CheckWriterFeatures();
             var ownerGrants = reader.OwnerGrants;
             if (ownerGrants is null && reader.Access is not null) throw new JazminKeyException("Only the file owner's master key can modify this file");
             if (ownerGrants is null && append.Grant.Count > 0) throw new JazminValidationException("Grant applies only to access-controlled files");
@@ -1091,6 +1109,7 @@ public static class JazminFile
                 Files = append.AddFiles,
                 Package = append.Package,
                 Shapes = append.AddShapes,
+                Locks = append.Locks,
             }, state with { Deleted = allDeleted, Files = files, ShapeTables = shapeTables });
             try
             {
@@ -1139,10 +1158,13 @@ public static class JazminFile
             if (!entries.Remove(p)) throw new JazminValidationException($"RemoveFiles: no file '{p}'");
         foreach (var f in append.AddFiles) entries.Remove(f.Path);
         return new FileState(entries.Values.ToList(), state?.Contents ?? [], state?.NextId ?? 0, state?.Package,
-            SavedShapes.Kept(state?.Shapes ?? [], append.AddShapes, append.RemoveShapes));
+            SavedShapes.Kept(state?.Shapes ?? [], append.AddShapes, append.RemoveShapes), state?.Locks ?? []);
     }
 
-    /// <summary>The files a rewrite keeps, read block by block from the old version while the new one is written.</summary>
+    /// <summary>
+    /// The files a rewrite keeps, read block by block from the old version while the new one is written. Each keeps its
+    /// lock, unless <see cref="JazminUpdate.Locks"/> removes it.
+    /// </summary>
     private static IEnumerable<FileSource> CarriedFiles(JazminReader reader, JazminUpdate update)
     {
         var state = reader.FileState();
@@ -1154,6 +1176,7 @@ public static class JazminFile
         return existing.Values.Where(e => !dropped.Contains(e.Path)).Select(e => new FileSource
         {
             Path = e.Path, Type = e.Type, Groups = e.Groups ?? [EmbeddedFiles.Everyone], Actions = e.Actions, GroupActions = e.GroupActions,
+            Lock = contents[e.Content].Lock is { } lockId && !(update.Locks?.TryGetValue(lockId, out var given) == true && given is null) ? lockId : null,
             Size = contents[e.Content].Size, Sha256 = contents[e.Content].Sha256,
             Read = (offset, length) => reader.ReadFileRange(e.Path, offset, offset + length),
         }).ToList();
@@ -1230,6 +1253,19 @@ public static class JazminFile
         if (grant["expires"] is { } expires && (now ?? DateTimeOffset.UtcNow) > DateTimeOffset.Parse((string)expires!, CultureInfo.InvariantCulture))
             throw new JazminAccessExpiredException($"Access for key {keyId} expired at {(string)expires!}");
         return UnlockTokens.Encode(Convert.FromBase64String((string)grant["share"]!));
+    }
+
+    /// <summary>
+    /// Key service: the unlock token (jzf1-...) of an online lock of the file's stored files (spec 6.8.1), for
+    /// <see cref="JazminReader.Unlock"/>, handed out after the service's own checks (sign-in, 2FA, the person's grant).
+    /// Owner key required. The token stays the same across updates and appends, and when the lock's password changes.
+    /// </summary>
+    public static string IssueFileUnlockToken(string path, JazminKey ownerKey, string lockId)
+    {
+        using var reader = JazminReader.Open(path, new JazminReadOptions { Key = ownerKey });
+        var locks = reader.OwnerLockStates() ?? throw new JazminValidationException("File unlock tokens exist only for access-controlled files, and need the owner key");
+        if (!locks.TryGetValue(lockId, out var l)) throw new JazminValidationException($"No lock '{lockId}' in this file");
+        return Locks.EncodeToken(l.Secret ?? throw new JazminValidationException($"Lock '{lockId}' is a password lock: it has no unlock token"));
     }
 
     /// <summary>

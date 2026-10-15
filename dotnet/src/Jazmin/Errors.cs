@@ -44,6 +44,26 @@ public class JazminAccessExpiredException : JazminKeyException
 }
 
 /// <summary>
+/// A stored file is locked (spec 6.8.1): <see cref="JazminReader.Unlock"/> with what <see cref="Kind"/> needs opens it.
+/// </summary>
+public class JazminFileLockedException : JazminKeyException
+{
+    public JazminFileLockedException(string message, string path, string lockId, JazminLockKind kind) : base(message)
+    {
+        Path = path;
+        Lock = lockId;
+        Kind = kind;
+    }
+
+    public string Path { get; }
+
+    /// <summary>The lock's id.</summary>
+    public string Lock { get; }
+
+    public JazminLockKind Kind { get; }
+}
+
+/// <summary>
 /// An online key needs an unlock token from the file owner's key service. <see cref="FileId"/> and
 /// <see cref="KeyId"/> identify what to ask for (e.g. send them to your secrets API).
 /// </summary>
