@@ -263,6 +263,9 @@ request.
 - [ ] Benchmarks re-run; USER-GUIDE section 9 updated if the numbers moved by more than 10%
 - [ ] Versions bumped together (`js/package.json`, `Jazmin.csproj`); `CHANGELOG.md` and RFC change log updated
 - [ ] TASKS.md statuses updated
+- [ ] The previous release reads this one's files: `node js/scripts/compat-previous.mjs --out <folder>`
+      (npm), then `dotnet run -c Release dotnet/scripts/compat-previous.cs -- <folder>` (NuGet). Each kind of file
+      added since then is read as its users expect; add a check when a release adds one, and move the versions on
 - [ ] Phone check of the viewer (below), results in the release notes
 
 ### Phone check
