@@ -1130,8 +1130,10 @@ Applying a change file:
   submission key opens the change file; not revoked; written and received
   before the grant expires), and MUST refuse each change to a row in a
   partition the grant doesn't cover, or that sets a column the grant doesn't
-  cover. An added row without the partition column goes into the grant's
-  partition when the grant has exactly one, and is refused otherwise.
+  cover. The partitions and column groups are those of the table `edit`
+  names, which may differ from another table's in the same file. An added row
+  without the partition column goes into the grant's partition when the grant
+  has exactly one, and is refused otherwise.
 - MUST refuse changes `edit` doesn't allow (an operation, a column), and
   added rows that would leave a column that can't be empty empty.
 - SHOULD hold, not apply, a change to a row that changed since the sender's
@@ -1760,6 +1762,12 @@ indexes, embedded files) written by both reference implementations.
   an absent key. The writers always wrote it so; the readers of releases
   1.0 to 1.4 refused such an index ("Index page has no first key") when the
   smallest indexed text was empty. Files need no change.
+- **Since format 1.0, a clarification (7.9):** a sender's partitions and
+  columns are checked against the table the document edits. The libraries of
+  releases 1.4 to 1.6.0 checked them against the file's first table, so in a
+  file of several tables whose edited table was not first (or had another
+  partition column or groups), a sender's allowed changes could be refused.
+  Change files and files need no change.
 
 ## Appendix C. Design Notes (informative)
 

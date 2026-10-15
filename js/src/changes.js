@@ -253,9 +253,10 @@ function planChanges(target, table, changes, grant, edit, overwrite) {
   }
 
   // What the sender may touch: a shared file's grant (its partitions and columns), and the document's edit settings.
-  const partitionBy = target.access?.partitionBy ?? null;
+  // The partitions and groups are the document's table's: another table of the file may have its own.
+  const partitionBy = table.access?.partitionBy ?? null;
   const own = grant && grant.rows !== '*' ? new Set(grant.rows) : null;
-  const covered = grant && grant.columns !== '*' ? new Set(grant.columns.flatMap((g) => target.access.groupColumns[g] ?? [])) : null;
+  const covered = grant && grant.columns !== '*' ? new Set(grant.columns.flatMap((g) => table.access.groupColumns[g] ?? [])) : null;
   const mayWrite = (name) => edit.columns.includes(name) && changeColumns.has(name) && (!covered || covered.has(name));
   const ownsPartition = (row) => !partitionBy || !own || own.has(String(row[partitionBy]));
 

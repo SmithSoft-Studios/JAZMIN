@@ -227,4 +227,62 @@ public class ChangesTests
         }
         Assert.Equal("B", RowsOf(path, new JazminReadOptions { Key = owner })["C-4"]["region"]);
     }
+
+    [Fact]
+    public void SharedFileOfSeveralTables_TheSender_IsCheckedAgainstTheDocumentsTable_NotTheFirst()
+    {
+        // The first table is partitioned by customer_id and has no groups; the editable one by customer, with a group.
+        var path = Path.Combine(Temp(), "customers.jzm");
+        var owner = JazminKey.Generate();
+        var bob = owner.CreateAccessKey();
+        var sally = owner.CreateAccessKey();
+        var access = new JazminAccessOptions();
+        access.Grants.Add(new JazminGrant(bob) { Rows = ["C1"], Columns = ["*"] });
+        access.Grants.Add(new JazminGrant(sally) { Rows = ["C2"] });
+        using (var writer = JazminWriter.Create(path, new JazminWriteOptions
+        {
+            Key = owner, Access = access, Files = [Doc],
+            Package = new JazminPackage { Entry = "index.html", Edit = new JazminEditSettings { Table = "requests", Key = ["request_id"], Columns = ["kind", "note", "staff_note"], Add = true } },
+            Tables =
+            [
+                new JazminTable("catalogue", [new("customer_id", JazminType.String) { Nullable = false }, new("sku", JazminType.String)]) { PartitionBy = "customer_id" },
+                new JazminTable("requests", [new("request_id", JazminType.String) { Nullable = false }, new("customer", JazminType.String), new("kind", JazminType.String), new("note", JazminType.String), new("staff_note", JazminType.String)])
+                {
+                    PartitionBy = "customer", ColumnGroups = { ["staff"] = ["staff_note"] },
+                },
+            ],
+        }))
+        {
+            writer.WriteRow(Row(("customer_id", "C1"), ("sku", "A")));
+            writer.WriteRow(Row(("customer_id", "C2"), ("sku", "B")));
+            writer.StartTable("requests");
+            writer.WriteRow(Row(("request_id", "R-1"), ("customer", "C1"), ("kind", "order"), ("note", null), ("staff_note", "x")));
+            writer.WriteRow(Row(("request_id", "R-2"), ("customer", "C2"), ("kind", "order"), ("note", null), ("staff_note", "y")));
+        }
+
+        // Bob (customer C1, the default group only) changes his request and adds one: it goes into C1, his partition.
+        byte[] change;
+        using (var asBob = JazminReader.Open(path, new JazminReadOptions { AccessKey = bob, CheckClockRollback = false }))
+        {
+            change = JazminFile.WriteChanges(asBob, new JazminChanges
+            {
+                Update = [Row(("request_id", "R-1"), ("note", "urgent"))],
+                Add = [Row(("request_id", "R-9"), ("kind", "dispute"), ("note", "wrong price"))],
+            });
+        }
+        var result = JazminFile.ApplyChanges(path, change, new JazminApplyChangesOptions { Key = owner });
+        Assert.Equal((bob.Id, 1L, 1L, 0), (result.Sender, result.Updated, result.Added, result.Refused.Count));
+
+        // Sally sees every group: she may change the staff note on her own request.
+        using (var asSally = JazminReader.Open(path, new JazminReadOptions { AccessKey = sally, CheckClockRollback = false }))
+        {
+            var hers = JazminFile.WriteChanges(asSally, new JazminChanges { Update = [Row(("request_id", "R-2"), ("staff_note", "checked"))] });
+            var applied = JazminFile.ApplyChanges(path, hers, new JazminApplyChangesOptions { Key = owner });
+            Assert.Equal((1L, 0), (applied.Updated, applied.Refused.Count));
+        }
+
+        using var requests = JazminReader.Open(path, new JazminReadOptions { Key = owner, Table = "requests" });
+        var rows = requests.Rows().ToDictionary(r => (string)r["request_id"]!);
+        Assert.Equal(("urgent", "C1", "dispute", "checked"), ((string)rows["R-1"]["note"]!, (string)rows["R-9"]["customer"]!, (string)rows["R-9"]["kind"]!, (string)rows["R-2"]["staff_note"]!));
+    }
 }

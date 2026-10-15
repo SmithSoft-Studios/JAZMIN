@@ -4,6 +4,11 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased
+- **Fixed: applying a change file to a shared file of several tables.** The sender's partitions and columns were
+  checked against the file's first table instead of the table the document edits, so when that table wasn't first (or
+  had another partition column or column groups), changes the sender was allowed to make were refused ("column … can't
+  be changed by this sender", "the row is in partition …"). Both libraries (`applyChanges`, `JazminFile.ApplyChanges`);
+  spec 7.9 says so. Change files and files are unchanged.
 - **Samples:** the sample key service (`dotnet/samples/Jazmin.KeyService`) can run without the owner key: it reads
   the online grants' unlock tokens from a file listed on a trusted machine (`Jazmin__TokensFile`;
   `listUnlockTokens` / `JazminFile.ListUnlockTokens`), and lets the web pages in `Jazmin__AllowedOrigins` call it. The
