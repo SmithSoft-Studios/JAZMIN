@@ -54,6 +54,11 @@
       <label id="jz-table-label" for="jz-table" hidden>Table <select id="jz-table"></select></label>
     </nav>
     <div id="jz-pane-document" class="pane" role="tabpanel" hidden>
+      <p id="jz-online" class="online-note" hidden></p>
+      <div id="jz-offline" class="offline" hidden>
+        <p><strong>You're offline.</strong> <span id="jz-offline-what"></span></p>
+        <p class="hint">It shows once you're connected. The Data and Files tabs work offline.</p>
+      </div>
       <iframe id="jz-frame" title="Document" sandbox="allow-scripts allow-modals allow-downloads"></iframe>
     </div>
     <div id="jz-pane-data" class="pane" role="tabpanel" hidden>

@@ -69,13 +69,21 @@ public sealed class TablesChangeTests
     {
         var shape = JsonNode.Parse("""{ "$rows": { "name": "name", "lines": { "$from": "tx", "$on": { "clientId": "clientId" }, "$rows": "amount" } } }""")!.AsObject();
         var file = Write(null,
-            package: new JazminPackage { Entry = "index.html", Edit = new JazminEditSettings { Table = "tx", Key = ["clientId", "at"], Columns = ["amount"] } },
+            package: new JazminPackage
+            {
+                Entry = "index.html", Edit = new JazminEditSettings { Table = "tx", Key = ["clientId", "at"], Columns = ["amount"] },
+                AllowedOrigins = ["https://cdn.jsdelivr.net"], Online = JazminOnline.Required, KeyService = "https://keys.example.com/unlock",
+                Masks = new Dictionary<string, JazminMaskView> { ["amount"] = new() { Seconds = 10 } },
+            },
             shapes: [new JazminSavedShape("Lines", shape) { Table = "clients" }], txName: "tx");
         JazminFile.Update(file, new JazminUpdate { RenameTables = new Dictionary<string, string> { ["tx"] = "transactions" } });
         using (var reader = JazminReader.Open(file))
         {
             Assert.Equal(["clients", "transactions"], reader.Tables);
             Assert.Equal("transactions", reader.Package!.Edit!.Table);
+            // The package's other settings stay as they were.
+            Assert.Equal((JazminOnline.Required, "https://keys.example.com/unlock", 10), (reader.Package.Online, reader.Package.KeyService, reader.Package.Masks!["amount"].Seconds));
+            Assert.Equal(["https://cdn.jsdelivr.net"], reader.Package.AllowedOrigins);
             Assert.Equal("transactions", (string?)reader.Shapes.Single().Shape["$rows"]!["lines"]!["$from"]);
         }
         void Refused(JazminUpdate change, string message) => Assert.Contains(message, Assert.Throws<JazminValidationException>(() => JazminFile.Update(file, change)).Message);

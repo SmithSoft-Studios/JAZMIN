@@ -95,6 +95,17 @@ test('files without embedded files are unchanged; paths and package settings are
   assert.throws(() => write(null, rows, { columns, files: [{ path: 'a', content: 'x' }], package: { allowedOrigins: ['https://x.com/path'] } }), /https origin/);
 });
 
+test('package.online says the document needs the network, with the origins it loads from (spec 6.8)', () => {
+  const files = [{ path: 'index.html', content: '<p>Chart</p>' }];
+  const cdn = ['https://cdn.jsdelivr.net', 'https://fonts.googleapis.com'];
+  for (const online of ['required', 'optional']) {
+    const r = open(write(null, rows, { columns, files, package: { entry: 'index.html', allowedOrigins: cdn, online } }));
+    assert.deepEqual([r.package.online, r.package.allowedOrigins], [online, cdn]);
+  }
+  assert.throws(() => write(null, rows, { columns, files, package: { online: 'required' } }), /package.online needs allowedOrigins/);
+  assert.throws(() => write(null, rows, { columns, files, package: { allowedOrigins: cdn, online: true } }), /package.online is 'required' or 'optional'/);
+});
+
 /** The example from the design: shared, partly shared and group-only files. */
 function accessFile() {
   const owner = JazminKey.generate();

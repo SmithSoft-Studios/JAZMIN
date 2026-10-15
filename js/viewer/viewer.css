@@ -45,7 +45,9 @@ dialog.changes .buttons { display: flex; justify-content: flex-end; gap: 8px; ma
 .tabs [role="tab"][aria-selected="true"] { border-bottom-color: var(--accent); color: var(--accent); }
 .pane { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px; }
 #jz-pane-document { padding: 0; overflow: hidden; }
-#jz-frame { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+#jz-pane-document:not([hidden]) { display: flex; flex-direction: column; }
+#jz-frame { display: block; flex: 1; min-height: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+#jz-frame[hidden] { display: none; }
 .filter { display: flex; gap: 8px; align-items: center; }
 .filter label { font-weight: 600; }
 .table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
@@ -95,6 +97,10 @@ button.small { padding: 3px 10px; font-size: 12.5px; }
 #jz-lock label { display: block; margin: 12px 0 4px; font-weight: 600; }
 #jz-lock input { box-sizing: border-box; }
 #jz-lock .sign-in { margin-top: 8px; }
+.online-note { margin: 0 0 8px; color: var(--muted); font-size: 12.5px; }
+.online-note::before { content: '\1F310\00a0'; }
+.offline { padding: 18px 20px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.offline p { margin: 4px 0; }
 td.masked .mask-shown { color: var(--muted); letter-spacing: .02em; }
 td.masked.revealed .mask-shown { color: var(--text); background: #fff7d6; border-radius: 4px; padding: 0 3px; }
 th .mask-head, td .reveal { margin-left: 4px; padding: 1px 8px; font-size: 12px; }

@@ -31,6 +31,7 @@
     state.name = name || 'file.jzm';
     state.answerTo = answerTo;
     state.readers.clear();
+    waitingForNetwork = null; // another file: the last one's document no longer waits
     $('jz-name').textContent = state.name;
     $('jz-key').value = '';
     $('jz-token').value = '';
@@ -846,6 +847,8 @@
 
   async function showDocument(reader) {
     const settings = reader.package;
+    // A document that needs the network says so (spec 6.8); offline, one that can't work without it waits for it.
+    if (!showOnline(settings, reader)) return;
     // A locked file (spec 6.8.1) reaches the page once it is unlocked (Files tab): the document is then shown again.
     const list = (await reader.files()).filter((f) => !f.lock || f.lock.unlocked);
     const files = [];
@@ -873,6 +876,23 @@
   }
 
   let pendingPackage = null;
+  let waitingForNetwork = null; // a document that needs the network, shown when the device is back online
+
+  /** The document's network note (package.online); false when it needs the network and the device is offline. */
+  function showOnline(settings, reader) {
+    const online = settings.online === 'required' || settings.online === 'optional' ? settings.online : null;
+    $('jz-online').hidden = !online;
+    $('jz-online').textContent = online === 'required' ? 'This document needs to be online.' : 'Parts of this document need to be online.';
+    const offline = online === 'required' && navigator.onLine === false;
+    $('jz-offline').hidden = !offline;
+    $('jz-frame').hidden = offline;
+    $('jz-offline-what').textContent = 'This document needs to be online.';
+    waitingForNetwork = offline ? reader : null;
+    return !offline;
+  }
+  addEventListener('online', () => {
+    if (waitingForNetwork) showDocument(waitingForNetwork).catch((e) => status(e.message));
+  });
 
   /** Messages from the sandbox: it starts, shows pages, and asks for data. */
   addEventListener('message', async (event) => {

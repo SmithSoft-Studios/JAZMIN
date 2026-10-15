@@ -89,6 +89,21 @@ public class FilesTests
         Assert.Throws<JazminValidationException>(() => Write(new JazminWriteOptions { Files = [new JazminFileInput("a", [1])], Package = new JazminPackage { AllowedOrigins = ["http://x.com"] } }));
     }
 
+    [Fact]
+    public void PackageOnline_SaysTheDocumentNeedsTheNetwork_WithTheOriginsItLoadsFrom()
+    {
+        string[] cdn = ["https://cdn.jsdelivr.net", "https://fonts.googleapis.com"];
+        foreach (var online in new[] { JazminOnline.Required, JazminOnline.Optional })
+        {
+            var bytes = Write(new JazminWriteOptions { Files = [new JazminFileInput("index.html", [1])], Package = new JazminPackage { Entry = "index.html", AllowedOrigins = cdn, Online = online } });
+            using var r = JazminReader.Open(bytes);
+            Assert.Equal(online, r.Package!.Online);
+            Assert.Equal(cdn, r.Package.AllowedOrigins);
+        }
+        Assert.Contains("needs AllowedOrigins", Assert.Throws<JazminValidationException>(() =>
+            Write(new JazminWriteOptions { Files = [new JazminFileInput("a", [1])], Package = new JazminPackage { Online = JazminOnline.Required } })).Message);
+    }
+
     private sealed record AccessScenario(JazminKey Owner, Dictionary<string, JazminAccessKey> Keys, byte[] Shared, byte[] File);
 
     /// <summary>The example from the design: shared, partly shared and group-only files.</summary>

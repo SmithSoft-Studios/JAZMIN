@@ -4,6 +4,11 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **Documents that need the internet (#218, spec 6.8).** `package.online: 'required' | 'optional'` (.NET
+  `JazminPackage.Online`, `JazminOnline`), with `allowedOrigins`. The web viewer says the document needs to be online;
+  with `'required'`, offline, it shows a message instead of the document, and the document once back online.
+- **Fixed (.NET, unreleased):** an update that renamed or removed tables in a file whose document edits rows kept
+  only some package settings: the key service and masked-column settings are now kept too.
 - **Where a masked column belongs (#190).** `reader.masked` (JS) and `reader.Masked` (.NET, `At`) give each masked column's
   `at`: its place in `columns`, now or once unlocked, as the browser reader does, so a viewer shows it where it was defined.
 - **Masked columns in the browser reader and the web viewer (#190).** `reader.masked()` (with `at`, the column's place),

@@ -183,6 +183,12 @@ export function normalizePackage(settings, paths) {
   // The owner's key service for the file's online locks (spec 6.8.2).
   if (settings.keyService !== undefined) out.keyService = checkKeyService(settings.keyService, 'package.keyService');
   if (settings.masks !== undefined) out.masks = normalizeMaskSettings(settings.masks);
+  // Whether the document needs the network (spec 6.8): only with an origin it may reach.
+  if (settings.online !== undefined) {
+    if (settings.online !== 'required' && settings.online !== 'optional') throw new JazminValidationError("package.online is 'required' or 'optional'");
+    if (!out.allowedOrigins?.length) throw new JazminValidationError('package.online needs allowedOrigins: the https origins the document loads from');
+    out.online = settings.online;
+  }
   return out;
 }
 
