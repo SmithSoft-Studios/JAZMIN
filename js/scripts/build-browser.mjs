@@ -86,7 +86,8 @@ ${text}
 }
 
 export function build() {
-  const text = Object.fromEntries(PARTS.map((p) => [p, fs.readFileSync(path.join(root, 'src', `${p}.js`), 'utf8')]));
+  // Line endings as LF whatever the checkout (Git on Windows can give CRLF).
+  const text = Object.fromEntries(PARTS.map((p) => [p, fs.readFileSync(path.join(root, 'src', `${p}.js`), 'utf8').replace(/\r\n/g, '\n')]));
   const names = Object.fromEntries(PARTS.map((p) => [p, declared(text[p])]));
   const owner = new Map();
   for (const p of PARTS) {
@@ -141,7 +142,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   let stale = 0;
   for (const [name, content] of Object.entries(out)) {
     const file = path.join(root, name);
-    const now = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+    const now = fs.existsSync(file) ? fs.readFileSync(file, 'utf8').replace(/\r\n/g, '\n') : null;
     if (now === content) continue;
     if (check) {
       console.error(`${name} is not what js/browser/src gives: run node scripts/build-browser.mjs`);
