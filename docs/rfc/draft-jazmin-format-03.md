@@ -1145,10 +1145,10 @@ that the column is there, and a shown part the owner chose (`••••4821`),
 not its values, until the key holder unlocks it with a password, an unlock
 token, or both: the locks of 6.8.1.
 
-- **A masked column group** holds one masked column. Its name is chosen by
-  the writer (the reference writers use `mask.` and the column's name, or a
-  name made from it when that isn't a valid group name). Grants name it as
-  any column group.
+- **A masked column group** holds one masked column, of one table. Its name
+  is chosen by the writer (the reference writers use `mask.` and the
+  column's name, or a name made from it when that isn't a valid group name).
+  Grants name it as any column group.
 - **In a key slot** that grants it, the group is not in `columns`. The access
   bundle's member `masks` holds `{ "locks": { "<lock id>": { "kind",
   "salt", "iterations", "keyService" } }, "groups": { "<group>": { "lock":
@@ -1156,25 +1156,30 @@ token, or both: the locks of 6.8.1.
   "type", "shown", "unmasked" } } } }`: the lock as in 6.8.1 (without
   `keys`), the group secret `C(g)` sealed under the lock key `L` (`nonce (12)
   || AES-256-GCM(C(g)) || tag (16)`, additional data `"JAZMIN/1/lock/" ||
-  lock id || "/column-group/" || g`), and the column: its position and name,
-  its type (5.1) as text, and the names of its shown and unmasked columns
-  when it has them.
+  lock id || "/column-group/" || g`), and the column: its table (the table's
+  index in the header), position and name, its type (5.1) as text, and the
+  names of its shown and unmasked columns when it has them.
 - **The shown column** (`shown`, optional) is an ordinary column, in a group
   the key sees, that holds what a masked value shows: text the writer made
   from the value by a rule, or values the owner gave. It is stored, filtered,
   sorted and indexed as any column.
 - **Masked rows only** (`unmasked`, optional): a masked column MAY be null in
   rows that don't need masking, with their values in an ordinary column of
-  the same type, the *unmasked* column, which is null in the masked rows. A
-  reader that knows masks gives a row's value from the unmasked column when
-  it is not null, else from the masked column once unlocked, else as masked.
+  the same type, the *unmasked* column, which is null in the masked rows.
+  Readers give both columns as they are (a filter on one doesn't see the
+  other's values); viewers that know masks show a row's value from the
+  unmasked column when it is not null, else from the masked column once
+  unlocked, else as masked.
 - **Readers** list a masked column (name, type, lock) and give no value for
   it until its lock is unlocked: then they derive `L`, open `C(g)` (a tag that
   doesn't verify means a wrong password or token), and read the group as any
   granted group. An unlock lasts while the reader is open.
 - **The owner** derives `C(g)` as for any group. The owner directory's
-  `masks` lists `[ { "group", "lock", "column", "shown", "unmasked" } ]`, so
-  rewrites keep them; its `locks` holds the locks (6.8.1).
+  `masks` lists `[ { "group", "lock", "table", "column", "shown",
+  "unmasked", "show", "rows" } ]`, so rewrites keep them (`show`: the rule
+  the shown column is made by; `rows`: the filter (9) of the rows masked, for
+  rows added later; both writer conventions); its `locks` holds the locks
+  (6.8.1).
 - **Older readers** don't know `masks`: to them the masked group is a group
   their key isn't granted, so the column is hidden; the shown and unmasked
   columns are ordinary columns.
