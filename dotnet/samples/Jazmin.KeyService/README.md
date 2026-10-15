@@ -79,6 +79,29 @@ from disk has the origin `null`: allow that only for a demo on your own computer
   TOTP secrets at rest.
 - **HTTPS only.** Tokens and codes must never travel in plain text or be logged.
 
+## Locked files: the viewer's sign-in window
+
+A stored file can be **locked** (JAZMIN 1.7, spec 6.8.1) with a lock that opens with a token from this service
+(`online: true`). When the file or the lock names the service (`keyService`, spec 6.8.2), the web viewer's
+**Unlock…** shows **Sign in at …**: it opens `GET /jazmin/unlock` in a window of its own, with the file id, the lock id
+and the viewer's origin. The person gives their user and the code from their authenticator app; the page asks
+`POST /unlock-lock` and posts the token back to the viewer, which opens the file. No key, password or file content
+reaches the service.
+
+1. **Owner/admin** gives a person a lock: `POST /admin/locks {userId, fileId, lockId}`.
+2. The person **enrols** as above (`/2fa/setup`, `/2fa/confirm`).
+3. **The viewer** names its origin; the page answers only origins in `Jazmin__AllowedOrigins` (`null` for a viewer
+   opened from disk: demos on your own computer only).
+
+Checks before a lock's token is issued: the user has 2FA and the code is right (the same lockouts as above), the lock
+was given to the user (403), and the file and online lock exist (404). With a tokens file instead of the owner key, list
+the locks' tokens with `JazminFile.ListFileUnlockTokens(path, ownerKey)` into each file's `locks`:
+`{ "fileId": "…", "tokens": [ … ], "locks": [ { "lockId": "medical", "token": "jzf1-…" } ] }`.
+
+One owner can name a different service per lock (for attachments locked for several providers): each runs its own
+copy of this service and holds only its own locks' tokens. For development, a service on `http://localhost` (or
+`127.0.0.1`, `[::1]`) is allowed; anywhere else it must be https.
+
 ## Limits
 
 2FA proves *who is asking* before a token is issued. It is not part of the file

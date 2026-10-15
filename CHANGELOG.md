@@ -16,6 +16,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   both libraries. `new JazminFileInput(path, new FileInfo(...)) { Lock = ..., GroupActions = ... }` gives a file read from
   disk the settings `FromFile` has no parameters for. Releases 1.0 to 1.6 read such files and refuse only the locked ones; **don't
   append to them with 1.0 to 1.6**, which would lose the locked files' keys (their update and compact fail safely).
+- **The viewer signs in at a lock's key service (#188, spec 6.8.2).** For a lock whose file or lock names a key service,
+  the viewer's **Unlock…** offers **Sign in at …**: the service opens in a window of its own, the person signs in and
+  passes its 2FA there, and the service posts the token back; the viewer accepts it only from that service's origin and
+  for the file and lock it asked about. The sample key service has the page (`GET /jazmin/unlock`), `POST /unlock-lock`
+  and `POST /admin/locks`, and reads lock tokens from a tokens file (`locks`, from `ListFileUnlockTokens`) or with the
+  owner key. A key service may be `http` on a loopback host (`localhost`, `127.0.0.1`, `[::1]`) for development.
 - **Key services for locks (#188, both libraries and the browser reader; spec 6.8.2).** `package.keyService` (.NET
   `JazminPackage.KeyService`) names the https service that gives out the tokens of a file's online locks, and a lock can
   name its own (`keyService` / `JazminLockOptions.KeyService`), for attachments locked for several providers. Readers give

@@ -237,12 +237,16 @@ internal static class EmbeddedFiles
         return json;
     }
 
-    /// <summary>A key service's address (spec 6.8.2): an https URL without a user name, password or fragment; else null.</summary>
+    /// <summary>
+    /// A key service's address (spec 6.8.2): an https URL (or http on a loopback host, for development) without a user
+    /// name, password or fragment; else null.
+    /// </summary>
     public static string? KeyServiceAddress(JsonNode? value) =>
         value is JsonValue v && v.TryGetValue<string>(out var text) ? KeyServiceAddress(text) : null;
 
     public static string? KeyServiceAddress(string? text) =>
-        Uri.TryCreate(text, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps && uri.UserInfo.Length == 0 && uri.Fragment.Length == 0
+        Uri.TryCreate(text, UriKind.Absolute, out var uri) && (uri.Scheme == Uri.UriSchemeHttps || (uri.Scheme == Uri.UriSchemeHttp && uri.Host is "localhost" or "127.0.0.1" or "[::1]"))
+            && uri.UserInfo.Length == 0 && uri.Fragment.Length == 0
             && !text!.Contains('#') ? uri.AbsoluteUri : null;
 
     /// <summary>Checks a key service's address given to a writer; returns it as a URL's text.</summary>

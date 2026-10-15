@@ -279,7 +279,8 @@
     } catch {
       return undefined;
     }
-    return url.protocol === 'https:' && !url.username && !url.password && !url.hash ? url.href : undefined;
+    const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+    return (url.protocol === 'https:' || (url.protocol === 'http:' && loopback)) && !url.username && !url.password && !url.hash ? url.href : undefined;
   }
 
   // ---- binary readers -----------------------------------------------------------------------------

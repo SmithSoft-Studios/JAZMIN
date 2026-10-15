@@ -139,8 +139,9 @@
     <div id="jz-lock-token-row">
       <label for="jz-lock-token">Unlock token</label>
       <input id="jz-lock-token" type="password" spellcheck="false" autocomplete="off" placeholder="jzf1-…">
-      <p class="hint">The file owner's key service gives it to you, after its own checks (signing in, a code from your
-        authenticator app).</p>
+      <button type="button" id="jz-lock-service" class="sign-in" hidden>Sign in</button>
+      <p class="hint" id="jz-lock-token-hint">The file owner's key service gives it to you, after its own checks
+        (signing in, a code from your authenticator app).</p>
     </div>
     <p id="jz-lock-error" class="error" role="alert"></p>
     <div class="buttons">

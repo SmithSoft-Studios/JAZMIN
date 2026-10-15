@@ -104,7 +104,12 @@ export function fileSource(entry) {
 }
 
 /** Validates `package` settings (spec 6.8). */
-/** A key service's address (spec 6.8.2): an https URL without a user name, password or fragment; else undefined. */
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+
+/**
+ * A key service's address (spec 6.8.2): an https URL (or http on a loopback host, for development) without a user name,
+ * password or fragment; else undefined.
+ */
 export function keyServiceAddress(value) {
   if (typeof value !== 'string') return undefined;
   let url;
@@ -113,7 +118,8 @@ export function keyServiceAddress(value) {
   } catch {
     return undefined;
   }
-  return url.protocol === 'https:' && !url.username && !url.password && !url.hash ? url.href : undefined;
+  const secure = url.protocol === 'https:' || (url.protocol === 'http:' && LOOPBACK.has(url.hostname));
+  return secure && !url.username && !url.password && !url.hash ? url.href : undefined;
 }
 
 /** Checks a key service's address given to a writer; returns it as a URL's text. */
