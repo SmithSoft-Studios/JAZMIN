@@ -3,6 +3,13 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## Unreleased (1.7.0)
+- **Progress and Stop for long reads (JavaScript, #184).** `onProgress` (called after each chunk with `{ done, total,
+  matches }`) and `signal` (an `AbortSignal`, checked before each chunk) on `count`, `find`, `findAsync`,
+  `findBatchesAsync`, `columnArrays`, `explain({ analyze: true })` and the exports, as the browser reader has them.
+  New `countAsync`, which gives the event loop a turn between chunks so a signal can stop it. Without the options,
+  reads take the same time as 1.6.2. A stopped read throws an `AbortError`.
+
 ## 1.6.2 - 2026-10-15 (file format 1.0)
 A fix for sorted indexes on columns with millions of distinct values (JavaScript).
 
