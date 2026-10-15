@@ -1190,6 +1190,14 @@ token, or both: the locks of 6.8.1.
   the shown column is made by; `rows`: the filter (9) of the rows masked, for
   rows added later; both writer conventions); its `locks` holds the locks
   (6.8.1).
+- **Changing masks:** a rewrite MAY mask a column that wasn't masked, or
+  unmask one, without widening anyone's access. A column masked moves into
+  its own masked group, which every grant that covered the group it was in
+  gets (masked); its rows get their shown values, and with a rows filter the
+  value of each row that doesn't match moves to the unmasked column. A column
+  unmasked keeps its group, now given plainly to the grants that had it
+  masked; the shown column the writer made goes (one the owner fills stays),
+  and the unmasked column's values move back into the column.
 - **Older readers** don't know `masks`: to them the masked group is a group
   their key isn't granted, so the column is hidden; the shown and unmasked
   columns are ordinary columns.
