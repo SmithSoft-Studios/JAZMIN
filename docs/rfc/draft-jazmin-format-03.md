@@ -769,8 +769,9 @@ access-controlled MUST NOT hold locks.
   - `both`: `HKDF-SHA256(ikm = P || S, salt, info = "JAZMIN/1/lock/" || id)`,
     where `P` is the password's PBKDF2 output as for `password`.
 - **The owner holds every lock** (7.6.5): the owner directory's `locks` is
-  `[ { "id", "kind", "key": "<base64 L>", "secret": "<base64 S>" } ]`, `secret`
-  for the online kinds. With the owner key a reader opens locked contents
+  `[ { "id", "kind", "salt", "iterations", "key": "<base64 L>", "secret":
+  "<base64 S>" } ]`, with the lock's `salt` and `iterations` as in its
+  directories and `secret` for the online kinds. With the owner key a reader opens locked contents
   without a password or token, and writers that rewrite the file (11.2,
   compaction) keep each lock's id, kind, salt, `L` and `S`, sealing each
   content's key again in the new version's directories. Changing a lock's
@@ -1034,8 +1035,8 @@ covers the whole file.
 - The owner directory (`owner`, UTF-8 JSON) holds `{ "partitions": [names],
   "fileGroups": [names], "grants": [ { "key": "jza1-...", "rows": "*" |
   [partition names], "columns": "*" | [names], "files": ..., "label": "...", "expires":
-  ..., "mode": ..., "share": ... } ], "locks": [ { "id", "kind", "key", "secret" } ]
-  }` (`locks`: 6.8.1). Only the owner reads it.
+  ..., "mode": ..., "share": ... } ], "locks": [ { "id", "kind", "salt", "iterations",
+  "key", "secret" } ] }` (`locks`: 6.8.1). Only the owner reads it.
 
 #### 7.6.6. Reading
 
