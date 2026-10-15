@@ -387,3 +387,26 @@ test("a sorted text index whose smallest key is the empty text answers lookups i
   assert.equal((await reader.query({ text: 'a' }, { limit: 1000 })).total, rows.filter((x) => x.text === 'a').length);
   assert.equal(await reader.count({ text: '' }), rows.filter((x) => x.text === '').length);
 });
+
+test('actions by file group: the browser reader takes what the library takes, for each key', async () => {
+  const owner = JazminKey.generate();
+  const keys = { a: owner.createAccessKey(), b: owner.createAccessKey(), all: owner.createAccessKey() };
+  const rows = ['A', 'B'].flatMap((g) => Array.from({ length: 10 }, (_, i) => ({ id: i, group: g })));
+  const bytes = write(null, rows, {
+    columns: [{ name: 'id', type: 'int' }, { name: 'group', type: 'string' }], key: owner, sortedBy: ['group', 'id'],
+    files: [
+      { path: 'terms.pdf', content: 'terms', groups: ['A', 'B'], groupActions: { A: { save: false, list: false }, B: { save: true, print: false } } },
+      { path: 'font.woff2', content: 'font', actions: { list: false } },
+    ],
+    access: { partitionBy: 'group', grants: [{ key: keys.a, rows: ['A'] }, { key: keys.b, rows: ['B'] }, { key: keys.all, rows: '*' }] },
+  });
+  for (const [name, key] of Object.entries(keys)) {
+    const library = open(bytes, { key: key.toString(), accessState: false });
+    const browser = await JazminBrowser.open(new Uint8Array(bytes), { key: key.toString() });
+    const actions = (files) => Object.fromEntries(files.map((f) => [f.path, f.actions ?? null]));
+    assert.deepEqual(actions(await browser.files()), actions(library.files), name);
+    library.close();
+  }
+  const all = await JazminBrowser.open(new Uint8Array(bytes), { key: keys.all.toString() });
+  assert.deepEqual((await all.files()).find((f) => f.path === 'terms.pdf').actions, { save: true }, 'through both groups: what either allows');
+});

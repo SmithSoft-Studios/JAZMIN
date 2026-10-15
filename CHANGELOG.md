@@ -4,6 +4,14 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **Stored files: `list: false`, and actions by file group (#188, both libraries, spec 6.8).** The action `list: false`
+  keeps a stored file out of viewers' lists of files (one the document page uses, such as a script or a font; the page
+  still loads it); the web viewer's Files tab leaves such files out. In access-controlled files a file can have its own
+  actions for some of its groups (`groupActions` / `JazminFileInput.GroupActions`), for example downloads for one group
+  and not another; a key that sees the file through several groups may do what any of them allows, and the owner sees
+  each group's actions (`groupActions` / `JazminEmbeddedFile.GroupActions`). Update, compact and append keep them.
+  Releases 1.0 to 1.6 read such files (ignoring `list`, taking the first group's actions); if they rewrite one, every
+  group gets the first group's actions.
 - **A smaller browser script: each page loads only what it uses (#187, TASKS P-26).** Besides the full
   `jazmin-browser.js` (unchanged for pages that load it), a core for reading files and JSON, CSV and XML exports
   (`jazmin-browser-core.js`, 168 KB, 45 KB gzipped: 55% of the full script) and three add-ons loaded after it:

@@ -72,6 +72,7 @@ write(path.join(temp, 'origins.jzm'), [{ n: 1 }], {
     { path: 'index.html', content: '<!doctype html><title>Origins</title><body><p>Allowed origins</p><script src="app.js"></script></body>' },
     {
       path: 'app.js',
+      actions: { list: false }, // the page's own script: the page loads it, the Files tab leaves it out
       content: `(async () => {
         const refused = [];
         document.addEventListener('securitypolicyviolation', (e) => refused.push(e.effectiveDirective + ' ' + new URL(e.blockedURI).host));
@@ -611,6 +612,9 @@ for (const name of chosen) {
     const refused = JSON.stringify(origins.refused);
     const wanted = JSON.stringify(['font-src other.example.org', 'media-src other.example.org']);
     results.push({ browser: name, label: 'allowed origins: fonts and media load from them only', ok: refused === wanted, problems: refused === wanted ? [] : [`refused: ${refused}`] });
+    // The page loaded app.js, which is list: false: the Files tab shows only index.html.
+    const inFiles = await page.evaluate(`[...document.querySelectorAll('#jz-files .path')].map((e) => e.textContent).join(',')`);
+    results.push({ browser: name, label: 'a file marked list: false: the page loads it, the Files tab leaves it out', ok: inFiles === 'index.html', problems: inFiles === 'index.html' ? [] : [`listed: ${inFiles}`] });
 
     // A document's changes: checked by the viewer, shown in its dialog, saved as a change file the library applies.
     await page.navigate(`${base}/js/viewer/index.html`);

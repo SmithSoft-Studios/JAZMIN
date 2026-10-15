@@ -264,4 +264,64 @@ public class FilesTests
         Assert.Equal("more D", Text(d.ReadFile("d2.txt")));
         Assert.Equal("D only", Text(d.ReadFile("img/logoD.png")));
     }
+
+    // Stored-file options (issue #188): List = false keeps a file out of viewers' lists of files (one the document page
+    // uses); in access-controlled files each file group can have its own actions, and a key that sees the file through
+    // several groups may do what any of them allows. Rewrites and appends keep each group's actions. Mirrors
+    // js/test/files.test.js.
+    [Fact]
+    public void List_is_an_action_and_actions_can_differ_by_file_group_and_rewrites_keep_them()
+    {
+        using (var plain = JazminReader.Open(Write(new JazminWriteOptions { Files = [new JazminFileInput("font.woff2", [1]) { Actions = new JazminFileActions { List = false } }] })))
+            Assert.Equal(new JazminFileActions { List = false }, plain.Files[0].Actions);
+        Assert.Throws<JazminValidationException>(() => Write(new JazminWriteOptions
+        {
+            Files = [new JazminFileInput("a", [1]) { Groups = ["A"], GroupActions = new Dictionary<string, JazminFileActions> { ["A"] = new() { Save = false } } }],
+        }));
+
+        var owner = JazminKey.Generate();
+        var keys = new[] { "a", "b", "d", "all" }.ToDictionary(n => n, _ => owner.CreateAccessKey());
+        JazminFileInput Terms(string extraGroup = "A") => new("docs/terms.pdf", Encoding.UTF8.GetBytes("terms"))
+        {
+            Groups = ["A", "B", "C", "D"], Actions = new JazminFileActions { Print = false },
+            GroupActions = new Dictionary<string, JazminFileActions> { [extraGroup] = new() { Save = false, List = false }, ["B"] = new() { Save = true } },
+        };
+        JazminWriteOptions Options(JazminFileInput file) => new()
+        {
+            Key = owner, SortedBy = ["group", "id"], Files = [file],
+            Access = new JazminAccessOptions
+            {
+                PartitionBy = "group",
+                Grants = [new JazminGrant(keys["a"]) { Rows = ["A"] }, new JazminGrant(keys["b"]) { Rows = ["B"] }, new JazminGrant(keys["d"]) { Rows = ["D"] }, new JazminGrant(keys["all"])],
+            },
+        };
+        Assert.Throws<JazminValidationException>(() => Write(Options(Terms(extraGroup: "E"))));
+        var path = Path.Combine(Directory.CreateTempSubdirectory("jazmin-files-").FullName, "g.jzm");
+        File.WriteAllBytes(path, Write(Options(Terms())));
+        JazminFileActions? ActionsFor(JazminAccessKey key)
+        {
+            using var r = JazminReader.Open(path, new JazminReadOptions { AccessKey = key });
+            return r.Files.Single(f => f.Path == "docs/terms.pdf").Actions;
+        }
+        void Check(string when)
+        {
+            Assert.True(new JazminFileActions { Save = false, List = false } == ActionsFor(keys["a"]), $"{when}: A's own");
+            Assert.True(new JazminFileActions { Save = true } == ActionsFor(keys["b"]), $"{when}: B's own");
+            Assert.True(new JazminFileActions { Print = false } == ActionsFor(keys["d"]), $"{when}: D has the file's");
+            Assert.True(ActionsFor(keys["all"]) is null, $"{when}: through every group, what any allows: all of it");
+            using var o = JazminReader.Open(path, new JazminReadOptions { Key = owner });
+            var byGroup = o.Files.Single(f => f.Path == "docs/terms.pdf").GroupActions!;
+            Assert.Equal(new JazminFileActions { Save = false, List = false }, byGroup["A"]);
+            Assert.Equal(new JazminFileActions { Save = true }, byGroup["B"]);
+            Assert.Equal(new JazminFileActions { Print = false }, byGroup["C"]);
+            Assert.Equal(new JazminFileActions { Print = false }, byGroup["D"]);
+        }
+        Check("written");
+        JazminFile.Compact(path, owner);
+        Check("compacted");
+        JazminFile.Update(path, new JazminUpdate { Key = owner, AddFiles = [new JazminFileInput("news.html", [1])] });
+        Check("updated");
+        JazminFile.Append(path, new JazminAppend { Key = owner, AddFiles = [new JazminFileInput("more.txt", [1]) { Groups = ["D"] }] });
+        Check("appended");
+    }
 }

@@ -2861,10 +2861,23 @@ JazminFile.Append("statements.jzm", new JazminAppend { Key = owner, AddFiles = [
 | `print` | printing the page | an on-screen dashboard |
 | `pdf` | saving the page as PDF; page settings instead of `true` set its page | a page that isn't print-ready |
 | `image` | saving the page as an image | a long statement |
+| `list` | listing the file among the file's files (1.7) | a script, a font or a data file the page loads |
 
   - **They steer viewers, they don't lock the file.** Someone with a key that
     sees a file can always read it with the library. To keep a file from a
     key, use groups (above).
+  - **Actions by group** (1.7, access-controlled files): `groupActions` gives
+    some of a file's groups their own actions, for example downloads for one
+    group and not another. A key that sees the file through several groups may
+    do what any of them allows; the owner sees each group's actions
+    (`reader.files[i].groupActions`, .NET `GroupActions`), and update, compact
+    and append keep them. Releases 1.0-1.6 read such files with the first
+    group's actions; if they rewrite one, every group gets those.
+
+    ```js
+    { path: 'payslips.pdf', file: './payslips.pdf', groups: ['hr', 'staff'],
+      groupActions: { hr: { save: true }, staff: { save: false } } }
+    ```
   - **Page settings** (`package.pdf` for the document, `actions.pdf` for one
     page): `format` (`A0`-`A6`, `Letter`, `Legal`, `Tabloid`, `Ledger`),
     `landscape`, `margin` (`{ top, right, bottom, left }`, such as `'12mm'`,

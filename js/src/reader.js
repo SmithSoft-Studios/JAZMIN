@@ -19,7 +19,7 @@ import {
 } from './constants.js';
 import { JazminFormatError, JazminKeyError, JazminValidationError } from './errors.js';
 import { enforceExpiry, toMs } from './expiry.js';
-import { EVERYONE, readActions } from './files.js';
+import { EVERYONE, mergeActions, readActions } from './files.js';
 import { answeredExactly, evaluate, filterReads, indexPlan, mayMatch, mustMatch, normalizeFilter } from './filter.js';
 import { CompositeIndex, LazyTrigramIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
 import { JazminAccessKey, JazminKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
@@ -1412,11 +1412,20 @@ export class JazminReader {
         for (const f of directory.files) {
           const known = index.entries.get(f.path);
           const groups = f.groups ?? (ownerNames ? [ownerNames.get(dir.group)] : undefined);
+          const actions = readActions(f.actions);
+          // The owner keeps each group's actions, so rewrites and appends write them back as they were.
+          const own = ownerNames ? { [ownerNames.get(dir.group)]: actions ?? {} } : null;
           if (known) {
             if (known.groups && groups) known.groups = [...new Set([...known.groups, ...groups])].sort();
+            // Seen through several groups: an action is allowed when any of them allows it.
+            const merged = mergeActions(known.actions, actions);
+            if (merged) known.actions = merged;
+            else delete known.actions;
+            if (own) known.groupActions = { ...known.groupActions, ...own };
           } else {
-            const actions = readActions(f.actions);
-            index.entries.set(f.path, { path: f.path, type: f.type, content: f.content, ...(groups ? { groups } : {}), ...(actions ? { actions } : {}) });
+            index.entries.set(f.path, {
+              path: f.path, type: f.type, content: f.content, ...(groups ? { groups } : {}), ...(actions ? { actions } : {}), ...(own ? { groupActions: own } : {}),
+            });
           }
         }
         for (const s of directoryShapes(directory)) {
@@ -1453,6 +1462,8 @@ export class JazminReader {
       return {
         path: e.path, type: e.type, size: c.size, sha256: c.sha256, ...(e.groups ? { groups: [...e.groups] } : {}),
         ...(e.actions ? { actions: structuredClone(e.actions) } : {}),
+        // The owner sees each group's actions when they differ (actions above: what any of them allows).
+        ...(e.groupActions && new Set(Object.values(e.groupActions).map((a) => JSON.stringify(a))).size > 1 ? { groupActions: structuredClone(e.groupActions) } : {}),
       };
     });
   }

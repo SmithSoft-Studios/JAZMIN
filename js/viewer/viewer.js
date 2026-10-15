@@ -510,7 +510,8 @@
   }
 
   async function showFiles() {
-    const list = await state.reader.files();
+    // A file marked list: false is one the document page uses (a script, a font): the page still has it.
+    const list = (await state.reader.files()).filter((f) => f.actions?.list !== false);
     $('jz-tab-files').hidden = list.length === 0;
     $('jz-files-status').textContent = list.length ? `${list.length} file${list.length === 1 ? '' : 's'} visible with this key` : '';
     $('jz-files').replaceChildren(...list.map((f) => {
