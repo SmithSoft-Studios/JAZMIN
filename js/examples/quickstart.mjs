@@ -4,7 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, compact, createFileHandler, exportFile, fromCSV, issueUnlockToken, open, openAsync,
+  JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, compact, createFileHandler, exportFile, fromCSV, issueFileUnlockToken, issueUnlockToken,
+  open, openAsync,
   applyChanges, fileSubmission, from, portableHtml, portableScript, rotateKey, toJSON, toXML, update, write, writeAsync, writeChanges,
 } from '../src/index.js';
 
@@ -387,5 +388,28 @@ const asOwner = open(contracts, { key: docsOwner });
 console.log('28.', asOwner.access.grants.map((g) => `${g.label}: files ${JSON.stringify(g.files)}`));
 asOwner.close();
 // 28. [ 'Reviewer: files ["legal"]' ]
+
+// 29. Stored files locked (USER-GUIDE 19.6): a key that sees them lists them, and opens one only with its password; an
+// online lock opens with the token the owner's key service hands out after its own checks (2FA, say).
+const claimOwner = JazminKey.generate();
+const claimant = claimOwner.createAccessKey();
+const claim = path.join(dir, 'claim.jzm');
+write(claim, [{ id: 1 }], {
+  columns: [{ name: 'id', type: 'int' }], key: claimOwner, access: { grants: [{ key: claimant }] },
+  files: [{ path: 'contract.pdf', content: 'The contract', lock: 'contracts' }, { path: 'scan.png', content: 'The scan', lock: 'medical' }],
+  locks: { contracts: { password: 'correct horse battery staple' }, medical: { online: true } },
+});
+const claimView = open(claim, { key: claimant });
+let refused29;
+try {
+  claimView.readFile('contract.pdf');
+} catch (error) {
+  refused29 = `${error.name} (${error.kind})`;
+}
+claimView.unlock('contracts', { password: 'correct horse battery staple' });
+claimView.unlock('medical', { unlockToken: issueFileUnlockToken(claim, claimOwner, 'medical') }); // from the key service
+console.log('29.', refused29, '->', claimView.readFile('contract.pdf').toString(), '/', claimView.readFile('scan.png').toString());
+claimView.close();
+// 29. JazminFileLockedError (password) -> The contract / The scan
 
 fs.rmSync(dir, { recursive: true, force: true });

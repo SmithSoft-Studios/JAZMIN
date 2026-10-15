@@ -539,6 +539,42 @@ using (var asOwner = JazminReader.Open(contractsPath, new JazminReadOptions { Ke
     // 29. [Reviewer: files [legal]]
 }
 
+// --- 30. Stored files locked (USER-GUIDE 19.6): a key that sees them lists them, and opens one only with its password;
+// an online lock opens with the token the owner's key service hands out after its own checks (2FA, say).
+var claimOwner = JazminKey.Generate();
+var claimant = claimOwner.CreateAccessKey();
+var claimPath = Path.Combine(dir, "claim.jzm");
+using (var writer = JazminWriter.Create(claimPath, [new JazminColumn("id", JazminType.Int)], new JazminWriteOptions
+{
+    Key = claimOwner,
+    Access = new JazminAccessOptions { Grants = [new JazminGrant(claimant)] },
+    Files = [new JazminFileInput("contract.pdf", "The contract"u8.ToArray()) { Lock = "contracts" }, new JazminFileInput("scan.png", "The scan"u8.ToArray()) { Lock = "medical" }],
+    Locks = new Dictionary<string, JazminLockOptions?>
+    {
+        ["contracts"] = new() { Password = "correct horse battery staple" },
+        ["medical"] = new() { Online = true },
+    },
+}))
+{
+    writer.WriteValues(1L);
+}
+using (var claimView = JazminReader.Open(claimPath, new JazminReadOptions { AccessKey = claimant }))
+{
+    var refused = "";
+    try
+    {
+        claimView.ReadFile("contract.pdf");
+    }
+    catch (JazminFileLockedException e)
+    {
+        refused = $"{e.GetType().Name} ({e.Kind})";
+    }
+    claimView.Unlock("contracts", password: "correct horse battery staple");
+    claimView.Unlock("medical", unlockToken: JazminFile.IssueFileUnlockToken(claimPath, claimOwner, "medical")); // from the key service
+    Console.WriteLine($"30. {refused} -> {System.Text.Encoding.UTF8.GetString(claimView.ReadFile("contract.pdf"))} / {System.Text.Encoding.UTF8.GetString(claimView.ReadFile("scan.png"))}");
+    // 30. JazminFileLockedException (Password) -> The contract / The scan
+}
+
 Directory.Delete(dir, true);
 
 public readonly record struct Money(long Cents, string Currency);

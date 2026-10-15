@@ -1,4 +1,5 @@
 using System.Buffers.Binary;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -72,6 +73,15 @@ public sealed class JazminWriteOptions
 
     /// <summary>Settings for viewers that render the embedded files.</summary>
     public JazminPackage? Package { get; set; }
+
+    /// <summary>
+    /// Shared files: locks of stored files by id (1 to 64 characters), named by <see cref="JazminFileInput.Lock"/> (spec
+    /// 6.8.1). Files that aren't shared refuse them: their one key would open every lock.
+    /// </summary>
+    public IReadOnlyDictionary<string, JazminLockOptions?>? Locks { get; set; }
+
+    /// <summary>The locks a rewrite keeps, as the owner directory has them (Update; an append has them in its state).</summary>
+    internal IReadOnlyList<LockState>? KeptLocks { get; init; }
 
     /// <summary>
     /// Export shapes saved in the file, offered by name. In a shared file each key that sees one (its groups) must see
@@ -210,7 +220,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     private Part[] _parts = [];
     private int _firstOrdinal;
     private readonly Dictionary<string, FileEntry> _fileEntries = new(StringComparer.Ordinal); // embedded files by path
-    private readonly Dictionary<string, StoredContent> _contents = new(StringComparer.Ordinal); // by SHA-256: stored once
+    private readonly Dictionary<string, StoredContent> _contents = new(StringComparer.Ordinal); // by SHA-256 and lock: stored once
+    private readonly Dictionary<string, LockState> _locks; // locks of stored files (spec 6.8.1) by id
     private int _nextContent;
     private JsonObject? _packageJson;
     private bool _packageSet;
@@ -260,6 +271,10 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             throw new JazminValidationException($"KdfIterations must be from {FormatConstants.MinKdfIterations} to {FormatConstants.MaxKdfIterations}");
 
         var access = _options.Access;
+        if (_options.Locks is not null && access is null)
+            throw new JazminValidationException("Locks need an access-controlled file (spec 6.8.1): with one key or password, that key would open every lock");
+        var (locks, removedLocks) = Jazmin.Locks.ForWriter(_options.Locks, cont?.Files?.Locks ?? _options.KeptLocks);
+        _locks = locks;
         if (_options.Tables is { } tables)
         {
             if (tables.Count == 0) throw new JazminValidationException("Tables must list at least one table");
@@ -358,7 +373,21 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             {
                 // Files already in the file stay; their stored contents are reused by reference.
                 foreach (var e in carried.Entries) _fileEntries[e.Path] = e;
-                foreach (var c in carried.Contents) _contents[c.Sha256] = c;
+                foreach (var c in carried.Contents)
+                {
+                    var kept = c;
+                    if (c.Lock is { } lockId && !_locks.ContainsKey(lockId))
+                    {
+                        // A removed lock's contents stay, unlocked.
+                        if (!removedLocks.Contains(lockId))
+                        {
+                            var filePath = carried.Entries.FirstOrDefault(e => e.Content == c.Id)?.Path ?? $"#{c.Id}";
+                            throw new JazminValidationException($"File '{filePath}' names lock '{lockId}', which the file no longer has: remove the file with Update (RemoveFiles)");
+                        }
+                        kept = new StoredContent { Id = c.Id, Size = c.Size, Sha256 = c.Sha256, BlockSize = c.BlockSize, Key = c.Key, Blocks = c.Blocks };
+                    }
+                    _contents[ContentSlot(kept.Sha256, kept.Lock)] = kept;
+                }
                 _nextContent = carried.NextId;
                 _packageJson = carried.Package;
             }
@@ -396,7 +425,14 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         if (_finished) throw new InvalidOperationException("Writer is already finished");
         DrainPending(all: true); // file blocks are written directly, after the chunks before them
         if (_fileEntries.ContainsKey(source.Path)) throw new JazminValidationException($"File '{source.Path}' is added twice");
-        if (!_contents.TryGetValue(source.Sha256, out var stored))
+        if (source.Lock is { } lockId && !_locks.ContainsKey(lockId))
+        {
+            var known = _locks.Count > 0 ? $"locks: {string.Join(", ", _locks.Keys)}" : "no locks given";
+            throw new JazminValidationException($"File '{source.Path}': no lock '{lockId}' ({known})");
+        }
+        // The same bytes locked and unlocked (or under two locks) are two contents: one's key must not open the other.
+        var slot = ContentSlot(source.Sha256, source.Lock);
+        if (!_contents.TryGetValue(slot, out var stored))
         {
             var id = _nextContent++;
             var key = _keys is not null || _access is not null ? RandomNumberGenerator.GetBytes(32) : null; // one random key per stored content
@@ -409,11 +445,14 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                 blocks.Add((_position, section.Length, _access is not null ? AccessCrypto.DigestText(section) : null));
                 Write(section);
             }
-            stored = new StoredContent { Id = id, Size = source.Size, Sha256 = source.Sha256, Key = key, Blocks = blocks };
-            _contents[source.Sha256] = stored;
+            stored = new StoredContent { Id = id, Size = source.Size, Sha256 = source.Sha256, Key = key, Lock = source.Lock, Blocks = blocks };
+            _contents[slot] = stored;
         }
         _fileEntries[source.Path] = new FileEntry(source.Path, source.Type, stored.Id, source.Groups, source.Actions, source.GroupActions);
     }
+
+    /// <summary>Where the writer keeps a stored content: by its bytes and its lock.</summary>
+    private static string ContentSlot(string sha256, string? lockId) => lockId is null ? sha256 : $"{sha256}/{lockId}";
 
     /// <summary>Writes the file directories (one per file group in access-controlled files); returns the header member.</summary>
     private FilesInfo WriteFileDirectories(int segment)
@@ -422,6 +461,11 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         var byId = _contents.Values.ToDictionary(c => c.Id);
         var shapes = _shapes.Values.OrderBy(s => s.Name, StringComparer.Ordinal).ToList();
         var firstTable = _continue?.Header.Tables[0].Name ?? _tables[0].Name;
+        // A locked content's key is not in the directories: they hold it sealed under its lock's key (spec 6.8.1), sealed
+        // once per content for every directory that lists it.
+        var sealedKeys = new Dictionary<int, string>();
+        string SealedKey(StoredContent c) =>
+            sealedKeys.TryGetValue(c.Id, out var known) ? known : sealedKeys[c.Id] = Convert.ToBase64String(Jazmin.Locks.Seal(_locks[c.Lock!], c.Id, c.Key!));
         // A file's actions in a group's directory: the group's own (GroupActions), else the file's.
         JsonObject Directory(IEnumerable<FileEntry> list, bool withGroups, IEnumerable<SavedShape> saved, string? group = null)
         {
@@ -436,8 +480,15 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                     if (actions is { Count: > 0 }) entry["actions"] = actions.DeepClone();
                     return (JsonNode?)entry;
                 }).ToArray()),
-                ["contents"] = new JsonArray(files.Select(e => e.Content).Distinct().Order().Select(id => (JsonNode?)byId[id].ToJson()).ToArray()),
             };
+            var contents = files.Select(e => e.Content).Distinct().Order().Select(id => byId[id]).ToList();
+            directory["contents"] = new JsonArray(contents.Select(c => (JsonNode?)c.ToJson()).ToArray());
+            var locked = contents.Where(c => c.Lock is not null).GroupBy(c => c.Lock!, StringComparer.Ordinal).OrderBy(g => g.Key, StringComparer.Ordinal).ToList();
+            if (locked.Count > 0)
+            {
+                directory["locks"] = new JsonArray(locked.Select(g => (JsonNode?)Jazmin.Locks.DirectoryEntry(_locks[g.Key],
+                    new JsonObject(g.Select(c => KeyValuePair.Create(c.Id.ToString(CultureInfo.InvariantCulture), (JsonNode?)SealedKey(c)))))).ToArray());
+            }
             var savedList = saved.Select(s => (JsonNode?)s.ToJson(withGroups, firstTable)).ToArray();
             if (savedList.Length > 0) directory["shapes"] = new JsonArray(savedList);
             return directory;
@@ -989,7 +1040,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         var header = new HeaderDef
         {
             ReaderFeatures = readerFeatures,
-            WriterFeatures = new List<string>(cont?.Header.WriterFeatures ?? []),
+            // file-locks while the file has a lock: writers that would not keep them must not modify it (spec 6.8.1, 12).
+            WriterFeatures = (cont?.Header.WriterFeatures ?? []).Where(f => f != Jazmin.Locks.Feature).Concat(_locks.Count > 0 ? [Jazmin.Locks.Feature] : []).ToList(),
             Created = cont?.Header.Created ?? Now.ToUnixTimeMilliseconds(),
             Modified = cont is null ? 0 : Now.ToUnixTimeMilliseconds(),
             AppendCount = segment,
@@ -1290,6 +1342,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             if (g.Share is not null) grant["share"] = Convert.ToBase64String(g.Share);
             return (JsonNode?)grant;
         }).ToArray());
+        // Every lock with its key and secret: the owner opens locked files, and rewrites keep the locks (spec 6.8.1).
+        if (_locks.Count > 0) directory["locks"] = Jazmin.Locks.OwnerList(_locks.Values);
         return directory.ToJsonString();
     }
 

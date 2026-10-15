@@ -6,7 +6,7 @@ choice made there: **locks only in access-controlled (shared) files.** In a file
 copy of each lock key (decision 1) would let anyone with that key open every lock, so a lock would protect nothing;
 without that copy, a rewrite could not re-seal the locked files. Such files refuse a lock, saying why. It changes the
 file format (an addition older readers handle gracefully, see "Compatibility"), so it is explained in plain words first.
-**Built in JavaScript** (2026-10-15; USER-GUIDE 19.6), with `files[i].lock: { id, kind, unlocked }` rather than the
+**Built in both libraries** (2026-10-15; USER-GUIDE 19.6), with `files[i].lock: { id, kind, unlocked }` rather than the
 sketch's `locked`, as it also tells the owner and an unlocked reader which lock a file has.
 
 ## The idea in plain words
