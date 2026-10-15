@@ -2,7 +2,8 @@
 
 Status: **E1 (A, reading last first) built (2026-10-15):** `reverse: true` in both libraries, the browser reader and the
 query APIs (`reverse()`, LINQ `Reverse()`); not automatic for `orderBy: '-date'`, because rows with the same date would
-come last first, where a sort keeps them in file order. E2 (B) not wanted; E3 (natural numbers and ignoring case) next.
+come last first, where a sort keeps them in file order. E2 (B) not wanted. **E3 built (2026-10-15):** spec 6.7 `sort`
+(keys with `nocase` and `natural`), both libraries and the browser reader; `sorted_by` keeps the plain leading keys.
 Earlier: **the owner asked (2026-10-14) for new ways of sorting kept as backward compatible as possible**: see
 "A compatible design" at the end, which needs no new format version.
 

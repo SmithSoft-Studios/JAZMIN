@@ -553,7 +553,7 @@
   function readTable(bytes) {
     const t = {
       name: '', columnCount: 0, groups: [], sortedBy: [], partitionBy: '', rowCount: 0, deletedCount: 0, chunkCount: 0,
-      partitions: [], partitionTable: null, deletes: null, indexes: [],
+      partitions: [], partitionTable: null, deletes: null, indexes: [], sort: [],
     };
     readMessage(bytes, (f, v) => {
       switch (f) {
@@ -579,6 +579,16 @@
         case 10: t.partitionTable = readRef(v); break;
         case 11: t.indexes.push(readIndexRef(v)); break;
         case 12: t.deletes = readRef(v); break;
+        case 13: { // other text orders (spec 6.7)
+          const k = { column: '' };
+          readMessage(v, (kf, kv) => {
+            if (kf === 1) k.column = text(kv);
+            else if (kf === 2 && num(kv)) k.nocase = true;
+            else if (kf === 3 && num(kv)) k.natural = true;
+          });
+          t.sort.push(k);
+          break;
+        }
         default: break;
       }
     });
@@ -3253,6 +3263,8 @@
       columns: visibleColumns,
       metadata: file.metadata,
       sortedBy: table.sortedBy.length ? [...table.sortedBy] : undefined,
+      /** The whole order when a key compares text another way (spec 6.7): [{ column, nocase?, natural? }]; else undefined. */
+      sort: table.sort.length ? table.sort.map((k) => ({ ...k })) : undefined,
       /** Rows this key can read (deleted rows left out). */
       rowCount: visibleRows,
       /** Rows of this table this key may not see. */

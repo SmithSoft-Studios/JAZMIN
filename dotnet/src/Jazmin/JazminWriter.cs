@@ -59,6 +59,12 @@ public sealed class JazminWriteOptions
     /// <summary>Rows must arrive in this column order; recorded so updates can merge in place.</summary>
     public IReadOnlyList<string>? SortedBy { get; set; }
 
+    /// <summary>
+    /// The order with other text comparisons (spec 6.7): keys whose text compares ignoring case and accents, or with the
+    /// numbers inside it by value. Instead of SortedBy.
+    /// </summary>
+    public IReadOnlyList<JazminSortKey>? Sort { get; set; }
+
     /// <summary>Makes the file access-controlled: access keys see only their granted partitions and column groups.</summary>
     public JazminAccessOptions? Access { get; set; }
 
@@ -141,6 +147,9 @@ public sealed class JazminTable(string name, IEnumerable<JazminColumn> columns)
 
     public IReadOnlyList<string>? SortedBy { get; init; }
 
+    /// <summary>The order with other text comparisons (spec 6.7), instead of SortedBy.</summary>
+    public IReadOnlyList<JazminSortKey>? Sort { get; init; }
+
     /// <summary>Access-controlled files: the partition column. Partition names are shared by every table of the file.</summary>
     public string? PartitionBy { get; init; }
 
@@ -187,7 +196,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     private sealed record PendingChunk(WrittenChunk Entry, Task<(byte[] Buffer, int Length, byte[]? Digest)[]> Work);
 
     /// <summary>A table to write, checked (spec 6.2). Partition columns and column groups belong to access-controlled files.</summary>
-    private sealed record TableSpec(string Name, JazminColumn[] Columns, IReadOnlyList<string>? SortedBy, int[]? SortCols, int ChunkRows,
+    // SortedBy: the order's leading plain keys (the catalog's sorted_by); Order: the whole order (spec 6.7).
+    private sealed record TableSpec(string Name, JazminColumn[] Columns, IReadOnlyList<string>? SortedBy, JazminSortKey[]? Order, int[]? SortCols, int ChunkRows,
         int ChunkBytes, string? PartitionBy, int PartitionCol, List<(string Name, int[] Cols)> ColumnGroups);
 
     [ThreadStatic]
@@ -278,16 +288,16 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         if (_options.Tables is { } tables)
         {
             if (tables.Count == 0) throw new JazminValidationException("Tables must list at least one table");
-            if (columns is not null || _options.SortedBy is not null || access?.PartitionBy is not null || access?.ColumnGroups.Count > 0)
-                throw new JazminValidationException("With Tables, give the columns, SortedBy, PartitionBy and ColumnGroups in each table");
-            _tables = tables.Select(t => Spec(t.Name, t.Columns, t.SortedBy, t.PartitionBy, t.ColumnGroups, t.ChunkRows, t.ChunkBytes, named: true)).ToArray();
+            if (columns is not null || _options.SortedBy is not null || _options.Sort is not null || access?.PartitionBy is not null || access?.ColumnGroups.Count > 0)
+                throw new JazminValidationException("With Tables, give the columns, SortedBy (or Sort), PartitionBy and ColumnGroups in each table");
+            _tables = tables.Select(t => Spec(t.Name, t.Columns, SortOrder.Of(t.SortedBy, t.Sort), t.PartitionBy, t.ColumnGroups, t.ChunkRows, t.ChunkBytes, named: true)).ToArray();
             var twice = _tables.GroupBy(t => t.Name, StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1);
             if (twice is not null) throw new JazminValidationException($"Table '{twice.Key}' is declared twice");
         }
         else
         {
             if (columns is null) throw new JazminValidationException("Give the columns, or the Tables option");
-            _tables = [Spec(cont?.Table.Name ?? "", columns, _options.SortedBy, access?.PartitionBy, access?.ColumnGroups, null, null, named: false)];
+            _tables = [Spec(cont?.Table.Name ?? "", columns, SortOrder.Of(_options.SortedBy, _options.Sort), access?.PartitionBy, access?.ColumnGroups, null, null, named: false)];
         }
         // Links between the tables: checked against them, kept in the metadata (names only).
         if (_options.Links is { } links)
@@ -578,7 +588,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     }
 
     /// <summary>A table's definition, checked (spec 6.2).</summary>
-    private TableSpec Spec(string name, IEnumerable<JazminColumn> columnList, IReadOnlyList<string>? sortedBy, string? partitionBy,
+    private TableSpec Spec(string name, IEnumerable<JazminColumn> columnList, IReadOnlyList<JazminSortKey>? order, string? partitionBy,
         Dictionary<string, string[]>? columnGroups, int? chunkRows, int? chunkBytes, bool named)
     {
         if (named && string.IsNullOrEmpty(name)) throw new JazminValidationException("Each table needs a name");
@@ -587,19 +597,27 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         var rows = chunkRows ?? _options.ChunkRows;
         if (rows < 1) throw new JazminValidationException("ChunkRows must be positive");
         int[]? sortCols = null;
-        if (sortedBy is not null)
+        IReadOnlyList<string>? sortedBy = null;
+        if (order is not null)
         {
-            if (sortedBy.Count == 0) throw new JazminValidationException("SortedBy must name at least one column");
-            sortCols = sortedBy.Select(n => Array.FindIndex(columns, c => c.Name == n) is var i and >= 0
-                ? i : throw new JazminValidationException($"SortedBy: unknown column '{n}'")).ToArray();
-            foreach (var i in sortCols)
-                if (TypeNames.IsNested(columns[i].Type)) throw new JazminValidationException($"SortedBy: a {TypeNames.ToName(columns[i].Type)} column cannot be sorted");
+            if (order.Count == 0) throw new JazminValidationException("SortedBy must name at least one column");
+            sortCols = order.Select(k => Array.FindIndex(columns, c => c.Name == k.Column) is var i and >= 0
+                ? i : throw new JazminValidationException($"SortedBy: unknown column '{k.Column}'")).ToArray();
+            for (var k = 0; k < sortCols.Length; k++)
+            {
+                var type = columns[sortCols[k]].Type;
+                if (TypeNames.IsNested(type)) throw new JazminValidationException($"SortedBy: a {TypeNames.ToName(type)} column cannot be sorted");
+                if (!order[k].Plain && type != JazminType.String)
+                    throw new JazminValidationException($"Sort: NoCase and Natural are for string columns ('{order[k].Column}' is {TypeNames.ToName(type)})");
+            }
+            sortedBy = SortOrder.Plain(order);
         }
+        var orderKeys = order?.ToArray();
         if (_options.Access is null)
         {
             if (partitionBy is not null || columnGroups is { Count: > 0 })
                 throw new JazminValidationException("PartitionBy and ColumnGroups need an access-controlled file (the Access option)");
-            return new TableSpec(name, columns, sortedBy, sortCols, rows, chunkBytes ?? _options.ChunkBytes, null, -1,
+            return new TableSpec(name, columns, sortedBy, orderKeys, sortCols, rows, chunkBytes ?? _options.ChunkBytes, null, -1,
                 [(FormatConstants.DefaultColumnGroup, Enumerable.Range(0, columns.Length).ToArray())]);
         }
         var layout = AccessConfig.NormalizeTable(partitionBy, columnGroups ?? new(), columns);
@@ -608,7 +626,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             if (layout.ColumnGroups[0].Name != FormatConstants.DefaultColumnGroup || !layout.ColumnGroups[0].Cols.Contains(i))
                 throw new JazminValidationException($"The SortedBy column '{columns[i].Name}' must stay in the default column group");
         }
-        return new TableSpec(name, columns, sortedBy, sortCols, rows, chunkBytes ?? _options.ChunkBytes, layout.PartitionBy, layout.PartitionCol, layout.ColumnGroups);
+        return new TableSpec(name, columns, sortedBy, orderKeys, sortCols, rows, chunkBytes ?? _options.ChunkBytes, layout.PartitionBy, layout.PartitionCol, layout.ColumnGroups);
     }
 
     /// <summary>Makes <paramref name="table"/> (table <paramref name="index"/> of the file) the table rows go to.</summary>
@@ -637,8 +655,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             foreach (var kind in _columns[i].Indexes.Distinct())
             {
                 // Readers find the leading SortedBy column's values from chunk statistics and have never used its
-                // sorted index (spec 6.7): it is not written.
-                if (kind == JazminIndexKind.Sorted && table.SortCols is [var leading, ..] && leading == i) continue;
+                // sorted index (spec 6.7): it is not written. A leading key with another text order is searched by its index.
+                if (kind == JazminIndexKind.Sorted && table.SortCols is [var leading, ..] && leading == i && table.SortedBy is { Count: > 0 }) continue;
                 IIndexBuilder builder = kind == JazminIndexKind.Sorted
                     ? new SortedIndexBuilder(_columns[i].Type, _options.SpillEntries ?? SortedIndexBuilder.SpillEntries(_options.Priority))
                     : new TrigramIndexBuilder();
@@ -650,10 +668,10 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         _firstOrdinal = cont?.Table.ChunkCount ?? 0;
         if (cont is not null && _sortCols is not null && cont.LastRow is not null)
         {
-            _lastSortKey = _sortCols.Select(i =>
+            _lastSortKey = _sortCols.Select((i, k) =>
             {
                 var v = Values.Normalize(_columns[i].Type, cont.LastRow[i], _columns[i].Name);
-                return v is null ? null : Values.ToKey(_columns[i].Type, v);
+                return v is null ? null : SortOrder.Key(_columns[i].Type, v, table.Order![k]);
             }).ToArray();
         }
         ResetChunk();
@@ -676,6 +694,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             ColumnCount = _columns.Length,
             ColumnGroups = ColumnGroupDefs(),
             SortedBy = _current.SortedBy?.ToList() ?? new List<string>(),
+            Sort = SortOrder.Catalog(_current.Order), // other text orders (spec 6.7); SortedBy keeps the plain leading keys
             PartitionBy = _current.PartitionBy ?? "",
             RowCount = RowCount,
             DeletedCount = cont?.Deleted.Length ?? 0,
@@ -934,14 +953,15 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     {
         // Two key arrays are reused (current and previous row): no allocation per row.
         var cols = _sortCols!;
+        var order = _current.Order!;
         var key = _sortKeyScratch ??= new object?[cols.Length];
         for (var k = 0; k < cols.Length; k++)
         {
             var value = normalized[cols[k]];
-            key[k] = value is null ? null : Values.ToKey(_columns[cols[k]].Type, value);
+            key[k] = value is null ? null : SortOrder.Key(_columns[cols[k]].Type, value, order[k]);
         }
         if (_lastSortKey is not null && SortKeys.Compare(_lastSortKey, key) > 0)
-            Fault($"Row {RowCount} is out of order for SortedBy [{string.Join(", ", _current.SortedBy!)}]");
+            Fault($"Row {RowCount} is out of order for SortedBy [{SortOrder.Describe(order)}]");
         _sortKeyScratch = _lastSortKey;
         _lastSortKey = key;
     }
@@ -1522,7 +1542,7 @@ internal static class SortKeys
             if (a[i] is null && b[i] is null) continue;
             if (a[i] is null) return -1;
             if (b[i] is null) return 1;
-            var c = Values.Compare(a[i]!, b[i]!) ?? 0;
+            var c = a[i] is NaturalKey natural ? natural.CompareTo(b[i] as NaturalKey) : Values.Compare(a[i]!, b[i]!) ?? 0;
             if (c != 0) return c;
         }
         return 0;

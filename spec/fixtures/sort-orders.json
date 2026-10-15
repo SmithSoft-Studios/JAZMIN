@@ -1,0 +1,18 @@
+{
+  "about": "Other text orders (spec 6.7): each list is in order for its comparison; both libraries check that sorting a shuffled copy gives it back, and that fold gives these folded forms.",
+  "fold": [
+    ["Apple", "apple"],
+    ["ÉMILE", "emile"],
+    ["Ångström", "angstrom"],
+    ["İstanbul", "istanbul"],
+    ["ΣΟΦΟΣ", "σοφοσ"],
+    ["Straße", "straße"],
+    ["Ǆ", "ǆ"],
+    ["naïve café", "naive cafe"],
+    ["𝐀bc", "𝐀bc"],
+    ["", ""]
+  ],
+  "nocase": ["apple", "Banana", "café", "Cafe2", "Émile", "zebra", "Zoë"],
+  "natural": ["", "1", "2", "02", "10", "A", "A2", "A10", "A10b", "A010c", "B", "a", "a1"],
+  "naturalNocase": ["", "file1", "File2", "file10", "FILE10a", "item 3", "Item 20", "ítem 100", "Zone"]
+}

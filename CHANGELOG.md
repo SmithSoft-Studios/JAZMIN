@@ -4,6 +4,12 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **Other text orders: ignoring case and accents, numbers by value (#189 E3, both libraries; spec 6.7).** A key of a
+  table's order can be `{ column, nocase, natural }` (`sortedBy` in JS; .NET `Sort` with `JazminSortKey`): `apple`,
+  `Banana`, `Émile` with `nocase`, `A2` before `A10` with `natural`. Writers check rows against it; appends, updates
+  (rows merged at their place, sort values set), compaction and re-sorts keep it. `reader.sort` / `Sort` gives it;
+  `sortedBy` keeps the order's leading plain keys, so releases 1.0 to 1.6 read such files correctly (and drop the rest
+  of the order if they append). Filters compare as before. Shared test vectors: `spec/fixtures/sort-orders.json`.
 - **Reading last first: `reverse: true` (#189 E1, both libraries and the browser reader).** `find`, `rows`, `findAsync`,
   `findBatchesAsync`, exports, and the browser reader's `find` and `query` take `reverse: true` (.NET
   `JazminQueryOptions.Reverse`): the reader starts at the last chunk, so the newest rows of a file sorted by date come

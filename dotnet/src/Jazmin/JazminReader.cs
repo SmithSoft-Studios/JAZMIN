@@ -1559,8 +1559,16 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <summary>PBKDF2 iterations of a password-protected file, otherwise null.</summary>
     public int? KdfIterations { get; private set; }
 
-    /// <summary>Columns the writer declared the rows to be ordered by (null if none).</summary>
+    /// <summary>Columns the writer declared the rows to be ordered by (null if none): the order's leading plain keys, those every reader relies on.</summary>
     public IReadOnlyList<string>? SortedBy => _table.SortedBy.Count > 0 ? _table.SortedBy : null;
+
+    /// <summary>
+    /// The table's whole order when a key compares text another way (1.7, spec 6.7); else null (the order is SortedBy).
+    /// </summary>
+    public IReadOnlyList<JazminSortKey>? Sort => _table.Sort.Count > 0 ? _table.Sort : null;
+
+    /// <summary>The table's whole order: Sort, or SortedBy as plain keys (null: none).</summary>
+    internal IReadOnlyList<JazminSortKey>? Order => Sort ?? SortedBy?.Select(n => new JazminSortKey(n)).ToList();
 
     /// <summary>Index refs this reader may use: the table's, or (access-controlled files, owner only) the owner catalog's.</summary>
     private List<IndexRef> IndexList()
@@ -2926,12 +2934,13 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         ListAllPartitions();
         object?[]? lastRow = null;
         var lastOrdinal = _table.ChunkCount - 1;
-        if (_table.SortedBy.Count > 0 && lastOrdinal >= 0)
+        var ordered = _table.SortedBy.Count > 0 || _table.Sort.Count > 0;
+        if (ordered && lastOrdinal >= 0)
         {
             var map = _access is { IsOwner: true } && !_allLoaded ? ChunkMapInfo() : null;
             if (!(map is not null && LoadPartitionsOf([map.RowStarts[lastOrdinal]]))) EnsureAllChunks();
         }
-        if (lastOrdinal >= 0 && _table.SortedBy.Count > 0 && _loaded[lastOrdinal])
+        if (lastOrdinal >= 0 && ordered && _loaded[lastOrdinal])
         {
             var saved = _deleted;
             _deleted = Array.Empty<long>(); // the physically last row, even if deleted, bounds the sort order

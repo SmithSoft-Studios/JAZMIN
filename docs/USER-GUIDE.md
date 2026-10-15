@@ -2409,6 +2409,23 @@ JazminFile.Update("orders.jzm", new JazminUpdate
   and never kept, and merges
   the files into the index at the end; `'speed'` holds them all. The index is byte for byte the same.
 - **In a file with several tables,** the options change the table named by `table` (the first by default).
+- **Other text orders** (1.7, spec 6.7): a key of the order can compare text **ignoring case and accents**
+  (`nocase`: `apple`, `Banana`, `Émile`) or with **the numbers inside it by value** (`natural`: `A2` before `A10`), or
+  both. The same in `write()`, `update()` and new tables. `reader.sort` (.NET `Sort`) gives such an order;
+  `reader.sortedBy` keeps its leading plain keys, the part every reader relies on (a binary search on the first, when it
+  is plain). Filters still compare values exactly; reading `reverse: true` gives the order backwards. Releases 1.0 to
+  1.6 read such files correctly, with only the plain part of the order; if they append to one, they drop the rest of
+  it, which stays true.
+
+  ```js
+  write('people.jzm', rows, { columns, sortedBy: ['region', { column: 'name', nocase: true, natural: true }] });
+  update('people.jzm', { sortedBy: [{ column: 'name', nocase: true }] });
+  ```
+
+  ```csharp
+  new JazminWriteOptions { Sort = [new JazminSortKey("region"), new JazminSortKey("name") { NoCase = true, Natural = true }] };
+  JazminFile.Update("people.jzm", new JazminUpdate { Sort = [new JazminSortKey("name") { NoCase = true }] });
+  ```
 
 Measured on 1,000,000 rows (9.2 MB, sorted by id, two sorted indexes), each run in its own process
 (`npm run bench:layout`; Node 24 and .NET 10 on a 12th-gen Intel i7; the range of three runs):

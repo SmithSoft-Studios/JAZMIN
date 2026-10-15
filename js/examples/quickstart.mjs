@@ -421,4 +421,13 @@ console.log('30.', [...journal.find({ account: 'A7' }, { reverse: true, limit: 3
 journal.close();
 // 30. [ 9957, 9907, 9857 ] 9999
 
+// 31. Text kept ignoring case and accents, with numbers by value (USER-GUIDE 16.1): update puts the rows in that order.
+const names = path.join(dir, 'names.jzm');
+write(names, ['file10', 'File2', 'émile', 'file1', 'Apple'].map((name) => ({ name })), { columns: [{ name: 'name', type: 'string' }] });
+update(names, { sortedBy: [{ column: 'name', nocase: true, natural: true }] });
+const namesReader = open(names);
+console.log('31.', [...namesReader.rows()].map((r) => r.name), namesReader.sort);
+namesReader.close();
+// 31. [ 'Apple', 'émile', 'file1', 'File2', 'file10' ] [ { column: 'name', nocase: true, natural: true } ]
+
 fs.rmSync(dir, { recursive: true, force: true });

@@ -26,11 +26,12 @@ import { ownerLockList, sealContentKey, writerLocks } from './locks.js';
 import { checkPriority, writeThreads } from './priority.js';
 import { checkShapeList, checkShapes, normalizeShapes } from './saved-shapes.js';
 import { normalizeColumns } from './schema.js';
+import { describeOrder, normalizeOrder, orderComparer, orderKeyMaker } from './sort-keys.js';
 import { toMs } from './expiry.js';
 import { encodeSection } from './section.js';
 import { SectionPool } from './section-pool.js';
 import { ColumnStats } from './stats.js';
-import { compareKeys, normalizeValue, toKey } from './types.js';
+import { normalizeValue } from './types.js';
 
 const FLAGS_OFFSET = 4; // preamble: magic (4) | flags u16 | reserved u16 | file id | salt | kdf iterations | reserved
 
@@ -154,18 +155,6 @@ export const KEPT_LOCKS = Symbol('jazmin.keptLocks');
 /** Where the writer keeps a stored content: by its bytes and its lock. */
 const contentSlot = (c) => (c.lock === undefined ? c.sha256 : `${c.sha256}/${c.lock}`);
 
-/** Orders two rows by the `sortedBy` columns; nulls sort first. */
-function compareSortKeys(a, b) {
-  for (let i = 0; i < a.length; i++) {
-    if (a[i] === b[i]) continue;
-    if (a[i] === null) return -1;
-    if (b[i] === null) return 1;
-    const c = compareKeys(a[i], b[i]);
-    if (c !== 0) return Number.isNaN(c) ? 0 : c;
-  }
-  return 0;
-}
-
 /** A column's catalog definition (spec 6.2), with a list's item or an object's fields (spec 5.4). */
 function catalogColumn(c, position) {
   return {
@@ -197,8 +186,9 @@ const sha256 = (...parts) => {
 };
 
 /**
- * A table's definition, checked (spec 6.2): { name, columns, sortedBy, sortCols, chunkRows, chunkBytes, partitionBy,
- * partitionCol, columnGroups }. Partition columns and column groups belong to access-controlled files.
+ * A table's definition, checked (spec 6.2): { name, columns, sortedBy, sortCols, order, chunkRows, chunkBytes,
+ * partitionBy, partitionCol, columnGroups }; `order` is its sort order (sort-keys.js normalizeOrder), `sortedBy` its
+ * plain leading keys (the catalog's sorted_by). Partition columns and column groups belong to access-controlled files.
  */
 function tableDefinition(t, { named, access, chunkRows, chunkBytes }) {
   if (t === null || typeof t !== 'object') throw new JazminValidationError('Each table must be an object');
@@ -207,14 +197,10 @@ function tableDefinition(t, { named, access, chunkRows, chunkBytes }) {
   const rows = t.chunkRows ?? chunkRows;
   if (!Number.isInteger(rows) || rows < 1) throw new JazminValidationError('chunkRows must be a positive integer');
   let sortCols = null;
+  let order = null;
   if (t.sortedBy !== undefined) {
-    if (!Array.isArray(t.sortedBy) || t.sortedBy.length === 0) throw new JazminValidationError('sortedBy must be a non-empty array of column names');
-    sortCols = t.sortedBy.map((name) => {
-      const i = columns.findIndex((c) => c.name === name);
-      if (i < 0) throw new JazminValidationError(`sortedBy: unknown column '${name}'`);
-      if (isNested(columns[i].type)) throw new JazminValidationError(`sortedBy: a ${columns[i].type} column cannot be sorted`);
-      return i;
-    });
+    order = normalizeOrder(t.sortedBy, columns);
+    sortCols = order.keys.map((k) => k.col);
   }
   let layout = { partitionBy: null, partitionCol: -1, columnGroups: [{ name: DEFAULT_COLUMN_GROUP, cols: columns.map((_, i) => i) }] };
   if (access) {
@@ -227,7 +213,9 @@ function tableDefinition(t, { named, access, chunkRows, chunkBytes }) {
   } else if ((t.partitionBy !== undefined && t.partitionBy !== null) || t.columnGroups !== undefined) {
     throw new JazminValidationError('partitionBy and columnGroups need an access-controlled file (the access option)');
   }
-  return { name: t.name ?? '', columns, sortedBy: t.sortedBy, sortCols, chunkRows: rows, chunkBytes: t.chunkBytes ?? chunkBytes, ...layout };
+  return {
+    name: t.name ?? '', columns, sortedBy: order ? order.plain : undefined, sortCols, order, chunkRows: rows, chunkBytes: t.chunkBytes ?? chunkBytes, ...layout,
+  };
 }
 
 /**
@@ -293,6 +281,8 @@ export class JazminWriter {
   #values; // reused per row
   #sortCols = null;
   #lastSortKey = null;
+  #orderKey = null; // the table's sort order: a row's key (sort-keys.js), and how two keys compare
+  #orderCompare = null;
   #continue = null; // append mode: state of the file being continued
   #progress = null; // onProgress and signal, when given: { onProgress, signal, total, written }
   #files = { entries: new Map(), contents: new Map(), nextId: 0 }; // embedded files (spec 6.8): path -> entry, sha256 -> stored content
@@ -527,6 +517,8 @@ export class JazminWriter {
     this.#values = new Array(def.columns.length);
     this.#sortCols = def.sortCols;
     this.#lastSortKey = null;
+    this.#orderKey = def.order ? orderKeyMaker(def.order.keys) : null;
+    this.#orderCompare = def.order ? orderComparer(def.order.keys) : null;
     this.#groups = def.columnGroups.map((g) => ({ name: g.name, cols: g.cols }));
     this.#chunks = [];
     this.#chunkPartition = null;
@@ -535,8 +527,8 @@ export class JazminWriter {
     def.columns.forEach((column, col) => {
       for (const kind of column.index) {
         // Readers find the leading sortedBy column's values from chunk statistics and have never used its sorted
-        // index (spec 6.7): it is not written.
-        if (kind === 'sorted' && def.sortCols?.[0] === col) continue;
+        // index (spec 6.7): it is not written. A leading key with another text order is searched by its index.
+        if (kind === 'sorted' && def.sortCols?.[0] === col && def.sortedBy?.length) continue;
         const builder = new INDEX_BUILDERS[kind](column.type, Infinity, { spillEntries: this.#options.spillEntries });
         this.#indexBuilders.push({ col, column: column.name, kind, builder });
       }
@@ -545,10 +537,7 @@ export class JazminWriter {
     this.#rowCount = cont ? cont.table.rowCount : 0;
     this.#firstOrdinal = cont ? cont.table.chunkCount : 0;
     if (cont && this.#sortCols && cont.lastRow) {
-      this.#lastSortKey = this.#sortCols.map((i) => {
-        const v = normalizeValue(this.#columns[i].type, cont.lastRow[this.#columns[i].name], this.#columns[i].name);
-        return v === null ? null : toKey(this.#columns[i].type, v);
-      });
+      this.#lastSortKey = this.#orderKey((i) => normalizeValue(this.#columns[i].type, cont.lastRow[this.#columns[i].name], this.#columns[i].name));
     }
     this.#resetChunk();
   }
@@ -569,6 +558,7 @@ export class JazminWriter {
       columnCount: this.#columns.length,
       columnGroups: this.#columnGroups(),
       sortedBy: this.#current.sortedBy ?? [],
+      sort: this.#current.order?.sort ?? [], // other text orders (spec 6.7); sortedBy keeps the plain leading keys
       partitionBy: this.#current.partitionBy ?? '',
       rowCount: this.#rowCount,
       deletedCount: cont?.deleted.length ?? 0,
@@ -726,9 +716,9 @@ export class JazminWriter {
   }
 
   #checkOrder(values, rowNumber) {
-    const key = this.#sortCols.map((i) => (values[i] === null ? null : toKey(this.#columns[i].type, values[i])));
-    if (this.#lastSortKey && compareSortKeys(this.#lastSortKey, key) > 0) {
-      throw new JazminValidationError(`Row ${rowNumber} is out of order for sortedBy [${this.#current.sortedBy.join(', ')}]`);
+    const key = this.#orderKey((i) => values[i]);
+    if (this.#lastSortKey && this.#orderCompare(this.#lastSortKey, key) > 0) {
+      throw new JazminValidationError(`Row ${rowNumber} is out of order for sortedBy [${describeOrder(this.#current.order.keys)}]`);
     }
     this.#lastSortKey = key;
   }

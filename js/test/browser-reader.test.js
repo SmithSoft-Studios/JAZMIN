@@ -471,3 +471,17 @@ test('reverse: the browser reader reads last first as the library does, in find,
   assert.equal(query.explain().reverse, true);
   library.close();
 });
+
+test('other text orders: the browser reader gives sort as the library does, and reads the rows in that order', async () => {
+  const columns = [{ name: 'region', type: 'string' }, { name: 'name', type: 'string' }];
+  const bytes = write(null, ['A', 'B'].flatMap((region) => ['file1', 'File2', 'file10'].map((name) => ({ region, name }))),
+    { columns, sortedBy: ['region', { column: 'name', nocase: true, natural: true }], chunkRows: 2 });
+  const library = open(bytes);
+  const browser = await JazminBrowser.open(new Uint8Array(bytes));
+  assert.deepEqual(browser.sortedBy, library.sortedBy);
+  assert.deepEqual(browser.sort, library.sort);
+  const names = [];
+  for await (const row of browser.find(null, { reverse: true })) names.push(row.name);
+  assert.deepEqual(names, [...library.rows({ reverse: true })].map((r) => r.name));
+  library.close();
+});

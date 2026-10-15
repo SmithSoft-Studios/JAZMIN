@@ -1269,6 +1269,14 @@ export class JazminReader {
     return this.#table.sortedBy.length ? [...this.#table.sortedBy] : undefined;
   }
 
+  /**
+   * The table's whole order when a key compares text another way (spec 6.7): [{ column, nocase?, natural? }], else
+   * undefined (the order is sortedBy's). sortedBy keeps its leading plain keys: those every reader can rely on.
+   */
+  get sort() {
+    return this.#table.sort?.length ? this.#table.sort.map((k) => ({ ...k })) : undefined;
+  }
+
   /** Index refs this reader may use: the table's, or (access-controlled files, owner only) the owner catalog's. */
   #indexList() {
     if (this.#indexRefs) return this.#indexRefs;
@@ -2807,7 +2815,7 @@ export class JazminReader {
     // last row, which bounds the sort order: only that chunk's partition is read when the chunk map names it.
     this.#listAllPartitions();
     let last = null;
-    if (this.#table.sortedBy.length && this.#table.chunkCount > 0) {
+    if ((this.#table.sortedBy.length || this.#table.sort?.length) && this.#table.chunkCount > 0) {
       const lastOrdinal = this.#table.chunkCount - 1;
       const map = this.#access?.isOwner && !this.#allLoaded ? this.#chunkMap() : null;
       if (!(map && this.#loadPartitionsOf([map.rowStarts[lastOrdinal]]))) this.#ensureAllChunks();
