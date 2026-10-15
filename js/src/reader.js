@@ -1600,12 +1600,14 @@ export class JazminReader {
 
   /**
    * Masked columns of this table (spec 7.6.8): [{ column, type, group, lock: { id, kind, unlocked, keyService? },
-   * shown?, unmasked? }]. Until its lock is unlocked a masked column isn't in `columns`: rows don't have it. `shown` names
-   * the column with what its values show; `unmasked`, the column with its values in the rows that aren't masked.
+   * shown?, unmasked?, at }]. Until its lock is unlocked a masked column isn't in `columns`: rows don't have it. `shown`
+   * names the column with what its values show; `unmasked`, the column with its values in the rows that aren't masked;
+   * `at`, where the column is (or will be, once unlocked) in `columns`, for viewers that show it in its place.
    */
   get masked() {
     if (!this.#access) return [];
-    const extra = (c) => ({ ...(c.shown ? { shown: c.shown } : {}), ...(c.unmasked ? { unmasked: c.unmasked } : {}) });
+    const at = (position) => this.#visibleCols.filter((i) => i < position).length;
+    const extra = (c) => ({ ...(c.shown ? { shown: c.shown } : {}), ...(c.unmasked ? { unmasked: c.unmasked } : {}), at: at(c.position) });
     if (this.#access.isOwner) {
       return (this.#ownerDirectory().masks ?? []).filter((m) => m.table === this.#tableIndex).sort((a, b) => a.position - b.position)
         .map((m) => ({ column: m.column, type: m.type, group: m.group, lock: this.#lockInfo(m.lock), ...extra(m) }));

@@ -1402,15 +1402,16 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         get
         {
             if (_access is null) return [];
+            int At(int position) => _visibleCols.Count(i => i < position);
             if (_access.IsOwner)
             {
                 return OwnerMasks().Where(m => (int?)m["table"] == _tableIndex).OrderBy(m => (int)m["position"]!)
                     .Select(m => new JazminMaskedColumn((string)m["column"]!, TypeNames.Parse((string)m["type"]!), (string)m["group"]!, LockInfo((string)m["lock"]!),
-                        (string?)m["shown"], (string?)m["unmasked"])).ToList();
+                        (string?)m["shown"], (string?)m["unmasked"], At((int)m["position"]!))).ToList();
             }
             return _access.MaskGroups.Where(g => (int?)g.Value.Column["table"] == _tableIndex).OrderBy(g => (int)g.Value.Column["position"]!)
                 .Select(g => new JazminMaskedColumn((string)g.Value.Column["name"]!, TypeNames.Parse((string)g.Value.Column["type"]!), g.Key, LockInfo(g.Value.Lock),
-                    (string?)g.Value.Column["shown"], (string?)g.Value.Column["unmasked"])).ToList();
+                    (string?)g.Value.Column["shown"], (string?)g.Value.Column["unmasked"], At((int)g.Value.Column["position"]!))).ToList();
         }
     }
 
