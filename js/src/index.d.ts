@@ -256,6 +256,8 @@ export interface MaskedColumn {
   shown?: string;
   /** The column with its values in the rows that aren't masked. */
   unmasked?: string;
+  /** Where the column is (or will be, once unlocked) in columns: viewers show it in its place. */
+  at: number;
 }
 
 /** What a file's document may change: rows of one table, by their key. */

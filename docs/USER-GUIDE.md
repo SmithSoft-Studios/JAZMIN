@@ -2321,7 +2321,7 @@ write('staff.jzm', rows, {
 });
 
 const reader = open('staff.jzm', { key: accessKey });
-reader.masked;               // [{ column: 'account', lock: { id: 'pay', kind: 'password', unlocked: false }, shown: 'account_shown' }, ...]
+reader.masked;               // [{ column: 'account', lock: { id: 'pay', kind: 'password', unlocked: false }, shown: 'account_shown', at: 4 }, ...]
 reader.columns;              // ..., account_shown, salary_unmasked: the masked columns aren't there yet
 reader.unlock('pay', { password: 'correct horse battery staple' });   // now rows have account
 ```

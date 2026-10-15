@@ -68,6 +68,7 @@ test('a key granted a masked column sees it masked, with its shown and unmasked 
   const { keys, file, owner } = staffFile();
   const r = asKey(file, keys.staff);
   assert.deepEqual(r.columns.map((c) => c.name), ['id', 'dept', 'name', 'account_shown', 'email_shown', 'salary_unmasked']);
+  assert.deepEqual(r.masked.map((m) => m.at), [3, 3, 3], 'account, email and salary come after id, dept and name');
   assert.deepEqual(r.masked.map((m) => [m.column, m.type, m.group, m.lock.id, m.lock.kind, m.lock.unlocked, m.shown ?? null, m.unmasked ?? null]), [
     ['account', 'string', 'mask.account', 'pay', 'password', false, 'account_shown', null],
     ['email', 'string', 'mask.email', 'pay', 'password', false, 'email_shown', null],

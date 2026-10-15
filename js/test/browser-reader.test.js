@@ -473,7 +473,7 @@ test('masked columns: the browser reader lists them, unlocks them in every table
   const browser = await notes.openTable('people');
   const rowsOf = async (reader) => (await reader.query(null)).rows;
   assert.deepEqual(await notes.masked(), []);
-  assert.deepEqual((await browser.masked()).map(({ at, ...m }) => m), library.masked);
+  assert.deepEqual(await browser.masked(), library.masked);
   assert.deepEqual((await browser.masked()).map((m) => m.at), [1, 2], 'account between id and name; salary after name');
   assert.deepEqual(await browser.locks(), library.locks);
   assert.deepEqual(browser.columns.map((c) => c.name), library.columns.map((c) => c.name));
@@ -488,6 +488,7 @@ test('masked columns: the browser reader lists them, unlocks them in every table
   library.unlock('hr', { unlockToken: issueFileUnlockToken(file, owner, 'hr') });
   assert.deepEqual(await rowsOf(browser), [...library.rows()]);
   assert.deepEqual((await browser.masked()).map((m) => [m.lock.unlocked, m.at]), [[true, 1], [true, 3]]);
+  assert.deepEqual(await browser.masked(), library.masked, 'the same places once unlocked');
   library.close();
 });
 

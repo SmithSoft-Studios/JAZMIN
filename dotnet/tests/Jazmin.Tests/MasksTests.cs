@@ -102,6 +102,7 @@ public class MasksTests
                 ("salary", JazminType.Decimal, "mask.salary", "hr", JazminLockKind.Online, false, null, "salary_unmasked"),
             ],
             r.Masked.Select(m => (m.Column, m.Type, m.Group, m.Lock.Id, m.Lock.Kind!.Value, m.Lock.Unlocked, m.Shown, m.Unmasked)));
+        Assert.Equal([3, 3, 3], r.Masked.Select(m => m.At)); // account, email and salary come after id, dept and name
         Assert.Equal([new JazminLockInfo("hr", JazminLockKind.Online, false), new JazminLockInfo("pay", JazminLockKind.Password, false)], r.Locks);
         Assert.Equal(
             [("•••• •••• •••• 4821", "t•••••@example.com", "52000.00"), ("•••• •••• •••• 4444", "b••@example.org", null), ("9", null, null)],

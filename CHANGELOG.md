@@ -4,6 +4,8 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **Where a masked column belongs (#190).** `reader.masked` (JS) and `reader.Masked` (.NET, `At`) give each masked column's
+  `at`: its place in `columns`, now or once unlocked, as the browser reader does, so a viewer shows it where it was defined.
 - **Masked columns in the browser reader and the web viewer (#190).** `reader.masked()` (with `at`, the column's place),
   `locks()` and `unlock()` for masked columns, which builds every open table reader again with them. The viewer shows
   a masked column in its place with what it shows, Unlock… in its header, then Reveal one value at a time (or the
