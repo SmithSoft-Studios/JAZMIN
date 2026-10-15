@@ -261,8 +261,14 @@ request.
 - [ ] `npm test`, `npm run typecheck`, `dotnet test` all pass on a clean checkout
 - [ ] Fixtures regenerated, if the format changed, and committed
 - [ ] Benchmarks re-run; USER-GUIDE section 9 updated if the numbers moved by more than 10%
+- [ ] No slower than the previous release, on a quiet machine: `node --expose-gc js/bench/compare-previous.mjs` and
+      `dotnet run -c Release dotnet/bench/compare-previous/compare-previous.cs` (median time and peak memory per
+      workload); a workload more than 10% slower runs again with `--only "<workload>" --rounds 9` before it counts
 - [ ] Versions bumped together (`js/package.json`, `Jazmin.csproj`); `CHANGELOG.md` and RFC change log updated
 - [ ] TASKS.md statuses updated
+- [ ] The previous release reads this one's files: `node js/scripts/compat-previous.mjs --out <folder>`
+      (npm), then `dotnet run -c Release dotnet/scripts/compat-previous.cs -- <folder>` (NuGet). Each kind of file
+      added since then is read as its users expect; add a check when a release adds one, and move the versions on
 - [ ] Phone check of the viewer (below), results in the release notes
 
 ### Phone check

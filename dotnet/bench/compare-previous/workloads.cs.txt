@@ -1,0 +1,66 @@
+// The workloads of compare-previous.cs, built twice: against the previous release's package and against this
+// repository (the driver adds the #:package or #:project line). One workload per run: args = workload, folder, rows.
+// Prints { "ms": ..., "result": ... }; the driver reads the process's peak memory.
+#:property PublishAot=false
+#:property Nullable=enable
+using System.Diagnostics;
+using Jazmin;
+using Jazmin.Query;
+
+var (workload, dir, rows) = (args[0], args[1], int.Parse(args[2]));
+JazminColumn[] columns =
+[
+    new("id", JazminType.Int) { Nullable = false, Indexes = [JazminIndexKind.Sorted] }, new("name", JazminType.String) { Indexes = [JazminIndexKind.Trigram] },
+    new("email", JazminType.String), new("country", JazminType.String) { Indexes = [JazminIndexKind.Sorted] }, new("age", JazminType.Int),
+    new("balance", JazminType.Float), new("joined", JazminType.DateTime), new("active", JazminType.Bool),
+];
+string[] countries = ["ZA", "NA", "BW", "ZW", "MZ", "LS", "SZ", "ZM"];
+string[] first = ["Ann", "Bob", "Thabo", "Lerato", "Pieter", "Aisha", "Sipho", "Maria"];
+string[] last = ["Smith", "Johnson", "Ndlovu", "Botha", "Naidoo", "Mokoena", "van Wyk", "Dlamini"];
+object?[] Row(int i) =>
+[
+    (long)i, $"{first[i % 8]} {last[i * 7 % 8]}", $"user{i}@example.com", countries[i * 13 % 8], (long)(18 + i * 31 % 70),
+    Math.Round(i * 7919L % 1_000_000 * 1.37) / 100, new DateTime(2015, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddDays(i % 3650), i % 3 != 0,
+];
+void Write(string path)
+{
+    using var writer = JazminWriter.Create(path, columns);
+    for (var i = 0; i < rows; i++) writer.WriteValues(Row(i));
+}
+var read = Path.Combine(dir, "read.jzm");
+var watch = Stopwatch.StartNew();
+long result = 0;
+switch (workload)
+{
+    case "make": // the file both versions read, made by the previous release
+        Write(read);
+        break;
+    case "open + count (index)":
+        using (var r = JazminReader.Open(read)) result = r.Count(JazminFilter.Eq("country", "ZA"));
+        break;
+    case "find, text search (trigram)":
+        using (var r = JazminReader.Open(read)) result = r.Find(JazminFilter.Contains("name", "Ndlovu"), new JazminQueryOptions { Limit = 5000 }).LongCount();
+        break;
+    case "find, scan (no index)":
+        using (var r = JazminReader.Open(read)) result = r.Find(JazminFilter.Gte("age", 80L)).LongCount();
+        break;
+    case "every row":
+        using (var r = JazminReader.Open(read)) result = r.Rows().LongCount();
+        break;
+    case "write":
+        Write(Path.Combine(dir, $"write-{Environment.ProcessId}.jzm"));
+        result = rows;
+        break;
+    case "update (insert, keeps order)":
+        var copy = Path.Combine(dir, $"update-{Environment.ProcessId}.jzm");
+        File.Copy(read, copy);
+        JazminFile.Update(copy, new JazminUpdate
+        {
+            Insert = [new Dictionary<string, object?> { ["id"] = -1L, ["name"] = "New", ["email"] = "n@x", ["country"] = "ZA", ["age"] = 30L, ["balance"] = 1.0, ["joined"] = DateTime.UnixEpoch, ["active"] = true }],
+        });
+        result = 1;
+        break;
+    default:
+        throw new ArgumentException($"No workload '{workload}'");
+}
+Console.Write($"{{\"ms\":{watch.Elapsed.TotalMilliseconds.ToString(System.Globalization.CultureInfo.InvariantCulture)},\"result\":{result}}}");
