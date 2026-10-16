@@ -1425,6 +1425,67 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         return JazminFilter.FromJson(doc.RootElement);
     }
 
+    /// <summary>
+    /// The rows of <paramref name="filter"/> and <paramref name="options"/> with each masked column (spec 7.6.8) as one
+    /// column, as viewers show it, for exports (<see cref="Formats.CsvFormat"/>, <see cref="Formats.JsonFormat"/>,
+    /// <see cref="Formats.XmlFormat"/>; <see cref="Formats.JazminJsonStream"/> uses it): a row's value is its unmasked
+    /// value when it has one, else its value when the column is unlocked and revealed, else what it shows (its shown
+    /// column, or •••• when it has none). <paramref name="revealMasked"/> false shows what values show even when unlocked;
+    /// <paramref name="revealOnly"/> reveals only those columns. A column that may hold what values show is text.
+    /// <see cref="JazminQueryOptions.Select"/> names the columns as they come out. Without masked columns: the rows as found.
+    /// </summary>
+    public (IReadOnlyList<JazminColumn> Columns, IEnumerable<JazminRow> Rows) ExportView(JazminFilter? filter = null, JazminQueryOptions? options = null,
+        bool revealMasked = true, IReadOnlyCollection<string>? revealOnly = null)
+    {
+        var masks = Masked;
+        if (masks.Count == 0) return (Formats.JsonFormat.ColumnsOf(this, options), Find(filter, options));
+        bool Revealed(JazminMaskedColumn m) => m.Lock.Unlocked && revealMasked && (revealOnly is null || revealOnly.Contains(m.Column));
+        var apart = masks.SelectMany(m => new[] { m.Column, m.Shown, m.Unmasked }).OfType<string>().ToHashSet(StringComparer.Ordinal);
+        JazminColumn Merged(JazminMaskedColumn m) => Revealed(m) && Columns.FirstOrDefault(c => c.Name == m.Column) is { } own
+            ? own : new JazminColumn(m.Column, Revealed(m) ? m.Type : JazminType.String);
+        var all = new List<JazminColumn>();
+        for (var i = 0; i < Columns.Count; i++)
+        {
+            foreach (var m in masks) if (m.At == i) all.Add(Merged(m));
+            if (!apart.Contains(Columns[i].Name)) all.Add(Columns[i]);
+        }
+        foreach (var m in masks) if (m.At >= Columns.Count) all.Add(Merged(m));
+        var columns = options?.Select is { } select
+            ? select.Select(name => all.FirstOrDefault(c => c.Name == name) ?? throw new JazminValidationException($"Unknown column '{name}'")).ToList()
+            : all;
+        var shown = masks.Where(m => columns.Any(c => c.Name == m.Column)).ToList();
+        var read = columns.SelectMany(c => shown.FirstOrDefault(m => m.Column == c.Name) is { } m
+            ? new[] { m.Lock.Unlocked ? m.Column : null, m.Shown, m.Unmasked }.OfType<string>() : [c.Name]).Distinct().ToList();
+        var shape = new RowShape(columns, Enumerable.Range(0, columns.Count).ToArray());
+        var found = Find(filter, new JazminQueryOptions
+        {
+            Select = read, Offset = options?.Offset ?? 0, Limit = options?.Limit, Reverse = options?.Reverse ?? false,
+            Progress = options?.Progress, CancellationToken = options?.CancellationToken ?? default,
+        });
+        return (columns, found.Select(row =>
+        {
+            var values = new object?[columns.Count];
+            for (var i = 0; i < columns.Count; i++)
+            {
+                var name = columns[i].Name;
+                var m = shown.FirstOrDefault(x => x.Column == name);
+                if (m is null)
+                {
+                    values[i] = row.TryGetValue(name, out var plain) ? plain : null;
+                    continue;
+                }
+                var open = m.Unmasked is { } u && row.TryGetValue(u, out var o) ? o : null;
+                var value = m.Lock.Unlocked && row.TryGetValue(m.Column, out var v) ? v : null;
+                values[i] = open is not null ? (Revealed(m) ? open : Formats.TextValues.ToText(m.Type, open)) // a row that isn't masked
+                    : Revealed(m) ? value
+                    : m.Lock.Unlocked && value is null ? null // unlocked: an empty value is empty
+                    : m.Shown is { } s ? (row.TryGetValue(s, out var t) ? t : null)
+                    : "••••";
+            }
+            return new JazminRow(row.RowId, shape, values);
+        }));
+    }
+
     /// <summary>Internal: the owner directory's masked columns (owner key only), as it keeps them; else empty.</summary>
     internal List<JsonObject> OwnerMasks() => _access is { IsOwner: true } && OwnerDirectory()["masks"] is JsonArray masks
         ? masks.Select(m => m as JsonObject ?? throw new JazminFormatException("The owner directory's masked columns are malformed")).ToList()

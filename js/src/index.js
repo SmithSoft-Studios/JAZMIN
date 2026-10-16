@@ -5,6 +5,7 @@ import { jsonPieces, parseJsonRows } from './formats/json.js';
 import { readJsonObjects } from './formats/json-stream.js';
 import { parseXml, readXmlRows, xmlPieces, xmlRecord } from './formats/xml.js';
 import { JazminReader, fileSource } from './reader.js';
+import { maskedView } from './masks.js';
 import { PREAMBLE_SIZE } from './constants.js';
 import { inferSchema } from './schema.js';
 import { TextColumnInference, textToValue, toObject } from './formats/text.js';
@@ -255,12 +256,20 @@ const EXPORTERS = { json: jsonPieces, csv: csvPieces, xml: xmlPieces };
 function exportTo(reader, format, options, write) {
   const exporter = EXPORTERS[format];
   if (!exporter) throw new JazminValidationError(`Unknown export format '${format}'`);
-  const { filter, select, limit, offset, reverse, shape, onProgress, signal, ...formatOptions } = options ?? {};
+  const { filter, select, limit, offset, reverse, shape, onProgress, signal, masked = 'merge', revealMasked = true, ...formatOptions } = options ?? {};
   if (shape !== undefined) {
     if (select || limit !== undefined || offset !== undefined || reverse !== undefined) {
       throw new JazminValidationError('With a shape, use $rows/$limit in the shape instead of select, limit, offset or reverse');
     }
     writeShape(reader, shape, format, { filter, ...formatOptions }, write);
+    return;
+  }
+  // Masked columns (spec 7.6.8): one column each, as viewers show them, unless asked for as stored (masked: 'raw').
+  if (masked !== 'merge' && masked !== 'raw') throw new JazminValidationError("masked is 'merge' (one column each, the default) or 'raw' (as stored)");
+  const view = masked === 'merge' ? maskedView(reader, select, revealMasked) : null;
+  if (view) {
+    const rows = reader.find(filter, { select: view.select, limit, offset, reverse, onProgress, signal });
+    for (const piece of exporter(view.columns, (function* () { for (const r of rows) yield view.row(r); }()), formatOptions)) write(piece);
     return;
   }
   const columns = select ? reader.columns.filter((c) => select.includes(c.name)) : reader.columns;

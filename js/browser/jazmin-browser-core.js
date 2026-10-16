@@ -3620,11 +3620,59 @@
    * An export's text, piece by piece. options: { filter, select, offset, limit } as for find, the format's own
    * (json: pretty, omitNulls; csv: delimiter, newline; xml: root, row), and { signal, onProgress } for long exports.
    */
+  /**
+   * Masked columns (spec 7.6.8) as one column each, as viewers show them, for exports (the library's maskedView): null
+   * when there are none. A row's value is its unmasked value when it has one, else its value when unlocked and revealed
+   * (`reveal`: true, false, or the columns to reveal), else what it shows (its shown column, or •••• with none).
+   */
+  function maskedView(readerColumns, masks, select, reveal = true) {
+    if (!masks.length) return null;
+    const revealed = (m) => m.lock.unlocked && (reveal === true || (Array.isArray(reveal) && reveal.includes(m.column)));
+    const apart = new Set(masks.flatMap((m) => [m.column, m.shown, m.unmasked]).filter(Boolean));
+    const merged = (m) => {
+      const own = readerColumns.find((c) => c.name === m.column);
+      return revealed(m) && own ? own : { name: m.column, type: revealed(m) ? m.type : 'string', nullable: true };
+    };
+    const all = [];
+    readerColumns.forEach((column, i) => {
+      for (const m of masks) if (m.at === i) all.push(merged(m));
+      if (!apart.has(column.name)) all.push(column);
+    });
+    for (const m of masks) if (m.at >= readerColumns.length) all.push(merged(m));
+    const columns = select ? all.filter((c) => select.includes(c.name)) : all;
+    const shown = masks.filter((m) => columns.some((c) => c.name === m.column));
+    const read = select ? [...new Set(columns.flatMap((c) => {
+      const m = shown.find((x) => x.column === c.name);
+      return m ? [m.lock.unlocked ? m.column : null, m.shown, m.unmasked].filter(Boolean) : [c.name];
+    }))] : undefined;
+    const text = (value) => (value instanceof Date ? value.toISOString() : String(value));
+    const row = (r) => {
+      const out = { ...r };
+      for (const m of shown) {
+        const open = m.unmasked ? r[m.unmasked] ?? null : null;
+        const show = revealed(m);
+        let value;
+        if (open !== null) value = show ? open : text(open); // a row that isn't masked
+        else if (show) value = r[m.column] ?? null;
+        else if (m.lock.unlocked && (r[m.column] ?? null) === null) value = null;
+        else if (m.shown) value = r[m.shown] ?? null;
+        else value = '••••';
+        out[m.column] = value;
+      }
+      return out;
+    };
+    return { columns, select: read, row };
+  }
+
   async function* exportPieces(reader, format, options = {}) {
     if (!EXPORT_TYPES[format]) throw new JazminValidationError(`Unknown export format '${format}'`);
-    const { filter, select, limit, offset, signal, onProgress, ...o } = options;
-    const columns = select ? reader.columns.filter((c) => select.includes(c.name)) : reader.columns;
-    const rows = reader.find(filter, { select, limit, offset, signal, onProgress });
+    const { filter, select, limit, offset, signal, onProgress, masked = 'merge', revealMasked = true, ...o } = options;
+    if (masked !== 'merge' && masked !== 'raw') throw new JazminValidationError("masked is 'merge' (one column each, the default) or 'raw' (as stored)");
+    // Masked columns: one column each, as viewers show them, unless asked for as stored.
+    const view = masked === 'merge' && typeof reader.masked === 'function' ? maskedView(reader.columns, await reader.masked(), select, revealMasked) : null;
+    const columns = view ? view.columns : select ? reader.columns.filter((c) => select.includes(c.name)) : reader.columns;
+    const found = reader.find(filter, { select: view ? view.select : select, limit, offset, signal, onProgress });
+    const rows = view ? (async function* () { for await (const r of found) yield view.row(r); }()) : found;
     if (format === 'csv') {
       const delimiter = o.delimiter ?? ',';
       const newline = o.newline ?? '\r\n';
@@ -3808,5 +3856,5 @@
 
   global.JazminBrowser = { ...API_CORE };
   // For the add-ons: the core's functions, and the hooks through which the core reaches them.
-  Object.defineProperty(global.JazminBrowser, Symbol.for('jazmin.browser.internals'), { value: { PREAMBLE, TRAILER, ENVELOPE, FLAG_ENCRYPTED, FLAG_PASSWORD, FLAG_ACCESS, KNOWN_FLAGS, CODEC_NONE, CODEC_DEFLATE, CODEC_BROTLI, MIN_KDF_ITERATIONS, MAX_KDF_ITERATIONS, TYPE_NAMES, ENCODING, NESTED_COLUMNS, MAX_NESTING_DEPTH, isNested, HAS_NULLS, POW10, SLOT_ID, SLOT_ENTRY, PAGE_ENTRY, ONLINE_SLOT, WHOLE_TABLE, EVERYONE, subtle, utf8, fromUtf8, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminFileLockedError, CRC_TABLE, crc32, hexToBytes, toHex, concat, equal, compareBytes, base64ToBytes, base64UrlToBytes, bytesToBase64Url, view, sha256, hkdf, hmacSha256, pbkdf2, decrypt, inflateRaw, verifySignature, MASTER_KEY_REFUSED, checksum, parseKey, keyText, parseUnlockToken, slotId, LOCK_KINDS, parseFileUnlockToken, lockNeeds, lockKey, sealAad, groupAad, readBundleMasks, keyServiceAddress, Reader, text, num, bytesOf, parseJson, repeatsName, dateFromMs, msFromFile, readMessage, readPacked, cumulative, readRef, readColumn, readPartition, readIndexRef, readTable, readHeader, readDirectory, readStatistics, FILE_FLAGS, fileActions, mergeActions, readIndexDirectory, readPartitionList, readDelta, readPostings, readPostingsSection, directoryShapes, checkFileDirectory, formatDecimal, readDecimal, readPlain, skipPlain, MADE_PER_ROW, decodeColumnar, decodeColumnarAt, skipValue, decodeAt, streamType, decodeStream, partEnd, decodeNested, OPS, STRING_OPS, keyOf, keyHash, inKeys, compare, compileFilter, condition, ORDERED_TYPES, RANGE_OPS, FEW_ROWS, SMALL_LOOKUP_BYTES, PAGES_CACHED, keyCompare, readKey, decodeBound, planOf, planLeaf, answeredExactly, setField, columnCollector, planColumns, filterReads, leafType, nestedMayMatch, leafMayMatch, mayMatch, leafMustMatch, mustMatch, sortBounds, unionAll, intersectSorted, PageKeys, readRowIds, PagedIndex, trigramsOf, trigramAnswers, skipPostings, intersectPostings, GRAM_HIGH, TrigramSegment, COMMON_SHARE, LazyTrigramIndex, CompositeIndex, leafLookup, indexPlan, sourceOf, BLOCK_SIZE, BLOCKS_CACHED, urlSource, openUrl, openScript, scriptBytes, open, openFile, locateTrailer, findPage, findSlot, openTable, tableReader, EXPORT_TYPES, XML_NAME, XML_UNWRITABLE, bytesToBase64, exportText, exportJson, exportNested, csvQuote, xmlEscape, xmlElement, exportPieces, exportTo, ENOUGH, exportString, exportBlob, JazminValidationError, normalizeBigInt, MAX_SAFE_BIG, compareDecimalKeys, decimalKeyOf, parseDecimalText, DECIMAL_TEXT, validation, hooks, addOn } });
+  Object.defineProperty(global.JazminBrowser, Symbol.for('jazmin.browser.internals'), { value: { PREAMBLE, TRAILER, ENVELOPE, FLAG_ENCRYPTED, FLAG_PASSWORD, FLAG_ACCESS, KNOWN_FLAGS, CODEC_NONE, CODEC_DEFLATE, CODEC_BROTLI, MIN_KDF_ITERATIONS, MAX_KDF_ITERATIONS, TYPE_NAMES, ENCODING, NESTED_COLUMNS, MAX_NESTING_DEPTH, isNested, HAS_NULLS, POW10, SLOT_ID, SLOT_ENTRY, PAGE_ENTRY, ONLINE_SLOT, WHOLE_TABLE, EVERYONE, subtle, utf8, fromUtf8, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminFileLockedError, CRC_TABLE, crc32, hexToBytes, toHex, concat, equal, compareBytes, base64ToBytes, base64UrlToBytes, bytesToBase64Url, view, sha256, hkdf, hmacSha256, pbkdf2, decrypt, inflateRaw, verifySignature, MASTER_KEY_REFUSED, checksum, parseKey, keyText, parseUnlockToken, slotId, LOCK_KINDS, parseFileUnlockToken, lockNeeds, lockKey, sealAad, groupAad, readBundleMasks, keyServiceAddress, Reader, text, num, bytesOf, parseJson, repeatsName, dateFromMs, msFromFile, readMessage, readPacked, cumulative, readRef, readColumn, readPartition, readIndexRef, readTable, readHeader, readDirectory, readStatistics, FILE_FLAGS, fileActions, mergeActions, readIndexDirectory, readPartitionList, readDelta, readPostings, readPostingsSection, directoryShapes, checkFileDirectory, formatDecimal, readDecimal, readPlain, skipPlain, MADE_PER_ROW, decodeColumnar, decodeColumnarAt, skipValue, decodeAt, streamType, decodeStream, partEnd, decodeNested, OPS, STRING_OPS, keyOf, keyHash, inKeys, compare, compileFilter, condition, ORDERED_TYPES, RANGE_OPS, FEW_ROWS, SMALL_LOOKUP_BYTES, PAGES_CACHED, keyCompare, readKey, decodeBound, planOf, planLeaf, answeredExactly, setField, columnCollector, planColumns, filterReads, leafType, nestedMayMatch, leafMayMatch, mayMatch, leafMustMatch, mustMatch, sortBounds, unionAll, intersectSorted, PageKeys, readRowIds, PagedIndex, trigramsOf, trigramAnswers, skipPostings, intersectPostings, GRAM_HIGH, TrigramSegment, COMMON_SHARE, LazyTrigramIndex, CompositeIndex, leafLookup, indexPlan, sourceOf, BLOCK_SIZE, BLOCKS_CACHED, urlSource, openUrl, openScript, scriptBytes, open, openFile, locateTrailer, findPage, findSlot, openTable, tableReader, EXPORT_TYPES, XML_NAME, XML_UNWRITABLE, bytesToBase64, exportText, exportJson, exportNested, csvQuote, xmlEscape, xmlElement, maskedView, exportPieces, exportTo, ENOUGH, exportString, exportBlob, JazminValidationError, normalizeBigInt, MAX_SAFE_BIG, compareDecimalKeys, decimalKeyOf, parseDecimalText, DECIMAL_TEXT, validation, hooks, addOn } });
 })(globalThis);

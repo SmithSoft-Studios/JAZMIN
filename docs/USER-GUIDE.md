@@ -2372,6 +2372,13 @@ column.
   reader lists them with `await reader.masked()` (each with `at`, its place in
   `columns`), and `unlock()` builds every open table reader again with the
   column.
+- **Exports** (CSV, JSON, XML) give each masked column as one column, as
+  viewers show it: a row's unmasked value, else its value once unlocked, else
+  what it shows (`••••` when nothing). `revealMasked: false` exports what values
+  show even when unlocked (an array reveals only those columns); `masked:
+  'raw'` exports the columns as stored. In .NET, `reader.ExportView(filter,
+  options, revealMasked)` gives the columns and rows for `CsvFormat.Write`,
+  `JsonFormat.Write` and `XmlFormat.Write`; `JazminJsonStream` uses it.
 - **Masking or unmasking later** (an update, owner key): `update(file, {
   key: owner, masks: { phone: { lock: 'pay', show: { last: 4 } }, salary:
   null } })` (.NET `Masks = new Dictionary<string, JazminMask?> { ... }`; per

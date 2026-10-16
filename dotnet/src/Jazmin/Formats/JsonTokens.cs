@@ -46,8 +46,7 @@ public sealed class JazminJsonReader : IDisposable
     /// <summary>The rows <paramref name="filter"/> and <paramref name="options"/> select, as in <see cref="JazminReader.Find(JazminFilter?, JazminQueryOptions?)"/>.</summary>
     public JazminJsonReader(JazminReader reader, JazminFilter? filter = null, JazminQueryOptions? options = null)
     {
-        _columns = JsonFormat.ColumnsOf(reader, options);
-        _rows = reader.Find(filter, options);
+        (_columns, _rows) = reader.ExportView(filter, options); // masked columns as one column each (spec 7.6.8)
     }
 
     public JazminJsonToken TokenType { get; private set; }
@@ -207,8 +206,9 @@ public sealed class JazminJsonStream : Stream
     public JazminJsonStream(JazminReader reader, JazminFilter? filter = null, JazminQueryOptions? options = null,
         Formatting formatting = Formatting.None, NullValueHandling nulls = NullValueHandling.Include)
     {
-        _columns = JsonFormat.ColumnsOf(reader, options);
-        _rows = reader.Find(filter, options).GetEnumerator();
+        var (columns, rows) = reader.ExportView(filter, options); // masked columns as one column each (spec 7.6.8)
+        _columns = columns;
+        _rows = rows.GetEnumerator();
         _writer = new Utf8JsonWriter(_buffer, JsonFormat.WriterOptions(formatting));
         _nulls = nulls;
     }

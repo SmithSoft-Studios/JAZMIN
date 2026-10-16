@@ -3608,11 +3608,59 @@
    * An export's text, piece by piece. options: { filter, select, offset, limit } as for find, the format's own
    * (json: pretty, omitNulls; csv: delimiter, newline; xml: root, row), and { signal, onProgress } for long exports.
    */
+  /**
+   * Masked columns (spec 7.6.8) as one column each, as viewers show them, for exports (the library's maskedView): null
+   * when there are none. A row's value is its unmasked value when it has one, else its value when unlocked and revealed
+   * (`reveal`: true, false, or the columns to reveal), else what it shows (its shown column, or •••• with none).
+   */
+  function maskedView(readerColumns, masks, select, reveal = true) {
+    if (!masks.length) return null;
+    const revealed = (m) => m.lock.unlocked && (reveal === true || (Array.isArray(reveal) && reveal.includes(m.column)));
+    const apart = new Set(masks.flatMap((m) => [m.column, m.shown, m.unmasked]).filter(Boolean));
+    const merged = (m) => {
+      const own = readerColumns.find((c) => c.name === m.column);
+      return revealed(m) && own ? own : { name: m.column, type: revealed(m) ? m.type : 'string', nullable: true };
+    };
+    const all = [];
+    readerColumns.forEach((column, i) => {
+      for (const m of masks) if (m.at === i) all.push(merged(m));
+      if (!apart.has(column.name)) all.push(column);
+    });
+    for (const m of masks) if (m.at >= readerColumns.length) all.push(merged(m));
+    const columns = select ? all.filter((c) => select.includes(c.name)) : all;
+    const shown = masks.filter((m) => columns.some((c) => c.name === m.column));
+    const read = select ? [...new Set(columns.flatMap((c) => {
+      const m = shown.find((x) => x.column === c.name);
+      return m ? [m.lock.unlocked ? m.column : null, m.shown, m.unmasked].filter(Boolean) : [c.name];
+    }))] : undefined;
+    const text = (value) => (value instanceof Date ? value.toISOString() : String(value));
+    const row = (r) => {
+      const out = { ...r };
+      for (const m of shown) {
+        const open = m.unmasked ? r[m.unmasked] ?? null : null;
+        const show = revealed(m);
+        let value;
+        if (open !== null) value = show ? open : text(open); // a row that isn't masked
+        else if (show) value = r[m.column] ?? null;
+        else if (m.lock.unlocked && (r[m.column] ?? null) === null) value = null;
+        else if (m.shown) value = r[m.shown] ?? null;
+        else value = '••••';
+        out[m.column] = value;
+      }
+      return out;
+    };
+    return { columns, select: read, row };
+  }
+
   async function* exportPieces(reader, format, options = {}) {
     if (!EXPORT_TYPES[format]) throw new JazminValidationError(`Unknown export format '${format}'`);
-    const { filter, select, limit, offset, signal, onProgress, ...o } = options;
-    const columns = select ? reader.columns.filter((c) => select.includes(c.name)) : reader.columns;
-    const rows = reader.find(filter, { select, limit, offset, signal, onProgress });
+    const { filter, select, limit, offset, signal, onProgress, masked = 'merge', revealMasked = true, ...o } = options;
+    if (masked !== 'merge' && masked !== 'raw') throw new JazminValidationError("masked is 'merge' (one column each, the default) or 'raw' (as stored)");
+    // Masked columns: one column each, as viewers show them, unless asked for as stored.
+    const view = masked === 'merge' && typeof reader.masked === 'function' ? maskedView(reader.columns, await reader.masked(), select, revealMasked) : null;
+    const columns = view ? view.columns : select ? reader.columns.filter((c) => select.includes(c.name)) : reader.columns;
+    const found = reader.find(filter, { select: view ? view.select : select, limit, offset, signal, onProgress });
+    const rows = view ? (async function* () { for await (const r of found) yield view.row(r); }()) : found;
     if (format === 'csv') {
       const delimiter = o.delimiter ?? ',';
       const newline = o.newline ?? '\r\n';
