@@ -4,6 +4,13 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **Document pages (.NET).** `JazminPackage.Pages` lists a document's pages in order (`JazminPage`: `Path`, `Title`
+  and, for that page, `Online`, `Table`, `Pdf` and `Actions` for its Print, PDF and image buttons); viewers show them
+  as tabs. `JazminPackage.Files` lists the files the pages load (paths, or folders ending in `/`), which viewers leave
+  out of their file lists. In shared files, `JazminFileInput.Page` marks a page in its file group's directory, so
+  only that group's keys know of it (`JazminEmbeddedFile.Page` when read). Writers check them with the same messages
+  as the JavaScript library; `Entry` is the first page when left out. Append, update and compact keep them, and a
+  renamed table is renamed in the pages. Releases 1.0-1.6 read these files and show the entry page alone (spec 6.8).
 - **Fixed: package settings in a file with no stored files are kept (both libraries).** Writers wrote the package
   settings only with stored files or saved shapes, so settings that make sense alone (`masks`, `online`) were dropped
   without a word. They are now written, appended and updated; releases 1.0 to 1.6 read such files as before.
