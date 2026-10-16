@@ -676,7 +676,7 @@ export function carriedFiles(reader, addFiles, removeFiles, locks) {
     return {
       [FILE_SOURCE]: true, path: e.path, type: e.type, groups: e.groups, ...(e.actions ? { actions: e.actions } : {}),
       ...(e.groupActions ? { groupActions: e.groupActions } : {}), ...(c.lock !== undefined && locks?.[c.lock] !== null ? { lock: c.lock } : {}),
-      size: c.size, sha256: c.sha256,
+      ...(e.page ? { page: e.page } : {}), size: c.size, sha256: c.sha256,
       read: (offset, length) => reader.readFileRange(e.path, offset, offset + length),
     };
   });

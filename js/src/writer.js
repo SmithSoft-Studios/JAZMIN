@@ -13,7 +13,7 @@ import {
 } from './catalog.js';
 import { columnBuffer, encodeColumnBuffers, nestedStage } from './columnar.js';
 import { isNested } from './nested.js';
-import { EVERYONE, FILE_BLOCK_SIZE, FILE_SOURCE, checkEdit, fileSource, normalizePackage } from './files.js';
+import { EVERYONE, FILE_BLOCK_SIZE, FILE_SOURCE, checkEdit, checkPages, fileSource, normalizePackage } from './files.js';
 import {
   DEFAULTS, DEFAULT_COLUMN_GROUP, FILE_ID_SIZE, FILE_LOCKS, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, INDEX_DELTAS, INLINE_PARTITIONS, NESTED_COLUMNS,
   KEYRING_GROUPS, MAGIC, MAX_KDF_ITERATIONS, MIN_KDF_ITERATIONS, PREAMBLE_SIZE, SALT_SIZE, TRAILER_SIZE, WHOLE_TABLE,
@@ -514,7 +514,7 @@ export class JazminWriter {
     }
     this.#files.entries.set(src.path, {
       path: src.path, type: src.type, groups: src.groups, content: stored.id, ...(src.actions ? { actions: src.actions } : {}),
-      ...(src.groupActions ? { groupActions: src.groupActions } : {}),
+      ...(src.groupActions ? { groupActions: src.groupActions } : {}), ...(src.page ? { page: src.page } : {}),
     });
   }
 
@@ -1148,7 +1148,10 @@ export class JazminWriter {
       return {
         files: list.map((e) => {
           const actions = actionsIn(e, group);
-          return { path: e.path, type: e.type, content: e.content, ...(withGroups ? { groups: e.groups } : {}), ...(actions && Object.keys(actions).length ? { actions } : {}) };
+          return {
+            path: e.path, type: e.type, content: e.content, ...(withGroups ? { groups: e.groups } : {}), ...(actions && Object.keys(actions).length ? { actions } : {}),
+            ...(e.page && !withGroups ? { page: e.page } : {}), // a page only this group's keys know of (spec 6.8)
+          };
         }),
         contents: contents.map((c) => {
           if (c.lock === undefined) return c;
@@ -1161,6 +1164,7 @@ export class JazminWriter {
     };
     const settings = normalizePackage(this.#package, new Set(this.#files.entries.keys()));
     if (settings?.edit) checkEdit(settings.edit, this.#tableDefs, { partial: Boolean(this.#continue) });
+    checkPages(settings, entries, this.#tableDefs.map((t) => t.name), { access: Boolean(this.#access), partial: Boolean(this.#continue) });
     const suffix = segment ? `/${segment}` : '';
     // nextContent: content ids are never reused, so block section ids stay unique across appends.
     const member = { directories: [], nextContent: this.#files.nextId, package: settings ? JSON.stringify(settings) : '', segment };

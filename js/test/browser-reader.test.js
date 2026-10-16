@@ -535,3 +535,27 @@ test('other text orders: the browser reader gives sort as the library does, and 
   assert.deepEqual(names, [...library.rows({ reverse: true })].map((r) => r.name));
   library.close();
 });
+
+test('document pages: the browser reader gives package.pages and files and each group page as the library does (spec 6.8)', async () => {
+  const owner = JazminKey.generate();
+  const [a, b] = [owner.createAccessKey(), owner.createAccessKey()];
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-browser-pages-')), 'pages.jzm');
+  write(file, [{ id: 1, branch: 'A' }, { id: 2, branch: 'B' }], {
+    columns: [{ name: 'id', type: 'int' }, { name: 'branch', type: 'string' }], key: owner,
+    files: [
+      { path: 'index.html', content: 'all' }, { path: 'app.js', content: 'js' },
+      { path: 'board.html', content: 'board', groups: ['A'], page: { title: 'Board pack', order: 1, actions: { print: false } } },
+    ],
+    package: { pages: [{ path: 'index.html', title: 'Overview' }], files: ['app.js'] },
+    access: { partitionBy: 'branch', grants: [{ key: a, rows: ['A'] }, { key: b, rows: ['B'] }] },
+  });
+  for (const key of [a, b]) { // the owner key never opens a shared file in a browser
+    const library = open(file, { key: key.toString(), accessState: false });
+    const browser = await JazminBrowser.open(new Uint8Array(fs.readFileSync(file)), { key: key.toString() });
+    assert.deepEqual(browser.package, library.package);
+    const pages = (list) => list.filter((f) => f.page).map((f) => [f.path, f.page]);
+    assert.deepEqual(pages(await browser.files()), pages(library.files));
+  }
+  const asA = await JazminBrowser.open(new Uint8Array(fs.readFileSync(file)), { key: a.toString() });
+  assert.deepEqual((await asA.files()).find((f) => f.path === 'board.html').page, { title: 'Board pack', order: 1, actions: { print: false } });
+});

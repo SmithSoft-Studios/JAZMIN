@@ -20,7 +20,7 @@ import {
 } from './constants.js';
 import { JazminFileLockedError, JazminFormatError, JazminKeyError, JazminValidationError } from './errors.js';
 import { enforceExpiry, toMs } from './expiry.js';
-import { EVERYONE, keyServiceAddress, mergeActions, readActions } from './files.js';
+import { EVERYONE, keyServiceAddress, mergeActions, readActions, readPage } from './files.js';
 import { answeredExactly, evaluate, filterReads, indexPlan, mayMatch, mustMatch, normalizeFilter } from './filter.js';
 import { CompositeIndex, LazyTrigramIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
 import { JazminAccessKey, JazminKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
@@ -1503,6 +1503,7 @@ export class JazminReader {
           const known = index.entries.get(f.path);
           const groups = f.groups ?? (ownerNames ? [ownerNames.get(dir.group)] : undefined);
           const actions = readActions(f.actions);
+          const page = this.#access ? readPage(f.page) : undefined; // a group's page (spec 6.8)
           // The owner keeps each group's actions, so rewrites and appends write them back as they were.
           const own = ownerNames ? { [ownerNames.get(dir.group)]: actions ?? {} } : null;
           if (known) {
@@ -1512,9 +1513,11 @@ export class JazminReader {
             if (merged) known.actions = merged;
             else delete known.actions;
             if (own) known.groupActions = { ...known.groupActions, ...own };
+            if (page && !known.page) known.page = page;
           } else {
             index.entries.set(f.path, {
               path: f.path, type: f.type, content: f.content, ...(groups ? { groups } : {}), ...(actions ? { actions } : {}), ...(own ? { groupActions: own } : {}),
+              ...(page ? { page } : {}),
             });
           }
         }
@@ -1555,6 +1558,7 @@ export class JazminReader {
         path: e.path, type: e.type, size: c.size, sha256: c.sha256, ...(e.groups ? { groups: [...e.groups] } : {}),
         ...(e.actions ? { actions: structuredClone(e.actions) } : {}),
         ...(c.lock !== undefined ? { lock: this.#lockInfo(c.lock) } : {}),
+        ...(e.page ? { page: structuredClone(e.page) } : {}), // a page of the document only some keys know of (spec 6.8)
         // The owner sees each group's actions when they differ (actions above: what any of them allows).
         ...(e.groupActions && new Set(Object.values(e.groupActions).map((a) => JSON.stringify(a))).size > 1 ? { groupActions: structuredClone(e.groupActions) } : {}),
       };

@@ -120,6 +120,69 @@ test('package settings are kept in a file with no stored files: written, appende
   assert.equal(open(file).package, undefined, 'removed');
 });
 
+test('document pages: package.pages as tabs in order, package.files kept out of lists; checked (spec 6.8)', () => {
+  const files = ['customers.html', 'transactions.html', 'summary.html', 'statement.html', 'app.js', 'fonts/a.woff2', 'fonts/b.woff2', 'terms.pdf']
+    .map((path) => ({ path, content: path }));
+  const pages = [
+    { path: 'customers.html', title: 'Customers' },
+    { path: 'summary.html', title: 'Summary', online: 'required' },
+    { path: 'statement.html', title: 'Statement', pdf: { format: 'A4' }, actions: { print: true, image: false } },
+  ];
+  const settings = { pages, files: ['app.js', 'fonts/'], allowedOrigins: ['https://cdn.jsdelivr.net'] };
+  const r = open(write(null, rows, { columns, files, package: settings }));
+  assert.deepEqual(r.package, { entry: 'customers.html', allowedOrigins: ['https://cdn.jsdelivr.net'], pages, files: ['app.js', 'fonts/'] });
+  assert.equal(open(write(null, rows, { columns, files, package: { ...settings, entry: 'summary.html' } })).package.entry, 'summary.html');
+  const refused = (package_, pattern) => assert.throws(() => write(null, rows, { columns, files, package: package_ }), pattern);
+  refused({ pages: [{ path: 'nope.html', title: 'X' }] }, /package\.pages\[0\]\.path 'nope\.html' is not one of the stored files/);
+  refused({ pages: [{ path: 'summary.html', title: 'A' }, { path: 'summary.html', title: 'B' }] }, /package\.pages: 'summary\.html' is listed twice/);
+  refused({ pages: [{ path: 'summary.html' }] }, /package\.pages\[0\]\.title is required/);
+  refused({ entry: 'terms.pdf', pages: [{ path: 'summary.html', title: 'S' }] }, /package\.entry 'terms\.pdf' is not one of package\.pages/);
+  refused({ pages: [{ path: 'summary.html', title: 'S', online: 'required' }] }, /package\.pages\[0\]\.online needs allowedOrigins/);
+  refused({ pages: [{ path: 'summary.html', title: 'S', actions: { save: true } }] }, /unknown action 'save' \(print, pdf, image\)/);
+  refused({ pages: [{ path: 'summary.html', title: 'S', actions: { print: 'yes' } }] }, /package\.pages\[0\]\.actions\.print must be true or false/);
+  refused({ pages: [{ path: 'summary.html', title: 'S', table: 'nope' }] }, /package\.pages\[0\]\.table 'nope' is not a table of the file/);
+  refused({ pages: [{ path: 'summary.html', title: 'S', order: 1 }] }, /unknown setting 'order'/);
+  refused({ files: ['nope.js'] }, /package\.files: 'nope\.js' is not one of the stored files/);
+  refused({ files: ['icons/'] }, /package\.files: no stored file is in the folder 'icons\/'/);
+  refused({ files: ['app.js', 'app.js'] }, /package\.files: 'app\.js' is listed twice/);
+  // A page in a file group's directory needs an access-controlled file.
+  assert.throws(() => write(null, rows, { columns, files: [{ path: 'p.html', content: 'p', page: { title: 'P' } }] }),
+    /File 'p\.html': page needs an access-controlled file \(use package\.pages\)/);
+});
+
+test('pages only some keys see: a file group\'s page, kept by append, update and compact (spec 6.8)', () => {
+  const owner = JazminKey.generate();
+  const [a, b] = [owner.createAccessKey(), owner.createAccessKey()];
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-pages-')), 'pages.jzm');
+  write(file, rows, {
+    columns, key: owner,
+    files: [
+      { path: 'index.html', content: 'everyone' },
+      { path: 'board.html', content: 'board', groups: ['A'], page: { title: 'Board pack', order: 2, actions: { print: true } } },
+    ],
+    package: { pages: [{ path: 'index.html', title: 'Overview' }] },
+    access: { partitionBy: 'group', grants: [{ key: a, rows: ['A'] }, { key: b, rows: ['B'] }] },
+  });
+  const pageOf = (key, p) => open(file, { key: key.toString() }).files.find((f) => f.path === p)?.page;
+  const check = (what) => {
+    assert.deepEqual(pageOf(a, 'board.html'), { title: 'Board pack', order: 2, actions: { print: true } }, what);
+    assert.deepEqual(pageOf(owner, 'board.html'), { title: 'Board pack', order: 2, actions: { print: true } }, what);
+    assert.equal(open(file, { key: b.toString() }).files.some((f) => f.path === 'board.html'), false, what);
+    assert.deepEqual(open(file, { key: b.toString() }).package.pages, [{ path: 'index.html', title: 'Overview' }], what);
+  };
+  check('written');
+  append(file, { key: owner.toString(), insert: [{ id: 999, group: 'A' }] });
+  check('appended');
+  update(file, { key: owner.toString() });
+  check('updated');
+  compact(file, { key: owner.toString() });
+  check('compacted');
+  assert.throws(() => write(null, rows, {
+    columns, key: owner, files: [{ path: 'board.html', content: 'board', groups: ['A'], page: { title: 'Board' } }],
+    package: { pages: [{ path: 'board.html', title: 'Board' }] }, access: { partitionBy: 'group', grants: [{ key: a, rows: ['A'] }] },
+  }), /File 'board\.html': its page is also in package\.pages/);
+});
+
 /** The example from the design: shared, partly shared and group-only files. */
 function accessFile() {
   const owner = JazminKey.generate();
