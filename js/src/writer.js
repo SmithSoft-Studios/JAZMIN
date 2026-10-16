@@ -909,7 +909,8 @@ export class JazminWriter {
       metadata: JSON.stringify(this.#options.metadata),
       tables,
       keyring: this.#keys ? this.#keys.keyring : null,
-      files: this.#files.entries.size > 0 || this.#shapes.size > 0 ? this.#writeFileDirectories(segment) : null,
+      // Package settings are kept with the file directories, also in a file with no stored files (masks, online).
+      files: this.#files.entries.size > 0 || this.#shapes.size > 0 || this.#hasPackage() ? this.#writeFileDirectories(segment) : null,
       access: null,
       deltas,
     };
@@ -1106,6 +1107,10 @@ export class JazminWriter {
       else table.partitions.push(p);
     }
     table.partitions.sort((a, b) => Buffer.compare(a.id, b.id));
+  }
+
+  #hasPackage() {
+    return this.#package !== undefined && this.#package !== null && (typeof this.#package !== 'object' || Object.keys(this.#package).length > 0);
   }
 
   /** Writes the file directories (one per file group in access-controlled files); returns the header member. */

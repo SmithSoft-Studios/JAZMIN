@@ -106,6 +106,20 @@ test('package.online says the document needs the network, with the origins it lo
   assert.throws(() => write(null, rows, { columns, files, package: { allowedOrigins: cdn, online: true } }), /package.online is 'required' or 'optional'/);
 });
 
+test('package settings are kept in a file with no stored files: written, appended, updated and removed', () => {
+  const settings = { allowedOrigins: ['https://cdn.jsdelivr.net'], online: 'optional' };
+  const buf = write(null, rows, { columns, package: settings });
+  assert.deepEqual([open(buf).package, open(buf).files], [settings, []]);
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-package-')), 'a.jzm');
+  fs.writeFileSync(file, buf);
+  append(file, { insert: [rows[0]] });
+  assert.deepEqual(open(file).package, settings, 'append');
+  update(file, {});
+  assert.deepEqual(open(file).package, settings, 'update');
+  update(file, { package: null });
+  assert.equal(open(file).package, undefined, 'removed');
+});
+
 /** The example from the design: shared, partly shared and group-only files. */
 function accessFile() {
   const owner = JazminKey.generate();

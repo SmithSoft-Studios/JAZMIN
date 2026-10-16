@@ -115,6 +115,25 @@ public class FilesTests
             Write(new JazminWriteOptions { Files = [new JazminFileInput("a", [1])], Package = new JazminPackage { Online = JazminOnline.Required } })).Message);
     }
 
+    [Fact]
+    public void PackageSettings_AreKept_InAFileWithNoStoredFiles()
+    {
+        var settings = new JazminPackage { AllowedOrigins = ["https://cdn.jsdelivr.net"], Online = JazminOnline.Optional };
+        var path = Path.Combine(Directory.CreateTempSubdirectory("jazmin-package-").FullName, "a.jzm");
+        File.WriteAllBytes(path, Write(new JazminWriteOptions { Package = settings }));
+        void Kept(string what)
+        {
+            using var r = JazminReader.Open(path);
+            Assert.Empty(r.Files);
+            Assert.Equal((JazminOnline.Optional, "https://cdn.jsdelivr.net"), (r.Package?.Online, r.Package?.AllowedOrigins?.Single()));
+        }
+        Kept("written");
+        JazminFile.Update(path, new JazminUpdate());
+        Kept("updated");
+        JazminFile.Append(path, new JazminAppend { Insert = [new Dictionary<string, object?> { ["id"] = 999L, ["group"] = "Z" }] });
+        Kept("appended");
+    }
+
     private sealed record AccessScenario(JazminKey Owner, Dictionary<string, JazminAccessKey> Keys, byte[] Shared, byte[] File);
 
     /// <summary>The example from the design: shared, partly shared and group-only files.</summary>
