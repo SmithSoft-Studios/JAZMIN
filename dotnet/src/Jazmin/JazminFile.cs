@@ -555,6 +555,14 @@ public static class JazminFile
             // A column masked anew moves into a masked group of its own, which every grant that had its group gets (spec 7.6.8).
             var moves = rewrites.SelectMany(w => w.Value.MaskedAnew.Select(c => new GroupMove(w.Key, c,
                 w.Key.AccessLayout.ColumnGroups.FirstOrDefault(g => g.Columns.Contains(c)).Name ?? FormatConstants.DefaultColumnGroup, Masks.GroupName(c)))).ToList();
+            // A mask folded back drops the group of its shown and unmasked columns (the writer makes it again for a new mask).
+            var dropped = rewrites.SelectMany(w => w.Value.DroppedGroups.Select(g => (Reader: w.Key, Group: g))).ToList();
+            if (access is not null && dropped.Count > 0)
+            {
+                var names = dropped.Select(d => d.Group).ToHashSet(StringComparer.Ordinal);
+                access.Grants = access.Grants.Select(g => g.Columns is null ? g : WithColumns(g, g.Columns.Where(c => !names.Contains(c)).ToList())).ToList();
+                access.ColumnGroups = access.ColumnGroups.Where(kv => !dropped.Any(d => d.Reader == reader && d.Group == kv.Key)).ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
+            }
             if (access is not null && moves.Count > 0)
             {
                 // A group whose every column is masked anew is gone: grants no longer name it.
@@ -597,7 +605,7 @@ public static class JazminFile
                 CancellationToken = update.CancellationToken,
                 ProgressTotal = totalRows,
                 Tables = named
-                    ? kept.Select(r => rewrites.TryGetValue(r, out var w) ? TableFor(r, w.Columns, w.Target, FinalName(r.TableName), moves) : TableFor(r, null, r.Order, FinalName(r.TableName)))
+                    ? kept.Select(r => rewrites.TryGetValue(r, out var w) ? TableFor(r, w.Columns, w.Target, FinalName(r.TableName), moves, w.DroppedGroups) : TableFor(r, null, r.Order, FinalName(r.TableName)))
                         .Concat(update.AddTables.Select(a => a.Table)).ToList()
                     : null,
             };
@@ -769,6 +777,9 @@ public static class JazminFile
         /// <summary>Columns masked anew: they leave their column group for a masked one of their own.</summary>
         public List<string> MaskedAnew { get; } = [];
 
+        /// <summary>The groups of the folded masks' shown and unmasked columns, which go with those columns.</summary>
+        public HashSet<string> DroppedGroups { get; } = new(StringComparer.Ordinal);
+
         private Func<object?[], object?[]>? _fold; // a row with the masks removed or given again folded back
 
         /// <summary>
@@ -791,12 +802,14 @@ public static class JazminFile
                 {
                     MasksReplaced.Add(column);
                     // The shown column the writer made goes; one the owner fills (show: { column }) stays.
-                    if (was["show"] is not JsonObject { } show || show["column"] is null) if ((string?)was["shown"] is { } shown) made.Add(shown);
+                    var madeShown = (was["show"] is not JsonObject { } show || show["column"] is null) && (string?)was["shown"] is not null;
+                    if (madeShown) made.Add((string)was["shown"]!);
                     if ((string?)was["unmasked"] is { } unmasked)
                     {
                         made.Add(unmasked);
                         folds.Add((_shape.Ordinal(column), _shape.Ordinal(unmasked)));
                     }
+                    if (madeShown || was["unmasked"] is not null) DroppedGroups.Add(Masks.OpenGroupName((string)was["group"]!));
                 }
                 else if (mask is not null) MaskedAnew.Add(column);
             }
@@ -1102,10 +1115,10 @@ public static class JazminFile
     private static JazminTable TableFor(JazminReader reader, IReadOnlyList<JazminColumn>? columns) => TableFor(reader, columns, reader.Order, reader.TableName);
 
     private static JazminTable TableFor(JazminReader reader, IReadOnlyList<JazminColumn>? columns, IReadOnlyList<JazminSortKey>? order, string name,
-        IReadOnlyList<GroupMove>? moves = null)
+        IReadOnlyList<GroupMove>? moves = null, IReadOnlySet<string>? dropped = null)
     {
         var (partitionBy, groups) = reader.AccessLayout;
-        var named = groups.Where(g => g.Name != FormatConstants.DefaultColumnGroup).ToDictionary(g => g.Name, g => g.Columns.ToArray());
+        var named = groups.Where(g => g.Name != FormatConstants.DefaultColumnGroup && !(dropped?.Contains(g.Name) ?? false)).ToDictionary(g => g.Name, g => g.Columns.ToArray());
         return new JazminTable(name, columns ?? ColumnsWithIndexes(reader))
         {
             Sort = order,
@@ -1132,11 +1145,14 @@ public static class JazminFile
         var columns = g.Columns.ToList();
         foreach (var m in moves) if (columns.Contains(m.From) && !columns.Contains(m.To)) columns.Add(m.To);
         columns.RemoveAll(emptied.Contains);
-        return new JazminGrant(g.Key)
-        {
-            Rows = g.Rows, Columns = columns, Label = g.Label, Expires = g.Expires, ExpiresIn = g.ExpiresIn, Mode = g.Mode, Files = g.Files, Share = g.Share,
-        };
+        return WithColumns(g, columns);
     }
+
+    /// <summary>A grant with other column groups, the rest kept.</summary>
+    private static JazminGrant WithColumns(JazminGrant g, IReadOnlyList<string> columns) => new(g.Key)
+    {
+        Rows = g.Rows, Columns = columns, Label = g.Label, Expires = g.Expires, ExpiresIn = g.ExpiresIn, Mode = g.Mode, Files = g.Files, Share = g.Share,
+    };
 
     /// <summary>
     /// Applies changes by appending them to the end of the file instead of rewriting it (spec 11.2).

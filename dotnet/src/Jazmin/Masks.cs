@@ -143,6 +143,16 @@ internal static class Masks
         return GroupNameRule.IsMatch(plain) ? plain : $"mask.{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(column)))[..16].ToLowerInvariant()}";
     }
 
+    /// <summary>
+    /// The column group of a masked column's shown and unmasked columns (spec 7.6.8): granted with the masked group, not
+    /// locked, so a key without the masked column sees nothing of it. "&lt;group&gt;.open", or a name made from it.
+    /// </summary>
+    public static string OpenGroupName(string group)
+    {
+        var plain = $"{group}.open";
+        return GroupNameRule.IsMatch(plain) ? plain : $"mask.{Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(group)))[..16].ToLowerInvariant()}.open";
+    }
+
     private static byte[] GroupAad(string lockId, string group) => Encoding.UTF8.GetBytes($"JAZMIN/1/lock/{lockId}/column-group/{group}");
 
     /// <summary>A masked column group's secret sealed under its lock's key.</summary>
@@ -322,6 +332,10 @@ internal static class Masks
             }
             var group = (string?)keptEntry?["group"] ?? GroupName(name);
             groups[group] = [name];
+            // The shown column the writer makes and the unmasked column go with the masked one: a group of their own,
+            // granted with it. A shown column the owner fills (FromColumn) stays where the owner put it.
+            string[] made = [.. new[] { show.Kind == JazminMaskShowKind.Column ? null : shown, unmasked }.OfType<string>()];
+            if (made.Length > 0) groups[OpenGroupName(group)] = made;
             masks.Add(new MaskSpec(name, group, mask.Lock, show, shown, unmasked, rows));
         }
         return ([.. output], masks, groups);

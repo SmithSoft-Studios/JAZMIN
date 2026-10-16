@@ -120,6 +120,44 @@ public class MasksTests
     }
 
     [Fact]
+    public void A_key_not_granted_a_masked_column_sees_nothing_of_it_not_its_shown_column_nor_the_unmasked_rows_values()
+    {
+        var owner = JazminKey.Generate();
+        var (staff, general) = (owner.CreateAccessKey(), owner.CreateAccessKey());
+        var path = System.IO.Path.Combine(Directory.CreateTempSubdirectory("jazmin-masks-").FullName, "staff.jzm");
+        File.WriteAllBytes(path, Write(Columns(), Staff, new JazminWriteOptions
+        {
+            Key = owner, Locks = Locks(),
+            Access = new JazminAccessOptions { PartitionBy = "dept", Grants = [new JazminGrant(staff), new JazminGrant(general) { Columns = ["*"] }] },
+        }));
+        string[] plain = ["id", "dept", "name"];
+        void Sees(string when)
+        {
+            using (var g = AsKey(path, general))
+            {
+                Assert.True(g.Columns.Select(c => c.Name).SequenceEqual(plain), $"{when}: {string.Join(", ", g.Columns.Select(c => c.Name))}");
+                Assert.Empty(g.Masked);
+            }
+            using var s = AsKey(path, staff); // every group: the masked ones and theirs (a mask given again moves its shown column last)
+            Assert.Equal(new[] { "account_shown", "dept", "email_shown", "id", "name", "salary_unmasked" }, s.Columns.Select(c => c.Name).Order(StringComparer.Ordinal));
+        }
+        Sees("written");
+        JazminFile.Compact(path, owner);
+        Sees("compacted");
+        JazminFile.Append(path, new JazminAppend
+        {
+            Key = owner, Insert = [new Dictionary<string, object?> { ["id"] = 9L, ["dept"] = "B", ["name"] = "Eve", ["account"] = "1234 5678", ["salary"] = "2.00" }],
+        });
+        Sees("appended");
+        JazminFile.Update(path, new JazminUpdate { Key = owner, Masks = new Dictionary<string, JazminMask?> { ["account"] = new("pay") { Show = JazminMaskShow.LastOf(2) } } });
+        Sees("masked again");
+        JazminFile.Update(path, new JazminUpdate { Key = owner, Masks = new Dictionary<string, JazminMask?> { ["salary"] = null } });
+        using (var g = AsKey(path, general)) Assert.Equal(plain, g.Columns.Select(c => c.Name));
+        using (var s = AsKey(path, staff))
+            Assert.Equal(new[] { "account_shown", "dept", "email_shown", "id", "name", "salary" }, s.Columns.Select(c => c.Name).Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
     public void Masks_are_per_grant_and_per_partition_and_a_grant_without_the_masked_group_never_sees_it()
     {
         var f = WriteStaff();

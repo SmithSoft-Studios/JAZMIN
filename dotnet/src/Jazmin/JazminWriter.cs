@@ -355,6 +355,14 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         {
             if (_options.Key is null) throw new JazminValidationException("An access-controlled file needs the owner's master key as Key");
             _access = AccessConfig.NormalizeGrants(_options.Access.Grants, _allGroupNames.ToHashSet(StringComparer.Ordinal), Now);
+            // A masked column's shown and unmasked columns go with it (spec 7.6.8): a grant of its group gets theirs too.
+            var maskedGroups = _otherMasks.Select(m => (string)m["group"]!).Concat(_tables.SelectMany(t => t.Masks.Select(m => m.Group))).ToList();
+            for (var i = 0; i < _access.Grants.Count; i++)
+            {
+                if (_access.Grants[i].Columns is not { } granted) continue; // every group: theirs too
+                var opens = maskedGroups.Where(granted.Contains).Select(Masks.OpenGroupName).Where(o => _allGroupNames.Contains(o) && !granted.Contains(o)).ToList();
+                if (opens.Count > 0) _access.Grants[i] = _access.Grants[i] with { Columns = [.. granted, .. opens] };
+            }
             var ownerFingerprint = OwnerSigning.Fingerprint(OwnerSigning.Derive(_options.Key.Bytes).PublicKey);
             foreach (var grant in _access.Grants)
                 if (!grant.Key.OwnerFingerprint.SequenceEqual(ownerFingerprint))
