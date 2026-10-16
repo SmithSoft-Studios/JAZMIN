@@ -748,30 +748,35 @@ for (const name of chosen) {
     });
 
     // A lock with a key service: Sign in opens it in a window, which posts the token back; the file opens.
-    await page.navigate(`${base}/js/viewer/index.html`);
-    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
-    await page.evaluate(`fetch('/e2e/locked-service.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'locked-service.jzm')).then(() => true)`);
-    await unlock(page, { file: 'locked-service.jzm', key: 'serviceReader' });
-    await page.evaluate(`([...document.querySelectorAll('#jz-files li')].find((li) => li.querySelector('.locked')).querySelector('button').click(), true)`);
-    await waitFor(page, `document.getElementById('jz-lock').open`, 'the unlock dialog');
-    const signInButton = await page.evaluate(`document.getElementById('jz-lock-service').hidden ? '' : document.getElementById('jz-lock-service').textContent`);
-    // The right token from another origin (here the viewer's own) is not the key service's answer: it is ignored.
-    await page.evaluate(`(window.postMessage({ type: 'jazmin:file-unlock', file: JazminViewer.state.reader.fileId, lock: 'medical', token: ${JSON.stringify(serviceToken)} }, '*'),
-      new Promise((r) => setTimeout(r, 400)).then(() => true))`);
-    const forgedIgnored = await page.evaluate(`document.getElementById('jz-lock').open && document.getElementById('jz-lock-token').value === ''`);
-    await page.evaluate(`(document.getElementById('jz-lock-service').click(), true)`);
-    let serviceUnlocked = true;
-    try {
-      await waitFor(page, `!document.getElementById('jz-lock').open && !document.querySelector('#jz-files .locked')`, 'the token from the key service');
-    } catch {
-      serviceUnlocked = await page.evaluate(`document.getElementById('jz-lock-error').textContent`);
+    // Not on the iPhone simulator: Safari there opens the window only from a person's tap and pauses the viewer's
+    // tab behind it, which WebDriver can't drive. It is in the phone check by hand (docs/CONTRIBUTING.md).
+    if (name === 'ios') console.log(`skip ${name.padEnd(8)} a lock's key service: Sign in (in the phone check by hand)`);
+    else {
+      await page.navigate(`${base}/js/viewer/index.html`);
+      await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+      await page.evaluate(`fetch('/e2e/locked-service.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'locked-service.jzm')).then(() => true)`);
+      await unlock(page, { file: 'locked-service.jzm', key: 'serviceReader' });
+      await page.evaluate(`([...document.querySelectorAll('#jz-files li')].find((li) => li.querySelector('.locked')).querySelector('button').click(), true)`);
+      await waitFor(page, `document.getElementById('jz-lock').open`, 'the unlock dialog');
+      const signInButton = await page.evaluate(`document.getElementById('jz-lock-service').hidden ? '' : document.getElementById('jz-lock-service').textContent`);
+      // The right token from another origin (here the viewer's own) is not the key service's answer: it is ignored.
+      await page.evaluate(`(window.postMessage({ type: 'jazmin:file-unlock', file: JazminViewer.state.reader.fileId, lock: 'medical', token: ${JSON.stringify(serviceToken)} }, '*'),
+        new Promise((r) => setTimeout(r, 400)).then(() => true))`);
+      const forgedIgnored = await page.evaluate(`document.getElementById('jz-lock').open && document.getElementById('jz-lock-token').value === ''`);
+      await page.evaluate(`(document.getElementById('jz-lock-service').click(), true)`);
+      let serviceUnlocked = true;
+      try {
+        await waitFor(page, `!document.getElementById('jz-lock').open && !document.querySelector('#jz-files .locked')`, 'the token from the key service');
+      } catch {
+        serviceUnlocked = await page.evaluate(`document.getElementById('jz-lock-error').textContent`);
+      }
+      const scan = serviceUnlocked === true ? await page.evaluate(`JazminViewer.state.reader.readFile('scan.png').then((b) => new TextDecoder().decode(b))`) : null;
+      const serviceOk = signInButton === `Sign in at ${new URL(otherBase).host}` && forgedIgnored === true && serviceUnlocked === true && scan === 'The scan';
+      results.push({
+        browser: name, label: "a lock's key service: Sign in opens its window, which posts the token back, and the file opens; other origins are ignored", ok: serviceOk,
+        problems: serviceOk ? [] : [JSON.stringify({ signInButton, forgedIgnored, serviceUnlocked, scan })],
+      });
     }
-    const scan = serviceUnlocked === true ? await page.evaluate(`JazminViewer.state.reader.readFile('scan.png').then((b) => new TextDecoder().decode(b))`) : null;
-    const serviceOk = signInButton === `Sign in at ${new URL(otherBase).host}` && forgedIgnored === true && serviceUnlocked === true && scan === 'The scan';
-    results.push({
-      browser: name, label: "a lock's key service: Sign in opens its window, which posts the token back, and the file opens; other origins are ignored", ok: serviceOk,
-      problems: serviceOk ? [] : [JSON.stringify({ signInButton, forgedIgnored, serviceUnlocked, scan })],
-    });
 
     // A document of pages: a tab each, in order, each reading its own table; offline only the page that needs the
     // network waits; the pages and the document's own files are left out of the Files tab.
