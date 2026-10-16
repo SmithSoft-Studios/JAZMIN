@@ -453,6 +453,15 @@ function plainSection(section, sectionId) {
 }
 
 /**
+ * An owner directory grant's column groups ('*': all): masked groups are listed apart, and a grant of every group says
+ * so (spec 7.6.8).
+ */
+function grantColumns(g) {
+  if (g.allColumns === true) return '*';
+  return Array.isArray(g.maskedColumns) && Array.isArray(g.columns) ? [...g.columns, ...g.maskedColumns] : g.columns;
+}
+
+/**
  * A key slot's masked columns (spec 7.6.8): { locks: Map(id -> lock), groups: Map(group -> { lock, sealed, column }) };
  * empty when the slot has none. A member that isn't well-formed is refused.
  */
@@ -1444,7 +1453,7 @@ export class JazminReader {
     }
     if (isOwner) {
       info.grants = this.#ownerDirectory().grants.map((g) => ({
-        keyId: this.#grantKey(g.key).id, rows: g.rows, columns: g.columns, ...(g.label === undefined ? {} : { label: g.label }),
+        keyId: this.#grantKey(g.key).id, rows: g.rows, columns: grantColumns(g), ...(g.label === undefined ? {} : { label: g.label }),
         mode: g.mode ?? 'offline',
         ...(g.expires ? { expires: g.expires } : {}),
         ...(g.files === undefined ? {} : { files: g.files }), // extra file groups: re-granting without them removes them
@@ -1809,10 +1818,7 @@ export class JazminReader {
     // Each grant with its key parsed (accessKey: its id is worked out when first asked for), so callers need not parse
     // every key again.
     const grants = this.#ownerDirectory().grants.map(({ maskedColumns, allColumns, ...g }) => ({
-      ...g,
-      // Masked groups are listed apart, and a grant of every group says so (spec 7.6.8).
-      ...(allColumns === true ? { columns: '*' } : Array.isArray(maskedColumns) && Array.isArray(g.columns) ? { columns: [...g.columns, ...maskedColumns] } : {}),
-      accessKey: this.#grantKey(g.key),
+      ...g, columns: grantColumns({ ...g, maskedColumns, allColumns }), accessKey: this.#grantKey(g.key),
     }));
     return { partitionBy: this.#table.partitionBy || undefined, columnGroups, grants };
   }
