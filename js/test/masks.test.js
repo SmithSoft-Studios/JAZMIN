@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { JazminKey, JazminKeyError, append, compact, issueFileUnlockToken, open, update, write } from '../src/index.js';
+import { JazminKey, JazminKeyError, append, compact, issueFileUnlockToken, open, toCSV, toJSON, toXML, update, write } from '../src/index.js';
 import { rowMasker, shownCodePoints, shownText, tableMasks } from '../src/masks.js';
 
 // Masked columns (spec 7.6.8): a column shown masked until its lock opens, with a shown column made by a rule and,
@@ -226,6 +226,30 @@ test('an update masks a column anew for the keys that saw it, in a named group o
   const plain = path.join(tmpDir(), 'plain.jzm');
   write(plain, [{ id: 1 }], { columns: [{ name: 'id', type: 'int' }] });
   assert.throws(() => update(plain, { masks: {} }), /masks need a shared file/);
+});
+
+test('exports give each masked column as one column: what it shows until unlocked and revealed, then its values', () => {
+  const { keys, file } = staffFile();
+  const r = asKey(file, keys.staff);
+  const csv = (options) => toCSV(r, options).trim().split(/\r?\n/);
+  assert.deepEqual(csv(), [
+    'id,dept,name,account,email,salary',
+    '1,A,Ann,•••• •••• •••• 4821,t•••••@example.com,52000.00',
+    '2,A,Ben,•••• •••• •••• 4444,b••@example.org,••••',
+    '3,B,Cas,9,,••••',
+  ]);
+  assert.deepEqual(JSON.parse(toJSON(r))[1], { id: 2, dept: 'A', name: 'Ben', account: '•••• •••• •••• 4444', email: 'b••@example.org', salary: '••••' });
+  r.unlock('pay', { password: 'pw' });
+  assert.deepEqual(csv().slice(1), [
+    '1,A,Ann,4821 0393 7712 4821,thandi@example.com,52000.00', '2,A,Ben,1111 2222 3333 4444,ben@example.org,••••', '3,B,Cas,9,,••••',
+  ], 'unlocked: account and email; salary has its own lock');
+  assert.deepEqual(csv({ revealMasked: false }).slice(1, 2), ['1,A,Ann,•••• •••• •••• 4821,t•••••@example.com,52000.00'], 'not revealed: as before');
+  assert.deepEqual(csv({ revealMasked: ['email'] }).slice(1, 2), ['1,A,Ann,•••• •••• •••• 4821,thandi@example.com,52000.00'], 'only the columns asked for');
+  assert.deepEqual(csv({ select: ['name', 'account'] }), ['name,account', 'Ann,4821 0393 7712 4821', 'Ben,1111 2222 3333 4444', 'Cas,9']);
+  assert.match(toXML(r), /<row><id>2<\/id><dept>A<\/dept><name>Ben<\/name><account>1111 2222 3333 4444<\/account><email>ben@example.org<\/email><salary>••••<\/salary><\/row>/);
+  assert.deepEqual(csv({ masked: 'raw' })[0], 'id,dept,name,account,email,account_shown,email_shown,salary_unmasked', 'as stored');
+  assert.throws(() => toCSV(r, { masked: 'hide' }), /masked is 'merge'/);
+  r.close();
 });
 
 test('masks are checked', () => {

@@ -312,6 +312,30 @@ public class MasksTests
     }
 
     [Fact]
+    public void Exports_give_each_masked_column_as_one_column_what_it_shows_until_unlocked_and_revealed_then_its_values()
+    {
+        var f = WriteStaff();
+        using var r = AsKey(f.Path, f.Staff);
+        string Csv(bool reveal = true, IReadOnlyCollection<string>? only = null, IReadOnlyList<string>? select = null)
+        {
+            var (columns, rows) = r.ExportView(options: select is null ? null : new JazminQueryOptions { Select = select }, revealMasked: reveal, revealOnly: only);
+            var text = new StringWriter();
+            Formats.CsvFormat.Write(text, columns, rows);
+            return text.ToString().Trim().ReplaceLineEndings("\n");
+        }
+        Assert.Equal("id,dept,name,account,email,salary\n1,A,Ann,•••• •••• •••• 4821,t•••••@example.com,52000.00\n2,A,Ben,•••• •••• •••• 4444,b••@example.org,••••\n3,B,Cas,9,,••••", Csv());
+        r.Unlock("pay", password: "pw");
+        Assert.Equal("id,dept,name,account,email,salary\n1,A,Ann,4821 0393 7712 4821,thandi@example.com,52000.00\n2,A,Ben,1111 2222 3333 4444,ben@example.org,••••\n3,B,Cas,9,,••••", Csv());
+        Assert.StartsWith("id,dept,name,account,email,salary\n1,A,Ann,•••• •••• •••• 4821,t•••••@example.com,", Csv(reveal: false));
+        Assert.StartsWith("id,dept,name,account,email,salary\n1,A,Ann,•••• •••• •••• 4821,thandi@example.com,", Csv(only: ["email"]));
+        Assert.Equal("name,account\nAnn,4821 0393 7712 4821\nBen,1111 2222 3333 4444\nCas,9", Csv(select: ["name", "account"]));
+        // JazminJsonStream gives them the same way.
+        using var json = new Formats.JazminJsonStream(r);
+        var first = System.Text.Json.JsonDocument.Parse(new StreamReader(json).ReadToEnd()).RootElement[1];
+        Assert.Equal(("1111 2222 3333 4444", "••••"), (first.GetProperty("account").GetString(), first.GetProperty("salary").GetString()));
+    }
+
+    [Fact]
     public void Masks_are_checked()
     {
         var owner = JazminKey.Generate();

@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { JazminAccessKey, JazminKey, append, issueFileUnlockToken, issueUnlockToken, open, write } from '../src/index.js';
+import { JazminAccessKey, JazminKey, append, exportString, issueFileUnlockToken, issueUnlockToken, open, write } from '../src/index.js';
 import '../browser/jazmin-browser.js';
 
 const { JazminBrowser } = globalThis;
@@ -478,6 +478,16 @@ test('masked columns: the browser reader lists them, unlocks them in every table
   assert.deepEqual(await browser.locks(), library.locks);
   assert.deepEqual(browser.columns.map((c) => c.name), library.columns.map((c) => c.name));
   assert.deepEqual(await rowsOf(browser), [...library.rows()]);
+  // Exports give each masked column as one column, as the library's do, before and after unlocking.
+  const sameExports = async (when) => {
+    for (const format of ['csv', 'json', 'xml']) {
+      for (const options of [{}, { revealMasked: false }, { masked: 'raw' }, { select: ['name', 'salary'] }]) {
+        const exported = { csv: JazminBrowser.toCSV, json: JazminBrowser.toJSON, xml: JazminBrowser.toXML }[format];
+        assert.equal(await exported(browser, options), exportString(library, format, options), `${when} ${format} ${JSON.stringify(options)}`);
+      }
+    }
+  };
+  await sameExports('locked');
   await assert.rejects(browser.unlock('pay', { password: 'nope' }), /Wrong password for lock 'pay'/);
   await notes.unlock('pay', { password: 'pw' }); // through another table's reader: this one is built again in place
   library.unlock('pay', { password: 'pw' });
@@ -489,6 +499,7 @@ test('masked columns: the browser reader lists them, unlocks them in every table
   assert.deepEqual(await rowsOf(browser), [...library.rows()]);
   assert.deepEqual((await browser.masked()).map((m) => [m.lock.unlocked, m.at]), [[true, 1], [true, 3]]);
   assert.deepEqual(await browser.masked(), library.masked, 'the same places once unlocked');
+  await sameExports('unlocked');
   library.close();
 });
 

@@ -606,6 +606,16 @@ export interface QueryOptions extends ProgressOptions {
 
 export interface ExportOptions extends QueryOptions {
   filter?: Filter;
+  /**
+   * Masked columns (1.7, spec 7.6.8): 'merge' (the default) gives each as one column, as viewers show it; 'raw' as
+   * stored (the masked column once unlocked, and its shown and unmasked columns apart).
+   */
+  masked?: 'merge' | 'raw';
+  /**
+   * With masked: 'merge': an unlocked masked column's values (true, the default), what they show (false), or the
+   * values of only these columns.
+   */
+  revealMasked?: boolean | string[];
   /** JSON only. */
   pretty?: boolean;
   /** JSON only: leave out null properties. */

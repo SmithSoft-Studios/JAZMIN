@@ -209,6 +209,54 @@ export const ownerMasks = (masks, table, columns) => masks.map((m) => {
   };
 });
 
+const valueText = (value) => (value instanceof Date ? value.toISOString() : String(value));
+
+/**
+ * A reader's rows with each masked column as one column, as viewers show it (spec 7.6.8), for exports: null when the
+ * table has none. A row's value is its unmasked value when it has one, else its value when the column is unlocked and
+ * revealed (`reveal`: true, false, or the columns to reveal), else what it shows (its shown column, or •••• when it has
+ * none). A column that may hold what values show is text. Returns { columns, select (to read), row (maps a row) };
+ * `select`: the export's columns, by name.
+ */
+export function maskedView(reader, select, reveal = true) {
+  const masks = reader.masked;
+  if (!masks.length) return null;
+  const revealed = (m) => m.lock.unlocked && (reveal === true || (Array.isArray(reveal) && reveal.includes(m.column)));
+  const apart = new Set(masks.flatMap((m) => [m.column, m.shown, m.unmasked]).filter(Boolean));
+  const merged = (m) => {
+    const own = reader.columns.find((c) => c.name === m.column);
+    return revealed(m) && own ? own : { name: m.column, type: revealed(m) ? m.type : 'string', nullable: true };
+  };
+  const all = [];
+  reader.columns.forEach((column, i) => {
+    for (const m of masks) if (m.at === i) all.push(merged(m));
+    if (!apart.has(column.name)) all.push(column);
+  });
+  for (const m of masks) if (m.at >= reader.columns.length) all.push(merged(m));
+  const columns = select ? all.filter((c) => select.includes(c.name)) : all;
+  const shown = masks.filter((m) => columns.some((c) => c.name === m.column));
+  const read = select ? [...new Set(columns.flatMap((c) => {
+    const m = shown.find((x) => x.column === c.name);
+    return m ? [m.lock.unlocked ? m.column : null, m.shown, m.unmasked].filter(Boolean) : [c.name];
+  }))] : undefined;
+  const row = (r) => {
+    const out = { ...r };
+    for (const m of shown) {
+      const open = m.unmasked ? r[m.unmasked] ?? null : null;
+      const show = revealed(m);
+      let value;
+      if (open !== null) value = show ? open : valueText(open); // a row that isn't masked
+      else if (show) value = r[m.column] ?? null;
+      else if (m.lock.unlocked && (r[m.column] ?? null) === null) value = null; // unlocked: an empty value is empty
+      else if (m.shown) value = r[m.shown] ?? null;
+      else value = DOTS;
+      out[m.column] = value;
+    }
+    return out;
+  };
+  return { columns, select: read, row };
+}
+
 /**
  * A row's mask work, for the writer: the shown values made, and in tables that mask some rows, each row's value in the
  * masked or the unmasked column: it stays masked when the row matches `rows`, else it moves to the unmasked column. A
