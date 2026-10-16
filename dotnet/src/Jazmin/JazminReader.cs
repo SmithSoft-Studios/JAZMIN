@@ -1457,6 +1457,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         var read = columns.SelectMany(c => shown.FirstOrDefault(m => m.Column == c.Name) is { } m
             ? new[] { m.Lock.Unlocked ? m.Column : null, m.Shown, m.Unmasked }.OfType<string>() : [c.Name]).Distinct().ToList();
         var shape = new RowShape(columns, Enumerable.Range(0, columns.Count).ToArray());
+        // Each column's mask and whether it is revealed, worked out once, not for every row.
+        var maskOf = columns.Select(c => shown.FirstOrDefault(m => m.Column == c.Name)).ToArray();
+        var revealedAt = maskOf.Select(m => m is not null && Revealed(m)).ToArray();
         var found = Find(filter, new JazminQueryOptions
         {
             Select = read, Offset = options?.Offset ?? 0, Limit = options?.Limit, Reverse = options?.Reverse ?? false,
@@ -1467,17 +1470,16 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             var values = new object?[columns.Count];
             for (var i = 0; i < columns.Count; i++)
             {
-                var name = columns[i].Name;
-                var m = shown.FirstOrDefault(x => x.Column == name);
+                var m = maskOf[i];
                 if (m is null)
                 {
-                    values[i] = row.TryGetValue(name, out var plain) ? plain : null;
+                    values[i] = row.TryGetValue(columns[i].Name, out var plain) ? plain : null;
                     continue;
                 }
                 var open = m.Unmasked is { } u && row.TryGetValue(u, out var o) ? o : null;
                 var value = m.Lock.Unlocked && row.TryGetValue(m.Column, out var v) ? v : null;
-                values[i] = open is not null ? (Revealed(m) ? open : Formats.TextValues.ToText(m.Type, open)) // a row that isn't masked
-                    : Revealed(m) ? value
+                values[i] = open is not null ? (revealedAt[i] ? open : Formats.TextValues.ToText(m.Type, open)) // a row that isn't masked
+                    : revealedAt[i] ? value
                     : m.Lock.Unlocked && value is null ? null // unlocked: an empty value is empty
                     : m.Shown is { } s ? (row.TryGetValue(s, out var t) ? t : null)
                     : "••••";
