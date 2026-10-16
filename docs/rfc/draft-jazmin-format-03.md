@@ -2006,7 +2006,13 @@ indexes, embedded files) written by both reference implementations.
   `masked-columns`; releases 1.0 to 1.6 don't check it, and an append or
   rewrite with them writes key slots and an owner directory without `masks`:
   as grants list masked groups apart (7.6.8), keys then lose the column (it
-  is never given unmasked), and the owner keeps it, to mask again.
+  is never given unmasked), and the owner keeps it, to mask again. A masked
+  column's shown and unmasked columns are in a column group of their own
+  (`<group>.open`), granted only with the masked group, so a key not granted
+  the column sees nothing of it. Rewrites can mask, unmask and re-mask
+  columns ("Changing masks"); no key gains access. The package setting
+  `masks.<column>.export` says whether viewers may export a column's
+  revealed values; viewers export what values show unless asked.
 - **Since format 1.0, other text orders (6.7):** a table's optional `sort`
   (catalog field 13 of `Table`): keys that compare text ignoring case and
   accents, or with the numbers inside it by value. `sorted_by` keeps the

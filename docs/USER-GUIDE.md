@@ -4760,11 +4760,11 @@ plain scripts (they work from `file://` too):
 
 | Script | What it has | Size (gzipped) |
 |---|---|---|
-| `jazmin-browser.js` | everything below | 308 KB (80 KB) |
-| `jazmin-browser-core.js` | opening, unlocking and reading files; JSON, CSV and XML exports | 168 KB (45 KB) |
-| `jazmin-browser-shapes.js` | export shapes, `reader.shapes()`, exports with `{ shape }` | 45 KB (12 KB) |
-| `jazmin-browser-writer.js` | `createWriter`, `write`, `writeChanges` | 53 KB (15 KB) |
-| `jazmin-browser-queries.js` | `JazminBrowser.from` (queries with arrow functions) | 47 KB (12 KB) |
+| `jazmin-browser.js` | everything below | 321 KiB (84 KiB) |
+| `jazmin-browser-core.js` | opening, unlocking and reading files; JSON, CSV and XML exports | 184 KiB (49 KiB) |
+| `jazmin-browser-shapes.js` | export shapes, `reader.shapes()`, exports with `{ shape }` | 44 KiB (11 KiB) |
+| `jazmin-browser-writer.js` | `createWriter`, `write`, `writeChanges` | 52 KiB (15 KiB) |
+| `jazmin-browser-queries.js` | `JazminBrowser.from` (queries with arrow functions) | 46 KiB (12 KiB) |
 
 ```html
 <script src="jazmin-browser-core.js"></script>
@@ -4772,9 +4772,9 @@ plain scripts (they work from `file://` too):
 ```
 
 A call that needs an add-on that isn't loaded says which one, for example "This needs
-jazmin-browser-shapes.js, loaded after jazmin-browser-core.js". The core alone loaded in about
-2.6 ms less than the full script, with about 360 KB less memory (Node 24: 10.8 against 13.3 ms,
-937 against 1,294 KB; the median of 15 loads). In npm they are
+jazmin-browser-shapes.js, loaded after jazmin-browser-core.js". The core alone loads in about
+3 ms less than the full script, with about 360 KB less memory (Node 24, 1.7.0: 13.0 to 13.9 against
+16.2 to 16.4 ms, 1,051 against 1,409 KB; the median of 15 loads, measured twice). In npm they are
 `@smithsoft-studios/jazmin/browser/core`, `…/shapes`, `…/writer` and `…/queries`. The
 from-disk sample's pages each load only what they use.
 
