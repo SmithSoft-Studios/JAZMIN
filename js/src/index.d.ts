@@ -1160,6 +1160,14 @@ export function write(target: string, rows: Record<string, Iterable<Record<strin
 export function inferSchema(rows: Iterable<Record<string, unknown>>, options?: { detectDates?: boolean }): JazminColumn[];
 
 export function exportString(reader: JazminReader, format: 'json' | 'csv' | 'xml', options?: ExportOptions): string;
+/**
+ * A reader's rows with each masked column as one column, as viewers show it and exports give it (1.7, spec 7.6.8), for
+ * tools that write rows themselves: null when the table has none. `select`: the columns as they come out; `reveal`: an
+ * unlocked masked column's values (true), what they show (false), or only these columns' values. Read `select` (the
+ * columns to read) with find(), and map each row with `row`.
+ */
+export function maskedView(reader: JazminReader, select?: string[] | null, reveal?: boolean | string[]):
+  { columns: JazminColumnInput[]; select: string[] | undefined; row: (row: Record<string, unknown>) => Record<string, unknown> } | null;
 export function exportFile(reader: JazminReader, format: 'json' | 'csv' | 'xml', path: string, options?: ExportOptions): void;
 export function toJSON(reader: JazminReader, options?: ExportOptions): string;
 /**

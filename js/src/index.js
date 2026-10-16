@@ -18,6 +18,7 @@ export { JazminWriter } from './writer.js';
 export { JazminAccessKey, JazminKey } from './keys.js';
 export { grantAccess, revokeAccess, update } from './update.js';
 export { append, compact } from './append.js';
+export { maskedView } from './masks.js';
 export { rotateKey, rotateOwnerKey } from './rotate.js';
 export { createFileHandler, documentPolicy, renderImage, renderPdf, serveFiles } from './server.js';
 export { portableHtml, portableScript } from './portable.js';
