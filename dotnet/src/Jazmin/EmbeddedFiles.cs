@@ -270,6 +270,8 @@ internal static class EmbeddedFiles
     /// A key service's address (spec 6.8.2): an https URL (or http on a loopback host, for development) without a user
     /// name, password or fragment; else null.
     /// </summary>
+    private static string? TextOf(JsonNode? node) => node is JsonValue v && v.TryGetValue<string>(out var text) ? text : null;
+
     public static string? KeyServiceAddress(JsonNode? value) =>
         value is JsonValue v && v.TryGetValue<string>(out var text) ? KeyServiceAddress(text) : null;
 
@@ -282,12 +284,16 @@ internal static class EmbeddedFiles
     public static string CheckKeyService(string value, string where) => KeyServiceAddress(value)
         ?? throw new JazminValidationException($"{where} must be an https address without a user name, password or #fragment, such as https://keys.example.com/unlock");
 
+    /// <summary>
+    /// The package settings as a file has them, read leniently: a setting of the wrong type (a damaged file's) is left
+    /// out, as the JavaScript reader, which gives them as they are, leaves it to whoever uses them.
+    /// </summary>
     public static JazminPackage? PackageFrom(JsonNode? json) => json is not JsonObject o ? null : new JazminPackage
     {
-        Entry = (string?)o["entry"],
-        Title = (string?)o["title"],
-        AllowedOrigins = o["allowedOrigins"] is JsonArray a ? a.Select(x => (string)x!).ToList() : null,
-        AllowWasm = (bool?)o["allowWasm"],
+        Entry = TextOf(o["entry"]),
+        Title = TextOf(o["title"]),
+        AllowedOrigins = o["allowedOrigins"] is JsonArray a ? a.Select(TextOf).OfType<string>().ToList() : null,
+        AllowWasm = o["allowWasm"] is JsonValue wasm && wasm.TryGetValue<bool>(out var allow) ? allow : null,
         Pdf = o["pdf"] is JsonObject pdf ? PdfFrom(pdf, strict: false) : null,
         Edit = Changes.EditFrom(o["edit"]),
         KeyService = KeyServiceAddress(o["keyService"]),

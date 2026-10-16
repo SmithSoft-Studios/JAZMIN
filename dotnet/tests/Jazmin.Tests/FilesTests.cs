@@ -90,6 +90,17 @@ public class FilesTests
     }
 
     [Fact]
+    public void PackageSettingsOfTheWrongType_AreLeftOut_NotAnError()
+    {
+        // A damaged file's settings (found by the fuzzer: allowedOrigins holding false): read leniently, never thrown.
+        var package = EmbeddedFiles.PackageFrom(System.Text.Json.Nodes.JsonNode.Parse(
+            """{ "entry": 7, "title": [], "allowedOrigins": [false, "https://a.example", null, {}], "allowWasm": "yes", "pdf": { "scale": "big" }, "edit": { "key": [1] }, "keyService": 3, "masks": { "x": 1 }, "online": true }"""));
+        Assert.NotNull(package);
+        Assert.Equal((null, null, null, null, null, null), (package.Entry, package.Title, package.AllowWasm, package.Edit, package.KeyService, package.Online));
+        Assert.Equal(["https://a.example"], package.AllowedOrigins);
+    }
+
+    [Fact]
     public void PackageOnline_SaysTheDocumentNeedsTheNetwork_WithTheOriginsItLoadsFrom()
     {
         string[] cdn = ["https://cdn.jsdelivr.net", "https://fonts.googleapis.com"];
