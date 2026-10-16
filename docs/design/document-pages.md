@@ -1,6 +1,8 @@
 # Document pages: several pages in one file, and the files they use kept out of sight
 
-Status: **draft for the owner's review** (2026-10-16). Nothing is built yet. The questions are at the end.
+Status: **decided** (owner, 2026-10-16): in 1.7.0; buttons from each page file's actions, which a page entry may
+override and the page's code may turn off and on; hidden files by path or folder; pages may also be marked in a file
+group's directory, so only that group's keys see them. **Specified:** spec 6.8.
 
 ## The idea in plain words
 
@@ -46,20 +48,25 @@ Two new optional members of the package settings (spec 6.8):
   and optionally:
   - `online` (`"required"` or `"optional"`), which overrides the package's `online` for that page;
   - `table`, the table `jazmin.query` and `jazmin.count` read when the page names none (else the first table);
-  - `pdf`, page settings for that page's PDFs, over the package's `pdf`.
+  - `pdf`, page settings for that page's PDFs, over the package's `pdf`;
+  - `actions` (`print`, `pdf`, `image`), over the page file's own.
 - **Print, PDF and image buttons follow the page file's `actions`**, which files already have per file and per file
-  group (6.8). A print-layout page allows `print` and `pdf`; a list page sets them `false`, and the viewer shows no
-  Print button on that tab. This uses the existing signed rules instead of a second copy of them.
+  group (6.8), unless the page entry gives its own. A print-layout page allows `print` and `pdf`; a list page sets
+  them `false`, and the viewer shows no Print button on that tab. The page's code can turn an allowed button off and
+  back on while it is shown (`jazmin.setActions`, as today), never on when it isn't allowed.
 - **`entry`** stays. It is the page that opens first, and it must be one of `pages`. Writers set it to the first page
   when it is left out. Viewers of releases 1.0 to 1.6 don't know `pages`, so they show `entry` alone, as today: the
   file still opens there.
 - **`files`**: paths of stored files that belong to the document, or folders (a path ending in `/`). Viewers SHOULD
   NOT list them, or the pages, in lists of the file's files. Writers check that each path is a stored file (or that
   some stored file is in the folder). Viewers of releases 1.0 to 1.6 ignore it and list the files as they do today.
-- **Shared files:** a page whose file a key can't see isn't shown to that key, and neither is its tab. One detail
-  matters here: the package settings are in the file's header, which **every key reads**. So the paths and titles in
-  `pages` and `files` are visible to every key, even for files a key can't open. A page whose very name must stay
-  secret shouldn't be named there (see question 4).
+- **Shared files:** a page whose file a key can't see isn't shown to that key, and neither is its tab. The package
+  settings are in the file's header, which **every key reads**, so the paths and titles in `pages` and `files` are
+  visible to every key, even for files a key can't open. A page whose name only some keys may see is marked instead
+  in its file group's directory, which only that group's keys read: the file's entry there gets `page`, with the
+  same members as a `pages` entry (no `path`) and `order`, its place among the tabs. Tabs are in this order: the
+  package's `pages` as listed, then directory pages by `order`, then by path. A file the document uses that only
+  some keys see is kept out of lists with `list: false` in that group's directory, as today.
 - **Libraries:** JS `package.pages` and `package.files`; .NET `JazminPackage.Pages` (`JazminPage`) and
   `JazminPackage.Files`. Writers check them; append, update and compact keep them. Rewrites by releases 1.0 to 1.6 drop
   them (unknown members), and viewers then show `entry` and list every file: nothing is lost but the tabs.
@@ -69,17 +76,13 @@ Two new optional members of the package settings (spec 6.8):
 
 No reader or writer feature is needed: every member is optional and ignored by readers that don't know it.
 
-## Questions for the owner
+## Decisions (owner, 2026-10-16)
 
-1. **Release:** in 1.7.0 (which is otherwise ready, apart from the phone check), or in 1.8.0 so 1.7.0 can ship now?
-   *Recommended: 1.8.0.* It touches the spec, both libraries, the browser reader, the viewer and Scout, plus samples.
-2. **Print and PDF buttons per page from each page file's `actions`** (as above), or a copy of them in each `pages`
-   entry? *Recommended: from the file's actions,* which already work per file group and are signed with the file.
-3. **`files` with folders** (`"fonts/"` hides every file in that folder), or exact paths only? *Recommended: both,*
-   so a document with many images or fonts lists one folder.
-4. **Pages and files in shared files** whose names must stay secret from some keys: accept that names in the package
-   settings are visible to every key (and say so in the spec), or also allow a page to be marked per file group
-   (a `page` action in the group's directory, which only that group's keys read)? *Recommended: accept it for now and
-   say so;* add the per-group marking later if a real file needs it.
-5. **Hide the pages and `files` from the Files tab for the owner too?** *Recommended: hide them for everyone in
-   viewers.* Tools that change the file (such as the library's `files` list) still list every file.
+1. **Release:** 1.7.0.
+2. **Buttons:** from each page file's `actions`; a `pages` entry (or directory `page`) may override them; the page's
+   code may turn allowed ones off and on (`jazmin.setActions`).
+3. **`files`:** exact paths and folders (a path ending in `/`).
+4. **Shared files:** pages can also be marked per file group (`page` in the group's directory), so only that group's
+   keys see their names.
+5. **Owner view** (default taken): viewers hide pages and `files` from the Files tab for every key, the owner
+   included; the libraries' `files` lists still give every file, each with its `page` when it has one.
