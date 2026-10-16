@@ -57,6 +57,16 @@ write(file('masks.jzm'), rows, {
   key: owner, access: { grants: [{ key: reader }] }, locks: { pay: { password: 'pw', iterations: 1000 } },
   package: { masks: { account: { seconds: 10 } } },
 });
+// Document pages (6.8): two pages with their own tables' settings, the document's own files, and a page only one
+// file group knows of.
+write(file('pages.jzm'), rows, {
+  columns, key: owner, access: { partitionBy: 'region', grants: [{ key: reader, rows: '*' }] },
+  files: [
+    { path: 'index.html', content: 'overview' }, { path: 'detail.html', content: 'detail' }, { path: 'app.js', content: 'js' },
+    { path: 'board.html', content: 'board', groups: ['North'], page: { title: 'Board', order: 1 } },
+  ],
+  package: { pages: [{ path: 'index.html', title: 'Overview' }, { path: 'detail.html', title: 'Detail', actions: { print: false } }], files: ['app.js'] },
+});
 fs.writeFileSync(file('keys.json'), JSON.stringify(keys, null, 2));
 
 // ---- the previous release ------------------------------------------------------------------------------------------
@@ -109,6 +119,11 @@ check('masked columns: an access key reads the rows and what the column shows, n
   const r = as('masks.jzm', keys.reader);
   const first = [...r.rows()][0];
   return same([r.columns.map((c) => c.name), first.account_shown, 'account' in first], [['id', 'region', 'name', 'account_shown'], '•••• 1000', false]);
+});
+check('document pages: the rows, the entry page, and every page and file as a stored file', () => {
+  const r = as('pages.jzm', keys.reader);
+  return same([r.rowCount, r.package.entry, r.files.map((f) => f.path).sort(), Buffer.from(r.readFile('board.html')).toString()],
+    [60, 'index.html', ['app.js', 'board.html', 'detail.html', 'index.html'], 'board']);
 });
 check('masked columns: the owner reads every column', () => {
   const r = as('masks.jzm', keys.owner);

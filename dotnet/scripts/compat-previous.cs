@@ -71,6 +71,12 @@ Check("masked columns: an access key reads the rows and what the column shows, n
     return Same(new object?[] { r.Columns.Select(c => c.Name).ToArray(), first["account_shown"], first.TryGetValue("account", out _) },
         new object?[] { new[] { "id", "region", "name", "account_shown" }, "•••• 1000", false });
 });
+Check("document pages: the rows, the entry page, and every page and file as a stored file", () =>
+{
+    using var r = Open("pages.jzm", keys["reader"]!.GetValue<string>());
+    return Same(new object?[] { r.RowCount, r.Package!.Entry, r.Files.Select(f => f.Path).Order(StringComparer.Ordinal).ToArray(), System.Text.Encoding.UTF8.GetString(r.ReadFile("board.html")) },
+        new object?[] { 60L, "index.html", new[] { "app.js", "board.html", "detail.html", "index.html" }, "board" });
+});
 Check("masked columns: the owner reads every column", () =>
 {
     using var r = Open("masks.jzm", keys["owner"]!.GetValue<string>());

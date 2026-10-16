@@ -3,88 +3,81 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
-## Unreleased (1.7.0)
-- **Document pages (.NET).** `JazminPackage.Pages` lists a document's pages in order (`JazminPage`: `Path`, `Title`
-  and, for that page, `Online`, `Table`, `Pdf` and `Actions` for its Print, PDF and image buttons); viewers show them
-  as tabs. `JazminPackage.Files` lists the files the pages load (paths, or folders ending in `/`), which viewers leave
-  out of their file lists. In shared files, `JazminFileInput.Page` marks a page in its file group's directory, so
-  only that group's keys know of it (`JazminEmbeddedFile.Page` when read). Writers check them with the same messages
-  as the JavaScript library; `Entry` is the first page when left out. Append, update and compact keep them, and a
-  renamed table is renamed in the pages. Releases 1.0-1.6 read these files and show the entry page alone (spec 6.8).
-- **Fixed: package settings in a file with no stored files are kept (both libraries).** Writers wrote the package
-  settings only with stored files or saved shapes, so settings that make sense alone (`masks`, `online`) were dropped
-  without a word. They are now written, appended and updated; releases 1.0 to 1.6 read such files as before.
-- **Document pages (JavaScript, the browser reader and the web viewer; spec 6.8).** `package.pages` lists a
-  document's pages in order, each with a `title` and optionally its own `online`, `table` (the table its queries read
-  when they name none), `pdf` and `actions` (over its file's); `entry` is one of them (the first when left out).
-  `package.files` names the document's own files (paths, or folders ending in `/`). In shared files a file's `page`
-  marks a page in its file groups' directories, so only their keys know of it (`files[i].page`). Writers check them;
-  append, update and compact keep them, and follow renamed tables. The viewer shows a tab per page, each with its own
-  table, buttons and network note: offline, only a page that needs the network waits. Its Files tab leaves out the
-  pages and the document's own files. Releases 1.0 to 1.6 show `entry` alone and list every file.
-- **The web viewer exports masked columns masked (#190).** Once unlocked, Export still writes what values show unless
-  **Include revealed values** is ticked in its menu (unticked by default); the file's `package.masks.<column>.export:
-  false` keeps a column masked in exports whatever is chosen (both libraries check and keep it). A shape that reads an
-  unlocked masked column is refused unless the box is ticked.
-- **Exports give each masked column as one column (#190).** CSV, JSON and XML exports (`toCSV`/`exportFile`, the
-  browser reader's, .NET `reader.ExportView` and `JazminJsonStream`) give a masked column as viewers show it: a row's
-  unmasked value, else its value once unlocked, else what it shows. `revealMasked: false` (or a list of columns) keeps
-  what values show even when unlocked; `masked: 'raw'` exports the columns as stored.
-- **Fixed (.NET, found by the long fuzz run):** a file whose package settings were damaged so that a setting had the
-  wrong type (`allowedOrigins` holding `false`) made `reader.Package` throw an `InvalidOperationException` instead of
-  reading. Settings of the wrong type are now left out, as with the other settings; the input is a damaged fixture.
-- **Fixed (unreleased, security):** a masked column's shown column (`<column>_shown`) and unmasked column
-  (`<column>_unmasked`) were in the general column group, so keys never granted the masked column saw what it shows
-  and the full values of its unmasked rows. They now have a column group of their own (`<group>.open`), granted only
-  with the masked column (spec 7.6.8), in both libraries, through rewrites, appends and mask changes.
-- **Fixed (JS, unreleased):** in a file with masked columns, the owner's `reader.access.grants` listed a grant's columns
-  without its masked groups, and a grant of every column as only the general group. It now lists them as .NET does.
-- **The owner sees every lock and how each column is masked (#190).** For the owner, `reader.locks` also lists locks
-  that only masked columns use, and `reader.masked` entries give `show` and `rows` (.NET `JazminMaskedColumn.Show`,
-  `Rows`), so tools can show and change them.
-- **Masks changed by an update (#190, spec 7.6.8).** `update(file, { masks: { column: { lock, show, rows } | null } })`
-  (.NET `JazminUpdate.Masks`, and per table): mask a column for the keys that saw it, unmask one for the keys that had
-  it masked (its made shown column and unmasked column fold back), or give it a new mask. No key gains access.
-- **An online dashboard in the demo gallery (#218).** The from-disk sample's Documents page has a third document,
-  `dashboard.jzm`: the Inter font from Google Fonts, Chart.js (an exact version, with its `integrity` hash) and icons
-  from jsDelivr, with `online: 'required'`; without the charts it shows the figures as a table.
-- **Documents that need the internet (#218, spec 6.8).** `package.online: 'required' | 'optional'` (.NET
-  `JazminPackage.Online`, `JazminOnline`), with `allowedOrigins`. The web viewer says the document needs to be online;
-  with `'required'`, offline, it shows a message instead of the document, and the document once back online.
-- **Fixed (.NET, unreleased):** an update that renamed or removed tables in a file whose document edits rows kept
-  only some package settings: the key service and masked-column settings are now kept too.
-- **Where a masked column belongs (#190).** `reader.masked` (JS) and `reader.Masked` (.NET, `At`) give each masked column's
-  `at`: its place in `columns`, now or once unlocked, as the browser reader does, so a viewer shows it where it was defined.
-- **Masked columns in the browser reader and the web viewer (#190).** `reader.masked()` (with `at`, the column's place),
-  `locks()` and `unlock()` for masked columns, which builds every open table reader again with them. The viewer shows
-  a masked column in its place with what it shows, Unlock… in its header, then Reveal one value at a time (or the
-  column, if the file says so) with a countdown and Hide, masked again after the file's seconds (30 by default), when
-  the window is hidden, or after 60 s without input; printing shows the masked text. A page around the viewer that
-  passes `reportReveals: true` hears `jazmin:revealed` (column, lock, scope; never the value or row).
-- **Masked columns in .NET (#190).** `JazminColumn.Mask` (`new JazminMask(lock) { Show = JazminMaskShow.KeepFormat(4),
-  Rows = filter }`), `reader.Masked`, `Unlock` opening masked columns in every table reader of the file, and
-  `JazminPackage.Masks` (`JazminMaskView`). Update, Compact and Append keep the masks; each library reads and changes the
-  other's masked files. Appends now keep locks that only masked columns use (no stored files). A row's value is masked or
-  unmasked by `rows` each time it is written, in both libraries, so a row an update changes to no longer match is unmasked.
-- **Masked columns: shown masked until a password or 2FA (#190, JavaScript; spec 7.6.8).** In a shared file a column's
-  `mask: { lock, show, rows }` keeps its values from keys granted it until `reader.unlock(lock, ...)` (the locks of
-  stored files): `reader.masked` lists them with what they show (`<column>_shown`, made by a rule: the last characters,
-  the first and last, the format kept, or a column the owner fills) and, for masking only some rows,
-  `<column>_unmasked`. Rewrites and appends keep them. `package.masks` says how viewers show revealed values (one at a
-  time or the column, for how long, and masked again when the window is hidden or idle). Releases 1.0 to 1.6 read such
-  files without the masked columns; if they rewrite one, keys lose those columns, never getting them unmasked.
-- **Other text orders: ignoring case and accents, numbers by value (#189 E3, both libraries; spec 6.7).** A key of a
-  table's order can be `{ column, nocase, natural }` (`sortedBy` in JS; .NET `Sort` with `JazminSortKey`): `apple`,
-  `Banana`, `Émile` with `nocase`, `A2` before `A10` with `natural`. Writers check rows against it; appends, updates
-  (rows merged at their place, sort values set), compaction and re-sorts keep it. `reader.sort` / `Sort` gives it;
-  `sortedBy` keeps the order's leading plain keys, so releases 1.0 to 1.6 read such files correctly (and drop the rest
-  of the order if they append). Filters compare as before. Shared test vectors: `spec/fixtures/sort-orders.json`.
-- **Reading last first: `reverse: true` (#189 E1, both libraries and the browser reader).** `find`, `rows`, `findAsync`,
+## 1.7.0 - 2026-10-16 (file format 1.0)
+Long reads and rewrites say how far they have got and can be stopped, and a read's cost can be estimated before it
+runs. Files can be read last row first and kept in orders that ignore case or compare numbers by value; very large
+rewrites stay within a memory budget; and a page loads only the parts of the browser script it uses. In shared files,
+stored files can be locked behind a password, a key service's 2FA, or both, and columns can be masked until a lock
+opens, with the web viewer revealing one value at a time. A document can have several pages, shown as tabs, and can
+say that it, or one of its pages, needs the internet.
+
+- **Compatibility:** the same file format; every addition is optional, and 1.7 reads every earlier file. The
+  published npm and NuGet 1.6.2 read a 1.7 file of each new kind as their users expect (other text orders, the new
+  package settings, stored-file options, locked files, document pages, and masked columns for an access key and for
+  the owner): a locked file is refused, and masked values are never shown. Releases 1.0 to 1.6 don't check writer
+  features, so **don't append to a file with locked files with 1.0 to 1.6**: the locked files' keys would be lost
+  (their update and compact fail safely). If they rewrite a file with masked columns, keys lose those columns (never
+  getting them unmasked), and they leave out the newer settings they don't know (`keyService`, `online`, `pages`,
+  `files`, `list`, actions by file group, the rest of a `sort` order); viewers of 1.0 to 1.6 show a document's entry
+  page alone and list every file. Change such files with 1.7.
+- **Speed and memory:** against the published 1.6.2 on 500,000 rows (each workload in its own process, the two
+  versions taking turns; medians of 5 rounds, and 9 for any more than 10% apart): reading takes the same time and
+  memory within noise in both libraries (open and count, a text search, a scan, every row, column arrays), and so do
+  writing and, in JavaScript, updating (6% longer at most). In .NET the first update in a process takes about 200 ms
+  longer (1,330 against 1,120 ms: more code to compile the first time it runs); later updates in the same process
+  take the same time as 1.6.2 (548 to 592 against 567 to 600 ms).
+
+### Added
+- **Progress and Stop for long reads (JavaScript, #184).** `onProgress` (called after each chunk with `{ done, total,
+  matches }`) and `signal` (an `AbortSignal`, checked before each chunk) on `count`, `find`, `findAsync`,
+  `findBatchesAsync`, `columnArrays`, `explain({ analyze: true })` and the exports, as the browser reader has them.
+  New `countAsync`, which gives the event loop a turn between chunks so a signal can stop it. Without the options,
+  reads take the same time as 1.6.2. A stopped read throws an `AbortError`.
+- **Progress and Stop for long reads (.NET, #184).** `JazminQueryOptions.Progress` (an `IProgress<JazminReadProgress>`:
+  `Done`, `Total`, `Matches` after each chunk) and `JazminQueryOptions.CancellationToken` (checked before each chunk, so
+  synchronous reads can be stopped too) for `Find`, `FindAsync` and `Explain(filter, true, options)`; `FindAsync`'s own
+  token now also stops a read inside a batch. New overloads `Count(filter, progress, cancellationToken)` and
+  `CountAsync(filter, progress, cancellationToken)`. Without them, reads take the same time as 1.6.2.
+- **Progress and Stop for rewrites (JavaScript, #184).** `write()`, `update()` and `compact()` take `onProgress` and
+  `signal`: they report `{ stage, done, total }` with the stages `sort` (rows put into a new sort order), `write` (rows
+  written, after each chunk) and `indexes` (indexes built at the end). A stop leaves no file from `write()`, and the
+  file as it was after `update()` or `compact()`, with no temporary file left.
+- **Progress and Stop for rewrites (.NET, #184).** `JazminUpdate.Progress` and `JazminWriteOptions.Progress` (an
+  `IProgress<JazminWriteProgress>`: `Stage` Sort, Write or Indexes, `Done`, `Total`), and a `CancellationToken` on both.
+  New `JazminFile.Compact(path, JazminUpdate, regroup)` takes them for compacting. A stop leaves the file as it was after
+  an update or compact; a writer created on a path deletes its file.
+- **Estimates before a read (#185).** `reader.estimate(filter, { offset })` (.NET `reader.Estimate(filter, offset)`)
+  says what a read would cost without reading a row, from chunk directories, statistics and indexes: the chunks, rows
+  and stored bytes `find()` reads at most, and those `count()` reads (0 when indexes or statistics answer it). Both
+  libraries give the same figures. `explain()` is unchanged.
+- **Reading last first: `reverse: true` (#189, both libraries and the browser reader).** `find`, `rows`, `findAsync`,
   `findBatchesAsync`, exports, and the browser reader's `find` and `query` take `reverse: true` (.NET
   `JazminQueryOptions.Reverse`): the reader starts at the last chunk, so the newest rows of a file sorted by date come
   first as fast as the oldest, with any filter, index or key; `offset` and `limit` count from the end. Query APIs:
   `reverse()` (JS and the browser) and LINQ `Reverse()` (.NET) after the filters are read this way. On 1,000,000 rows,
   one account's newest 20 took 5.2 ms instead of 46.5 ms (count, then the last page). No format change.
+- **Other text orders: ignoring case and accents, numbers by value (#189, both libraries; spec 6.7).** A key of a
+  table's order can be `{ column, nocase, natural }` (`sortedBy` in JS; .NET `Sort` with `JazminSortKey`): `apple`,
+  `Banana`, `Émile` with `nocase`, `A2` before `A10` with `natural`. Writers check rows against it; appends, updates
+  (rows merged at their place, sort values set), compaction and re-sorts keep it. `reader.sort` / `Sort` gives it;
+  `sortedBy` keeps the order's leading plain keys, so releases 1.0 to 1.6 read such files correctly (and drop the rest
+  of the order if they append). Filters compare as before. Shared test vectors: `spec/fixtures/sort-orders.json`.
+- **A smaller browser script: each page loads only what it uses (#187, TASKS P-26).** Besides the full
+  `jazmin-browser.js` (unchanged for pages that load it), a core for reading files and JSON, CSV and XML exports
+  (`jazmin-browser-core.js`, 184 KiB, 49 KiB gzipped: 57% of the full script's 321 KiB) and three add-ons loaded after it:
+  `-shapes.js`, `-writer.js` and `-queries.js`. A call that needs an add-on that isn't loaded says which. They are built
+  from `js/browser/src` by `js/scripts/build-browser.mjs`; npm exports `./browser/core`, `./browser/shapes`,
+  `./browser/writer` and `./browser/queries`. The from-disk sample's pages load only what they use. **The viewer** loads
+  the core and fetches the shapes and writer add-ons when first used; Save as HTML and `portableHtml` put them inline. A
+  file with no saved shapes loads the core alone.
+- **Stored files: `list: false`, and actions by file group (#188, both libraries, spec 6.8).** The action `list: false`
+  keeps a stored file out of viewers' lists of files (one the document page uses, such as a script or a font; the page
+  still loads it); the web viewer's Files tab leaves such files out. In access-controlled files a file can have its own
+  actions for some of its groups (`groupActions` / `JazminFileInput.GroupActions`), for example downloads for one group
+  and not another; a key that sees the file through several groups may do what any of them allows, and the owner sees
+  each group's actions (`groupActions` / `JazminEmbeddedFile.GroupActions`). Update, compact and append keep them.
+  Releases 1.0 to 1.6 read such files (ignoring `list`, taking the first group's actions); if they rewrite one, every
+  group gets the first group's actions.
 - **Locked stored files: a password, an unlock token from your key service, or both (#188, both libraries; spec 6.8.1).**
   In a shared file, `locks: { contracts: { password } | { online: true } | both }` and a file's `lock: 'contracts'`
   keep the file shut for a key that sees it until `reader.unlock('contracts', { password, unlockToken })`; `readFile`
@@ -95,14 +88,7 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   `reader.Unlock(id, password, unlockToken)`, `JazminEmbeddedFile.Lock`, `JazminFileLockedException`,
   `JazminFile.IssueFileUnlockToken`, and `Locks` on `JazminUpdate` / `JazminAppend`; files and tokens are the same in
   both libraries. `new JazminFileInput(path, new FileInfo(...)) { Lock = ..., GroupActions = ... }` gives a file read from
-  disk the settings `FromFile` has no parameters for. Releases 1.0 to 1.6 read such files and refuse only the locked ones; **don't
-  append to them with 1.0 to 1.6**, which would lose the locked files' keys (their update and compact fail safely).
-- **The viewer signs in at a lock's key service (#188, spec 6.8.2).** For a lock whose file or lock names a key service,
-  the viewer's **Unlock…** offers **Sign in at …**: the service opens in a window of its own, the person signs in and
-  passes its 2FA there, and the service posts the token back; the viewer accepts it only from that service's origin and
-  for the file and lock it asked about. The sample key service has the page (`GET /jazmin/unlock`), `POST /unlock-lock`
-  and `POST /admin/locks`, and reads lock tokens from a tokens file (`locks`, from `ListFileUnlockTokens`) or with the
-  owner key. A key service may be `http` on a loopback host (`localhost`, `127.0.0.1`, `[::1]`) for development.
+  disk the settings `FromFile` has no parameters for.
 - **Key services for locks (#188, both libraries and the browser reader; spec 6.8.2).** `package.keyService` (.NET
   `JazminPackage.KeyService`) names the https service that gives out the tokens of a file's online locks, and a lock can
   name its own (`keyService` / `JazminLockOptions.KeyService`), for attachments locked for several providers. Readers give
@@ -113,26 +99,63 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   `JazminFileLockedError`. The viewer's Files tab shows a locked file with a padlock and **Unlock…**, which asks for what
   the lock needs and refuses a wrong password or token; a document's page gets the file once it is unlocked (the viewer
   shows the document again), and a locked file no longer stops the document from showing.
-- **Writer features are checked (spec 12).** Append, update, compact and `rotateKey` refuse a file with a writer feature
-  this library doesn't know, and `reader.writerFeatures` (.NET `WriterFeatures`) lists them; reading is unchanged. The
-  first is `file-locks`.
-- **Stored files: `list: false`, and actions by file group (#188, both libraries, spec 6.8).** The action `list: false`
-  keeps a stored file out of viewers' lists of files (one the document page uses, such as a script or a font; the page
-  still loads it); the web viewer's Files tab leaves such files out. In access-controlled files a file can have its own
-  actions for some of its groups (`groupActions` / `JazminFileInput.GroupActions`), for example downloads for one group
-  and not another; a key that sees the file through several groups may do what any of them allows, and the owner sees
-  each group's actions (`groupActions` / `JazminEmbeddedFile.GroupActions`). Update, compact and append keep them.
-  Releases 1.0 to 1.6 read such files (ignoring `list`, taking the first group's actions); if they rewrite one, every
-  group gets the first group's actions.
-- **A smaller browser script: each page loads only what it uses (#187, TASKS P-26).** Besides the full
-  `jazmin-browser.js` (unchanged for pages that load it), a core for reading files and JSON, CSV and XML exports
-  (`jazmin-browser-core.js`, 168 KB, 45 KB gzipped: 55% of the full script) and three add-ons loaded after it:
-  `-shapes.js`, `-writer.js` and `-queries.js`. A call that needs an add-on that isn't loaded says which. They are built
-  from `js/browser/src` by `js/scripts/build-browser.mjs`; npm exports `./browser/core`, `./browser/shapes`,
-  `./browser/writer` and `./browser/queries`. The from-disk sample's pages load only what they use. **The viewer** loads
-  the core and fetches the shapes and writer add-ons when first used; Save as HTML and `portableHtml` put them inline. A
-  file with no saved shapes loads 164 KB of reader scripts instead of 301 KB, and opens as fast (Chrome: 267 against
-  268 ms).
+- **The viewer signs in at a lock's key service (#188, spec 6.8.2).** For a lock whose file or lock names a key service,
+  the viewer's **Unlock…** offers **Sign in at …**: the service opens in a window of its own, the person signs in and
+  passes its 2FA there, and the service posts the token back; the viewer accepts it only from that service's origin and
+  for the file and lock it asked about. The sample key service has the page (`GET /jazmin/unlock`), `POST /unlock-lock`
+  and `POST /admin/locks`, and reads lock tokens from a tokens file (`locks`, from `ListFileUnlockTokens`) or with the
+  owner key. A key service may be `http` on a loopback host (`localhost`, `127.0.0.1`, `[::1]`) for development.
+- **Masked columns: shown masked until a password or 2FA (#190, both libraries; spec 7.6.8).** In a shared file a
+  column's `mask: { lock, show, rows }` (.NET `JazminColumn.Mask`: `new JazminMask(lock) { Show =
+  JazminMaskShow.KeepFormat(4), Rows = filter }`) keeps its values from keys granted it until `reader.unlock(lock, ...)`
+  (the locks of stored files), which opens them in every table reader of the file. `reader.masked` (.NET
+  `reader.Masked`) lists them with what they show (`<column>_shown`, made by a rule: the last characters, the first and
+  last, the format kept, or a column the owner fills), for masking only some rows `<column>_unmasked`, and `at`, the
+  column's place in `columns`. A masked column's shown and unmasked columns are in a column group of their own, granted
+  only with it, so a key not granted the column sees nothing of it. A row's value is masked or unmasked by `rows` each
+  time it is written. Update, compact and append keep the masks, and each library reads and changes the other's
+  masked files. For the owner, `reader.locks` also lists locks only masked columns use, and `reader.masked` gives each
+  one's `show` and `rows`, so tools can show and change them. `package.masks` (.NET `JazminPackage.Masks`,
+  `JazminMaskView`) says how viewers show revealed values: one at a time or the column, for how long, masked again when
+  the window is hidden or idle, and whether they may be exported (`export: false`).
+- **Masks changed by an update (#190, spec 7.6.8).** `update(file, { masks: { column: { lock, show, rows } | null } })`
+  (.NET `JazminUpdate.Masks`, and per table): mask a column for the keys that saw it, unmask one for the keys that had
+  it masked (its made shown column and unmasked column fold back), or give it a new mask. No key gains access.
+- **Exports give each masked column as one column (#190).** CSV, JSON and XML exports (`toCSV`/`exportFile`, the
+  browser reader's, .NET `reader.ExportView` and `JazminJsonStream`) give a masked column as viewers show it: a row's
+  unmasked value, else its value once unlocked, else what it shows. `revealMasked: false` (or a list of columns) keeps
+  what values show even when unlocked; `masked: 'raw'` exports the columns as stored. `maskedView(reader, select,
+  reveal)` does the same for tools that write rows themselves.
+- **Masked columns in the browser reader and the web viewer (#190).** `reader.masked()` (with `at`), `locks()` and
+  `unlock()` for masked columns, which builds every open table reader again with them. The viewer shows a masked column
+  in its place with what it shows, Unlock… in its header, then Reveal one value at a time (or the column, if the file
+  says so) with a countdown and Hide, masked again after the file's seconds (30 by default), when the window is hidden,
+  or after 60 s without input; printing shows the masked text. Export still writes what values show unless **Include
+  revealed values** is ticked in its menu (unticked by default, and never for a column with `export: false`); a shape
+  that reads an unlocked masked column is refused unless it is ticked. A page around the viewer that passes
+  `reportReveals: true` hears `jazmin:revealed` (column, lock, scope; never the value or row).
+- **Document pages: several pages as tabs, and the document's own files (both libraries, the browser reader and the
+  web viewer; spec 6.8).** `package.pages` (.NET `JazminPackage.Pages`, `JazminPage`) lists a document's pages in
+  order, each with a `title` and optionally its own `online`, `table` (the table its queries read when they name
+  none), `pdf` and `actions` (over its file's); `entry` is one of them (the first when left out). `package.files`
+  (.NET `Files`) names the document's own files, paths or folders ending in `/`. In shared files a file's `page`
+  (.NET `JazminFileInput.Page`) marks a page in its file groups' directories, so only their keys know of it
+  (`files[i].page`, .NET `JazminEmbeddedFile.Page`). Writers check them with the same messages in both libraries;
+  append, update and compact keep them, and follow renamed tables. The web viewer shows a tab per page, each with its
+  own table, buttons and network note: offline, only a page that needs the network waits. Its Files tab leaves out
+  the pages and the document's own files.
+- **Documents that need the internet (#218, spec 6.8).** `package.online: 'required' | 'optional'` (.NET
+  `JazminPackage.Online`, `JazminOnline`), with `allowedOrigins`. The web viewer says the document needs to be online;
+  with `'required'`, offline, it shows a message instead of the document, and the document once back online.
+- **A masked-columns demo in the gallery (#236).** The from-disk sample's `masked.html`: 40 staff with a bank account,
+  an ID number, an email and directors' salaries masked; unlock with the demo password, reveal values one at a time,
+  and export CSV and JSON masked and revealed side by side. Every demo page and sample now says what it shows and
+  which feature it demonstrates; the quickstarts export a masked column both ways.
+- **An online dashboard in the demo gallery (#218).** The from-disk sample's Documents page has a third document,
+  `dashboard.jzm`: the Inter font from Google Fonts, Chart.js (an exact version, with its `integrity` hash) and icons
+  from jsDelivr, with `online: 'required'`; without the charts it shows the figures as a table.
+
+### Changed
 - **Large rewrites in bounded memory (#186, both libraries).** Sorted indexes past 1,000,000 entries
   (`priority: 'memory'`) or 2,000,000 (`'balanced'`) write their sorted entries to temporary files, encrypted with a key
   made for them and never kept, and merge them into the index when the file is written; `'speed'` holds them all, as
@@ -140,30 +163,17 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   runs at once, making runs longer when there are more rows. On 25,000,000 rows (JavaScript), a new index on a text
   column peaked at 729 MB instead of 4,762 MB (`'memory'`), and a new sort order at 714 MB instead of 4,627 MB; in .NET
   at 515 MB instead of 4,730 MB, and 501 MB instead of 3,864 MB.
-- **Estimates before a read (#185).** `reader.estimate(filter, { offset })` (.NET `reader.Estimate(filter, offset)`)
-  says what a read would cost without reading a row, from chunk directories, statistics and indexes: the chunks, rows
-  and stored bytes `find()` reads at most, and those `count()` reads (0 when indexes or statistics answer it). Both
-  libraries give the same figures. `explain()` is unchanged.
-- **Progress and Stop for rewrites (.NET, #184).** `JazminUpdate.Progress` and `JazminWriteOptions.Progress` (an
-  `IProgress<JazminWriteProgress>`: `Stage` Sort, Write or Indexes, `Done`, `Total`), and a `CancellationToken` on both.
-  New `JazminFile.Compact(path, JazminUpdate, regroup)` takes them for compacting. A stop leaves the file as it was after
-  an update or compact; a writer created on a path deletes its file. Without them, writes and rewrites take the same
-  time as 1.6.2.
-- **Progress and Stop for rewrites (JavaScript, #184).** `write()`, `update()` and `compact()` take `onProgress` and
-  `signal`: they report `{ stage, done, total }` with the stages `sort` (rows put into a new sort order), `write` (rows
-  written, after each chunk) and `indexes` (indexes built at the end). A stop leaves no file from `write()`, and the
-  file as it was after `update()` or `compact()`, with no temporary file left. Without the options, they take the same
-  time as 1.6.2.
-- **Progress and Stop for long reads (.NET, #184).** `JazminQueryOptions.Progress` (an `IProgress<JazminReadProgress>`:
-  `Done`, `Total`, `Matches` after each chunk) and `JazminQueryOptions.CancellationToken` (checked before each chunk, so
-  synchronous reads can be stopped too) for `Find`, `FindAsync` and `Explain(filter, true, options)`; `FindAsync`'s own
-  token now also stops a read inside a batch. New overloads `Count(filter, progress, cancellationToken)` and
-  `CountAsync(filter, progress, cancellationToken)`. Without them, reads take the same time as 1.6.2.
-- **Progress and Stop for long reads (JavaScript, #184).** `onProgress` (called after each chunk with `{ done, total,
-  matches }`) and `signal` (an `AbortSignal`, checked before each chunk) on `count`, `find`, `findAsync`,
-  `findBatchesAsync`, `columnArrays`, `explain({ analyze: true })` and the exports, as the browser reader has them.
-  New `countAsync`, which gives the event loop a turn between chunks so a signal can stop it. Without the options,
-  reads take the same time as 1.6.2. A stopped read throws an `AbortError`.
+- **Writer features are checked (spec 12).** Append, update, compact and `rotateKey` refuse a file with a writer feature
+  this library doesn't know, and `reader.writerFeatures` (.NET `WriterFeatures`) lists them; reading is unchanged. The
+  first are `file-locks` and `masked-columns`.
+
+### Fixed
+- **Package settings in a file with no stored files are kept (both libraries).** Writers wrote the package settings
+  only with stored files or saved shapes, so settings that make sense alone (`allowedOrigins` with `online`, or the
+  1.7 `masks`) were dropped without a word. They are now written, appended and updated.
+- **.NET, found by the long fuzz run:** a file whose package settings were damaged so that a setting had the wrong type
+  (`allowedOrigins` holding `false`) made `reader.Package` throw an `InvalidOperationException` instead of reading.
+  Settings of the wrong type are now left out, as with the other settings; the input is a damaged fixture.
 
 ## 1.6.2 - 2026-10-15 (file format 1.0)
 A fix for sorted indexes on columns with millions of distinct values (JavaScript).
