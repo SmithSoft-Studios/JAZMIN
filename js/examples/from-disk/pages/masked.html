@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Masked columns</title>
+<link rel="icon" href="favicon.png" type="image/png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="page wide">
+  <p class="crumbs"><a href="index.html">← All demos</a></p>
+  <div class="head">
+    <div>
+      <h1>Masked columns: a password as well as the key</h1>
+      <p><code>payroll-masked.jzm</code> is Harbour &amp; Co.'s payroll for October, shared with a payroll clerk's
+        access key. The key sees every row, but each person's email, bank account and ID number, and the
+        <strong>directors'</strong> salaries, show masked until the clerk also gives the lock's password.</p>
+    </div>
+    <span id="status" class="badge" role="status" hidden></span>
+  </div>
+
+  <aside class="about" aria-label="What this shows">
+    <strong>What this shows</strong>
+    <p>A table as one key sees it, masked; the same table once the lock is open, each value revealed for a few seconds;
+      and the file's CSV and JSON exported masked and with revealed values, side by side, with timings.</p>
+    <p class="feature">Feature: masked columns (1.7) and their exports · <span class="ref">USER-GUIDE §15.7</span></p>
+  </aside>
+
+  <section id="start" class="panel unlock">
+    <h2>Open it with the clerk's key</h2>
+    <p>The key and the lock's password are in <code>data/masked-keys.js</code> for this demo only. A real key and
+      password never belong in a page.</p>
+    <button id="open" type="button" class="primary">Open with the clerk's key</button>
+    <p id="error" class="error" role="alert"></p>
+  </section>
+
+  <div id="opened" hidden>
+    <div class="stats">
+      <div class="panel stat"><span>Staff the key sees</span><strong id="rows"></strong></div>
+      <div class="panel stat"><span>Opened in</span><strong id="opened-in"></strong></div>
+      <div class="panel stat"><span>Masked columns</span><strong id="mask-count"></strong></div>
+      <div class="panel stat"><span>Lock <code id="lock-id"></code></span><strong id="lock-state"></strong></div>
+    </div>
+
+    <section class="panel">
+      <div class="toolbar">
+        <h2 class="grow" id="table-title">What the key sees</h2>
+        <form id="unlock" class="unlock-form">
+          <input id="password" type="password" autocomplete="off" aria-label="The lock's password">
+          <button class="primary" type="submit">Unlock</button>
+        </form>
+        <button id="relock" type="button" class="soft" hidden>Lock again</button>
+      </div>
+      <p class="hint muted" id="unlock-hint"></p>
+      <p id="unlock-error" class="error" role="alert"></p>
+      <p class="hint muted narrow-only">Swipe the table sideways for the masked columns.</p>
+      <div class="table-scroll"><table id="payroll"></table></div>
+      <ul class="mask-rules" id="rules"></ul>
+    </section>
+
+    <section class="panel">
+      <div class="toolbar">
+        <h2 class="grow">Export: masked, or with revealed values</h2>
+        <div class="tabs" role="tablist" id="formats">
+          <button type="button" role="tab" data-format="csv" aria-selected="true">CSV</button>
+          <button type="button" role="tab" data-format="json" aria-selected="false">JSON</button>
+        </div>
+      </div>
+      <p>An export gives each masked column as <strong>one column</strong>, as a viewer shows it: a row that isn't
+        masked has its value, the others what they show, unless the export asks for revealed values and the lock is
+        open.</p>
+      <div class="split exports">
+        <div>
+          <h3>Masked</h3>
+          <pre class="code"><code id="masked-code"></code></pre>
+          <p class="hint export-note" id="masked-note"></p>
+          <pre class="output" id="masked-output"></pre>
+          <button type="button" class="soft" id="masked-save">Save</button>
+        </div>
+        <div>
+          <h3>With revealed values</h3>
+          <pre class="code"><code id="revealed-code"></code></pre>
+          <p class="hint export-note" id="revealed-note"></p>
+          <pre class="output" id="revealed-output"></pre>
+          <p class="hint muted" id="revealed-why" hidden>The lock is closed, so this export can't reveal anything: it is the
+            same as the masked one. Unlock above, and it changes.</p>
+          <button type="button" class="soft" id="revealed-save">Save</button>
+        </div>
+      </div>
+      <p class="hint" id="export-false"></p>
+    </section>
+
+    <section class="panel">
+      <h2>In the viewer</h2>
+      <p>The viewer asks for the key: copy it first, then paste it there. A masked column's header has
+        <strong>Unlock…</strong>, which asks for the password (<code id="viewer-password"></code>); then each value has
+        <strong>Reveal</strong>. Its <strong>Export ▾</strong> menu exports masked unless you tick <strong>Include
+        revealed values</strong>, which lists the columns the file allows, never <code>id_number</code>.</p>
+      <div class="field key-field">
+        <input id="key" type="text" readonly aria-label="The clerk's access key (demo only)">
+        <button type="button" class="soft" id="copy">Copy the key</button>
+      </div>
+      <p class="hint muted" id="copied" role="status"></p>
+      <button type="button" class="primary" id="in-viewer">Open in the viewer</button>
+    </section>
+
+    <section class="panel how">
+      <h2>How the file was written, and exported</h2>
+      <div class="split">
+        <div>
+          <h3>Writing (Node, the owner key)</h3>
+          <pre class="code"><code>write('payroll-masked.jzm', payroll, { key: owner,
+  columns: [
+    { name: 'staff', type: 'string' }, { name: 'name', type: 'string' }, …,
+    { name: 'email', type: 'string', mask: { lock: 'payroll', show: { keepFormat: true } } },
+    { name: 'account', type: 'string', mask: { lock: 'payroll', show: { keepFormat: true, last: 4 } } },
+    { name: 'id_number', type: 'string', mask: { lock: 'payroll', show: { first: 2, last: 2 } } },
+    { name: 'salary', type: 'decimal', mask: { lock: 'payroll', rows: { grade: 'Director' } } },
+  ],
+  access: { grants: [{ key: clerk, rows: '*', columns: '*' }] },
+  locks: { payroll: { password } },
+  package: { masks: {                     // how viewers show revealed values
+    salary: { reveal: 'value', seconds: 15 },
+    id_number: { seconds: 10, export: false },   // never exported revealed by viewers
+  } },
+});</code></pre>
+        </div>
+        <div>
+          <h3>Reading (this page, the clerk's key)</h3>
+          <pre class="code"><code>const reader = await JazminBrowser.open(bytes, { key });
+await reader.masked();   // [{ column: 'email', lock: { id: 'payroll',
+                         //   unlocked: false }, shown: 'email_shown', at: 4 }, …]
+await reader.unlock('payroll', { password });
+
+// Exports: one column each, as viewers show them
+await JazminBrowser.toCSV(reader, { revealMasked: false });
+await JazminBrowser.toCSV(reader, { revealMasked: ['email', 'account', 'salary'] });
+await JazminBrowser.toJSON(reader, { revealMasked: true });  // every unlocked column
+await JazminBrowser.toCSV(reader, { masked: 'raw' });        // the columns as stored</code></pre>
+          <p class="hint">In Node it is the same: <code>exportString(reader, 'csv', { revealMasked: false })</code>. In
+            .NET, <code>reader.ExportView(filter, options, revealMasked)</code> gives the columns and rows for
+            <code>CsvFormat.Write</code> and <code>JsonFormat.Write</code>.</p>
+        </div>
+      </div>
+    </section>
+  </div>
+</main>
+
+<!-- Only what this page uses: the core (or the full jazmin-browser.js). -->
+<script src="browser/jazmin-browser-core.js"></script>
+<script src="data.js"></script>
+<script src="data/masked-keys.js"></script>
+<script src="demo.js"></script>
+<script>
+  const { $, rand } = demo;
+  // What the page knows about the file (a key can't learn the owner's rules): how each masked column shows its values.
+  const RULES = {
+    email: 'keeps its format: the first letter and the domain',
+    account: 'keeps its format, and the last 4 digits',
+    id_number: 'the first 2 and the last 2 digits',
+    salary: "masked only in the directors' rows (rows: { grade: 'Director' }); the others are plain",
+  };
+  const HEADINGS = { staff: 'Staff', name: 'Name', branch: 'Branch', grade: 'Grade', email: 'Email', account: 'Bank account', id_number: 'ID number', salary: 'Salary' };
+  const DEFAULTS = { reveal: 'value', seconds: 30, whenHidden: true, idleSeconds: 60, export: true }; // as viewers have them
+  const ms = (t) => {
+    const d = performance.now() - t;
+    return d < 10 ? `${d.toFixed(1)} ms` : d < 1000 ? `${Math.round(d)} ms` : `${(d / 1000).toFixed(2)} s`;
+  };
+  const size = (text) => {
+    const bytes = new Blob([text]).size;
+    return bytes < 1024 ? `${bytes} bytes` : `${(bytes / 1024).toFixed(1)} KB`;
+  };
+
+  let bytes;
+  let reader;
+  let masks = [];
+  let rows = [];
+  let format = 'csv';
+  let revealed = null; // { staff, column, until }: one value at a time, as the file's package.masks says
+  let lastInput = Date.now();
+  const exported = {};
+
+  $('password').value = maskedDemo.password;
+  $('unlock-hint').textContent = `The lock's password, for this demo only: “${maskedDemo.password}”. Until it is given, the key can't decrypt the masked values: they aren't hidden by the page, they aren't there.`;
+  $('viewer-password').textContent = maskedDemo.password;
+  $('key').value = maskedDemo.key;
+
+  $('open').addEventListener('click', async () => {
+    $('open').disabled = true;
+    $('open').textContent = 'Opening…';
+    try {
+      bytes = await JazminBrowser.scriptBytes(data.masked);
+      await openReader();
+      $('start').hidden = true;
+      $('opened').hidden = false;
+      $('status').hidden = false;
+      $('status').textContent = `${(bytes.length / 1024).toFixed(1)} KB · ${maskedDemo.label}`;
+    } catch (e) {
+      $('error').textContent = e.message || String(e);
+      $('open').disabled = false;
+      $('open').textContent = "Open with the clerk's key";
+    }
+  });
+
+  /** Opens the file with the key (locked again), and shows what it sees. */
+  async function openReader() {
+    const started = performance.now();
+    reader = await JazminBrowser.open(bytes, { key: maskedDemo.key });
+    $('opened-in').textContent = ms(started);
+    revealed = null;
+    await refresh();
+    $('lock-state').textContent = 'Locked';
+    $('lock-state').className = '';
+  }
+
+  /** The rows and masks as the key sees them now, the table and both exports. */
+  async function refresh() {
+    masks = await reader.masked();
+    rows = (await reader.query({}, { limit: 1000, total: false })).rows;
+    const unlocked = masks.every((m) => m.lock.unlocked);
+    $('rows').textContent = `${reader.rowCount} of ${reader.rowCount + reader.hiddenRowCount}`;
+    $('mask-count').textContent = `${masks.length}, one lock`;
+    $('lock-id').textContent = masks[0]?.lock.id ?? '';
+    $('unlock').hidden = unlocked;
+    $('relock').hidden = !unlocked;
+    $('unlock-hint').hidden = unlocked;
+    $('table-title').textContent = unlocked ? 'Unlocked: click a value to reveal it' : 'What the key sees: masked';
+    $('rules').replaceChildren(...masks.map((m) => {
+      const li = document.createElement('li');
+      const s = settings(m);
+      li.innerHTML = '<code></code> <span></span>';
+      li.querySelector('code').textContent = m.column;
+      li.querySelector('span').textContent = `${RULES[m.column] ?? ''}. Revealed for ${s.seconds} s${s.export ? '' : '; never exported revealed by viewers (export: false)'}.`;
+      return li;
+    }));
+    drawTable();
+    await exportBoth();
+  }
+
+  /** How viewers show this column's revealed values: the file's package.masks, over the defaults. */
+  const settings = (m) => ({ ...DEFAULTS, ...(reader.package?.masks?.[m.column] ?? {}) });
+
+  /** The table: each masked column in its place, as one column; a masked value has Reveal once its lock is open. */
+  function drawTable() {
+    const masked = new Map(masks.map((m) => [m.column, m]));
+    const apart = new Set(masks.flatMap((m) => [m.column, m.shown, m.unmasked]).filter(Boolean));
+    const names = [];
+    reader.columns.forEach((c, i) => {
+      for (const m of masks) if (m.at === i) names.push(m.column);
+      if (!apart.has(c.name)) names.push(c.name);
+    });
+    for (const m of masks) if (m.at >= reader.columns.length) names.push(m.column);
+    const table = $('payroll');
+    table.replaceChildren();
+    const head = table.createTHead().insertRow();
+    for (const name of names) {
+      const th = document.createElement('th');
+      th.dataset.column = name;
+      th.textContent = HEADINGS[name] ?? name;
+      if (name === 'salary') th.className = 'number';
+      if (masked.has(name)) th.append(Object.assign(document.createElement('span'), { className: 'mask-tag', textContent: masked.get(name).lock.unlocked ? 'unlocked' : 'masked' }));
+      head.append(th);
+    }
+    const body = table.createTBody();
+    for (const row of rows) {
+      const tr = body.insertRow();
+      for (const name of names) {
+        const td = tr.insertCell();
+        td.dataset.column = name;
+        if (name === 'salary') td.className = 'number';
+        const m = masked.get(name);
+        if (!m) {
+          td.textContent = row[name] ?? '—';
+          continue;
+        }
+        const plain = m.unmasked ? row[m.unmasked] ?? null : null;
+        if (plain !== null) {
+          td.textContent = name === 'salary' ? rand(Number(plain)) : plain;
+          continue;
+        }
+        const shows = m.shown ? row[m.shown] ?? '••••' : '••••';
+        const open = revealed && revealed.staff === row.staff && revealed.column === name;
+        const shown = open ? (name === 'salary' ? rand(Number(row[name])) : row[name]) : shows;
+        if (!m.lock.unlocked) {
+          td.append(Object.assign(document.createElement('span'), { className: 'masked-value', textContent: shown }));
+          continue;
+        }
+        // Unlocked: the value itself is the button that reveals it (and hides it again), with its countdown.
+        const button = Object.assign(document.createElement('button'), { type: 'button', className: open ? 'reveal open' : 'reveal' });
+        button.append(Object.assign(document.createElement('span'), { className: open ? 'revealed' : 'masked-value', textContent: shown }));
+        if (open) button.append(Object.assign(document.createElement('span'), { className: 'countdown', textContent: `${Math.max(0, Math.ceil((revealed.until - Date.now()) / 1000))} s` }));
+        button.title = open ? 'Hide' : 'Reveal';
+        button.setAttribute('aria-label', `${open ? 'Hide' : 'Reveal'} ${HEADINGS[name]} of ${row.name}`);
+        button.addEventListener('click', () => {
+          revealed = open ? null : { staff: row.staff, column: name, until: Date.now() + settings(m).seconds * 1000 };
+          drawTable();
+        });
+        td.append(button);
+      }
+    }
+  }
+
+  // A revealed value counts down, and is masked again when its time is up, when the page is hidden or loses focus, or
+  // after a minute without input (package.masks: seconds, whenHidden, idleSeconds).
+  setInterval(() => {
+    if (!revealed) return;
+    const m = masks.find((x) => x.column === revealed.column);
+    const s = settings(m);
+    if (Date.now() >= revealed.until || (s.idleSeconds && Date.now() - lastInput > s.idleSeconds * 1000)) {
+      revealed = null;
+      drawTable();
+      return;
+    }
+    const countdown = document.querySelector('#payroll .countdown');
+    if (countdown) countdown.textContent = `${Math.ceil((revealed.until - Date.now()) / 1000)} s`;
+  }, 250);
+  const hide = () => {
+    if (!revealed || !settings(masks.find((x) => x.column === revealed.column)).whenHidden) return;
+    revealed = null;
+    drawTable();
+  };
+  document.addEventListener('visibilitychange', () => document.hidden && hide());
+  window.addEventListener('blur', hide);
+  for (const type of ['pointerdown', 'keydown', 'wheel', 'touchstart']) document.addEventListener(type, () => (lastInput = Date.now()), { passive: true });
+
+  $('unlock').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const button = $('unlock').querySelector('button');
+    button.disabled = true;
+    button.textContent = 'Unlocking…';
+    $('unlock-error').textContent = '';
+    try {
+      const started = performance.now();
+      await reader.unlock(maskedDemo.lock, { password: $('password').value });
+      $('lock-state').textContent = `Unlocked in ${ms(started)}`;
+      $('lock-state').className = 'in';
+      await refresh();
+    } catch (e) {
+      $('unlock-error').textContent = e instanceof JazminBrowser.JazminKeyError ? 'Wrong password: try again' : (e.message || String(e));
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Unlock';
+    }
+  });
+  $('relock').addEventListener('click', () => openReader());
+
+  /** Both exports in the chosen format: masked, and with the revealed values the file lets viewers export. */
+  async function exportBoth() {
+    const exportable = masks.filter((m) => settings(m).export).map((m) => m.column);
+    const kept = masks.filter((m) => !settings(m).export).map((m) => m.column);
+    const call = format === 'csv' ? 'toCSV' : 'toJSON';
+    const pretty = format === 'json' ? ', pretty: true' : '';
+    $('masked-code').textContent = `await JazminBrowser.${call}(reader, {\n  revealMasked: false${pretty} })`;
+    $('revealed-code').textContent = `await JazminBrowser.${call}(reader, {\n  revealMasked: ${JSON.stringify(exportable).replaceAll(',', ', ').replaceAll('"', "'")}${pretty} })`;
+    const unlocked = masks.some((m) => m.lock.unlocked);
+    for (const [side, revealMasked] of [['masked', false], ['revealed', exportable]]) {
+      const started = performance.now();
+      const text = await JazminBrowser[call](reader, { revealMasked, ...(format === 'json' ? { pretty: true } : {}) });
+      const took = ms(started);
+      exported[side] = text;
+      const lines = text.split('\n');
+      $(`${side}-output`).textContent = lines.slice(0, 10).join('\n') + (lines.length > 10 ? '\n…' : '');
+      $(`${side}-note`).textContent = `${rows.length} rows · ${size(text)} · ${took}`;
+    }
+    $('revealed-why').hidden = unlocked;
+    $('export-false').textContent = `${kept.join(', ')} stays masked in both: the file's package.masks says export: false, so viewers never export it revealed, even with "Include revealed values" ticked, and this page leaves it out of revealMasked too. Your own code decides: revealMasked: true reveals every unlocked column.`;
+  }
+
+  $('formats').addEventListener('click', async (event) => {
+    const button = event.target.closest('button[data-format]');
+    if (!button) return;
+    format = button.dataset.format;
+    for (const b of $('formats').querySelectorAll('button')) b.setAttribute('aria-selected', String(b === button));
+    await exportBoth();
+  });
+  for (const side of ['masked', 'revealed']) {
+    $(`${side}-save`).addEventListener('click', () => demo.save(new Blob([exported[side]], { type: format === 'csv' ? 'text/csv' : 'application/json' }), `payroll-${side}.${format}`));
+  }
+
+  $('copy').addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(maskedDemo.key);
+      $('copied').textContent = 'Copied: paste it in the viewer.';
+    } catch {
+      $('key').select();
+      $('copied').textContent = 'Selected: press Ctrl+C (⌘C) to copy it.';
+    }
+  });
+  $('in-viewer').addEventListener('click', () => demo.inViewer(bytes, 'payroll-masked.jzm'));
+</script>
+</body>
+</html>

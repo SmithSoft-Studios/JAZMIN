@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="style.css">
 <style>
   .steps { display: grid; gap: 1rem; }
+  .steps > * { min-width: 0; } /* a long command scrolls in its box, not the page */
   .step h2 { display: flex; align-items: center; gap: 0.6rem; }
   .step h2 .n { display: inline-grid; place-items: center; width: 1.8rem; height: 1.8rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 0.95rem; }
   .step.done h2 .n { background: var(--in); color: var(--paper); }
@@ -40,6 +41,13 @@
     </div>
     <span id="status" class="badge" role="status" hidden></span>
   </div>
+
+  <aside class="about" aria-label="What this shows">
+    <strong>What this shows</strong>
+    <p>A file whose online access key opens it only with an unlock token, which the sample key service gives after a
+      code from an authenticator app: set the app up, see the key alone refused, then open the file with a code.</p>
+    <p class="feature">Feature: online keys with 2FA · <span class="ref">USER-GUIDE §18.5</span></p>
+  </aside>
 
   <div class="steps">
     <section class="panel step" id="step-service">

@@ -1,5 +1,8 @@
 # JAZMIN in Blazor: LINQ in the browser (sample)
 
+> **What this shows:** the .NET library in the browser with Blazor WebAssembly: a file of two tables made in the page,
+> then queried with LINQ, each query timed. **Features:** several tables (USER-GUIDE §23) and LINQ the reader runs (§8.3).
+
 The JAZMIN .NET library running in the browser with Blazor WebAssembly. The page makes a file of two tables (250
 clients and their 26,328 card transactions, the bank demo of [js/examples/from-disk](../../../js/examples/from-disk)),
 then queries both tables with LINQ, in lambda and query syntax. No server is involved: the page is static files.

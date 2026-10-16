@@ -9,6 +9,7 @@ var data = {
   dashboard: 'data/dashboard.jzm.js', // documents.html: loads its font, charts and icons from the internet
   shared: 'data/shared.jzm.js', // shared.html, with the keys in data/shared-keys.js
   remco: 'data/remco.jzm.js', // two-factor.html, with the key in data/two-factor-keys.js
+  masked: 'data/payroll-masked.jzm.js', // masked.html, with the key and the lock's password in data/masked-keys.js
 };
 
 // Filters pick-file.html offers for a demo file, by its name: each button sends one to the viewer

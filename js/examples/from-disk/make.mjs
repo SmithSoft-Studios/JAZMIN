@@ -9,9 +9,11 @@
 //   (documents.html shows them in the viewer);
 // - data/shared.jzm: one file with access keys that see different rows, columns, files and shapes (shared.html);
 // - data/remco.jzm: executives' pay, opened with an online access key: the sample key service gives its unlock token
-//   only after a code from an authenticator app (two-factor.html). key-service/tokens.json is what that service reads.
+//   only after a code from an authenticator app (two-factor.html). key-service/tokens.json is what that service reads;
+// - data/payroll-masked.jzm: a payroll whose private columns are masked until a lock's password opens them (masked.html).
 // Every file is locked with the password "demo", except the report (open to anyone) and the shared file (access keys,
-// in data/shared-keys.js for this demo only: real keys never belong in a page).
+// in data/shared-keys.js for this demo only: real keys never belong in a page). The payroll's key and its lock's
+// password are in data/masked-keys.js, for this demo only too.
 // Run: node examples/from-disk/make.mjs [folder] [--rows n]
 //      (default folder: examples/from-disk/site; --rows: transactions in transactions.jzm, 0 for none)
 import fs from 'node:fs';
@@ -19,7 +21,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { JazminKey, inspect, listUnlockTokens, portableScript, write } from '../../src/index.js';
-import { bank, branchSales, branchTargets, executives, staff, statement, tasks, transactions } from './demo-data.mjs';
+import { bank, branchSales, branchTargets, executives, payroll, staff, statement, tasks, transactions } from './demo-data.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const js = path.resolve(here, '../..');
@@ -238,6 +240,38 @@ fs.writeFileSync(path.join(site, 'data/two-factor-keys.js'), [
   '// The access key two-factor.html opens data/remco.jzm with, and who holds it. FOR THIS DEMO ONLY: a real key is like',
   '// a password, and never belongs in a page or a file next to it. Made by make.mjs; each run makes new keys.',
   `var twoFactor = ${JSON.stringify(twoFactor, null, 2)};`,
+  '',
+].join('\n'));
+
+// Masked columns (USER-GUIDE 15.7): a payroll clerk's key sees every row, but each person's email, bank account and ID
+// number, and the directors' salaries, show masked (what the rule lets them show) until the lock's password opens them.
+// package.masks says how viewers show revealed values, and that the ID numbers never leave a viewer revealed.
+const payrollOwner = JazminKey.generate();
+const clerk = payrollOwner.createAccessKey();
+const payrollPassword = 'payroll 2026';
+const maskedFile = path.join(site, 'data/payroll-masked.jzm');
+write(maskedFile, payroll(), {
+  columns: [
+    { name: 'staff', type: 'string', nullable: false }, { name: 'name', type: 'string' }, { name: 'branch', type: 'string' }, { name: 'grade', type: 'string' },
+    { name: 'email', type: 'string', mask: { lock: 'payroll', show: { keepFormat: true } } }, // a••••••••••@harbourco.co.za
+    { name: 'account', type: 'string', mask: { lock: 'payroll', show: { keepFormat: true, last: 4 } } }, // •••• ••• 5526
+    { name: 'id_number', type: 'string', mask: { lock: 'payroll', show: { first: 2, last: 2 } } }, // 80•••••••••89
+    { name: 'salary', type: 'decimal', mask: { lock: 'payroll', rows: { grade: 'Director' } } }, // only the directors' rows
+  ],
+  metadata: { company: 'Harbour & Co. Stores', title: 'Payroll, October 2026 (demo data)', currency: 'ZAR' },
+  key: payrollOwner,
+  access: { grants: [{ key: clerk, label: 'Payroll clerk: Megan Botha', rows: '*', columns: '*' }] },
+  locks: { payroll: { password: payrollPassword } },
+  package: { masks: { salary: { reveal: 'value', seconds: 15 }, id_number: { seconds: 10, export: false } } },
+  // A saved shape that needs no masked column. (The package is kept with the file's stored files and saved shapes: a
+  // file with neither keeps no package settings.)
+  shapes: [{ name: 'Headcount', description: 'Staff per branch and grade', default: true, shape: { $groupBy: ['branch', 'grade'], $sort: ['branch', 'grade'], $rows: { branch: 'branch', grade: 'grade', people: { $count: true } } } }],
+});
+fs.writeFileSync(`${maskedFile}.js`, portableScript(maskedFile));
+fs.writeFileSync(path.join(site, 'data/masked-keys.js'), [
+  "// The access key masked.html opens data/payroll-masked.jzm with, and the password of the file's lock. FOR THIS DEMO",
+  '// ONLY: a real key and password are never in a page or a file next to it. Made by make.mjs; each run makes a new key.',
+  `var maskedDemo = ${JSON.stringify({ label: 'Payroll clerk: Megan Botha', key: clerk.export(), lock: 'payroll', password: payrollPassword }, null, 2)};`,
   '',
 ].join('\n'));
 

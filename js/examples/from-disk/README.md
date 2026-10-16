@@ -1,11 +1,15 @@
 # JAZMIN from disk (sample)
 
+> **What this shows:** a folder of pages that open `.jzm` files in a browser with no server, one feature per demo, each
+> page saying at its top what it shows. **Features:** opening files from disk and the viewer in your own page (USER-GUIDE
+> §24.4), with export shapes, several tables, documents, access keys, 2FA and masked columns.
+
 Pages that open `.jzm` files **straight from disk**: double-click an HTML file, with no web server, no Node and
 nothing uploaded. See USER-GUIDE §24.4 for the details and measurements.
 
 | Page | What it shows |
 |---|---|
-| `index.html` | Where to start: the two ways of opening files, and the four demos |
+| `index.html` | Where to start: the two ways of opening files, and the demos |
 | `small-file.html` | **A statement that opens by itself,** with no choosing: the file is named in `data.js`. Totals, spending by category, and a merchant search that says how long it took |
 | `pick-file.html` | **Any file, any size:** a start page asks for the file (Browse, or drop it); once chosen, it opens in the viewer, which reads only what it needs. For the demo file, buttons above the viewer try filters |
 | `shapes.html` | **Export shapes:** a bar chart drawn from a shape saved in the file, in one call; the file's saved shapes with their JSON, XML, JSON Schema and the shape itself; a lab that checks a shape as you type and shows its output |
@@ -13,6 +17,7 @@ nothing uploaded. See USER-GUIDE §24.4 for the details and measurements.
 | `documents.html` | **Documents:** a report that saves itself as a PDF in one click, and a task list that saves changes, each a page stored in its file, shown by the viewer |
 | `shared.html` | **One file, three people:** the same file opened with three access keys, side by side: each sees its own rows, columns, saved shapes and files |
 | `two-factor.html` | **A file that asks for a code:** an online access key, whose unlock token the sample key service (`dotnet/samples/Jazmin.KeyService`) gives out only after a code from an authenticator app. Set the app up by QR code, see the key alone refused, then open the file with a code. Needs the .NET 10 SDK to run the service |
+| `masked.html` | **Masked columns:** a payroll opened with a clerk's access key: emails, bank accounts, ID numbers and the directors' salaries show masked (each as its rule lets it show) until the lock's password opens them; then each value reveals for a few seconds with a countdown. **Export:** CSV and JSON side by side, masked (`revealMasked: false`) and with revealed values, with timings; `id_number` stays masked in both (`package.masks`: `export: false`). Open it in the viewer with the key |
 | `viewer/index.html` | The viewer on its own: choose or drop a file in it |
 
 ## Run it
@@ -22,7 +27,8 @@ node examples/from-disk/make.mjs                  # in js/: about 7 seconds
 node examples/from-disk/make.mjs D:/somewhere --rows 5000000    # another folder, a bigger demo file
 ```
 
-Then open `examples/from-disk/site/index.html` in Chrome, Edge or Firefox. The password is `demo` (the demo pages fill
+Then open `examples/from-disk/site/index.html` in Chrome, Edge or Firefox. Each page says at its top what it shows and
+which feature, with its USER-GUIDE section. The password is `demo` (the demo pages fill
 it in). The `site` folder needs nothing else: copy it to a USB stick or a shared drive and it still works.
 
 ## The demo data
@@ -39,6 +45,7 @@ salary on the 25th of each month. The same every time.
 | `data/tasks.jzm` (6 KB) and `.js` | Seven tasks, and a page that edits them (`documents/tasks`); the package says which columns may change | Locked with the password |
 | `data/dashboard.jzm` (6 KB) and `.js` | The sales again, and a dashboard (`documents/dashboard`) that loads the Inter font from Google Fonts, and Chart.js (an exact version, with its `integrity` hash) and icons from jsDelivr. The package lists those sites (`allowedOrigins`) and says it needs to be online (`online: 'required'`): the viewer says so, and offline waits for the network. Without the charts the page shows a table | Open to anyone; needs to be online |
 | `data/shared.jzm` (10 KB) and `.js` | 30 staff in three branches: rows by branch, pay in a column group, files and saved shapes for groups, three access keys (`data/shared-keys.js`, for this demo only) | Access keys |
+| `data/payroll-masked.jzm` (9 KB) and `.js` | October's payroll for 40 staff in four branches. `email` (format kept), `account` (format kept, last 4), `id_number` (first 2 and last 2) and `salary` (only the directors' rows, `rows: { grade: 'Director' }`) are masked, under one password lock; `package.masks` says how viewers show revealed values, and `export: false` for `id_number`. One access key and the lock's password in `data/masked-keys.js`, for this demo only | An access key, and a lock's password |
 | `data/remco.jzm` (3 KB) and `.js` | Eight executives' pay, for a remuneration committee. One **online** access key (`data/two-factor-keys.js`, for this demo only), and its unlock token in `key-service/tokens.json` for the sample key service, listed with the owner key (`listUnlockTokens`) so the service never holds it | An online access key |
 
 The indexes and the sort order are what make it fast: a filter on those columns reads only the rows it returns, and
@@ -67,6 +74,7 @@ Measured in Chrome on an ordinary laptop, from disk:
 | Several tables (`tables.html`) | One client's spending and latest transactions through the saved linked shape (limited to them by a filter), then all their transactions from the second table; four queries across both tables, next to their LINQ | Opens in about 130 ms; a client's linked shape 100-150 ms, their transactions 3-10 ms (sorted by client: a binary search); each query 20-75 ms |
 | Documents (`documents.html`) | The report draws itself from `jazmin.rows()`, and each branch's target from its second table, with `jazmin.query({}, { table: 'targets' })`. **Save as PDF** makes an A4 PDF in the report's page and downloads it, with no print dialog: `pdf.js`, stored in the file beside the page, draws the same report in the standard Helvetica fonts (text you can select and search, 3.8 KB), and `jazmin.download()` saves it. Print uses the browser's dialog. The task list saves a change file through the viewer, which shows what will change first | Opens at once; the PDF in 57–70 ms (Chrome, three runs) |
 | A file that asks for a code (`two-factor.html`) | The key alone is refused (`JazminUnlockRequiredError`, with the file's and the key's ids); a wrong code, or a code used already, gets no token; a fresh code does | The key service checks the code and gives the token in about 15 ms; the file then opens in about 14 ms |
+| Masked columns (`masked.html`) | The key alone sees what the rules show (`a•••••••••••@harbourco.co.za`, `•••• ••• 5526`, `80••••89`, `••••`); `reader.unlock('payroll', { password })` adds the values. An export gives each masked column as one column: before the lock opens both exports are the same; after, the revealed one has the values (and is smaller: 4.3 KB against 5.8 KB, since each • is 3 bytes in UTF-8) | Opens in 6-7 ms; the lock opens in 83-90 ms (the password's key derivation); each 40-row export in 3-13 ms (the first JSON one 17-19 ms). Chrome, four runs |
 | One file, three people (`shared.html`) | Three access keys: the Cape Town manager sees Cape Town with pay; the Johannesburg team lead sees Johannesburg without pay (the pay columns can't be decrypted, and their names aren't known); HR sees everything, plus the HR files and the *Pay by branch* shape | Each key opens the file in 4-10 ms |
 
 ## How it works
@@ -145,7 +153,7 @@ Copy the viewer and the browser reader from the npm package (`node_modules/@smit
 - **Memory:** a page holds the whole of a script's file, about 60 to 110 MB for a 21 MB file. A chosen file is read in
   pieces, about 20 to 30 MB for a file of any size.
 - **A `.jzm.js` is code, and the page runs it.** Load only scripts you made, or trust.
-- **The password never goes in the page or in `data.js`.** The person types it. The demo pages fill in `demo`, and
-  `shared.html` reads its keys from `data/shared-keys.js`, for this demo only: a real page holds no password and no
-  key.
+- **The password never goes in the page or in `data.js`.** The person types it. The demo pages fill in `demo`,
+  `shared.html` reads its keys from `data/shared-keys.js`, and `masked.html` its key and lock password from
+  `data/masked-keys.js`, for this demo only: a real page holds no password and no key.
 - **Paths** in `data.js` are relative to the page, or a `file:///` address such as `file:///C:/Reports/statement.jzm.js`.
