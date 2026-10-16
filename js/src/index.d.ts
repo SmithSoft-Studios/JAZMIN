@@ -96,6 +96,11 @@ export interface FileInput {
   groupActions?: Record<string, FileActions>;
   /** Shared files: the id of the lock (one of WriteOptions.locks) that must be opened before the file is (1.7, spec 6.8.1). */
   lock?: string;
+  /**
+   * Shared files: the file is a page of the document that only its groups' keys know of (1.7, spec 6.8), shown as a tab
+   * after package.pages, by order. Pages every key may know of go in package.pages instead.
+   */
+  page?: GroupPage;
 }
 
 /**
@@ -192,6 +197,32 @@ export interface FileInfo {
   groupActions?: Record<string, FileActions>;
   /** The file's lock, when it has one (1.7): readFile() throws JazminFileLockedError until unlock() opens it. */
   lock?: LockInfo;
+  /** A page of the document only some keys know of (1.7, spec 6.8): written in its file group's directory. */
+  page?: GroupPage;
+}
+
+/** A page of the document (1.7, spec 6.8): a tab in viewers. */
+export interface PageSettings {
+  /** The tab's name. */
+  title: string;
+  /** This page needs the network (over the package's online): offline, viewers say so in its tab, and show the others. */
+  online?: 'required' | 'optional';
+  /** The table the page's jazmin.query and jazmin.count read when it names none (else the first table). */
+  table?: string;
+  /** Page settings for this page's PDFs, over the package's. */
+  pdf?: PdfSettings;
+  /** Its buttons, over the page file's own actions; the page's code can turn allowed ones off and on (jazmin.setActions). */
+  actions?: { print?: boolean; pdf?: boolean; image?: boolean };
+}
+
+/** One of package.pages: a stored HTML page and its settings. */
+export interface PackagePage extends PageSettings {
+  path: string;
+}
+
+/** A page in a file group's directory: shown after package.pages, by order (pages without one last), then by path. */
+export interface GroupPage extends PageSettings {
+  order?: number;
 }
 
 /** Settings for viewers that render a file's embedded website. */
@@ -226,6 +257,13 @@ export interface PackageSettings {
    * less). Viewers say it needs to be online. Needs allowedOrigins, the sites it loads from.
    */
   online?: 'required' | 'optional';
+  /** The document's pages, shown as tabs in this order (1.7, spec 6.8). entry is one of them (the first, when left out). */
+  pages?: PackagePage[];
+  /**
+   * The document's own files (1.7, spec 6.8): stored paths, or folders ending in '/'. Viewers keep them, and the pages,
+   * out of lists of the file's files; pages load them as before. Names here are seen by every key of a shared file.
+   */
+  files?: string[];
 }
 
 /** How viewers show a masked column's revealed values (defaults: 'value', 30, true, 60). */

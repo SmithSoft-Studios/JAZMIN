@@ -12,6 +12,7 @@
   const state = {
     blob: null, name: '', options: null, reader: null, readers: new Map(), filter: null, page: 0, total: 0, shown: null, answerTo: null,
     reportReveals: false, // the page that passed the file asked to hear of reveals (jazmin:revealed)
+    pages: { pages: [], explicit: false }, pagePath: null, docReader: null, pagesOf: null, // the document's pages (spec 6.8)
   };
 
   const status = (message) => { $('jz-status').textContent = message || ''; };
@@ -113,6 +114,28 @@
 
   // ---- showing a file ----------------------------------------------------------------------------
 
+  /**
+   * The document's pages this key sees (spec 6.8): package.pages in order, then pages in its file groups' directories
+   * by order (none last), then by path. explicit: whether the file names pages at all (else its entry is the one page).
+   */
+  function documentPages(settings, files) {
+    const seen = new Set(files.map((f) => f.path));
+    const listed = (Array.isArray(settings.pages) ? settings.pages : [])
+      .filter((p) => p && typeof p.path === 'string' && typeof p.title === 'string' && seen.has(p.path));
+    const own = files.filter((f) => f.page && !listed.some((p) => p.path === f.path)).map((f) => ({ path: f.path, ...f.page }))
+      .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    const pages = [...listed, ...own];
+    if (pages.length) return { pages, explicit: true };
+    return { pages: settings.entry ? [{ path: settings.entry, title: settings.title || 'Document' }] : [], explicit: false };
+  }
+
+  /** A file the document uses, which the Files tab leaves out: one of its pages, or in package.files (spec 6.8). */
+  function documentFile(path) {
+    if (state.pages.explicit && state.pages.pages.some((p) => p.path === path)) return true;
+    const own = state.reader.package?.files;
+    return Array.isArray(own) && own.some((f) => typeof f === 'string' && (f.endsWith('/') ? path.startsWith(f) : f === path));
+  }
+
   async function render(reader) {
     show('jz-content');
     $('jz-export').hidden = false;
@@ -120,7 +143,10 @@
     const select = $('jz-table');
     select.replaceChildren(...reader.tables.map((t) => new Option(t || '(table)', t, false, t === reader.table)));
     $('jz-table-label').hidden = reader.tables.length < 2;
-    const hasDocument = Boolean(reader.package?.entry);
+    if (state.pagesOf !== state.reader) state.pagePath = null; // another file: its first page
+    state.pagesOf = state.reader;
+    state.pages = documentPages(reader.package || {}, await reader.files());
+    const hasDocument = state.pages.pages.length > 0;
     $('jz-tab-document').hidden = !hasDocument;
     state.filter = null;
     state.page = 0;
@@ -709,8 +735,9 @@
   }
 
   async function showFiles() {
-    // A file marked list: false is one the document page uses (a script, a font): the page still has it.
-    const list = (await state.reader.files()).filter((f) => f.actions?.list !== false);
+    // A file marked list: false, a page of the document or one of its own files (package.files) is one the document
+    // uses (a script, a font): the page still has it.
+    const list = (await state.reader.files()).filter((f) => f.actions?.list !== false && !documentFile(f.path));
     $('jz-tab-files').hidden = list.length === 0;
     $('jz-files-status').textContent = list.length ? `${list.length} file${list.length === 1 ? '' : 's'} visible with this key` : '';
     $('jz-files').replaceChildren(...list.map((f) => {
@@ -887,17 +914,53 @@
     return reader;
   }
 
-  async function showDocument(reader) {
-    const settings = reader.package;
-    // A document that needs the network says so (spec 6.8); offline, one that can't work without it waits for it.
-    if (!showOnline(settings, reader)) return;
+  /** The page tabs (spec 6.8): one per page, in order, when the document has more than one. */
+  function showPageTabs() {
+    const { pages } = state.pages;
+    $('jz-pages').hidden = pages.length < 2;
+    $('jz-pages').replaceChildren(...(pages.length < 2 ? [] : pages.map((p) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.textContent = p.title;
+      button.dataset.page = p.path;
+      if ((p.online ?? state.docReader.package?.online) === 'required') {
+        button.classList.add('needs-online');
+        button.title = 'Needs to be online';
+      }
+      if (p.path === state.pagePath) button.setAttribute('aria-current', 'page');
+      button.addEventListener('click', () => {
+        if (p.path !== state.pagePath) showDocument(state.docReader, p.path).catch((e) => status(e.message));
+      });
+      return button;
+    })));
+  }
+
+  async function showDocument(reader, path = state.pagePath) {
+    const settings = reader.package || {};
+    const { pages } = state.pages;
+    const page = pages.find((p) => p.path === path) ?? pages.find((p) => p.path === settings.entry) ?? pages[0];
+    state.pagePath = page.path;
+    state.docReader = reader;
+    showPageTabs();
+    // A page that needs the network says so (spec 6.8); offline, one that can't work without it waits for it, and the
+    // other pages still show.
+    if (!showOnline(settings, reader, page)) return;
     // A locked file (spec 6.8.1) reaches the page once it is unlocked (Files tab): the document is then shown again.
     const list = (await reader.files()).filter((f) => !f.lock || f.lock.unlocked);
     const files = [];
-    for (const f of list) files.push({ path: f.path, blob: await reader.fileBlob(f.path), actions: f.actions });
-    const rows = [];
-    if (reader.rowCount <= ROWS_FOR_TEMPLATES) for await (const row of reader.find(null)) rows.push(row);
+    for (const f of list) {
+      // The page's own buttons (its pages entry) over its file's actions; its PDF settings over the package's.
+      const own = f.path === page.path && (page.actions || page.pdf)
+        ? { ...f.actions, ...page.actions, ...(page.pdf && page.actions?.pdf !== false && f.actions?.pdf !== false ? { pdf: page.pdf } : {}) }
+        : f.actions;
+      files.push({ path: f.path, blob: await reader.fileBlob(f.path), actions: own });
+    }
     frameReader = reader;
+    // The page's own table (its table setting) is the one its queries read when they name none.
+    const own = page.table && reader.tables.includes(page.table) ? await documentTable(page.table) : reader;
+    frameReader = own;
+    const rows = [];
+    if (own.rowCount <= ROWS_FOR_TEMPLATES) for await (const row of own.find(null)) rows.push(row);
     const tables = [];
     for (const name of reader.tables.length ? reader.tables : [reader.table]) {
       const t = await documentTable(name);
@@ -905,9 +968,9 @@
     }
     const frame = $('jz-frame');
     const message = {
-      type: 'jazmin:package', entry: settings.entry, files, policy: policy(settings), allowedOrigins: settings.allowedOrigins || [],
-      metadata: reader.metadata, columns: reader.columns, access: reader.access, rowCount: reader.rowCount, table: reader.table, tables,
-      rows: reader.rowCount <= ROWS_FOR_TEMPLATES ? rows : null,
+      type: 'jazmin:package', entry: page.path, files, policy: policy(settings), allowedOrigins: settings.allowedOrigins || [],
+      metadata: reader.metadata, columns: own.columns, access: reader.access, rowCount: own.rowCount, table: own.table, tables,
+      rows: own.rowCount <= ROWS_FOR_TEMPLATES ? rows : null,
       // Pages print with the browser's dialog, which also saves them as PDF. Changes are saved as change files.
       capabilities: ['print', 'pdf', 'edit'], renders: false, edit: settings.edit || null,
     };
@@ -920,15 +983,20 @@
   let pendingPackage = null;
   let waitingForNetwork = null; // a document that needs the network, shown when the device is back online
 
-  /** The document's network note (package.online); false when it needs the network and the device is offline. */
-  function showOnline(settings, reader) {
-    const online = settings.online === 'required' || settings.online === 'optional' ? settings.online : null;
+  /**
+   * The network note of the page shown (its online, else the package's); false when it needs the network and the
+   * device is offline. A document of several pages speaks of the page.
+   */
+  function showOnline(settings, reader, page) {
+    const wanted = page?.online ?? settings.online;
+    const online = wanted === 'required' || wanted === 'optional' ? wanted : null;
+    const what = state.pages.pages.length > 1 ? 'page' : 'document';
     $('jz-online').hidden = !online;
-    $('jz-online').textContent = online === 'required' ? 'This document needs to be online.' : 'Parts of this document need to be online.';
+    $('jz-online').textContent = online === 'required' ? `This ${what} needs to be online.` : `Parts of this ${what} need to be online.`;
     const offline = online === 'required' && navigator.onLine === false;
     $('jz-offline').hidden = !offline;
     $('jz-frame').hidden = offline;
-    $('jz-offline-what').textContent = 'This document needs to be online.';
+    $('jz-offline-what').textContent = `This ${what} needs to be online.`;
     waitingForNetwork = offline ? reader : null;
     return !offline;
   }

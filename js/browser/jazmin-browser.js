@@ -752,6 +752,24 @@
   }
 
   /**
+   * A page in a file group's directory (spec 6.8), as the library's readPage: members of the wrong type left out; none
+   * without a title.
+   */
+  function pageOf(page) {
+    if (page === null || typeof page !== 'object' || Array.isArray(page) || typeof page.title !== 'string') return undefined;
+    const out = { title: page.title };
+    if (page.online === 'required' || page.online === 'optional') out.online = page.online;
+    if (typeof page.table === 'string') out.table = page.table;
+    if (page.pdf !== null && typeof page.pdf === 'object' && !Array.isArray(page.pdf)) out.pdf = page.pdf;
+    if (page.actions !== null && typeof page.actions === 'object' && !Array.isArray(page.actions)) {
+      const actions = Object.fromEntries(['print', 'pdf', 'image'].filter((a) => typeof page.actions[a] === 'boolean').map((a) => [a, page.actions[a]]));
+      if (Object.keys(actions).length) out.actions = actions;
+    }
+    if (Number.isInteger(page.order)) out.order = page.order;
+    return out;
+  }
+
+  /**
    * Actions seen through two file groups, as one (as the library's mergeActions): allowed when either allows (an action
    * left out is allowed); page settings for PDFs are the first's that allows them.
    */
@@ -3221,9 +3239,14 @@
           }
           for (const f of directory.files) {
             const known = entries.get(f.path);
+            const page = access ? pageOf(f.page) : undefined; // a page only this group's keys know of (spec 6.8)
             // Seen through several groups: an action is allowed when any of them allows it.
-            if (known) known.actions = mergeActions(known.actions, fileActions(f.actions));
-            else entries.set(f.path, { path: f.path, type: f.type, content: f.content, actions: fileActions(f.actions) });
+            if (known) {
+              known.actions = mergeActions(known.actions, fileActions(f.actions));
+              if (page && !known.page) known.page = page;
+            } else {
+              entries.set(f.path, { path: f.path, type: f.type, content: f.content, actions: fileActions(f.actions), ...(page ? { page } : {}) });
+            }
           }
           for (const s of directoryShapes(directory)) {
             if (shapes.has(s.name)) continue;
@@ -3454,7 +3477,10 @@
         }
         return JSON.parse(JSON.stringify(shapeList));
       },
-      /** Embedded files this key can see: [{ path, type, size, sha256, actions?, lock? }] (lock: { id, kind, unlocked }). */
+      /**
+       * Embedded files this key can see: [{ path, type, size, sha256, actions?, lock?, page? }] (lock: { id, kind, unlocked };
+       * page: a page of the document only some keys know of, spec 6.8).
+       */
       async files() {
         const index = await files();
         const { entries, contents } = index;
@@ -3462,7 +3488,7 @@
           const c = contents.get(e.content);
           return {
             path: e.path, type: e.type, size: c.size, sha256: c.sha256, ...(e.actions ? { actions: JSON.parse(JSON.stringify(e.actions)) } : {}),
-            ...(c.lock !== undefined ? { lock: lockInfo(index, c.lock) } : {}),
+            ...(c.lock !== undefined ? { lock: lockInfo(index, c.lock) } : {}), ...(e.page ? { page: JSON.parse(JSON.stringify(e.page)) } : {}),
           };
         }).sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
       },

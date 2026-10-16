@@ -57,7 +57,11 @@ export function fileSource(entry) {
   if (entry.lock !== undefined && (typeof entry.lock !== 'string' || entry.lock.length < 1 || entry.lock.length > 64)) {
     throw new JazminValidationError(`File '${filePath}': lock must be a lock id (1 to 64 characters)`);
   }
-  const extra = { ...(actions ? { actions } : {}), ...(groupActions ? { groupActions } : {}), ...(entry.lock !== undefined ? { lock: entry.lock } : {}) };
+  // page: the file is a page of the document that only its file groups' keys know of (spec 6.8; checked by the writer).
+  const page = entry.page === undefined ? undefined : normalizePageSettings(entry.page, `File '${filePath}': page`, undefined, true);
+  const extra = {
+    ...(actions ? { actions } : {}), ...(groupActions ? { groupActions } : {}), ...(entry.lock !== undefined ? { lock: entry.lock } : {}), ...(page ? { page } : {}),
+  };
   if ((entry.content === undefined) === (entry.file === undefined)) {
     throw new JazminValidationError(`File '${filePath}': supply exactly one of content or file`);
   }
@@ -189,6 +193,117 @@ export function normalizePackage(settings, paths) {
     if (!out.allowedOrigins?.length) throw new JazminValidationError('package.online needs allowedOrigins: the https origins the document loads from');
     out.online = settings.online;
   }
+  // The document's pages, shown as tabs, and its own files, kept out of viewers' lists (spec 6.8).
+  if (settings.pages !== undefined) {
+    if (!Array.isArray(settings.pages) || !settings.pages.length) throw new JazminValidationError('package.pages must be a non-empty array of pages: { path, title }');
+    const seen = new Set();
+    out.pages = settings.pages.map((page, i) => {
+      const where = `package.pages[${i}]`;
+      if (page === null || typeof page !== 'object' || Array.isArray(page)) throw new JazminValidationError(`${where} must be a page: { path, title }`);
+      if (page.path === undefined || page.path === null || page.path === '') throw new JazminValidationError(`${where}.path is required`);
+      if (typeof page.path !== 'string' || !paths.has(page.path)) throw new JazminValidationError(`${where}.path '${page.path}' is not one of the stored files`);
+      if (page.order !== undefined) throw new JazminValidationError(`${where}.order is only for a page in a file group's directory`);
+      if (seen.has(page.path)) throw new JazminValidationError(`package.pages: '${page.path}' is listed twice`);
+      seen.add(page.path);
+      const { path: _, ...rest } = page;
+      return { path: page.path, ...normalizePageSettings(rest, where, out.allowedOrigins ?? []) };
+    });
+    if (out.entry === undefined) out.entry = out.pages[0].path;
+    else if (!seen.has(out.entry)) throw new JazminValidationError(`package.entry '${out.entry}' is not one of package.pages`);
+  }
+  if (settings.files !== undefined) {
+    const bad = 'package.files must be an array of stored paths or folders (ending in /)';
+    if (!Array.isArray(settings.files)) throw new JazminValidationError(bad);
+    const seen = new Set();
+    out.files = settings.files.map((f) => {
+      if (typeof f !== 'string' || !f.length) throw new JazminValidationError(bad);
+      if (seen.has(f)) throw new JazminValidationError(`package.files: '${f}' is listed twice`);
+      seen.add(f);
+      if (f.endsWith('/')) {
+        if (![...paths].some((p) => p.startsWith(f))) throw new JazminValidationError(`package.files: no stored file is in the folder '${f}'`);
+      } else if (!paths.has(f)) {
+        throw new JazminValidationError(`package.files: '${f}' is not one of the stored files`);
+      }
+      return f;
+    });
+  }
+  return out;
+}
+
+const PAGE_SETTINGS = ['title', 'online', 'table', 'pdf', 'actions', 'order'];
+const PAGE_ACTIONS = ['print', 'pdf', 'image'];
+
+/**
+ * A page's settings (spec 6.8): { title, online?, table?, pdf?, actions? }, and order for a page in a file group's
+ * directory (withOrder). `where` names it in errors; `origins` are the package's allowedOrigins (online needs them;
+ * undefined: checked later, by the writer).
+ */
+export function normalizePageSettings(page, where, origins, withOrder = false) {
+  const members = PAGE_SETTINGS.filter((n) => withOrder || n !== 'order');
+  if (page === null || typeof page !== 'object' || Array.isArray(page)) throw new JazminValidationError(`${where} must be an object { ${members.join(', ')} }`);
+  if (withOrder && page.path !== undefined) throw new JazminValidationError(`${where}.path is not used: the page is the file itself`);
+  for (const name of Object.keys(page)) {
+    if (!members.includes(name)) throw new JazminValidationError(`${where}: unknown setting '${name}' (${members.join(', ')})`);
+  }
+  if (typeof page.title !== 'string' || !page.title.length) throw new JazminValidationError(`${where}.title is required`);
+  const out = { title: page.title };
+  if (page.online !== undefined) {
+    if (page.online !== 'required' && page.online !== 'optional') throw new JazminValidationError(`${where}.online is 'required' or 'optional'`);
+    if (origins !== undefined && !origins.length) throw new JazminValidationError(`${where}.online needs allowedOrigins`);
+    out.online = page.online;
+  }
+  if (page.table !== undefined) {
+    if (typeof page.table !== 'string' || !page.table.length) throw new JazminValidationError(`${where}.table must be a table name`);
+    out.table = page.table;
+  }
+  if (page.pdf !== undefined) out.pdf = normalizePdf(page.pdf, `${where}.pdf`);
+  if (page.actions !== undefined) {
+    if (page.actions === null || typeof page.actions !== 'object' || Array.isArray(page.actions)) throw new JazminValidationError(`${where}.actions must be an object { print, pdf, image }`);
+    out.actions = {};
+    for (const [name, value] of Object.entries(page.actions)) {
+      if (!PAGE_ACTIONS.includes(name)) throw new JazminValidationError(`${where}.actions: unknown action '${name}' (print, pdf, image)`);
+      if (typeof value !== 'boolean') throw new JazminValidationError(`${where}.actions.${name} must be true or false`);
+      out.actions[name] = value;
+    }
+  }
+  if (withOrder && page.order !== undefined) {
+    if (!Number.isInteger(page.order)) throw new JazminValidationError(`${where}.order must be a whole number`);
+    out.order = page.order;
+  }
+  return out;
+}
+
+/**
+ * The writer's checks of pages against the whole file (spec 6.8): the tables they name, directory pages only in
+ * access-controlled files, needing allowedOrigins for online, and never also in package.pages.
+ */
+export function checkPages(settings, entries, tableNames, { access, partial = false }) {
+  const known = new Set(tableNames);
+  (settings?.pages ?? []).forEach((p, i) => {
+    if (p.table !== undefined && !partial && !known.has(p.table)) throw new JazminValidationError(`package.pages[${i}].table '${p.table}' is not a table of the file`);
+  });
+  const listed = new Set((settings?.pages ?? []).map((p) => p.path));
+  for (const e of entries) {
+    if (!e.page) continue;
+    if (!access) throw new JazminValidationError(`File '${e.path}': page needs an access-controlled file (use package.pages)`);
+    if (listed.has(e.path)) throw new JazminValidationError(`File '${e.path}': its page is also in package.pages`);
+    if (e.page.online !== undefined && !settings?.allowedOrigins?.length) throw new JazminValidationError(`File '${e.path}': page.online needs allowedOrigins`);
+    if (e.page.table !== undefined && !partial && !known.has(e.page.table)) throw new JazminValidationError(`File '${e.path}': page.table '${e.page.table}' is not a table of the file`);
+  }
+}
+
+/** A directory page as a reader takes it (spec 6.8): members of the wrong type left out; none without a title. */
+export function readPage(page) {
+  if (page === null || typeof page !== 'object' || Array.isArray(page) || typeof page.title !== 'string') return undefined;
+  const out = { title: page.title };
+  if (page.online === 'required' || page.online === 'optional') out.online = page.online;
+  if (typeof page.table === 'string') out.table = page.table;
+  if (page.pdf !== null && typeof page.pdf === 'object' && !Array.isArray(page.pdf)) out.pdf = page.pdf;
+  if (page.actions !== null && typeof page.actions === 'object' && !Array.isArray(page.actions)) {
+    const actions = Object.fromEntries(PAGE_ACTIONS.filter((a) => typeof page.actions[a] === 'boolean').map((a) => [a, page.actions[a]]));
+    if (Object.keys(actions).length) out.actions = actions;
+  }
+  if (Number.isInteger(page.order)) out.order = page.order;
   return out;
 }
 

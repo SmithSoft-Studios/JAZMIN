@@ -239,7 +239,7 @@ export function updateUnlocked(path, options = {}) {
       key: newOwner ? newOwner.key : key, password, kdfIterations: reader.kdfIterations, onProgress, signal, [PROGRESS_TOTAL]: totalRows,
       access: access && named ? { grants: access.grants } : access,
       now, // expired grants are dropped, and the new version's fresh secrets lock them out
-      files: [...carriedFiles(reader, addFiles, removeFiles, locks), ...addFiles],
+      files: [...carriedFiles(reader, addFiles, removeFiles, locks).map((f) => (f.page ? { ...f, page: pageAfter(f.page, tablePlan.names) } : f)), ...addFiles],
       // The file's locks, changed by those given (the writer refuses locks in a file that is not shared).
       ...(locks !== undefined ? { locks } : {}),
       ...(owner ? { [KEPT_LOCKS]: [...reader[OWNER_LOCKS].values()] } : {}),
@@ -612,13 +612,24 @@ function shapeAfter(shape, { removed, names, first, changed }) {
   return { ...shape, table: rename(shape.table ?? first), shape: renameLinks(shape.shape, rename) };
 }
 
-/** The package settings after tables are renamed or removed: its edit table follows a rename, and can't be removed. */
+/**
+ * The package settings after tables are renamed or removed: its edit table and its pages' tables follow a rename; the
+ * edit table can't be removed (a page's removed table is refused by the writer).
+ */
 function packageAfter(settings, { removed, names, first, changed }) {
-  if (!changed || !settings?.edit) return settings;
-  const table = settings.edit.table ?? first; // none named: the file's first, which may be another table afterwards
-  if (removed.has(table)) throw new JazminValidationError(`The document's edits change table '${table}', which is being removed: change package.edit first`);
-  return { ...settings, edit: { ...settings.edit, table: names.get(table) ?? table } };
+  if (!changed || !settings) return settings;
+  let out = settings;
+  if (settings.edit) {
+    const table = settings.edit.table ?? first; // none named: the file's first, which may be another table afterwards
+    if (removed.has(table)) throw new JazminValidationError(`The document's edits change table '${table}', which is being removed: change package.edit first`);
+    out = { ...out, edit: { ...settings.edit, table: names.get(table) ?? table } };
+  }
+  if (Array.isArray(settings.pages)) out = { ...out, pages: settings.pages.map((p) => pageAfter(p, names)) };
+  return out;
 }
+
+/** A page's settings after tables are renamed: its table follows. */
+const pageAfter = (page, names) => (page?.table !== undefined && names.has(page.table) ? { ...page, table: names.get(page.table) } : page);
 
 /** The sort order a rewrite gives a table: its own (`given` undefined), none (null or []), or the keys given. */
 function targetSortedBy(given, current) {
@@ -676,7 +687,7 @@ export function carriedFiles(reader, addFiles, removeFiles, locks) {
     return {
       [FILE_SOURCE]: true, path: e.path, type: e.type, groups: e.groups, ...(e.actions ? { actions: e.actions } : {}),
       ...(e.groupActions ? { groupActions: e.groupActions } : {}), ...(c.lock !== undefined && locks?.[c.lock] !== null ? { lock: c.lock } : {}),
-      size: c.size, sha256: c.sha256,
+      ...(e.page ? { page: e.page } : {}), size: c.size, sha256: c.sha256,
       read: (offset, length) => reader.readFileRange(e.path, offset, offset + length),
     };
   });

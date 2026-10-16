@@ -3338,6 +3338,65 @@ reader.Unlock("medical", unlockToken: JazminFile.IssueFileUnlockToken("claim.jzm
   `compact` fail without changing the file. 1.7 refuses to modify any file
   with a writer feature it doesn't know.
 
+### 19.7 Document pages: several pages as tabs, and the document's own files
+
+A file's document can have several pages (1.7, spec 6.8). The package settings list them in order, and the web
+viewer shows each as a tab on its Document tab: a customer list, the transactions, a summary with charts, a statement
+laid out for printing. Each page is an ordinary stored HTML page that reads the data itself (`jazmin.query`,
+`jazmin.count`, section 24.1). The settings also name the document's **own files** (scripts, styles, fonts), which
+viewers keep out of the Files tab:
+
+```js
+write('bank.jzm', { clients, transactions }, {
+  tables: [{ name: 'clients', columns: clientColumns }, { name: 'transactions', columns: transactionColumns }],
+  files: [
+    { path: 'clients.html', file: 'site/clients.html' }, { path: 'transactions.html', file: 'site/transactions.html' },
+    { path: 'summary.html', file: 'site/summary.html' }, { path: 'statement.html', file: 'site/statement.html' },
+    { path: 'app.js', file: 'site/app.js' }, { path: 'fonts/inter.woff2', file: 'site/fonts/inter.woff2' },
+    { path: 'terms.pdf', file: 'site/terms.pdf' },
+  ],
+  package: {
+    pages: [
+      { path: 'clients.html', title: 'Clients', table: 'clients', actions: { print: false } },
+      { path: 'transactions.html', title: 'Transactions', table: 'transactions', actions: { print: false } },
+      { path: 'summary.html', title: 'Summary', online: 'required' },     // Chart.js from jsDelivr
+      { path: 'statement.html', title: 'Statement', pdf: { format: 'A4' } },
+    ],
+    files: ['app.js', 'fonts/'],                       // a folder: every file in it
+    allowedOrigins: ['https://cdn.jsdelivr.net'],
+  },
+});
+```
+
+- **Each page's settings:** `title` (the tab's name); `table`, the table its queries read when they name none;
+  `online`, over the package's (offline, the Summary tab says it needs to be online and the other tabs work);
+  `pdf`, page settings for its PDFs; `actions` (`print`, `pdf`, `image`), over its file's own actions. The page's
+  code can still turn an allowed button off and back on (`jazmin.setActions`), never on when it isn't allowed.
+- **`entry`** is the page that opens first: one of the pages, the first when you leave it out. Viewers of releases
+  1.0 to 1.6 show that page alone, and list every file.
+- **The Files tab** leaves out the pages and the files in `files` (and, as before, files marked `list: false`).
+  They are ordinary stored files: the pages load them, and a key that sees a file can read it.
+  `reader.files` still lists them all.
+- **Checked when written:** every path is a stored file (a folder has at least one), no page twice, tables exist,
+  `online` needs `allowedOrigins`. Append, update and compact keep the pages; renamed tables are followed, and a
+  table a page reads can't be removed.
+
+**Pages only some keys see.** The package settings are in the file's header, which every key reads, so the names in
+`pages` and `files` are seen by every key of a shared file (not the pages' contents). A page only some keys may know
+of is marked on its file instead, in its file groups' directories, which only their keys read:
+
+```js
+files: [
+  { path: 'index.html', content: overview },
+  { path: 'board.html', content: boardPack, groups: ['directors'], page: { title: 'Board pack', order: 1 } },
+],
+package: { pages: [{ path: 'index.html', title: 'Overview' }] },
+```
+
+A key that sees the `directors` group gets a **Board pack** tab after the package's pages (by `order`, then by
+path); other keys see neither the tab nor the file's name. `files[i].page` gives it to readers. A file's page can't
+also be in `pages`, and files that aren't shared use `pages`.
+
 ## 20. Speed and memory: practical recipes
 
 The examples below use a statements file of transactions, sorted by account:
