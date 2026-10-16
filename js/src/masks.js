@@ -18,6 +18,16 @@ export function maskGroupName(column) {
 }
 
 /**
+ * The column group of a masked column's shown and unmasked columns (spec 7.6.8): granted with the masked group, not
+ * locked, so a key without the masked column sees nothing of it. "<group>.open", or a name made from it when that isn't
+ * a valid group name.
+ */
+export function openGroupName(group) {
+  const plain = `${group}.open`;
+  return GROUP_NAME.test(plain) ? plain : `mask.${crypto.createHash('sha256').update(group, 'utf8').digest('hex').slice(0, 16)}.open`;
+}
+
+/**
  * A mask's shown rule, checked: 'none' (no shown column), { last }, { first, last }, { keepFormat, last } or
  * { column } (the owner gives the shown values in that column).
  */
@@ -173,8 +183,13 @@ export function tableMasks(columns, kept = []) {
     }
     const group = m.group ?? maskGroupName(m.column);
     groups[group] = [m.column];
+    // The shown column the writer makes and the unmasked column go with the masked one: a group of their own, granted
+    // with it. A shown column the owner fills (show: { column }) stays where the owner put it.
+    const made = [show.kind === 'column' ? undefined : shown, unmasked].filter(Boolean);
+    const open = made.length ? openGroupName(group) : undefined;
+    if (open) groups[open] = made;
     return {
-      column: m.column, group, lock: m.lock, show, shown, unmasked,
+      column: m.column, group, lock: m.lock, show, shown, unmasked, ...(open ? { open } : {}),
       ...(m.rows !== undefined ? { rows: m.rows } : {}),
     };
   });

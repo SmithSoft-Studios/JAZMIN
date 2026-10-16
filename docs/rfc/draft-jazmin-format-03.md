@@ -1167,13 +1167,22 @@ token, or both: the locks of 6.8.1.
   lock id || "/column-group/" || g`), and the column: its table (the table's
   index in the header), position and name, its type (5.1) as text, and the
   names of its shown and unmasked columns when it has them.
-- **The shown column** (`shown`, optional) is an ordinary column, in a group
-  the key sees, that holds what a masked value shows: text the writer made
-  from the value by a rule, or values the owner gave. It is stored, filtered,
-  sorted and indexed as any column.
+- **The shown column** (`shown`, optional) is an ordinary column that holds
+  what a masked value shows: text the writer made from the value by a rule,
+  or values the owner gave. It is stored, filtered, sorted and indexed as any
+  column.
+- **The open group:** the shown column the writer made and the unmasked
+  column (below) are in a column group of their own, granted plainly (not
+  locked) to exactly the grants that have the masked group, so a key without
+  the masked column sees nothing of it: not what it shows, nor the values of
+  its unmasked rows. Writers MUST NOT put them in a group a key can have
+  without the masked group. The reference writers name it the masked group's
+  name and `.open` (or a name made from it), and add it to a grant that names
+  the masked group. A shown column the owner fills stays in the owner's group.
 - **Masked rows only** (`unmasked`, optional): a masked column MAY be null in
   rows that don't need masking, with their values in an ordinary column of
-  the same type, the *unmasked* column, which is null in the masked rows.
+  the same type, the *unmasked* column (in the open group), which is null in
+  the masked rows.
   Readers give both columns as they are (a filter on one doesn't see the
   other's values); viewers that know masks show a row's value from the
   unmasked column when it is not null, else from the masked column once

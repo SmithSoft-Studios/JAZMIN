@@ -89,6 +89,34 @@ test('a key granted a masked column sees it masked, with its shown and unmasked 
   r.close();
 });
 
+test("a key not granted a masked column sees nothing of it: not its shown column, nor the unmasked rows' values", () => {
+  const { keys, file, owner } = staffFile();
+  const general = ['id', 'dept', 'name'];
+  const sees = (when) => {
+    const r = asKey(file, keys.noMask); // granted the general group only
+    assert.deepEqual([r.columns.map((c) => c.name), r.masked], [general, []], when);
+    r.close();
+    const s = asKey(file, keys.staff); // granted every group: the masked ones and theirs (a mask given again moves its shown column last)
+    assert.deepEqual(s.columns.map((c) => c.name).sort(), [...general, 'account_shown', 'email_shown', 'salary_unmasked'].sort(), when);
+    s.close();
+  };
+  sees('written');
+  compact(file, { key: owner });
+  sees('compacted');
+  append(file, { key: owner, insert: [{ id: 9, dept: 'B', name: 'Eve', account: '1234 5678', salary: '2.00' }] });
+  sees('appended');
+  update(file, { key: owner, masks: { account: { lock: 'pay', show: { last: 2 } } } });
+  sees('masked again');
+  // Unmasked: its shown column goes, and the column goes to the keys that had it, as before.
+  update(file, { key: owner, masks: { salary: null } });
+  const r = asKey(file, keys.noMask);
+  assert.deepEqual(r.columns.map((c) => c.name), general);
+  r.close();
+  const s = asKey(file, keys.staff);
+  assert.deepEqual(s.columns.map((c) => c.name).sort(), [...general, 'salary', 'account_shown', 'email_shown'].sort());
+  s.close();
+});
+
 test('masks are per grant and per partition; a grant without the masked group never sees it', () => {
   const { keys, file } = staffFile();
   const b = asKey(file, keys.deptB);

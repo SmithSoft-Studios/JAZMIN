@@ -23,7 +23,7 @@ import { LINKS_KEY, checkLinkDefinitions, normalizeLinks } from './links.js';
 import { INDEX_BUILDERS, INDEX_PAGE_BYTES, INDEX_SPILL_ENTRIES, encodePostingsSection } from './indexes.js';
 import { JazminKey, KeySchedule, deriveFromPassword, fingerprint, hkdf, parseAnyKey } from './keys.js';
 import { ownerLockList, readOwnerLocks, sealContentKey, sealGroupSecret, writerLocks } from './locks.js';
-import { MASKED_COLUMNS, ownerMasks, rowMasker, tableMasks } from './masks.js';
+import { MASKED_COLUMNS, openGroupName, ownerMasks, rowMasker, tableMasks } from './masks.js';
 import { checkPriority, writeThreads } from './priority.js';
 import { checkShapeList, checkShapes, normalizeShapes } from './saved-shapes.js';
 import { normalizeColumns } from './schema.js';
@@ -410,6 +410,15 @@ export class JazminWriter {
       if (!(owner instanceof JazminKey)) throw new JazminValidationError("An access-controlled file needs the owner's master key (jzk1-...) as `key`");
       this.#ownerKey = owner;
       this.#access = normalizeGrants(access.grants, new Set(this.#allGroupNames), this.#options.now);
+      // A masked column's shown and unmasked columns go with it (spec 7.6.8): a grant of its group gets theirs too.
+      const maskGroups = [...this.#otherMasks.map((m) => m.group), ...this.#tableDefs.flatMap((t) => t.masks.map((m) => m.group))];
+      for (const g of this.#access.grants) {
+        if (!Array.isArray(g.columns)) continue; // every group: theirs too
+        for (const group of maskGroups) {
+          const open = openGroupName(group);
+          if (g.columns.includes(group) && this.#allGroupNames.includes(open) && !g.columns.includes(open)) g.columns = [...g.columns, open];
+        }
+      }
       // Same file, same secrets when appending: new sections must be readable with those already in use.
       this.#secrets = cont ? new FileSecrets(this.#salt, cont.ownerSecrets.header, cont.ownerSecrets.owner) : new FileSecrets(this.#salt);
       this.#secrets.recordPartitions(cont?.directory.partitions ?? []);

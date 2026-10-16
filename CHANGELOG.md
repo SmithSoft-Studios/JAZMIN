@@ -7,6 +7,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 - **Fixed (.NET, found by the long fuzz run):** a file whose package settings were damaged so that a setting had the
   wrong type (`allowedOrigins` holding `false`) made `reader.Package` throw an `InvalidOperationException` instead of
   reading. Settings of the wrong type are now left out, as with the other settings; the input is a damaged fixture.
+- **Fixed (unreleased, security):** a masked column's shown column (`<column>_shown`) and unmasked column
+  (`<column>_unmasked`) were in the general column group, so keys never granted the masked column saw what it shows
+  and the full values of its unmasked rows. They now have a column group of their own (`<group>.open`), granted only
+  with the masked column (spec 7.6.8), in both libraries, through rewrites, appends and mask changes.
 - **Fixed (JS, unreleased):** in a file with masked columns, the owner's `reader.access.grants` listed a grant's columns
   without its masked groups, and a grant of every column as only the general group. It now lists them as .NET does.
 - **The owner sees every lock and how each column is masked (#190).** For the owner, `reader.locks` also lists locks

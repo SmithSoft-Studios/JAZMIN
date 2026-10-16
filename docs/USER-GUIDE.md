@@ -2351,13 +2351,15 @@ column.
   fill (`Visa ending 4821`, `R40k–R50k`). The writer makes the shown values
   in `<column>_shown`, an ordinary column you can filter, sort and index.
 - **Masking only some rows** (`rows`, a filter): the other rows' values go to
-  `<column>_unmasked`, which every key granted the table sees. Viewers show
+  `<column>_unmasked`, which the keys granted the masked column see. Viewers show
   the two as one column. A filter on one doesn't see the other's values. Each
   time a row is written (new, or rewritten by an update) its value goes where
   `rows` says, so a row changed to no longer match is unmasked.
 - **Grants:** a masked column is in a column group of its own, `mask.<column>`.
   A grant of every column (`columns: '*'`) includes it, masked; a grant that
-  lists groups gets it only if it lists that group.
+  lists groups gets it only if it lists that group. Its shown and unmasked
+  columns go with it (a group of their own, `mask.<column>.open`): a key
+  without the masked column sees nothing of it.
 - **The owner** sees every value. `update()`, `compact()` and `append()` keep
   the masks, make the shown values of new rows, and put new rows in the
   masked or the unmasked column by `rows`. Both libraries read and change
@@ -2386,7 +2388,8 @@ column.
   people walking away from an open screen: a value once on screen can be
   copied.
 - **Older libraries** (1.0-1.6) read the file and don't show the masked
-  columns at all (the shown and unmasked columns are ordinary columns). Don't
+  columns at all (the shown and unmasked columns are ordinary columns to them,
+  for the same keys). Don't
   rewrite or append to it with them: they would drop the masks, and keys
   would lose the masked columns (never get them unmasked); the owner keeps the
   values.

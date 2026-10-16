@@ -14,7 +14,7 @@ import { withLock } from './lock.js';
 import { RowSorter, SORT_RUN_ROWS } from './sort-rows.js';
 import { normalizeOrder, orderComparer, orderKeyMaker } from './sort-keys.js';
 import { linksAfter } from './links.js';
-import { maskGroupName } from './masks.js';
+import { maskGroupName, openGroupName } from './masks.js';
 import { JazminWriter, KEPT_LOCKS, KEPT_MASKS, PROGRESS_TOTAL } from './writer.js';
 
 /**
@@ -194,11 +194,21 @@ export function updateUnlocked(path, options = {}) {
     if (newOwner) access = { ...access, grants: newOwner.grants(access.grants) };
     // A column masked moves into a masked group of its own, which every grant that had its group gets (spec 7.6.8).
     const groupMoves = [...plans].flatMap(([r, p]) => p.masks?.moves(r[OWNER_GRANTS].columnGroups) ?? []);
+    // A mask folded back drops the group of its shown and unmasked columns (the writer makes it again for a new mask).
+    const droppedGroups = [...plans].flatMap(([r, p]) => [...(p.masks?.dropGroups ?? [])].map((group) => ({ reader: r, group })));
     const layoutOf = (r) => {
       const layout = tableLayout(r[OWNER_GRANTS]);
       const moves = groupMoves.filter((m) => m.reader === r);
-      return moves.length ? { ...layout, columnGroups: moveColumns(layout.columnGroups, moves) } : layout;
+      const drop = new Set(droppedGroups.filter((d) => d.reader === r).map((d) => d.group));
+      let groups = moves.length ? moveColumns(layout.columnGroups, moves) : layout.columnGroups;
+      if (drop.size) groups = Object.fromEntries(Object.entries(groups).filter(([name]) => !drop.has(name)));
+      return { ...layout, columnGroups: groups };
     };
+    if (access && droppedGroups.length) {
+      const drop = new Set(droppedGroups.map((d) => d.group));
+      access = { ...access, grants: access.grants.map((g) => (Array.isArray(g.columns) ? { ...g, columns: g.columns.filter((c) => !drop.has(c)) } : g)) };
+      if (access.columnGroups) access = { ...access, columnGroups: layoutOf(reader).columnGroups };
+    }
     if (access && groupMoves.length) {
       // A group whose every column is masked anew is gone: grants no longer name it.
       const emptied = new Set(groupMoves.filter((m) => m.from !== '*' && m.reader[OWNER_GRANTS].columnGroups[m.from]
@@ -490,12 +500,14 @@ function planMasks(reader, given, owner, where) {
     const was = file.get(column);
     if (mask === null && !was) throw new JazminValidationError(`${where}: masks: column '${column}' isn't masked`);
     // The shown column the writer made goes; one the owner fills (show: { column }) stays.
-    if (was) fold.push({ column, shown: was.show?.column === undefined ? was.shown : undefined, unmasked: was.unmasked });
+    if (was) fold.push({ column, group: was.group, shown: was.show?.column === undefined ? was.shown : undefined, unmasked: was.unmasked });
     if (mask !== null) add.set(column, mask);
   }
   const made = new Set(fold.flatMap((f) => [f.shown, f.unmasked]).filter(Boolean));
   return {
     replaced: new Set(fold.map((f) => f.column)),
+    // The groups of the folded masks' shown and unmasked columns, which go with those columns.
+    dropGroups: new Set(fold.filter((f) => f.shown || f.unmasked).map((f) => openGroupName(f.group))),
     columns: (columns) => {
       for (const column of add.keys()) if (!columns.some((c) => c.name === column)) throw new JazminValidationError(`${where}: masks: no column '${column}'`);
       return columns.filter((c) => !made.has(c.name));
