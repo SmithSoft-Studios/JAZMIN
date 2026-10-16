@@ -666,8 +666,9 @@ text) and `segment` when an append wrote the directories.
   the page settings for the document's PDFs (below), and `edit`, what the
   document may change (7.9), `keyService`, the https address of the
   owner's key service for the file's online locks (6.8.2), `masks`, how
-  viewers show masked columns' revealed values (7.6.8), and `online`,
-  whether the document needs the network (below). Viewers MUST
+  viewers show masked columns' revealed values (7.6.8), `online`,
+  whether the document needs the network, `pages`, the document's pages,
+  and `files`, the document's own files (below). Viewers MUST
   treat stored files as untrusted content and SHOULD derive the page's
   security policy from these settings only.
 - **Documents that need the network:** `online` is `"required"` (the
@@ -677,6 +678,37 @@ text) and `segment` when an append wrote the directories.
   at least one such origin. Viewers SHOULD tell the person that the document
   needs to be online, and with `"required"`, while the device is offline,
   SHOULD say so instead of showing a document that can't work. Readers that don't know `online` ignore it.
+- **Pages:** `pages` is an ordered array of the document's pages, each an
+  object with `path` (a stored path), `title` (text) and optionally
+  `online` (as above, for that page, over the package's), `table` (the
+  table a page's queries read when they name none; else the first table),
+  `pdf` (page settings, over the package's) and `actions` (`print`, `pdf`,
+  `image`, each `true` or `false`, over the page file's own). A path MUST
+  NOT be listed twice. With `pages`, `entry` MUST be one of them (writers
+  SHOULD set it to the first when it is left out): it is the page that
+  opens first, and the one viewers that don't know `pages` show. Viewers
+  SHOULD show each page the key can see as a tab, in order, and load a
+  page when it is first shown; while the device is offline, a page that
+  needs the network SHOULD say so in its own tab without keeping the
+  others from showing. A page's buttons follow its actions; the page MAY
+  turn an allowed action off and back on while it is shown, never on when
+  it isn't allowed.
+- **Pages only some keys see:** in an access-controlled file, a file's
+  entry in a file group's directory MAY have `page`, an object with the
+  members of a `pages` entry except `path`, and optionally `order` (a
+  number). Only keys that read that directory know of the page. Viewers
+  SHOULD show such pages after the package's `pages`, by `order` (pages
+  without it last), then by path. The package settings are in the header,
+  which every key reads: a page whose name only some keys may know MUST
+  NOT be named in `pages` or `files`.
+- **The document's own files:** `files` is an array of stored paths, or
+  folders (a path ending in `/`, for every stored file under it), of files
+  the document's pages use, such as scripts, styles and fonts. Viewers
+  SHOULD NOT list them, or the pages, in lists of the file's files; pages
+  load them as before, and a key that sees a file can read it. Writers MUST
+  refuse a path that isn't stored and a folder no stored file is in.
+  Readers that don't know `pages`, `page` or `files` ignore them, and show
+  `entry` and list every file.
 - Writers MUST NOT reuse a content id within a file, so block section ids
   stay unique across appends.
 
@@ -1985,6 +2017,12 @@ indexes, embedded files) written by both reference implementations.
   it ignore it; writers of releases 1.0 to 1.6 leave it out when they rewrite
   the package settings, and viewers then show the document without saying it
   needs the internet.
+- **Since format 1.0, document pages (6.8):** `pages` and `files` in the
+  package settings, and `page` in a file group's directory entries: the
+  document's pages, shown as tabs (each with its own `online`, `table`,
+  `pdf` and `actions`), and the files they use, kept out of viewers' lists.
+  Readers that don't know them ignore them: viewers of releases 1.0 to 1.6
+  show `entry` alone and list every file, and their rewrites leave them out.
 - **Since format 1.0, key services for locks (6.8.2):** `keyService` in the
   package settings and in directory and owner-directory locks. Readers that
   don't know it ignore it; writers of releases 1.0 to 1.6 leave it out when
