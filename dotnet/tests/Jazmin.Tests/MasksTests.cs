@@ -148,6 +148,10 @@ public class MasksTests
         using (var o = JazminReader.Open(f.Path, new JazminReadOptions { Key = f.Owner }))
         {
             Assert.Equal([("account", true), ("email", true), ("salary", true)], o.Masked.Select(m => (m.Column, m.Lock.Unlocked)));
+            // The owner sees how each is masked, and every lock, also those only masked columns use.
+            Assert.Equal([JazminMaskShow.KeepFormat(4), JazminMaskShow.KeepFormat(4), JazminMaskShow.None], o.Masked.Select(m => m.Show));
+            Assert.Equal([false, false, true], o.Masked.Select(m => m.Rows is not null));
+            Assert.Equal([("hr", JazminLockKind.Online, true), ("pay", JazminLockKind.Password, true)], o.Locks.Select(l => (l.Id, l.Kind!.Value, l.Unlocked)));
             Assert.Equal("61000.50", o.Rows().ElementAt(1)["salary"]?.ToString());
             Assert.Equal(["file-locks", "masked-columns"], o.WriterFeatures.Order(StringComparer.Ordinal));
             Assert.Empty(o.ReaderFeatures); // older readers read the file, the masked columns hidden

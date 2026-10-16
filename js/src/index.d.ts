@@ -263,6 +263,10 @@ export interface MaskedColumn {
   unmasked?: string;
   /** Where the column is (or will be, once unlocked) in columns: viewers show it in its place. */
   at: number;
+  /** The owner only: what its values show (the rule, as update({ masks }) takes it). */
+  show?: MaskOptions['show'];
+  /** The owner only: the rows masked, when not every row is. */
+  rows?: Filter;
 }
 
 /** What a file's document may change: rows of one table, by their key. */

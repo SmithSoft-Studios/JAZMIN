@@ -111,6 +111,9 @@ test('the owner sees everything; rewrites and appends keep the masks; new rows f
   const { keys, file, owner } = staffFile();
   const o = open(file, { key: owner });
   assert.deepEqual(o.masked.map((m) => [m.column, m.lock.unlocked]), [['account', true], ['email', true], ['salary', true]]);
+  // The owner sees how each is masked, and every lock, also those only masked columns use.
+  assert.deepEqual(o.masked.map((m) => [m.show, m.rows ?? null]), [[{ keepFormat: true, last: 4 }, null], [{ keepFormat: true, last: 4 }, null], ['none', { id: { gte: 2 } }]]);
+  assert.deepEqual(o.locks.map((l) => [l.id, l.kind, l.unlocked]), [['hr', 'online', true], ['pay', 'password', true]]);
   assert.equal([...o.rows()][1].salary, '61000.50');
   assert.deepEqual(o.writerFeatures.sort(), ['file-locks', 'masked-columns']);
   assert.deepEqual(o.readerFeatures, [], 'no reader feature: older readers read the file, the masked columns hidden');

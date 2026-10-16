@@ -1589,7 +1589,8 @@ export class JazminReader {
    * 'both'. unlock() opens one; the owner key opens every lock.
    */
   get locks() {
-    const ids = new Set([...this.#files().locks.keys(), ...(this.#access?.masks?.locks.keys() ?? [])]);
+    // The owner sees every lock of the file: also those only masked columns use (spec 7.6.8).
+    const ids = new Set([...this.#files().locks.keys(), ...(this.#access?.masks?.locks.keys() ?? []), ...(this.#access?.isOwner ? this.#ownerLocks().keys() : [])]);
     return [...ids].sort().map((id) => this.#lockInfo(id));
   }
 
@@ -1610,7 +1611,11 @@ export class JazminReader {
     const extra = (c) => ({ ...(c.shown ? { shown: c.shown } : {}), ...(c.unmasked ? { unmasked: c.unmasked } : {}), at: at(c.position) });
     if (this.#access.isOwner) {
       return (this.#ownerDirectory().masks ?? []).filter((m) => m.table === this.#tableIndex).sort((a, b) => a.position - b.position)
-        .map((m) => ({ column: m.column, type: m.type, group: m.group, lock: this.#lockInfo(m.lock), ...extra(m) }));
+        .map((m) => ({
+          column: m.column, type: m.type, group: m.group, lock: this.#lockInfo(m.lock), ...extra(m),
+          // The owner also sees how it is masked, to change it (update({ masks })).
+          show: structuredClone(m.show ?? 'none'), ...(m.rows !== undefined ? { rows: structuredClone(m.rows) } : {}),
+        }));
     }
     return [...this.#access.masks.groups].filter(([, e]) => e.column.table === this.#tableIndex).sort(([, a], [, b]) => a.column.position - b.column.position)
       .map(([group, e]) => ({ column: e.column.name, type: e.column.type, group, lock: this.#lockInfo(e.lock), ...extra(e.column) }));
