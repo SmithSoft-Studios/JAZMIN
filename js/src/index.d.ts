@@ -238,6 +238,8 @@ export interface MaskViewSettings {
   whenHidden?: boolean;
   /** Mask again after this long without input; 0: never. */
   idleSeconds?: number;
+  /** false: viewers never export its revealed values (an export has what they show). Default true: when asked. */
+  export?: boolean;
 }
 
 /**

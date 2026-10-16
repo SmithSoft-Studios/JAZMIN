@@ -447,18 +447,59 @@
     note.hidden = false;
     note.textContent = `Exporting ${what} as ${format.toUpperCase()}…`;
     const started = performance.now();
+    // Masked columns (spec 7.6.8): exported as they show unless the person asks for the revealed values, and the file
+    // allows it for that column.
+    const revealMasked = $('jz-export-reveal').checked ? exportableMasks().map((m) => m.column) : false;
+    const keptMasked = masking.columns.filter((m) => !(revealMasked || []).includes(m.column)).map((m) => m.column);
     try {
-      if (shape) await addOn('shapes');
-      const blob = await JazminBrowser.exportBlob(reader, format, { filter, shape, signal: job.signal, onProgress: busy.progress });
+      if (shape) {
+        await addOn('shapes');
+        await checkShapeReveals(reader, shape, revealMasked || []);
+      }
+      const blob = await JazminBrowser.exportBlob(reader, format, { filter, shape, revealMasked, signal: job.signal, onProgress: busy.progress });
       const shaped = !shape ? '' : label ? `-${label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'shaped'}` : '-shaped';
       const name = `${state.name.replace(/\.jzm$/i, '')}${filter ? '-filtered' : ''}${shaped}.${format}`;
       await save(name, blob);
-      note.textContent = `Saved ${name} · ${(blob.size / 1048576).toFixed(blob.size < 10485760 ? 2 : 1)} MB in ${elapsed(performance.now() - started)}`;
+      note.textContent = `Saved ${name} · ${(blob.size / 1048576).toFixed(blob.size < 10485760 ? 2 : 1)} MB in ${elapsed(performance.now() - started)}`
+        + (keptMasked.length && !shape ? ` · ${keptMasked.join(', ')} exported masked` : '');
     } catch (error) {
       note.textContent = job.signal.aborted ? 'Export stopped.' : `Export: ${error.message || error}`;
     } finally {
       busy.end();
       if (work.export === job) work.export = null;
+    }
+  }
+
+  /** The unlocked masked columns the file lets the person export revealed (package.masks.<column>.export). */
+  const exportableMasks = () => masking.columns.filter((m) => m.lock.unlocked && maskSettings(m).export !== false);
+
+  /** The Export menu's "Include revealed values": offered once a masked column it may export is unlocked; unticked. */
+  function showExportReveal() {
+    const exportable = exportableMasks();
+    $('jz-export-reveal-row').hidden = exportable.length === 0;
+    $('jz-export-reveal').checked = false;
+    $('jz-export-reveal-text').textContent = `Include revealed values (${exportable.map((m) => m.column).join(', ')})`;
+  }
+
+  /**
+   * A shape reads columns directly, so one that reads an unlocked masked column whose values aren't to be exported is
+   * refused: checked by the shape's schema on readers that leave those columns out (its own table and those it links).
+   */
+  async function checkShapeReveals(reader, shape, revealed) {
+    const hiding = async (t) => {
+      const masks = typeof t.masked === 'function' ? await t.masked() : [];
+      const hidden = new Set(masks.filter((m) => m.lock.unlocked && !(t === state.reader && revealed.includes(m.column))).map((m) => m.column));
+      if (!hidden.size) return t;
+      return {
+        table: t.table, tables: t.tables, columns: t.columns.filter((c) => !hidden.has(c.name)), shapes: () => t.shapes(),
+        openTable: async (name) => hiding(await t.openTable(name)),
+      };
+    };
+    try {
+      await JazminBrowser.shapeSchema(await hiding(reader), shape);
+    } catch (error) {
+      if (!/unknown or hidden column/.test(error.message)) throw error;
+      throw new Error('This shape reads a masked column whose values aren\'t exported: tick "Include revealed values" in the Export menu to export them');
     }
   }
 
@@ -520,6 +561,7 @@
 
   async function loadMasks(reader) {
     masking.columns = typeof reader.masked === 'function' ? await reader.masked() : [];
+    showExportReveal();
   }
 
   const maskSettings = (m) => ({ ...MASK_DEFAULTS, ...(state.reader.package?.masks?.[m.column] ?? {}) });

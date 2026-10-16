@@ -2379,6 +2379,13 @@ column.
   'raw'` exports the columns as stored. In .NET, `reader.ExportView(filter,
   options, revealMasked)` gives the columns and rows for `CsvFormat.Write`,
   `JsonFormat.Write` and `XmlFormat.Write`; `JazminJsonStream` uses it.
+- **Exports in the viewer and Scout stay masked** even once unlocked, unless
+  the person ticks **Include revealed values** in the Export menu (unticked
+  each time a file opens or a lock opens; Scout ticks it for the owner). A
+  column whose `package.masks` setting says `export: false` is never exported
+  revealed by them. A saved or typed shape that reads an unlocked masked column
+  is refused unless the box is ticked. The note under the menu says which
+  columns went out masked.
 - **Masking or unmasking later** (an update, owner key): `update(file, {
   key: owner, masks: { phone: { lock: 'pay', show: { last: 4 } }, salary:
   null } })` (.NET `Masks = new Dictionary<string, JazminMask?> { ... }`; per

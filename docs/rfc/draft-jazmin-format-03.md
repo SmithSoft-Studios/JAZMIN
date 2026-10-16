@@ -1220,11 +1220,14 @@ token, or both: the locks of 6.8.1.
   would leave keys without the column.
 - **Viewer settings:** the package's `masks` (6.8) MAY say, for a masked
   column by name, how viewers show revealed values: `{ "reveal": "value" |
-  "column", "seconds": n, "whenHidden": bool, "idleSeconds": n }`: one value
-  at a time or the whole column; how long a revealed value shows (0: while
-  unlocked); whether it is masked again when the viewer's window is hidden
-  or loses focus; and after how long without input (0: never). Readers SHOULD
-  default to `value`, 30, true and 60. These steer viewers: a key holder who
+  "column", "seconds": n, "whenHidden": bool, "idleSeconds": n, "export":
+  bool }`: one value at a time or the whole column; how long a revealed value
+  shows (0: while unlocked); whether it is masked again when the viewer's
+  window is hidden or loses focus; after how long without input (0: never);
+  and whether viewers may export its revealed values when the person asks
+  (false: an export has what values show). Readers SHOULD default to `value`,
+  30, true, 60 and true; viewers SHOULD export what values show unless the
+  person asks for the revealed values. These steer viewers: a key holder who
   unlocked a column can read its values with the library whatever they say.
   Viewers SHOULD also mask revealed values in what they print. A viewer MAY
   tell a page that embeds it, when that page asks, that a value or a column

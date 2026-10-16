@@ -4,6 +4,10 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased (1.7.0)
+- **The web viewer exports masked columns masked (#190).** Once unlocked, Export still writes what values show unless
+  **Include revealed values** is ticked in its menu (unticked by default); the file's `package.masks.<column>.export:
+  false` keeps a column masked in exports whatever is chosen (both libraries check and keep it). A shape that reads an
+  unlocked masked column is refused unless the box is ticked.
 - **Exports give each masked column as one column (#190).** CSV, JSON and XML exports (`toCSV`/`exportFile`, the
   browser reader's, .NET `reader.ExportView` and `JazminJsonStream`) give a masked column as viewers show it: a row's
   unmasked value, else its value once unlocked, else what it shows. `revealMasked: false` (or a list of columns) keeps

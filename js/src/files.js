@@ -129,7 +129,7 @@ export function checkKeyService(value, where) {
   return address;
 }
 
-const MASK_SETTINGS = { reveal: ['value', 'column'], seconds: 'count', whenHidden: 'bool', idleSeconds: 'count' };
+const MASK_SETTINGS = { reveal: ['value', 'column'], seconds: 'count', whenHidden: 'bool', idleSeconds: 'count', export: 'bool' };
 
 /**
  * How viewers show masked columns' revealed values (spec 7.6.8), by column: { reveal: 'value' | 'column', seconds,
@@ -144,7 +144,7 @@ function normalizeMaskSettings(masks) {
     const settings = {};
     for (const [name, value] of Object.entries(given)) {
       const kind = MASK_SETTINGS[name];
-      if (!kind) throw new JazminValidationError(`${where}: unknown setting '${name}' (reveal, seconds, whenHidden, idleSeconds)`);
+      if (!kind) throw new JazminValidationError(`${where}: unknown setting '${name}' (reveal, seconds, whenHidden, idleSeconds, export)`);
       if (Array.isArray(kind) ? !kind.includes(value) : kind === 'bool' ? typeof value !== 'boolean' : !(Number.isInteger(value) && value >= 0 && value <= 86400)) {
         throw new JazminValidationError(`${where}.${name}: ${Array.isArray(kind) ? kind.map((k) => `'${k}'`).join(' or ') : kind === 'bool' ? 'true or false' : 'a whole number of seconds from 0 to 86400'}`);
       }
