@@ -492,7 +492,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             stored = new StoredContent { Id = id, Size = source.Size, Sha256 = source.Sha256, Key = key, Lock = source.Lock, Blocks = blocks };
             _contents[slot] = stored;
         }
-        _fileEntries[source.Path] = new FileEntry(source.Path, source.Type, stored.Id, source.Groups, source.Actions, source.GroupActions);
+        _fileEntries[source.Path] = new FileEntry(source.Path, source.Type, stored.Id, source.Groups, source.Actions, source.GroupActions, source.Page);
     }
 
     /// <summary>Where the writer keeps a stored content: by its bytes and its lock.</summary>
@@ -510,7 +510,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         var sealedKeys = new Dictionary<int, string>();
         string SealedKey(StoredContent c) =>
             sealedKeys.TryGetValue(c.Id, out var known) ? known : sealedKeys[c.Id] = Convert.ToBase64String(Jazmin.Locks.Seal(_locks[c.Lock!], c.Id, c.Key!));
-        // A file's actions in a group's directory: the group's own (GroupActions), else the file's.
+        Dictionary<string, JsonObject>? pages = null; // each file's page as stored, by path (checked below)
+        // A file's actions in a group's directory: the group's own (GroupActions), else the file's; and its page.
         JsonObject Directory(IEnumerable<FileEntry> list, bool withGroups, IEnumerable<SavedShape> saved, string? group = null)
         {
             var files = list.ToList();
@@ -522,6 +523,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                     if (withGroups) entry["groups"] = new JsonArray((e.Groups ?? [EmbeddedFiles.Everyone]).Select(g => (JsonNode?)g).ToArray());
                     var actions = group is not null && e.GroupActions is { } byGroup && byGroup.TryGetValue(group, out var own) ? own : e.Actions;
                     if (actions is { Count: > 0 }) entry["actions"] = actions.DeepClone();
+                    if (pages is not null && pages.TryGetValue(e.Path, out var page)) entry["page"] = page.DeepClone();
                     return (JsonNode?)entry;
                 }).ToArray()),
             };
@@ -537,11 +539,22 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             if (savedList.Length > 0) directory["shapes"] = new JsonArray(savedList);
             return directory;
         }
-        var package = _packageSet ? EmbeddedFiles.PackageJson(_options.Package, _fileEntries.Keys) : _packageJson;
+        var tableNames = (_continue?.Header.Tables.Select(t => t.Name) ?? _tables.Select(t => t.Name)).ToList();
+        var package = _packageSet ? EmbeddedFiles.PackageJson(_options.Package, _fileEntries.Keys, tableNames) : _packageJson;
         if (_packageSet && package?["edit"] is { } edit)
             Changes.CheckEdit(edit, _tables.Select(t => (t.Name, (IReadOnlyList<JazminColumn>)t.Columns, t.PartitionBy)).ToList(), partial: _continue is not null);
-        if (!_packageSet && package?["entry"] is { } entry && !_fileEntries.ContainsKey((string)entry!))
-            throw new JazminValidationException($"package.entry '{entry}' is not one of the stored files");
+        if (!_packageSet && package is not null) EmbeddedFiles.CheckStored(package, _fileEntries.Keys);
+        // Pages in file groups' directories (spec 6.8): only in shared files, whose keys see files by group, and never
+        // also in package.pages, which every key reads.
+        var listedPages = EmbeddedFiles.PagePaths(package);
+        var hasOrigins = package?["allowedOrigins"] is JsonArray { Count: > 0 };
+        foreach (var e in entries)
+        {
+            if (e.Page is not { } page) continue;
+            if (_access is null) throw new JazminValidationException($"File '{e.Path}': page needs an access-controlled file (use package.pages)");
+            if (listedPages.Contains(e.Path)) throw new JazminValidationException($"File '{e.Path}': its page is also in package.pages");
+            (pages ??= new(StringComparer.Ordinal))[e.Path] = EmbeddedFiles.DirectoryPageJson(page, e.Path, tableNames, hasOrigins);
+        }
         var suffix = segment > 0 ? $"/{segment}" : "";
         var directories = new List<(string, SectionRef)>();
         void WriteDirectory(string group, string sectionId, JsonObject json, byte[]? key) =>

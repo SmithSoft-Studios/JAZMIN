@@ -68,6 +68,13 @@ public sealed class JazminFileInput
     /// file is (1.7, spec 6.8.1).
     /// </summary>
     public string? Lock { get; init; }
+
+    /// <summary>
+    /// Access-controlled files: the file is one of the document's pages, which only keys that see the file know of (1.7,
+    /// spec 6.8), written in each of its groups' directories. Leave <see cref="JazminPage.Path"/> out: the page is this
+    /// file. A page every key may know of goes in <see cref="JazminPackage.Pages"/> instead.
+    /// </summary>
+    public JazminPage? Page { get; init; }
 }
 
 /// <summary>An embedded file visible to the current key.</summary>
@@ -87,6 +94,9 @@ public sealed record JazminEmbeddedFile(string Path, string Type, long Size, str
     /// <see cref="JazminReader.Unlock"/> opens the lock.
     /// </summary>
     public JazminLockInfo? Lock { get; init; }
+
+    /// <summary>The file's page in its group's directory (1.7, spec 6.8), when it has one; <see cref="JazminPage.Path"/> is null.</summary>
+    public JazminPage? Page { get; init; }
 }
 
 /// <summary>
@@ -181,6 +191,53 @@ public sealed class JazminPackage
     /// the sites it loads from. Null: not said.
     /// </summary>
     public JazminOnline? Online { get; init; }
+
+    /// <summary>
+    /// The document's pages, in order (1.7, spec 6.8): viewers show each as a tab. <see cref="Entry"/>, the page that
+    /// opens first (and the one older viewers show), must be one of them; writers set it to the first when it is left
+    /// out. Every key reads these settings: a page whose name only some keys may know goes in its file group's directory
+    /// (<see cref="JazminFileInput.Page"/>).
+    /// </summary>
+    public IReadOnlyList<JazminPage>? Pages { get; init; }
+
+    /// <summary>
+    /// The document's own files (1.7, spec 6.8): stored paths, or folders ending in '/', of the scripts, styles, fonts
+    /// and images its pages load. Viewers leave them, and the pages, out of their lists of the file's files.
+    /// </summary>
+    public IReadOnlyList<string>? Files { get; init; }
+}
+
+/// <summary>
+/// One of a document's pages (1.7, spec 6.8): a stored HTML page shown as a tab, with its own settings over the
+/// package's. In <see cref="JazminPackage.Pages"/> give <see cref="Path"/>; as a file's page in its group's directory
+/// (<see cref="JazminFileInput.Page"/>) leave it out, and <see cref="Order"/> places it among the tabs.
+/// </summary>
+public sealed record JazminPage
+{
+    /// <summary>The page's stored path (package pages only).</summary>
+    public string? Path { get; init; }
+
+    /// <summary>The tab's name (required).</summary>
+    public string? Title { get; init; }
+
+    /// <summary>Whether this page needs the network, over the package's <see cref="JazminPackage.Online"/>; needs <see cref="JazminPackage.AllowedOrigins"/>.</summary>
+    public JazminOnline? Online { get; init; }
+
+    /// <summary>The table the page's queries read when they name none (else the file's first table).</summary>
+    public string? Table { get; init; }
+
+    /// <summary>Page settings for this page's PDFs, over the package's <see cref="JazminPackage.Pdf"/>.</summary>
+    public JazminPdfSettings? Pdf { get; init; }
+
+    /// <summary>
+    /// The page's buttons, over the page file's own actions: only <see cref="JazminFileActions.Print"/>,
+    /// <see cref="JazminFileActions.Pdf"/> and <see cref="JazminFileActions.Image"/> (the page's PDF settings go in
+    /// <see cref="Pdf"/>).
+    /// </summary>
+    public JazminFileActions? Actions { get; init; }
+
+    /// <summary>A page in a file group's directory only: its place among the tabs, after the package's pages (those without one last, then by path).</summary>
+    public int? Order { get; init; }
 }
 
 /// <summary>How much a document needs the network (spec 6.8).</summary>
@@ -231,14 +288,18 @@ internal static class EmbeddedFiles
     }
 
     /// <summary>Validates package settings against the stored paths; returns the header JSON or null.</summary>
-    public static JsonObject? PackageJson(JazminPackage? package, ICollection<string> paths)
+    public static JsonObject? PackageJson(JazminPackage? package, ICollection<string> paths, IReadOnlyCollection<string> tables)
     {
         if (package is null) return null;
         var json = new JsonObject();
-        if (package.Entry is not null)
+        if (package.Entry is not null && !paths.Contains(package.Entry)) throw new JazminValidationException($"package.entry '{package.Entry}' is not one of the stored files");
+        var pages = package.Pages is { } given ? PagesJson(given, paths, tables, package.AllowedOrigins is { Count: > 0 }) : null;
+        // With pages, the entry is one of them: the first when none is given.
+        var entry = package.Entry ?? (pages is { Count: > 0 } ? package.Pages![0].Path : null);
+        if (entry is not null)
         {
-            if (!paths.Contains(package.Entry)) throw new JazminValidationException($"package.entry '{package.Entry}' is not one of the stored files");
-            json["entry"] = package.Entry;
+            if (pages is not null && !package.Pages!.Any(p => p.Path == entry)) throw new JazminValidationException($"package.entry '{entry}' is not one of package.pages");
+            json["entry"] = entry;
         }
         if (package.Title is not null) json["title"] = package.Title;
         if (package.AllowedOrigins is not null)
@@ -261,9 +322,152 @@ internal static class EmbeddedFiles
         {
             if (package.AllowedOrigins is not { Count: > 0 })
                 throw new JazminValidationException("package.online needs AllowedOrigins: the https origins the document loads from");
-            json["online"] = online == JazminOnline.Required ? "required" : "optional";
+            json["online"] = OnlineText(online);
+        }
+        if (pages is not null) json["pages"] = pages;
+        if (package.Files is { } files)
+        {
+            var list = new JsonArray();
+            var seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var p in files)
+            {
+                CheckOwnFile(p, paths);
+                if (!seen.Add(p)) throw new JazminValidationException($"package.files: '{p}' is listed twice");
+                list.Add(p);
+            }
+            json["files"] = list;
         }
         return json;
+    }
+
+    private static string OnlineText(JazminOnline online) => online == JazminOnline.Required ? "required" : "optional";
+
+    private static JazminOnline? OnlineFrom(JsonNode? node) => TextOf(node) switch { "required" => JazminOnline.Required, "optional" => JazminOnline.Optional, _ => null };
+
+    /// <summary>Checks package.pages (spec 6.8): stored paths, each once, each page's settings; returns their JSON.</summary>
+    private static JsonArray PagesJson(IReadOnlyList<JazminPage> pages, ICollection<string> paths, IReadOnlyCollection<string> tables, bool hasOrigins)
+    {
+        if (pages.Count == 0) throw new JazminValidationException("package.pages must be a non-empty array of pages: { path, title }");
+        var json = new JsonArray();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (var i = 0; i < pages.Count; i++)
+        {
+            var page = pages[i] ?? throw new JazminValidationException($"package.pages[{i}] must be a page: {{ path, title }}");
+            if (page.Path is null) throw new JazminValidationException($"package.pages[{i}].path is required");
+            if (!paths.Contains(page.Path)) throw new JazminValidationException($"package.pages[{i}].path '{page.Path}' is not one of the stored files");
+            if (!seen.Add(page.Path)) throw new JazminValidationException($"package.pages: '{page.Path}' is listed twice");
+            json.Add(PageJson(page, $"package.pages[{i}]", tables, hasOrigins, directory: false));
+        }
+        return json;
+    }
+
+    /// <summary>Checks a file's page in its groups' directories (spec 6.8) and returns its JSON.</summary>
+    public static JsonObject DirectoryPageJson(JazminPage page, string path, IReadOnlyCollection<string> tables, bool hasOrigins) =>
+        PageJson(page, $"File '{path}': page", tables, hasOrigins, directory: true);
+
+    /// <summary>A page's settings as stored; <paramref name="where"/> names it in errors.</summary>
+    private static JsonObject PageJson(JazminPage page, string where, IReadOnlyCollection<string> tables, bool hasOrigins, bool directory)
+    {
+        var json = new JsonObject();
+        if (directory)
+        {
+            if (page.Path is not null) throw new JazminValidationException($"{where}.path is not used: the page is the file itself");
+        }
+        else json["path"] = page.Path;
+        if (string.IsNullOrEmpty(page.Title)) throw new JazminValidationException($"{where}.title is required");
+        json["title"] = page.Title;
+        if (page.Online is { } online)
+        {
+            if (!hasOrigins) throw new JazminValidationException($"{where}.online needs allowedOrigins");
+            json["online"] = OnlineText(online);
+        }
+        if (page.Table is { } table)
+        {
+            if (!tables.Contains(table)) throw new JazminValidationException($"{where}.table '{table}' is not a table of the file");
+            json["table"] = table;
+        }
+        if (page.Pdf is { } pdf) json["pdf"] = PdfJson(pdf, $"{where}.pdf");
+        if (page.Actions is { } actions)
+        {
+            foreach (var (name, set) in new[] { ("open", actions.Open is not null), ("save", actions.Save is not null), ("list", actions.List is not null) })
+                if (set) throw new JazminValidationException($"{where}.actions: unknown action '{name}' (print, pdf, image)");
+            if (actions.PdfSettings is not null) throw new JazminValidationException($"{where}.actions.pdf must be true or false");
+            var buttons = new JsonObject();
+            if (actions.Print is { } print) buttons["print"] = print;
+            if (actions.Pdf is { } asPdf) buttons["pdf"] = asPdf;
+            if (actions.Image is { } image) buttons["image"] = image;
+            if (buttons.Count > 0) json["actions"] = buttons;
+        }
+        if (page.Order is { } order)
+        {
+            if (!directory) throw new JazminValidationException($"{where}.order is only for a page in a file group's directory");
+            json["order"] = order;
+        }
+        return json;
+    }
+
+    /// <summary>One of package.files: a stored path, or a folder (ending in '/') some stored file is in.</summary>
+    private static void CheckOwnFile(string? p, ICollection<string> paths)
+    {
+        if (p is { Length: > 0 } && p[^1] == '/')
+        {
+            if (!paths.Any(stored => stored.StartsWith(p, StringComparison.Ordinal))) throw new JazminValidationException($"package.files: no stored file is in the folder '{p}'");
+        }
+        else if (p is null || !paths.Contains(p)) throw new JazminValidationException($"package.files: '{p}' is not one of the stored files");
+    }
+
+    /// <summary>
+    /// Package settings an append keeps as the file has them: the files they name must still be stored (the entry, the
+    /// pages, the document's own files).
+    /// </summary>
+    public static void CheckStored(JsonObject package, ICollection<string> paths)
+    {
+        if (TextOf(package["entry"]) is { } entry && !paths.Contains(entry))
+            throw new JazminValidationException($"package.entry '{entry}' is not one of the stored files");
+        if (package["pages"] is JsonArray pages)
+        {
+            for (var i = 0; i < pages.Count; i++)
+                if (TextOf((pages[i] as JsonObject)?["path"]) is { } path && !paths.Contains(path))
+                    throw new JazminValidationException($"package.pages[{i}].path '{path}' is not one of the stored files");
+        }
+        if (package["files"] is JsonArray files)
+            foreach (var p in files.Select(TextOf).OfType<string>()) CheckOwnFile(p, paths);
+    }
+
+    /// <summary>The paths of package.pages, as stored.</summary>
+    public static HashSet<string> PagePaths(JsonObject? package) =>
+        package?["pages"] is JsonArray pages ? pages.Select(p => TextOf((p as JsonObject)?["path"])).OfType<string>().ToHashSet(StringComparer.Ordinal) : [];
+
+    /// <summary>
+    /// A page read from a file, leniently: members of the wrong type are left out; null without its required ones (a
+    /// path in package.pages, a title). A directory page has no path, and may have an order.
+    /// </summary>
+    public static JazminPage? PageFrom(JsonNode? json, bool directory)
+    {
+        if (json is not JsonObject o) return null;
+        var path = directory ? null : TextOf(o["path"]);
+        var title = TextOf(o["title"]);
+        if (title is null || (!directory && path is null)) return null;
+        return new JazminPage
+        {
+            Path = path,
+            Title = title,
+            Online = OnlineFrom(o["online"]),
+            Table = TextOf(o["table"]),
+            Pdf = o["pdf"] is JsonObject pdf ? PdfFrom(pdf, strict: false) : null,
+            Actions = PageActionsFrom(o["actions"]),
+            Order = directory && o["order"] is JsonValue v && v.TryGetValue<int>(out var order) ? order : null,
+        };
+    }
+
+    private static bool? FlagOf(JsonNode? n) => n is JsonValue v && v.TryGetValue<bool>(out var b) ? b : null;
+
+    /// <summary>A page's buttons as a reader takes them: print, pdf and image, each true or false; null when none.</summary>
+    private static JazminFileActions? PageActionsFrom(JsonNode? json)
+    {
+        if (json is not JsonObject o) return null;
+        var actions = new JazminFileActions { Print = FlagOf(o["print"]), Pdf = FlagOf(o["pdf"]), Image = FlagOf(o["image"]) };
+        return actions == new JazminFileActions() ? null : actions;
     }
 
     /// <summary>
@@ -300,6 +504,8 @@ internal static class EmbeddedFiles
         Masks = Jazmin.Masks.PackageFrom(o["masks"]),
         Online = (o["online"] as JsonValue)?.TryGetValue<string>(out var online) == true
             ? online switch { "required" => JazminOnline.Required, "optional" => JazminOnline.Optional, _ => null } : null,
+        Pages = o["pages"] is JsonArray pages ? pages.Select(p => PageFrom(p, directory: false)).OfType<JazminPage>().ToList() : null,
+        Files = o["files"] is JsonArray files ? files.Select(TextOf).OfType<string>().ToList() : null,
     };
 
     private static readonly string[] PdfFormats = ["A0", "A1", "A2", "A3", "A4", "A5", "A6", "Letter", "Legal", "Tabloid", "Ledger"];
@@ -444,6 +650,7 @@ internal sealed class FileSource
     public JsonObject? Actions { get; init; }
     public Dictionary<string, JsonObject?>? GroupActions { get; init; }
     public string? Lock { get; init; }
+    public JazminPage? Page { get; init; }
     public required long Size { get; init; }
     public required string Sha256 { get; init; }
     public required Func<long, int, byte[]> Read { get; init; }
@@ -467,7 +674,7 @@ internal sealed class FileSource
         {
             return new FileSource
             {
-                Path = path, Type = type, Groups = groups, Actions = actions, GroupActions = groupActions, Lock = lockId, Size = bytes.Length,
+                Path = path, Type = type, Groups = groups, Actions = actions, GroupActions = groupActions, Lock = lockId, Page = input.Page, Size = bytes.Length,
                 Sha256 = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(),
                 Read = (offset, length) => bytes.AsSpan((int)offset, length).ToArray(),
             };
@@ -482,7 +689,7 @@ internal sealed class FileSource
         }
         return new FileSource
         {
-            Path = path, Type = type, Groups = groups, Actions = actions, GroupActions = groupActions, Lock = lockId, Size = size, Sha256 = sha,
+            Path = path, Type = type, Groups = groups, Actions = actions, GroupActions = groupActions, Lock = lockId, Page = input.Page, Size = size, Sha256 = sha,
             Read = (offset, length) =>
             {
                 using var stream = File.OpenRead(disk);
@@ -563,9 +770,9 @@ internal sealed class StoredContent
     };
 }
 
-/// <summary>A directory entry: path -> content id, with its groups where known, and its actions (as stored).</summary>
+/// <summary>A directory entry: path -> content id, with its groups where known, its actions (as stored) and its page.</summary>
 internal sealed record FileEntry(string Path, string Type, int Content, List<string>? Groups, JsonObject? Actions = null,
-    Dictionary<string, JsonObject?>? GroupActions = null);
+    Dictionary<string, JsonObject?>? GroupActions = null, JazminPage? Page = null);
 
 /// <summary>The files and saved shapes carried from one version of a file to the next (append / update).</summary>
 internal sealed record FileState(List<FileEntry> Entries, List<StoredContent> Contents, int NextId, JsonObject? Package, List<SavedShape>? Shapes = null,

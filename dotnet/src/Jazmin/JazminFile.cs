@@ -610,7 +610,7 @@ public static class JazminFile
                     : null,
             };
             writer = named ? JazminWriter.Create(temp, options) : JazminWriter.Create(temp, main!.Columns, options);
-            foreach (var source in CarriedFiles(reader, update)) writer.AddSource(source);
+            foreach (var source in CarriedFiles(reader, update, plan)) writer.AddSource(source);
             foreach (var file in update.AddFiles) writer.AddFile(file);
 
             var result = new JazminUpdateResult(0, 0, 0, 0);
@@ -1027,20 +1027,33 @@ public static class JazminFile
         };
     }
 
-    /// <summary>The package after tables are renamed or removed: its edit table follows a rename, and can't be removed.</summary>
+    /// <summary>
+    /// The package after tables are renamed or removed: its edit table and its pages' tables follow a rename; the edit
+    /// table can't be removed (nor a page's: the writer refuses a page reading a table the file no longer has).
+    /// </summary>
     private static JazminPackage? PackageAfter(JazminPackage? package, TablePlan plan)
     {
-        if (!plan.Changed || package?.Edit is not { } edit) return package;
-        var table = edit.Table ?? plan.First; // none named: the file's first, which may be another table afterwards
-        if (plan.Removed.Contains(table)) throw new JazminValidationException($"The document's edits change table '{table}', which is being removed: change Package.Edit first");
+        if (!plan.Changed || package is null || (package.Edit is null && package.Pages is null)) return package;
+        var edit = package.Edit;
+        if (edit is not null)
+        {
+            var table = edit.Table ?? plan.First; // none named: the file's first, which may be another table afterwards
+            if (plan.Removed.Contains(table)) throw new JazminValidationException($"The document's edits change table '{table}', which is being removed: change Package.Edit first");
+            edit = edit with { Table = RenamedTable(table, plan) };
+        }
         return new JazminPackage
         {
-            // Every setting kept: only the edited table's name changes.
+            // Every setting kept: only the tables' names change.
             Entry = package.Entry, Title = package.Title, AllowedOrigins = package.AllowedOrigins, AllowWasm = package.AllowWasm, Pdf = package.Pdf,
-            KeyService = package.KeyService, Masks = package.Masks, Online = package.Online,
-            Edit = edit with { Table = plan.Names.TryGetValue(table, out var to) ? to : table },
+            KeyService = package.KeyService, Masks = package.Masks, Online = package.Online, Files = package.Files,
+            Edit = edit,
+            Pages = package.Pages?.Select(p => p is null ? p! : p with { Table = RenamedTable(p.Table, plan) }).ToList(),
         };
     }
+
+    /// <summary>A table's name after a rename (null stays null: a page reading the first table keeps reading the first).</summary>
+    [return: System.Diagnostics.CodeAnalysis.NotNullIfNotNull(nameof(table))]
+    private static string? RenamedTable(string? table, TablePlan plan) => table is not null && plan.Names.TryGetValue(table, out var to) ? to : table;
 
     /// <summary>
     /// Columns with the indexes <paramref name="indexes"/> gives them; columns not named keep theirs. The old first sort
@@ -1337,7 +1350,7 @@ public static class JazminFile
     /// The files a rewrite keeps, read block by block from the old version while the new one is written. Each keeps its
     /// lock, unless <see cref="JazminUpdate.Locks"/> removes it.
     /// </summary>
-    private static IEnumerable<FileSource> CarriedFiles(JazminReader reader, JazminUpdate update)
+    private static IEnumerable<FileSource> CarriedFiles(JazminReader reader, JazminUpdate update, TablePlan plan)
     {
         var state = reader.FileState();
         var existing = (state?.Entries ?? []).ToDictionary(e => e.Path, StringComparer.Ordinal);
@@ -1348,7 +1361,8 @@ public static class JazminFile
         return existing.Values.Where(e => !dropped.Contains(e.Path)).Select(e => new FileSource
         {
             Path = e.Path, Type = e.Type, Groups = e.Groups ?? [EmbeddedFiles.Everyone], Actions = e.Actions, GroupActions = e.GroupActions,
-            Lock = contents[e.Content].Lock is { } lockId && !(update.Locks?.TryGetValue(lockId, out var given) == true && given is null) ? lockId : null,
+            Page = e.Page is { } page ? page with { Table = RenamedTable(page.Table, plan) } : null, // its table follows a rename
+            Lock =contents[e.Content].Lock is { } lockId && !(update.Locks?.TryGetValue(lockId, out var given) == true && given is null) ? lockId : null,
             Size = contents[e.Content].Size, Sha256 = contents[e.Content].Sha256,
             Read = (offset, length) => reader.ReadFileRange(e.Path, offset, offset + length),
         }).ToList();

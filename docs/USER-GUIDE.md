@@ -2996,6 +2996,55 @@ using Stream pdf = reader.OpenFile("docs/terms.pdf");   // seekable, decodes one
 JazminFile.Append("statements.jzm", new JazminAppend { Key = owner, AddFiles = [new JazminFileInput("news.html", news)], RemoveFiles = ["old.html"] });
 ```
 
+#### Document pages (.NET, 1.7)
+
+A document can have several pages, which viewers show as tabs in the order
+you list them (spec 6.8). Each page is an ordinary stored HTML file with its
+own settings: the table its queries read (`Table`), whether it needs the
+internet (`Online`), its PDF page settings (`Pdf`) and its Print, PDF and
+image buttons (`Actions`). `Package.Files` lists the files the pages load
+(scripts, styles, fonts; a folder ends in `/`), so viewers leave them, and the
+pages, out of the list of the file's files.
+
+```csharp
+Package = new JazminPackage
+{
+    // Entry is left out: the writer sets it to the first page, the one older viewers show.
+    Pages =
+    [
+        new JazminPage { Path = "customers.html", Title = "Customers", Table = "clients", Actions = new JazminFileActions { Print = false, Pdf = false } },
+        new JazminPage { Path = "transactions.html", Title = "Transactions", Table = "transactions" },
+        new JazminPage { Path = "summary.html", Title = "Summary", Online = JazminOnline.Required },   // the others still work offline
+        new JazminPage { Path = "statement.html", Title = "Statement", Pdf = new JazminPdfSettings { Format = "A4" } },
+    ],
+    Files = ["app.js", "style.css", "fonts/"],
+    AllowedOrigins = ["https://cdn.jsdelivr.net"],   // Online needs at least one
+},
+
+// Shared files: a page only some keys may know of goes in its file group's directory, not in Pages.
+new JazminFileInput("bonus.html", bonusHtml) { Groups = ["managers"], Page = new JazminPage { Title = "Bonuses", Order = 1 } },
+
+var pages = reader.Package?.Pages;                               // the pages every key knows of
+var groupPages = reader.Files.Where(f => f.Page is not null);    // the pages only this key's groups know of
+```
+
+- **Checked when written.** Every page's path must be a stored file, listed
+  once, with a title; `Entry`, when given, must be one of the pages; a page's
+  `Table` must be one of the file's tables; each path in `Files` must be
+  stored (a folder must hold a stored file). A page's `Actions` take only
+  `Print`, `Pdf` and `Image`.
+- **Pages every key can see the names of.** The package settings are in the
+  file's header, which every key reads. In a shared file, a page whose name
+  only some keys should know goes on the file itself (`JazminFileInput.Page`,
+  without `Path`): only keys that see the file know of it. Viewers show those
+  tabs after `Pages`, by `Order`, then by path.
+- **Kept.** Append, update and compact keep the pages, `Files` and each
+  file's page; new `Package` settings in an update replace them. A renamed
+  table is renamed in the pages too; removing a table a page reads is
+  refused until the page no longer names it.
+- **Older releases** (1.0-1.6) read these files and show `Entry` alone, as
+  before; if they rewrite one, the pages are dropped and every file is listed.
+
 ### 19.3 Good to know
 
 - **Appends** keep existing files by reference. A replaced or removed file
