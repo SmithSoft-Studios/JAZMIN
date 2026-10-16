@@ -1,5 +1,9 @@
 # Filing service (reference sample)
 
+> **What this shows:** a small Node service that files the records people send back from the field into the shared
+> file, checking each batch first. **Features:** submission keys and `fileSubmission()` (USER-GUIDE §15.6), files sent
+> with records, and `compact()` after filing (§17).
+
 People in the field capture records, often offline, and send them back as
 small `.jzm` files written in the browser. Each one is locked with the
 person's **submission key**, which they get only by opening the shared file

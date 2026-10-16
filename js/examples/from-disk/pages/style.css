@@ -133,7 +133,8 @@ button.soft { background: var(--paper); font-weight: 600; }
 .how h3 { margin-top: 0; }
 
 /* index.html: the gallery */
-.gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 1rem; }
+.gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(17rem, 1fr)); gap: 1rem; }
+.gallery > .panel { margin-bottom: 0; } /* tiles in a row are the same height */
 .tile { display: flex; flex-direction: column; gap: 0.4rem; color: var(--ink); text-decoration: none; transition: transform 0.15s, border-color 0.15s; }
 .tile:hover, .tile:focus-visible { transform: translateY(-2px); border-color: var(--accent); outline: none; }
 .tile h3 { margin: 0.2rem 0 0; font-size: 1.05rem; }
@@ -192,3 +193,39 @@ button.chip.action:hover { background: var(--accent); color: var(--on-accent); }
 #query-js, #query-linq { font-size: 12px; }
 .query-code { display: grid; gap: 0.25rem; }
 .query-code > * { min-width: 0; }
+
+/* Every demo: what it shows, and the feature */
+.about { margin: 0 0 1.25rem; padding: 0.75rem 1rem; border-left: 4px solid var(--accent); border-radius: 10px; background: var(--accent-soft); }
+.about > strong { display: block; color: var(--accent); font-size: 0.78rem; letter-spacing: 0.05em; text-transform: uppercase; }
+.about p { margin: 0.2rem 0 0; color: var(--ink); }
+.about .ref { white-space: nowrap; }
+.about .feature { color: var(--muted); font-size: 0.88rem; }
+.card .about { margin: 1rem 0 0; }
+
+/* masked.html */
+.unlock-form { display: flex; gap: 0.5rem; }
+.unlock-form input { width: 11rem; min-width: 0; }
+.mask-tag { margin-left: 0.4rem; padding: 0.05rem 0.4rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 0.68rem; letter-spacing: 0; text-transform: none; }
+#payroll td { white-space: nowrap; }
+.masked-value { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 0.86rem; }
+.revealed { font-weight: 600; font-variant-numeric: tabular-nums; }
+button.reveal { display: inline-flex; align-items: center; gap: 0.4rem; margin: -0.15rem -0.35rem; padding: 0.15rem 0.35rem; border: 1px dashed color-mix(in srgb, var(--accent) 45%, transparent); border-radius: 6px; background: none; color: inherit; font: inherit; text-align: inherit; }
+button.reveal:hover, button.reveal:focus-visible { background: var(--accent-soft); border-color: var(--accent); }
+button.reveal.open { border-style: solid; border-color: var(--accent); background: var(--accent-soft); }
+.countdown { padding: 0 0.4rem; border-radius: 999px; background: var(--accent); color: var(--on-accent); font-size: 0.72rem; font-weight: 700; }
+.mask-rules { margin: 0.9rem 0 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.88rem; }
+.exports h3 { margin-top: 0.5rem; }
+.exports pre.code { margin-bottom: 0.4rem; }
+.exports pre.output { max-height: 16rem; white-space: pre; word-break: normal; margin: 0.4rem 0 0.6rem; }
+.export-note { margin: 0.2rem 0; font-weight: 600; }
+.key-field { margin: 0.6rem 0 0.25rem; }
+.key-field input { font: 0.8rem ui-monospace, SFMono-Regular, Consolas, monospace; }
+.narrow-only { display: none; }
+@media (max-width: 520px) {
+  #payroll [data-column="staff"], #payroll [data-column="branch"] { display: none; }
+  #payroll { font-size: 0.85rem; }
+  #payroll th, #payroll td { padding: 0.45rem 0.4rem; }
+  #payroll td[data-column="name"] { white-space: normal; min-width: 6.5rem; }
+  .unlock-form { width: 100%; } .unlock-form input { flex: 1; width: auto; }
+  .narrow-only { display: block; }
+}

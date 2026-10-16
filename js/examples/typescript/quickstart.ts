@@ -1,4 +1,6 @@
 // TypeScript quick start - type-checked by `npm run typecheck`, and run by CI (`node examples/typescript/quickstart.ts`).
+// What this shows: the library's types in use (columns, filters, links, storage and update results) on the JavaScript
+// examples: write, query, append, compact, update and export (USER-GUIDE 5, the TypeScript guide).
 import { JAZMIN, JazminKey, JazminKeyError, accessKeyOf, append, compact, importJSONFile, open, toCSV, update, write, type Filter, type JazminColumnInput, type JazminLink, type LinkCheck, type StorageReport, type UpdateResult } from '@smithsoft-studios/jazmin';
 import fs from 'node:fs';
 import os from 'node:os';

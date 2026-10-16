@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, compact, createFileHandler, exportFile, fromCSV, issueFileUnlockToken, issueUnlockToken,
+  JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, compact, createFileHandler, exportFile, exportString, fromCSV, issueFileUnlockToken, issueUnlockToken,
   open, openAsync,
   applyChanges, fileSubmission, from, portableHtml, portableScript, rotateKey, toJSON, toXML, update, write, writeAsync, writeChanges,
 } from '../src/index.js';
@@ -12,11 +12,11 @@ import {
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-examples-'));
 const file = path.join(dir, 'customers.jzm');
 
-// 1. JSON-like one-liners
+// 1. JSON-like one-liners: rows to bytes and back (USER-GUIDE 4.1).
 const bytes = JAZMIN.stringify([{ id: 1, name: 'Ann' }, { id: 2, name: 'Bob' }]);
 console.log('1.', JAZMIN.parse(bytes));
 
-// 2. Schema, indexes, metadata and encryption
+// 2. Schema, indexes, metadata and encryption (USER-GUIDE 4.2).
 const key = JazminKey.generate();
 write(file, [
   { id: 1, name: 'Ann Johnson', country: 'ZA', balance: '1520.75', joined: new Date('2024-01-02') },
@@ -34,19 +34,19 @@ write(file, [
   key,
 });
 
-// 3. Query with the GraphQL-style filter language
+// 3. Query with the GraphQL-style filter language, and see the plan (USER-GUIDE 8.1, 9.6).
 const reader = open(file, { key: key.export() });
 console.log('2.', reader.columns.map((c) => `${c.name}:${c.type}`).join(', '), reader.metadata);
 for (const row of reader.find({ country: 'ZA', name: { icontains: 'ndlovu' } })) console.log('3.', row);
 console.log('   plan:', reader.explain({ id: 3 }));
 
-// 4. Export, paging
+// 4. Export to JSON and CSV, and paging (USER-GUIDE 11, 9.7).
 console.log('4.', toJSON(reader, { filter: { id: { gte: 2 } }, select: ['id', 'name'] }));
 exportFile(reader, 'csv', path.join(dir, 'customers.csv'));
 console.log('   page 2:', [...reader.rows({ offset: 1, limit: 1 })].map((r) => r.id));
 reader.close();
 
-// 5. Streaming writer for large data (constant memory)
+// 5. Streaming writer for large data, in constant memory (USER-GUIDE 4.4).
 const big = path.join(dir, 'big.jzm');
 const writer = new JazminWriter(big, {
   columns: [{ name: 'id', type: 'int', nullable: false, index: 'sorted' }, { name: 'reading', type: 'float' }],
@@ -58,11 +58,11 @@ const bigReader = open(big);
 console.log(`5. 1,000,000 rows in ${Math.round(fs.statSync(big).size / 1024)} KB;`, [...bigReader.find({ id: 765432 })][0]);
 bigReader.close();
 
-// 6. CSV in
+// 6. CSV in: column types inferred (USER-GUIDE 11).
 const fromCsv = open(fromCSV('sku,qty\r\nA1,3\r\nB2,\r\n', null));
 console.log('6.', fromCsv.columns.map((c) => `${c.name}:${c.type}`), [...fromCsv.rows()]);
 
-// 7. Append small changes cheaply, then compact when you choose
+// 7. Append small changes cheaply, then compact when you choose (USER-GUIDE 17).
 const appended = append(file, {
   key,
   insert: [{ id: 4, name: 'Lerato Mokoena', country: 'ZA', balance: '12.00', joined: new Date('2026-01-05') }],
@@ -71,7 +71,7 @@ const appended = append(file, {
 console.log('7.', appended);
 console.log('   compacted:', compact(file, { key }));
 
-// 8. One file, many keys, each for a limited time: Bob for 2 hours (offline),
+// 8. One file, many keys, each for a limited time (USER-GUIDE 15, 18): Bob for 2 hours (offline),
 //    Sally for 14 days (online - she also needs an unlock token from your key service).
 const owner = JazminKey.generate();
 const bob = owner.createAccessKey();
@@ -102,7 +102,7 @@ try {
   sallyView.close();
 }
 
-// 9. Export shapes: nested JSON/XML from flat rows - one entry per client (details taken once), with totals.
+// 9. Export shapes (USER-GUIDE 21.1): nested JSON/XML from flat rows - one entry per client (details taken once), with totals.
 const statements = open(write(null, [
   { client: 'C1', name: 'ABC Corp', date: new Date('2025-03-01'), amount: 1000 },
   { client: 'C2', name: 'Test Ltd', date: new Date('2025-03-02'), amount: 20000 },
@@ -119,7 +119,7 @@ const shape = {
 console.log('9.', toJSON(statements, { shape }));
 console.log(toXML(statements, { shape })); // <export><clients><client><id>C1</id>...
 
-// 10. Async: rows from an async source (e.g. a database cursor), and non-blocking reads for servers.
+// 10. Async (USER-GUIDE 22): rows from an async source (e.g. a database cursor), and non-blocking reads for servers.
 async function* cursor() {
   for (let i = 0; i < 1000; i++) yield { id: i, amount: i / 4 };
 }
@@ -431,6 +431,7 @@ namesReader.close();
 // 31. [ 'Apple', 'émile', 'file1', 'File2', 'file10' ] [ { column: 'name', nocase: true, natural: true } ]
 
 // 32. A masked column (USER-GUIDE 15.7): a key granted it sees what the owner lets it show, until it unlocks the column.
+// Exports give it as one column, as viewers show it: masked unless asked for its revealed values (revealMasked).
 const payOwner = JazminKey.generate();
 const payClerk = payOwner.createAccessKey();
 const pay = write(null, [{ id: 1, name: 'Thandi', account: '4821 0393 7712 4821' }], {
@@ -441,7 +442,11 @@ const payView = open(pay, { key: payClerk });
 const before32 = [...payView.rows()][0];
 payView.unlock('pay', { password: 'correct horse battery staple' });
 console.log('32.', before32, '->', [...payView.rows()][0].account);
+const masked32 = exportString(payView, 'csv', { revealMasked: false }); // as it shows, even once unlocked
+const revealed32 = exportString(payView, 'csv', { revealMasked: ['account'] }); // or true: every unlocked column
+console.log('    export:', JSON.stringify(masked32), '->', JSON.stringify(revealed32));
 payView.close();
 // 32. { id: 1, name: 'Thandi', account_shown: '•••• •••• •••• 4821' } -> 4821 0393 7712 4821
+//     export: "id,name,account\r\n1,Thandi,•••• •••• •••• 4821\r\n" -> "id,name,account\r\n1,Thandi,4821 0393 7712 4821\r\n"
 
 fs.rmSync(dir, { recursive: true, force: true });

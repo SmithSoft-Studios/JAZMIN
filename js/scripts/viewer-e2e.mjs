@@ -296,7 +296,22 @@ const SAMPLE = (() => {
     .map((s) => [s.segment, `−${rand(Math.abs(s.spent))}`, s.payments.toLocaleString('en-US')]); // the pages' minus sign
   bankTransactions.close();
   clients.close();
+  // The masked payroll (masked.html): its exports as the library gives them to the clerk's key, masked, and with the
+  // values the file lets viewers export revealed once the lock is open.
+  const maskedKeys = fs.readFileSync(path.join(temp, 'sample/data/masked-keys.js'), 'utf8');
+  const maskedDemo = JSON.parse(maskedKeys.slice(maskedKeys.indexOf('{'), maskedKeys.lastIndexOf('}') + 1));
+  const payroll = open(path.join(temp, 'sample/data/payroll-masked.jzm'), { key: maskedDemo.key });
+  const masked = { rows: payroll.rowCount, csv: exportString(payroll, 'csv', { revealMasked: false }) };
+  payroll.unlock(maskedDemo.lock, { password: maskedDemo.password });
+  Object.assign(masked, {
+    unlockedCsv: exportString(payroll, 'csv', { revealMasked: false }),
+    revealedCsv: exportString(payroll, 'csv', { revealMasked: ['email', 'account', 'salary'] }),
+    revealedJson: exportString(payroll, 'json', { revealMasked: ['email', 'account', 'salary'], pretty: true }),
+    firstSalary: [...payroll.rows({ limit: 1 })][0].salary,
+  });
+  payroll.close();
   return {
+    masked,
     statementRows: rows.length,
     closing: rand(closing),
     coffee: rows.filter((r) => /coffee/i.test(r.merchant)).length,
@@ -1200,6 +1215,27 @@ for (const name of chosen) {
     await waitFor(page, `!!document.getElementById('open')`, 'the shared page');
     await page.evaluate(`(document.getElementById('open').click(), true)`);
     const people = await waitFor(page, `!document.getElementById('people').hidden && [...document.querySelectorAll('.person')].map((p) => ({ who: p.querySelector('h2').textContent, rows: p.querySelector('.rows').textContent, columns: [...p.querySelectorAll('.columns-chips .chip:not(.off)')].map((c) => c.textContent), shapes: [...p.querySelectorAll('.shape-chips .chip')].map((c) => c.textContent), files: p.querySelectorAll('.file-list li').length, table: [...p.querySelectorAll('.rows-table th')].map((th) => th.textContent), shown: p.querySelectorAll('.rows-table tbody tr').length, hint: p.querySelector('.rows-hint').textContent, branches: p.querySelector('.rows-table th').textContent === 'branch' ? [...new Set([...p.querySelectorAll('.rows-table tbody tr')].map((tr) => tr.cells[0].textContent))] : null }))`, 'the three keys');
+    // The masked payroll: masked with the key alone (the masked export equal to the revealed one), then unlocked: a value
+    // revealed with its countdown, and both exports as the library gives them, in CSV and in JSON.
+    await page.navigate(sample('masked.html'));
+    await waitFor(page, `!!document.getElementById('open')`, 'the masked page');
+    await page.evaluate(`(document.getElementById('open').click(), true)`);
+    const payrollExports = `({ masked: exported?.masked, revealed: exported?.revealed })`;
+    const payrollShown = await waitFor(page, `/rows ·/.test(${text('masked-note')}) && /rows ·/.test(${text('revealed-note')}) && { rows: ${text('rows')}, lock: ${text('lock-state')}, buttons: document.querySelectorAll('#payroll button.reveal').length, cells: [...document.querySelectorAll('#payroll tbody tr:first-child td')].map((td) => td.textContent), why: !document.getElementById('revealed-why').hidden, masked: document.getElementById('masked-output').textContent.split(String.fromCharCode(10))[0] }`, 'the payroll masked');
+    const payrollLocked = await page.evaluate(payrollExports);
+    await page.evaluate(`(document.getElementById('unlock').requestSubmit(), true)`);
+    await waitFor(page, `/^Unlocked in /.test(${text('lock-state')}) && document.querySelectorAll('#payroll button.reveal').length > 0`, 'the payroll unlocked');
+    await page.evaluate(`(document.querySelector('#payroll tbody tr:first-child td[data-column="salary"] button.reveal').click(), true)`);
+    const payrollRevealed = await waitFor(page, `document.querySelector('#payroll .countdown') && { value: document.querySelector('#payroll .revealed').textContent, countdown: document.querySelector('#payroll .countdown').textContent }`, 'a salary revealed');
+    const payrollUnlocked = await waitFor(page, `exported?.revealed !== ${JSON.stringify(SAMPLE.masked.csv)} && ${payrollExports}`, 'the unlocked exports');
+    await page.evaluate(`(document.querySelector('#formats [data-format="json"]').click(), true)`);
+    const payrollJson = await waitFor(page, `exported?.revealed?.startsWith('[') && exported.revealed`, 'the JSON export');
+    const payrollOk = payrollShown.rows === `${SAMPLE.masked.rows} of ${SAMPLE.masked.rows}` && payrollShown.lock === 'Locked' && payrollShown.buttons === 0 && payrollShown.why
+      && payrollShown.cells[7] === '••••' && /^a•+@harbourco\.co\.za$/.test(payrollShown.cells[4]) && payrollShown.masked.trim() === 'staff,name,branch,grade,email,account,id_number,salary'
+      && payrollLocked.masked === SAMPLE.masked.csv && payrollLocked.revealed === SAMPLE.masked.csv
+      && payrollRevealed.value === `R ${Number(SAMPLE.masked.firstSalary).toLocaleString('en-US', { minimumFractionDigits: 2 })}` && /^1[45] s$/.test(payrollRevealed.countdown)
+      && payrollUnlocked.masked === SAMPLE.masked.unlockedCsv && payrollUnlocked.revealed === SAMPLE.masked.revealedCsv && payrollJson === SAMPLE.masked.revealedJson;
+    results.push({ browser: name, label: `the demo gallery: masked columns, unlocked with the lock's password, and their exports masked and revealed, as the library gives them${fromDisk ? ', from disk' : ' (over HTTP)'}`, ok: payrollOk, problems: payrollOk ? [] : [JSON.stringify({ payrollShown, payrollRevealed, payrollLocked: { masked: payrollLocked.masked?.slice(0, 200), revealed: payrollLocked.revealed?.slice(0, 200) }, payrollUnlocked: { masked: payrollUnlocked.masked?.slice(0, 200), revealed: payrollUnlocked.revealed?.slice(0, 200) }, json: payrollJson?.slice(0, 200), expected: { csv: SAMPLE.masked.csv.slice(0, 200), revealed: SAMPLE.masked.revealedCsv.slice(0, 200) } })] });
     await page.navigate(sample('documents.html'));
     await waitFor(page, `!!document.getElementById('open-report')`, 'the documents page');
     await page.evaluate(`(window.statuses = [], addEventListener('message', (e) => e.data?.type === 'jazmin:status' && statuses.push(e.data.state + ' ' + e.data.name)), document.getElementById('open-report').click(), true)`);

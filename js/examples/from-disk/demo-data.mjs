@@ -192,3 +192,46 @@ export function staff() {
   }
   return rows;
 }
+
+/** The check digit of a South African ID number (the Luhn rule, over its first 12 digits). */
+function luhn(digits) {
+  let sum = 0;
+  for (let i = 0; i < digits.length; i++) {
+    let d = Number(digits[digits.length - 1 - i]);
+    if (i % 2 === 0) d = d * 2 > 9 ? d * 2 - 9 : d * 2;
+    sum += d;
+  }
+  return String((10 - (sum % 10)) % 10);
+}
+
+/**
+ * A month's payroll for 40 staff in four branches, for a file whose private columns are masked: each person's email,
+ * bank account and ID number, and the directors' salaries (the other salaries aren't secret in this company).
+ */
+export function payroll() {
+  const rnd = random(4021);
+  const digits = (n) => Array.from({ length: n }, () => Math.floor(rnd() * 10)).join('');
+  const grades = [['Director', 1, 168000], ['Manager', 2, 79000], ['Senior', 2, 52000], ['Officer', 3, 33500], ['Clerk', 2, 19800]];
+  const used = new Set();
+  const rows = [];
+  for (const branch of ['Cape Town', 'Johannesburg', 'Durban', 'Pretoria']) {
+    for (const [grade, count, pay] of grades) {
+      for (let n = 0; n < count; n++) {
+        let name;
+        do name = `${pick(rnd, FIRST_NAMES)} ${pick(rnd, LAST_NAMES)}`; while (used.has(name));
+        used.add(name);
+        const [first, ...last] = name.toLowerCase().split(' ');
+        const born = new Date(Date.UTC(1966 + Math.floor(rnd() * 36), Math.floor(rnd() * 12), 1 + Math.floor(rnd() * 28)));
+        const id = `${born.toISOString().slice(2, 10).replaceAll('-', '')}${digits(4)}08`;
+        rows.push({
+          staff: `HC-${String(rows.length + 101)}`, name, branch, grade,
+          email: `${first}.${last.join('')}@harbourco.co.za`,
+          account: `${digits(4)} ${digits(3)} ${digits(4)}`,
+          id_number: id + luhn(id),
+          salary: money(Math.round(pay * (0.9 + rnd() * 0.25) / 100) * 100),
+        });
+      }
+    }
+  }
+  return rows;
+}

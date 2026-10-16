@@ -17,12 +17,12 @@ var customers = new List<Customer>
     new() { Id = 3, Name = "Thabo Ndlovu", Country = "ZA", Tier = Tier.Bronze, Balance = 0m, Joined = new DateTime(2025, 6, 7, 0, 0, 0, DateTimeKind.Utc) },
 };
 
-// --- 1. Newtonsoft-style one-liners ------------------------------------------------------------
+// --- 1. Newtonsoft-style one-liners (USER-GUIDE 6.1) -------------------------------------------------
 byte[] bytes = JazminConvert.SerializeObject(customers);
 List<Customer> back = JazminConvert.DeserializeObject<List<Customer>>(bytes)!;
 Console.WriteLine($"1. Round-tripped {back.Count} customers in {bytes.Length} bytes");
 
-// --- 2. Encrypted file + LINQ query that uses indexes --------------------------------------------
+// --- 2. Encrypted file + LINQ query that uses indexes (USER-GUIDE 8.3) -------------------------------
 var key = JazminKey.Generate();
 Console.WriteLine($"2. Store this key safely: {key.Export()[..12]}...");
 new JazminSerializer(new JazminSerializerSettings { Key = key, Metadata = new JsonObject { ["source"] = "crm" } })
@@ -35,14 +35,14 @@ using (var reader = JazminReader.Open(path, new JazminReadOptions { Key = key })
     Console.WriteLine($"   Plan for Id == 3: {reader.Explain(JazminFilter.Eq("Id", 3))}");
 }
 
-// --- 3. Untyped rows and the JSON filter language (same as JavaScript / GraphQL "where") --------
+// --- 3. Untyped rows and the JSON filter language, as in JavaScript and GraphQL "where" (USER-GUIDE 8.1) ---
 using (var reader = JazminReader.Open(path, new JazminReadOptions { Key = key }))
 {
     foreach (var row in reader.Find("""{ "Name": { "icontains": "ndlovu" } }"""))
         Console.WriteLine($"3. Row {row.RowId}: {row["Name"]} joined {row["Joined"]:yyyy-MM-dd}");
 }
 
-// --- 4. Streaming writer for very large data (constant memory) ------------------------------------
+// --- 4. Streaming writer for very large data (constant memory) (USER-GUIDE 6.5) ----------------------
 var bigPath = Path.Combine(dir, "big.jzm");
 var columns = new[]
 {
@@ -59,12 +59,12 @@ using (var reader = JazminReader.Open(bigPath))
     Console.WriteLine($"4. 1,000,000 rows in {new FileInfo(bigPath).Length / 1024:N0} KB; id 765432 -> {row["reading"]}");
 }
 
-// --- 5. Convert to and from JSON / CSV / XML --------------------------------------------------------
+// --- 5. Convert to and from JSON / CSV / XML (USER-GUIDE 11) -----------------------------------------
 var fromJson = JazminConvert.FromJson("""[{"sku":"A1","qty":3},{"sku":"B2","qty":null}]""");
 Console.WriteLine("5. " + JazminConvert.ToCsv(fromJson).Replace("\r\n", " | "));
 Console.WriteLine("   " + JazminConvert.ToJson(fromJson, new JazminSerializerSettings { NullValueHandling = NullValueHandling.Ignore }));
 
-// --- 6. Append small changes cheaply, then compact when you choose ---------------------------------
+// --- 6. Append small changes cheaply, then compact when you choose (USER-GUIDE 17) -------------------
 var linesPath = Path.Combine(dir, "lines.jzm");
 var lineColumns = new[] { new JazminColumn("section", JazminType.String), new JazminColumn("amount", JazminType.Float) };
 using (var writer = JazminWriter.Create(linesPath, lineColumns, new JazminWriteOptions { Key = key }))
@@ -82,7 +82,7 @@ Console.WriteLine($"6. Appended: {appended.Inserted} inserted, {appended.Deleted
 var compacted = JazminFile.Compact(linesPath, key);
 Console.WriteLine($"   Compacted: {compacted.BytesBefore:N0} -> {compacted.BytesAfter:N0} bytes");
 
-// --- 7. One file, many keys, each for a limited time ----------------------------------------------
+// --- 7. One file, many keys, each for a limited time (USER-GUIDE 15, 18) -----------------------------
 // Bob: 2 hours (offline). Sally: 14 days (online - she also needs an unlock token from your key service).
 var owner = JazminKey.Generate();
 var bob = owner.CreateAccessKey();
@@ -120,7 +120,7 @@ catch (JazminUnlockRequiredException e)
     Console.WriteLine($"   Sally sees {sallyView.Rows().Count()} row(s) until {sallyView.Access!.Expires:u}");
 }
 
-// --- 8. Export shapes: nested JSON / XML from flat rows (details taken once per client, with totals) -----
+// --- 8. Export shapes: nested JSON / XML from flat rows (details taken once per client, with totals) (USER-GUIDE 21.1) ---
 var statementsPath = Path.Combine(dir, "statements.jzm");
 using (var writer = JazminWriter.Create(statementsPath,
     [new("client", JazminType.String), new("name", JazminType.String), new("date", JazminType.DateTime), new("amount", JazminType.Float)],
@@ -146,7 +146,7 @@ using (var statements = JazminReader.Open(statementsPath))
     Console.WriteLine(shape.ToXml(statements));
 }
 
-// --- 9. Async: write from an async source, read without blocking the calling thread ---------------
+// --- 9. Async: write from an async source, read without blocking the calling thread (USER-GUIDE 22) ---
 static async IAsyncEnumerable<object?[]> Cursor()
 {
     for (var i = 0; i < 1000; i++)
@@ -193,7 +193,7 @@ using (var linesReader = clientsReader.OpenTable("transactions")) // same open f
     Console.WriteLine($"10. Tables {string.Join(", ", clientsReader.Tables)}: {name} has {linesReader.Count(JazminFilter.Eq("clientId", "C1"))} lines");
 }
 
-// --- 11. Newtonsoft-style settings: camelCase names, a converter for your own type, no stored defaults --
+// --- 11. Newtonsoft-style settings: camelCase names, a converter for your own type, no stored defaults (USER-GUIDE 6.3) ---
 var shopSettings = new JazminSerializerSettings
 {
     NamingStrategy = JazminNamingStrategy.CamelCase,
@@ -218,7 +218,7 @@ var rotation = JazminFile.RotateKey(path, new JazminKeyRotation { Key = key, New
 using (var rekeyed = JazminReader.Open(path, new JazminReadOptions { Key = newKey }))
     Console.WriteLine($"13. {rotation.Sections} sections encrypted again; {rekeyed.RowCount} rows open with the new key");
 
-// --- 14. Rows as UTF-8 JSON, written as they are read (for HTTP responses and System.Text.Json) ------
+// --- 14. Rows as UTF-8 JSON, written as they are read (for HTTP responses and System.Text.Json) (USER-GUIDE 11.2) ---
 using (var reader = JazminReader.Open(path, new JazminReadOptions { Key = newKey }))
 using (var json = new JazminJsonStream(reader, JazminFilter.Eq("Country", "ZA")))
 using (var text = new StreamReader(json))
@@ -625,7 +625,18 @@ using (var payView = JazminReader.Open(payPath, new JazminReadOptions { AccessKe
     var before = payView.Rows().First()["account_shown"];
     payView.Unlock("pay", password: "correct horse battery staple");
     Console.WriteLine($"33. {before} -> {payView.Rows().First()["account"]}");
+    // Exports give it as one column, as viewers show it: masked unless asked for its revealed values. ExportView gives
+    // the columns and rows for CsvFormat, JsonFormat and XmlFormat (JazminJsonStream uses it too).
+    string Csv(bool revealMasked)
+    {
+        var (columns, rows) = payView.ExportView(revealMasked: revealMasked);
+        using var text = new StringWriter();
+        CsvFormat.Write(text, columns, rows);
+        return text.ToString().Replace("\r", "\\r").Replace("\n", "\\n");
+    }
+    Console.WriteLine($"    export: {Csv(revealMasked: false)} -> {Csv(revealMasked: true)}");
     // 33. •••• •••• •••• 4821 -> 4821 0393 7712 4821
+    //     export: id,name,account\r\n1,Thandi,•••• •••• •••• 4821\r\n -> id,name,account\r\n1,Thandi,4821 0393 7712 4821\r\n
 }
 
 Directory.Delete(dir, true);

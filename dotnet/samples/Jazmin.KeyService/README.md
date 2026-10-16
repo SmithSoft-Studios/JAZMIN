@@ -1,5 +1,9 @@
 # Jazmin.KeyService — unlock tokens with 2FA
 
+> **What this shows:** a key service that gives out unlock tokens only after a code from an authenticator app, for
+> online access keys and for locks (locked files and masked columns), with the viewer's sign-in window.
+> **Features:** online keys and 2FA (USER-GUIDE §18.5), locks (§19.6, §15.7). The from-disk page `two-factor.html` uses it.
+
 A sample ASP.NET service that issues JAZMIN **unlock tokens** for **online**
 grants, only after the user enters a valid code from an authenticator app
 (Google/Microsoft Authenticator and others). Codes are checked with

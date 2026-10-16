@@ -42,3 +42,11 @@ tfoot td { font-weight: 700; border-top: 2px solid var(--ink); border-bottom: 0;
   .kpis { grid-template-columns: repeat(4, 1fr); }
   .two { grid-template-columns: 1fr 1fr; }
 }
+
+/* What this page shows, and the feature (as in the from-disk sample's pages); not printed */
+.about { margin: 1rem 0 0; padding: 0.6rem 0.9rem; border-left: 4px solid var(--accent); border-radius: 8px; background: color-mix(in srgb, var(--accent) 9%, #fff); font-size: 0.9rem; }
+.about > strong { display: block; color: var(--accent); font-size: 0.74rem; letter-spacing: 0.05em; text-transform: uppercase; }
+.about p { margin: 0.15rem 0 0; }
+.about .ref { white-space: nowrap; }
+.about .feature { color: var(--muted); font-size: 0.82rem; }
+@media print { .about { display: none !important; } }
