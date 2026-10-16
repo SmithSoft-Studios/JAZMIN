@@ -1114,7 +1114,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             Metadata = (_metadataOut ?? _options.Metadata ?? new JsonObject()).ToJsonString(),
             Tables = tables,
             Keyring = _keys?.Keyring,
-            Files = _fileEntries.Count > 0 || _shapes.Count > 0 ? WriteFileDirectories(segment) : null,
+            // Package settings are kept with the file directories, also in a file with no stored files (masks, online).
+            Files = _fileEntries.Count > 0 || _shapes.Count > 0 || (_packageSet ? _options.Package is not null : _packageJson is not null) ? WriteFileDirectories(segment) : null,
             Deltas = deltas,
         };
 

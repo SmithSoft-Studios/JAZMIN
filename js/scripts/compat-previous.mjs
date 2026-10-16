@@ -51,10 +51,11 @@ write(file('locks.jzm'), rows, {
   files: [{ path: 'readme.txt', content: 'open' }, { path: 'contract.pdf', content: 'locked', lock: 'contracts' }],
   locks: { contracts: { password: 'pw', iterations: 1000 } },
 });
-// Masked columns (7.6.8): account masked with its format kept.
+// Masked columns (7.6.8): account masked with its format kept, and viewer settings in a file with no stored files.
 write(file('masks.jzm'), rows, {
   columns: columns.map((c) => (c.name === 'account' ? { ...c, mask: { lock: 'pay', show: { keepFormat: true, last: 4 } } } : c)),
   key: owner, access: { grants: [{ key: reader }] }, locks: { pay: { password: 'pw', iterations: 1000 } },
+  package: { masks: { account: { seconds: 10 } } },
 });
 fs.writeFileSync(file('keys.json'), JSON.stringify(keys, null, 2));
 
