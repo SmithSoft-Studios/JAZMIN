@@ -359,6 +359,28 @@ write(path.join(temp, 'online.jzm'), [{ n: 1 }], {
   package: { entry: 'index.html', title: 'Online', allowedOrigins: ['https://cdn.jsdelivr.net', 'https://fonts.googleapis.com'], online: 'required' },
 });
 
+// Document pages (spec 6.8): three tabs, each reporting what it reads; the Summary needs the network, Sales has no
+// Print; the document's own files (app.js, fonts/) and its pages are kept out of the Files tab.
+const pageHtml = (name) => `<!doctype html><title>${name}</title><body><p>${name}</p><script>
+  jazmin.query({}, { limit: 1000 }).then((r) => jazmin.ready({ page: '${name}', table: jazmin.table, rows: (r.rows || r).length, print: jazmin.actions.print }));
+</script></body>`;
+write(path.join(temp, 'pages.jzm'), { clients: [{ id: 1 }, { id: 2 }], sales: [{ id: 1 }, { id: 2 }, { id: 3 }] }, {
+  tables: [{ name: 'clients', columns: [{ name: 'id', type: 'int' }] }, { name: 'sales', columns: [{ name: 'id', type: 'int' }] }],
+  files: [
+    { path: 'clients.html', content: pageHtml('clients') }, { path: 'sales.html', content: pageHtml('sales') },
+    { path: 'summary.html', content: pageHtml('summary') }, { path: 'app.js', content: '// the pages\' script' },
+    { path: 'fonts/inter.woff2', content: 'font' }, { path: 'terms.pdf', content: 'terms' },
+  ],
+  package: {
+    pages: [
+      { path: 'clients.html', title: 'Clients', table: 'clients' },
+      { path: 'sales.html', title: 'Sales', table: 'sales', actions: { print: false } },
+      { path: 'summary.html', title: 'Summary', online: 'required' },
+    ],
+    files: ['app.js', 'fonts/'], allowedOrigins: ['https://cdn.jsdelivr.net'],
+  },
+});
+
 // Masked columns (spec 7.6.8): account masked with its format kept, salary masked only from id 2. Revealed account
 // values show for 2 seconds here (30 by default).
 const maskedOwner = JazminKey.generate();
@@ -734,6 +756,36 @@ for (const name of chosen) {
     results.push({
       browser: name, label: "a lock's key service: Sign in opens its window, which posts the token back, and the file opens; other origins are ignored", ok: serviceOk,
       problems: serviceOk ? [] : [JSON.stringify({ signInButton, forgedIgnored, serviceUnlocked, scan })],
+    });
+
+    // A document of pages: a tab each, in order, each reading its own table; offline only the page that needs the
+    // network waits; the pages and the document's own files are left out of the Files tab.
+    await page.navigate(`${base}/js/viewer/index.html`);
+    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+    await page.evaluate(`(Object.defineProperty(navigator, 'onLine', { get: () => window.jzOnline !== false, configurable: true }), window.jzOnline = false, true)`);
+    await page.evaluate(`fetch('/e2e/pages.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'pages.jzm')).then(() => true)`);
+    const pageReady = (what) => waitFor(page, `JazminViewer.state.lastReady && JazminViewer.state.lastReady.info && JazminViewer.state.lastReady.info.page === '${what}'`, `the ${what} page`);
+    await pageReady('clients');
+    const pgTabs = await page.evaluate(`[...document.querySelectorAll('#jz-pages button')].map((b) => b.textContent + (b.getAttribute('aria-current') ? '*' : '')).join(', ')`);
+    const pgListed = await page.evaluate(`[...document.querySelectorAll('#jz-files .path')].map((e) => e.textContent).join(', ')`);
+    const pgClients = await page.evaluate(`JazminViewer.state.lastReady.info`);
+    await page.evaluate(`(document.querySelector('#jz-pages button[data-page="sales.html"]').click(), true)`);
+    await pageReady('sales');
+    const pgSales = await page.evaluate(`JazminViewer.state.lastReady.info`);
+    await page.evaluate(`(document.querySelector('#jz-pages button[data-page="summary.html"]').click(), true)`);
+    await waitFor(page, `!document.getElementById('jz-offline').hidden`, 'the Summary waiting for the network');
+    const pgSummary = await page.evaluate(`({ note: document.getElementById('jz-online').textContent, frameHidden: document.getElementById('jz-frame').hidden })`);
+    await page.evaluate(`(document.querySelector('#jz-pages button[data-page="clients.html"]').click(), true)`);
+    await pageReady('clients');
+    const pgBack = await page.evaluate(`document.getElementById('jz-offline').hidden && !document.getElementById('jz-frame').hidden`);
+    await page.evaluate(`(window.jzOnline = true, true)`);
+    const pgPagesOk = pgTabs === 'Clients*, Sales, Summary' && pgListed === 'terms.pdf'
+      && pgClients.table === 'clients' && pgClients.rows === 2 && pgClients.print === true
+      && pgSales.table === 'sales' && pgSales.rows === 3 && pgSales.print === false
+      && pgSummary.note === 'This page needs to be online.' && pgSummary.frameHidden === true && pgBack === true;
+    results.push({
+      browser: name, label: 'document pages: a tab each in order, each with its table and buttons; offline only the page that needs the network waits; its own files unlisted', ok: pgPagesOk,
+      problems: pgPagesOk ? [] : [JSON.stringify({ pgTabs, pgListed, pgClients, pgSales, pgSummary, pgBack })],
     });
 
     // A document that needs the network: the note says so; offline it waits with a message, then shows.

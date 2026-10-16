@@ -141,7 +141,10 @@ test('document pages: package.pages as tabs in order, package.files kept out of 
   refused({ pages: [{ path: 'summary.html', title: 'S', actions: { save: true } }] }, /unknown action 'save' \(print, pdf, image\)/);
   refused({ pages: [{ path: 'summary.html', title: 'S', actions: { print: 'yes' } }] }, /package\.pages\[0\]\.actions\.print must be true or false/);
   refused({ pages: [{ path: 'summary.html', title: 'S', table: 'nope' }] }, /package\.pages\[0\]\.table 'nope' is not a table of the file/);
-  refused({ pages: [{ path: 'summary.html', title: 'S', order: 1 }] }, /unknown setting 'order'/);
+  refused({ pages: [{ path: 'summary.html', title: 'S', order: 1 }] }, /package\.pages\[0\]\.order is only for a page in a file group's directory/);
+  refused({ pages: [{ title: 'S' }] }, /package\.pages\[0\]\.path is required/);
+  refused({ pages: [null] }, /package\.pages\[0\] must be a page: \{ path, title \}/);
+  refused({ pages: [] }, /package\.pages must be a non-empty array/);
   refused({ files: ['nope.js'] }, /package\.files: 'nope\.js' is not one of the stored files/);
   refused({ files: ['icons/'] }, /package\.files: no stored file is in the folder 'icons\/'/);
   refused({ files: ['app.js', 'app.js'] }, /package\.files: 'app\.js' is listed twice/);
@@ -383,4 +386,16 @@ test('list: false is an action; actions can differ by file group, and rewrites k
   check('updated');
   append(file, { key: owner, addFiles: [{ path: 'more.txt', content: 'more', groups: ['D'] }] });
   check('appended');
+});
+
+test('document pages follow renamed tables, and a page\'s table can\'t be removed (spec 6.8)', () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-pages-rename-')), 'two.jzm');
+  write(file, { clients: [{ id: 1 }], sales: [{ id: 1 }] }, {
+    tables: [{ name: 'clients', columns: [{ name: 'id', type: 'int' }] }, { name: 'sales', columns: [{ name: 'id', type: 'int' }] }],
+    files: [{ path: 'c.html', content: 'c' }, { path: 's.html', content: 's' }],
+    package: { pages: [{ path: 'c.html', title: 'Clients', table: 'clients' }, { path: 's.html', title: 'Sales', table: 'sales' }] },
+  });
+  update(file, { renameTables: { sales: 'orders' } });
+  assert.deepEqual(open(file).package.pages.map((p) => p.table), ['clients', 'orders']);
+  assert.throws(() => update(file, { removeTables: ['orders'] }), /package\.pages\[1\]\.table 'orders' is not a table of the file/);
 });

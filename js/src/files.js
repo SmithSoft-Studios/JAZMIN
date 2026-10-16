@@ -195,12 +195,14 @@ export function normalizePackage(settings, paths) {
   }
   // The document's pages, shown as tabs, and its own files, kept out of viewers' lists (spec 6.8).
   if (settings.pages !== undefined) {
-    if (!Array.isArray(settings.pages) || !settings.pages.length) throw new JazminValidationError('package.pages must be a non-empty array of pages');
+    if (!Array.isArray(settings.pages) || !settings.pages.length) throw new JazminValidationError('package.pages must be a non-empty array of pages: { path, title }');
     const seen = new Set();
     out.pages = settings.pages.map((page, i) => {
       const where = `package.pages[${i}]`;
-      if (page === null || typeof page !== 'object' || Array.isArray(page)) throw new JazminValidationError(`${where} must be an object { path, title, online, table, pdf, actions }`);
+      if (page === null || typeof page !== 'object' || Array.isArray(page)) throw new JazminValidationError(`${where} must be a page: { path, title }`);
+      if (page.path === undefined || page.path === null || page.path === '') throw new JazminValidationError(`${where}.path is required`);
       if (typeof page.path !== 'string' || !paths.has(page.path)) throw new JazminValidationError(`${where}.path '${page.path}' is not one of the stored files`);
+      if (page.order !== undefined) throw new JazminValidationError(`${where}.order is only for a page in a file group's directory`);
       if (seen.has(page.path)) throw new JazminValidationError(`package.pages: '${page.path}' is listed twice`);
       seen.add(page.path);
       const { path: _, ...rest } = page;
@@ -239,6 +241,7 @@ const PAGE_ACTIONS = ['print', 'pdf', 'image'];
 export function normalizePageSettings(page, where, origins, withOrder = false) {
   const members = PAGE_SETTINGS.filter((n) => withOrder || n !== 'order');
   if (page === null || typeof page !== 'object' || Array.isArray(page)) throw new JazminValidationError(`${where} must be an object { ${members.join(', ')} }`);
+  if (withOrder && page.path !== undefined) throw new JazminValidationError(`${where}.path is not used: the page is the file itself`);
   for (const name of Object.keys(page)) {
     if (!members.includes(name)) throw new JazminValidationError(`${where}: unknown setting '${name}' (${members.join(', ')})`);
   }
@@ -264,7 +267,7 @@ export function normalizePageSettings(page, where, origins, withOrder = false) {
     }
   }
   if (withOrder && page.order !== undefined) {
-    if (typeof page.order !== 'number' || !Number.isFinite(page.order)) throw new JazminValidationError(`${where}.order must be a number`);
+    if (!Number.isInteger(page.order)) throw new JazminValidationError(`${where}.order must be a whole number`);
     out.order = page.order;
   }
   return out;
@@ -300,7 +303,7 @@ export function readPage(page) {
     const actions = Object.fromEntries(PAGE_ACTIONS.filter((a) => typeof page.actions[a] === 'boolean').map((a) => [a, page.actions[a]]));
     if (Object.keys(actions).length) out.actions = actions;
   }
-  if (typeof page.order === 'number' && Number.isFinite(page.order)) out.order = page.order;
+  if (Number.isInteger(page.order)) out.order = page.order;
   return out;
 }
 

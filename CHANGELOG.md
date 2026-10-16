@@ -7,6 +7,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 - **Fixed: package settings in a file with no stored files are kept (both libraries).** Writers wrote the package
   settings only with stored files or saved shapes, so settings that make sense alone (`masks`, `online`) were dropped
   without a word. They are now written, appended and updated; releases 1.0 to 1.6 read such files as before.
+- **Document pages (JavaScript, the browser reader and the web viewer; spec 6.8).** `package.pages` lists a
+  document's pages in order, each with a `title` and optionally its own `online`, `table` (the table its queries read
+  when they name none), `pdf` and `actions` (over its file's); `entry` is one of them (the first when left out).
+  `package.files` names the document's own files (paths, or folders ending in `/`). In shared files a file's `page`
+  marks a page in its file groups' directories, so only their keys know of it (`files[i].page`). Writers check them;
+  append, update and compact keep them, and follow renamed tables. The viewer shows a tab per page, each with its own
+  table, buttons and network note: offline, only a page that needs the network waits. Its Files tab leaves out the
+  pages and the document's own files. Releases 1.0 to 1.6 show `entry` alone and list every file.
 - **The web viewer exports masked columns masked (#190).** Once unlocked, Export still writes what values show unless
   **Include revealed values** is ticked in its menu (unticked by default); the file's `package.masks.<column>.export:
   false` keeps a column masked in exports whatever is chosen (both libraries check and keep it). A shape that reads an

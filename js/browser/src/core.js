@@ -755,7 +755,7 @@
       const actions = Object.fromEntries(['print', 'pdf', 'image'].filter((a) => typeof page.actions[a] === 'boolean').map((a) => [a, page.actions[a]]));
       if (Object.keys(actions).length) out.actions = actions;
     }
-    if (typeof page.order === 'number' && Number.isFinite(page.order)) out.order = page.order;
+    if (Number.isInteger(page.order)) out.order = page.order;
     return out;
   }
 
