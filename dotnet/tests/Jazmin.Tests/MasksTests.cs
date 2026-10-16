@@ -399,7 +399,7 @@ public class MasksTests
             Key = owner, Access = new JazminAccessOptions { Grants = [new JazminGrant(owner.CreateAccessKey())] }, Locks = Locks(),
             Files = [new JazminFileInput("index.html", "<p>Staff</p>"u8.ToArray())], Package = package,
         };
-        var view = new JazminMaskView { Reveal = JazminMaskReveal.Column, Seconds = 0, WhenHidden = true, IdleSeconds = 120 };
+        var view = new JazminMaskView { Reveal = JazminMaskReveal.Column, Seconds = 0, WhenHidden = true, IdleSeconds = 120, Export = false };
         var bytes = Write(Columns(), Staff, Options(new JazminPackage { Entry = "index.html", Masks = new Dictionary<string, JazminMaskView> { ["salary"] = view } }));
         using (var r = JazminReader.Open(bytes, new JazminReadOptions { Key = owner }))
             Assert.Equal(view, r.Package!.Masks!["salary"]);

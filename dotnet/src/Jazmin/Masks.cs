@@ -119,6 +119,9 @@ public sealed record JazminMaskView
 
     /// <summary>Masked again after this many seconds without input (0 to 86400; 0: never).</summary>
     public int? IdleSeconds { get; init; }
+
+    /// <summary>False: viewers never export its revealed values (an export has what they show). Unset: when asked.</summary>
+    public bool? Export { get; init; }
 }
 
 /// <summary>A masked column as the writer keeps it: its group, lock, shown rule, added columns and rows filter (JSON).</summary>
@@ -370,6 +373,7 @@ internal static class Masks
             if (view.Seconds is { } seconds) settings["seconds"] = CheckSeconds(seconds, $"{where}.seconds");
             if (view.WhenHidden is { } hidden) settings["whenHidden"] = hidden;
             if (view.IdleSeconds is { } idle) settings["idleSeconds"] = CheckSeconds(idle, $"{where}.idleSeconds");
+            if (view.Export is { } export) settings["export"] = export;
             json[column] = settings;
         }
         return json;
@@ -393,6 +397,7 @@ internal static class Masks
                 Seconds = Seconds(s["seconds"]),
                 WhenHidden = s["whenHidden"] is JsonValue h && h.TryGetValue<bool>(out var b) ? b : null,
                 IdleSeconds = Seconds(s["idleSeconds"]),
+                Export = s["export"] is JsonValue e && e.TryGetValue<bool>(out var exports) ? exports : null,
             };
         }
         return masks;

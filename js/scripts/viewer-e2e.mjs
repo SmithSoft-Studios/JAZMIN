@@ -777,16 +777,39 @@ for (const name of chosen) {
     const secondShown = await page.evaluate(table);
     await waitFor(page, `!document.querySelector('#jz-rows td.revealed')`, 'the revealed value masked again after 2 seconds');
     const reveals = await page.evaluate(`JSON.stringify(window.jzReveals.map((m) => [m.column, m.lock, m.scope, 'value' in m]))`);
+    // Exports: masked until the person asks for the revealed values (the Export menu's box, unticked).
+    await page.evaluate(NO_DOWNLOADS);
+    const exportCsv = async (reveal) => {
+      await page.evaluate(`(document.getElementById('jz-export-reveal').checked = ${reveal}, window.jzSaved = null,
+        document.querySelector('#jz-export-menu [data-format="csv"]').click(), true)`);
+      return (await waitFor(page, SAVED_TEXT, 'the CSV export')).text.trim().split(String.fromCharCode(10)).map((l) => l.trim()).join(' / ');
+    };
+    const revealRow = await page.evaluate(`document.getElementById('jz-export-reveal-row').hidden ? null
+      : [document.getElementById('jz-export-reveal').checked, document.getElementById('jz-export-reveal-text').textContent]`);
+    const maskedCsv = await exportCsv(false);
+    const revealedCsv = await exportCsv(true);
+    // A shape reads columns directly: one that reads an unlocked masked column is refused unless the box is ticked.
+    await page.evaluate(`(document.getElementById('jz-export-reveal').checked = false, document.getElementById('jz-shape-open').click(),
+      document.getElementById('jz-shape-text').value = ${JSON.stringify(JSON.stringify({ $rows: { name: 'name', account: 'account' } }))},
+      document.getElementById('jz-shape-text').dispatchEvent(new Event('input')), true)`);
+    await waitFor(page, `document.getElementById('jz-shape-check').className.includes('ok')`, 'the shape check');
+    await page.evaluate(`(window.jzSaved = null, document.getElementById('jz-shape-json').click(), true)`);
+    const shapeRefused = await waitFor(page, `/masked column whose values aren't exported/.test(document.getElementById('jz-export-note').textContent)`, 'the shaped export refused');
+    await page.evaluate(`(document.getElementById('jz-shape').open && document.getElementById('jz-shape').close(), true)`);
     const maskedOk = maskedBefore.head === 'id | account 🔒 Unlock… | name | salary 🔒 Unlock…'
       && maskedBefore.rows.join(' / ') === '1 | •••• •••• •••• 4821 | Ann | 52000.00 / 2 | •••• •••• •••• 4444 | Ben | ••••'
       && maskedUnlocked.head === 'id | account | name | salary'
       && maskedUnlocked.rows.join(' / ') === '1 | •••• •••• •••• 4821 Reveal | Ann | 52000.00 / 2 | •••• •••• •••• 4444 Reveal | Ben | •••• Reveal'
       && firstShown.rows[0] === '1 | 4821 0393 7712 4821 Hide (2 s) | Ann | 52000.00'
       && secondShown.rows.join(' / ') === '1 | •••• •••• •••• 4821 Reveal | Ann | 52000.00 / 2 | 1111 2222 3333 4444 Hide (2 s) | Ben | •••• Reveal'
-      && reveals === JSON.stringify([['account', 'pay', 'value', false], ['account', 'pay', 'value', false]]);
+      && reveals === JSON.stringify([['account', 'pay', 'value', false], ['account', 'pay', 'value', false]])
+      && JSON.stringify(revealRow) === JSON.stringify([false, 'Include revealed values (account, salary)'])
+      && maskedCsv === 'id,account,name,salary / 1,•••• •••• •••• 4821,Ann,52000.00 / 2,•••• •••• •••• 4444,Ben,••••'
+      && revealedCsv === 'id,account,name,salary / 1,4821 0393 7712 4821,Ann,52000.00 / 2,1111 2222 3333 4444,Ben,61000.50'
+      && shapeRefused === true;
     results.push({
-      browser: name, label: 'masked columns: masked text in place, Unlock… in the header, Reveal one value at a time, masked again after its time, reveals reported', ok: maskedOk,
-      problems: maskedOk ? [] : [JSON.stringify({ maskedBefore, maskedUnlocked, firstShown, secondShown, reveals })],
+      browser: name, label: 'masked columns: masked text in place, Unlock… in the header, Reveal one value at a time, masked again after its time, reveals reported, exports masked unless asked', ok: maskedOk,
+      problems: maskedOk ? [] : [JSON.stringify({ maskedBefore, maskedUnlocked, firstShown, secondShown, reveals, revealRow, maskedCsv, revealedCsv, shapeRefused })],
     });
 
     // A document's changes: checked by the viewer, shown in its dialog, saved as a change file the library applies.

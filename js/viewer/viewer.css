@@ -65,6 +65,7 @@ td.null { color: var(--muted); font-style: italic; }
 .menu-items button:hover, .menu-items button:focus-visible { background: var(--bg); }
 #jz-export-note { margin: 6px 0 0; }
 .menu-items hr { width: 100%; margin: 4px 0; border: 0; border-top: 1px solid var(--line); }
+.menu-check { display: flex; gap: 6px; align-items: center; margin: 4px 8px; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
 .menu-label { margin: 2px 8px 4px; color: var(--muted); font-size: 12px; white-space: nowrap; }
 .saved-shape { display: flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px; }
 .saved-shape .name { flex: 1; min-width: 0; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; }

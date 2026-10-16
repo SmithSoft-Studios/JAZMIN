@@ -302,8 +302,9 @@ test('the package says how viewers show revealed values, by column; checked', ()
     columns, key: owner, access: { grants: [{ key: owner.createAccessKey() }] },
     locks: { pay: { password: 'pw', iterations: ITERATIONS }, hr: { online: true } }, files: [{ path: 'index.html', content: '<p>Staff</p>' }],
   };
-  const bytes = write(null, rows, { ...base, package: { entry: 'index.html', masks: { salary: { reveal: 'column', seconds: 0, whenHidden: true, idleSeconds: 120 } } } });
-  assert.deepEqual(open(bytes, { key: owner }).package.masks, { salary: { reveal: 'column', seconds: 0, whenHidden: true, idleSeconds: 120 } });
+  const bytes = write(null, rows, { ...base, package: { entry: 'index.html', masks: { salary: { reveal: 'column', seconds: 0, whenHidden: true, idleSeconds: 120, export: false } } } });
+  assert.deepEqual(open(bytes, { key: owner }).package.masks, { salary: { reveal: 'column', seconds: 0, whenHidden: true, idleSeconds: 120, export: false } });
+  assert.throws(() => write(null, rows, { ...base, package: { masks: { salary: { export: 'no' } } } }), /package.masks.salary.export: true or false/);
   assert.throws(() => write(null, rows, { ...base, package: { masks: { salary: { reveal: 'all' } } } }), /package.masks.salary.reveal: 'value' or 'column'/);
   assert.throws(() => write(null, rows, { ...base, package: { masks: { salary: { seconds: -1 } } } }), /a whole number of seconds from 0 to 86400/);
   assert.throws(() => write(null, rows, { ...base, package: { masks: { salary: { blur: true } } } }), /unknown setting 'blur'/);
