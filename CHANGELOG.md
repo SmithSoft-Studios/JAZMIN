@@ -7,6 +7,9 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 - **Fixed (.NET, found by the long fuzz run):** a file whose package settings were damaged so that a setting had the
   wrong type (`allowedOrigins` holding `false`) made `reader.Package` throw an `InvalidOperationException` instead of
   reading. Settings of the wrong type are now left out, as with the other settings; the input is a damaged fixture.
+- **The owner sees every lock and how each column is masked (#190).** For the owner, `reader.locks` also lists locks
+  that only masked columns use, and `reader.masked` entries give `show` and `rows` (.NET `JazminMaskedColumn.Show`,
+  `Rows`), so tools can show and change them.
 - **Masks changed by an update (#190, spec 7.6.8).** `update(file, { masks: { column: { lock, show, rows } | null } })`
   (.NET `JazminUpdate.Masks`, and per table): mask a column for the keys that saw it, unmask one for the keys that had
   it masked (its made shown column and unmasked column fold back), or give it a new mask. No key gains access.

@@ -1387,7 +1387,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         get
         {
             FileIndex();
-            return _fileLocks.Keys.Union(_access?.MaskLocks.Keys ?? Enumerable.Empty<string>()).Order(StringComparer.Ordinal).Select(LockInfo).ToList();
+            // The owner sees every lock of the file: also those only masked columns use (spec 7.6.8).
+            var owned = _access is { IsOwner: true } ? OwnerLockStates()!.Keys : Enumerable.Empty<string>();
+            return _fileLocks.Keys.Union(_access?.MaskLocks.Keys ?? Enumerable.Empty<string>()).Union(owned).Order(StringComparer.Ordinal).Select(LockInfo).ToList();
         }
     }
 
@@ -1407,12 +1409,20 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             {
                 return OwnerMasks().Where(m => (int?)m["table"] == _tableIndex).OrderBy(m => (int)m["position"]!)
                     .Select(m => new JazminMaskedColumn((string)m["column"]!, TypeNames.Parse((string)m["type"]!), (string)m["group"]!, LockInfo((string)m["lock"]!),
-                        (string?)m["shown"], (string?)m["unmasked"], At((int)m["position"]!))).ToList();
+                        (string?)m["shown"], (string?)m["unmasked"], At((int)m["position"]!), Masks.ShowFrom(m["show"]), RowsFilter(m["rows"]))).ToList();
             }
             return _access.MaskGroups.Where(g => (int?)g.Value.Column["table"] == _tableIndex).OrderBy(g => (int)g.Value.Column["position"]!)
                 .Select(g => new JazminMaskedColumn((string)g.Value.Column["name"]!, TypeNames.Parse((string)g.Value.Column["type"]!), g.Key, LockInfo(g.Value.Lock),
                     (string?)g.Value.Column["shown"], (string?)g.Value.Column["unmasked"], At((int)g.Value.Column["position"]!))).ToList();
         }
+    }
+
+    /// <summary>A masked column's rows filter as the owner directory keeps it (JSON), or null for every row.</summary>
+    private static JazminFilter? RowsFilter(JsonNode? rows)
+    {
+        if (rows is null) return null;
+        using var doc = System.Text.Json.JsonDocument.Parse(rows.ToJsonString());
+        return JazminFilter.FromJson(doc.RootElement);
     }
 
     /// <summary>Internal: the owner directory's masked columns (owner key only), as it keeps them; else empty.</summary>

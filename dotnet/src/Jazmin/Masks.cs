@@ -88,7 +88,10 @@ public sealed record JazminMask(string Lock)
 /// <param name="Shown">The column with what its values show, if it has one.</param>
 /// <param name="Unmasked">The column with its values in the rows that aren't masked, if only some rows are.</param>
 /// <param name="At">Where the column is (or will be, once unlocked) in <see cref="JazminReader.Columns"/>: viewers show it in its place.</param>
-public sealed record JazminMaskedColumn(string Column, JazminType Type, string Group, JazminLockInfo Lock, string? Shown, string? Unmasked, int At);
+/// <param name="Show">The owner only: what its values show (the rule, as <see cref="JazminUpdate.Masks"/> takes it).</param>
+/// <param name="Rows">The owner only: the rows masked, when not every row is.</param>
+public sealed record JazminMaskedColumn(string Column, JazminType Type, string Group, JazminLockInfo Lock, string? Shown, string? Unmasked, int At,
+    JazminMaskShow? Show = null, JazminFilter? Rows = null);
 
 /// <summary>How a viewer shows a revealed masked value (spec 7.6.8).</summary>
 public enum JazminMaskReveal
