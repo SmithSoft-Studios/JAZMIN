@@ -302,6 +302,11 @@ memory limits. So before each release, also check by hand on one iPhone
    mode, start it from the home screen and open the file again.
 7. **Save as HTML:** save a copy, open it from the phone's files app and
    unlock it with bob's key.
+8. **Sign in at a key service** (not run in the simulator, which can't bring
+   the viewer back from the sign-in window): with the sample key service
+   (`dotnet/samples/Jazmin.KeyService`) on HTTPS, open a file whose lock names
+   it, tap **Unlock…**, then **Sign in at …**, sign in in the window that
+   opens, and go back to the viewer: the locked file opens.
 
 Record each step's result for both phones in the release notes, including
 anything that didn't work.
