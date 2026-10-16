@@ -347,6 +347,7 @@ internal static class EmbeddedFiles
     /// <summary>Checks package.pages (spec 6.8): stored paths, each once, each page's settings; returns their JSON.</summary>
     private static JsonArray PagesJson(IReadOnlyList<JazminPage> pages, ICollection<string> paths, IReadOnlyCollection<string> tables, bool hasOrigins)
     {
+        if (pages.Count == 0) throw new JazminValidationException("package.pages must be a non-empty array of pages: { path, title }");
         var json = new JsonArray();
         var seen = new HashSet<string>(StringComparer.Ordinal);
         for (var i = 0; i < pages.Count; i++)

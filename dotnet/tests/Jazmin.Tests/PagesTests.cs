@@ -114,6 +114,8 @@ public sealed class PagesTests
         Package(new JazminPackage { Pages = [P("customers.html") with { Actions = new JazminFileActions { PdfSettings = new JazminPdfSettings() } }] }, "package.pages[0].actions.pdf must be true or false");
         Package(new JazminPackage { Pages = [P("customers.html") with { Order = 1 }] }, "package.pages[0].order is only for a page in a file group's directory");
         Package(new JazminPackage { Pages = [new JazminPage { Title = "T" }] }, "package.pages[0].path is required");
+        Package(new JazminPackage { Pages = [] }, "package.pages must be a non-empty array of pages: { path, title }");
+        Package(new JazminPackage { Pages = [null!] }, "package.pages[0] must be a page: { path, title }");
 
         Package(new JazminPackage { Files = ["app.js", "nope.js"] }, "package.files: 'nope.js' is not one of the stored files");
         Package(new JazminPackage { Files = ["img/"] }, "package.files: no stored file is in the folder 'img/'");
