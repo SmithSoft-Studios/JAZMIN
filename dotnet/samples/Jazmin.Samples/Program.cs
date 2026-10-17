@@ -919,6 +919,19 @@ JazminFile.Compact(syncsPath, syncOwner, regroup: true);
 Console.WriteLine($"42. {appendedChunks} chunks after 5 syncs; compacted: {compactedChunks}; regrouped: {SyncChunks()}");
 // 42. 12 chunks after 5 syncs; compacted: 12; regrouped: 2
 
+// 43. Publisher signatures (USER-GUIDE 26): who published a file, that it hasn't changed, and the facts signed with it.
+// A file written here has no publisher signature: None. The repository's test files are signed under a test root no
+// release trusts, so they show as Signed, with no name or facts, until SmithSoft's root is built in (1.8.0).
+string? signedTestFile = null;
+for (var up = new DirectoryInfo(AppContext.BaseDirectory); up is not null && signedTestFile is null; up = up.Parent)
+{
+    var candidate = Path.Combine(up.FullName, "spec", "fixtures", "publisher", "signed-plain.jzm");
+    if (File.Exists(candidate)) signedTestFile = candidate;
+}
+var signed43 = signedTestFile is null ? null : JazminFile.VerifyPublisher(signedTestFile);
+Console.WriteLine($"43. {JazminFile.VerifyPublisher(path).Status}{(signed43 is null ? "" : $" {signed43.Status} {signed43.Name ?? "null"}")}");
+// 43. None Signed null
+
 Directory.Delete(dir, true);
 
 /// <summary>
