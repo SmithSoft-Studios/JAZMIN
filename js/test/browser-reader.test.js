@@ -1,12 +1,16 @@
 // The browser reader (js/browser/jazmin-browser.js, used by the viewer) returns exactly what this library returns, for
 // the shared fixtures written by both libraries: every key, embedded files, several tables, appended files.
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { JazminAccessKey, JazminKey, append, exportString, issueFileUnlockToken, issueUnlockToken, open, write } from '../src/index.js';
+import { crc32 } from '../src/binary.js';
+import { JazminFormatError } from '../src/errors.js';
+import { fingerprint } from '../src/keys.js';
 import '../browser/jazmin-browser.js';
 
 const { JazminBrowser } = globalThis;
@@ -228,6 +232,20 @@ test('browser reader: keys are checked, and an online key asks for its unlock to
   assert.ok(error instanceof JazminUnlockRequiredError);
   assert.match(error.keyId, /^[0-9a-f]{16}$/);
   await assert.rejects(JazminBrowser.open(fixture('js-brotli.jzm')), /Brotli/);
+});
+
+test("an owner key that isn't a point on the curve is an invalid owner signature, in both readers", async () => {
+  // The signature section names the owner's public key; an access key whose fingerprint matches it reaches the check.
+  const bytes = Buffer.from(fixture('js-access.jzm'));
+  const t = bytes.length - 44;
+  const at = Number(bytes.readBigUInt64LE(t + 24));
+  const length = bytes.readUInt32LE(t + 32);
+  const point = Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 1)]);
+  point.copy(bytes, at + 16);
+  bytes.writeUInt32LE(crc32(bytes.subarray(at + 16, at + length)), at + 12);
+  const key = new JazminAccessKey(crypto.randomBytes(32), fingerprint(point));
+  assert.throws(() => open(bytes, { key }), (e) => e instanceof JazminFormatError && /owner signature is invalid/.test(e.message));
+  await assert.rejects(JazminBrowser.open(bytes, { key: key.toString() }), (e) => e.name === 'JazminFormatError' && /owner signature is invalid/.test(e.message));
 });
 
 test('browser reader: damaged files fail with a JazminError', async () => {
