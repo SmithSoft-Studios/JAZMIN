@@ -3,6 +3,14 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## Unreleased
+
+### Added
+- **`estimate()` in the browser reader:** `await reader.estimate(filter, { offset })` says what a read will cost before
+  it runs, with the same figures as the Node and .NET libraries (chunks, rows and bytes `find()` reads at most, and
+  what `count()` reads). The demo gallery's "What will this read?" now asks the browser reader instead of figures
+  saved when the site was built.
+
 ## 1.7.0 - 2026-10-16 (file format 1.0)
 Long reads and rewrites say how far they have got and can be stopped, and a read's cost can be estimated before it
 runs. Files can be read last row first and kept in orders that ignore case or compare numbers by value; very large

@@ -3415,6 +3415,40 @@
         return n;
       },
       /**
+       * What a read would cost, before it runs, as the library's estimate(): the chunks, rows and stored bytes find()
+       * reads at most ({ chunks, rows, bytes }), and those count() reads ({ countChunks, countRows, countBytes }: 0 when
+       * indexes or statistics answer it). From chunk directories, statistics and indexes only: no row is read.
+       * { offset } as find()'s: leading chunks it skips whole are counted, not read.
+       */
+      async estimate(filter, { offset = 0 } = {}) {
+        if (filter) compileFilter(filter, visibleColumns);
+        const plan = planOf(filter, planColumnsList);
+        const { runs, rowIds } = await route(plan);
+        const counted = !plan || (rowIds !== null && answeredExactly(plan)); // count() needs no chunk
+        const whole = (chunk) => !plan || mustMatch(plan, statsOf(chunk), chunk.rowCount);
+        const result = { chunks: 0, rows: 0, bytes: 0, countChunks: 0, countRows: 0, countBytes: 0 };
+        let skipped = 0;
+        for (const { chunk, from, to } of runs) {
+          const live = liveRows(chunk);
+          const rows = rowIds === null ? live : to - from;
+          const first = chunk.parts[0];
+          const last = chunk.parts[chunk.parts.length - 1];
+          const length = last.offset + last.length - first.offset;
+          if (!result.chunks && rowIds === null && offset - skipped >= live && whole(chunk)) skipped += live;
+          else {
+            result.chunks++;
+            result.rows += rows;
+            result.bytes += length;
+          }
+          if (!counted && !(rowIds === null && whole(chunk))) {
+            result.countChunks++;
+            result.countRows += rows;
+            result.countBytes += length;
+          }
+        }
+        return result;
+      },
+      /**
        * How a filter executes, as the library reports it: { strategy: 'index', candidateRows } or { strategy: 'scan',
        * chunks, chunksSkipped }. With { analyze: true } (and any find() options) it also runs the query and reports
        * rows, bytesRead, chunksRead, indexPagesRead, columnsDecoded and ms. Statistics and indexes already loaded are

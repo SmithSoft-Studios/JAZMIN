@@ -13,3 +13,4 @@ TestResults/
 *.speedscope.json
 # The from-disk sample, built by js/examples/from-disk/make.mjs
 js/examples/from-disk/site/
+.playwright-mcp/

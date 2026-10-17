@@ -98,23 +98,6 @@ if (rows) {
     ],
   });
   console.log(`${(fs.statSync(big).size / 1048576).toFixed(1)} MB in ${((Date.now() - started) / 1000).toFixed(1)} s`);
-  // What each Try filter (pages/data.js) will read, from the library's estimate() (USER-GUIDE 9.6): the browser reader
-  // has no estimate(), so pick-file.html shows these beside its own explain(), for this file (its id) only.
-  const { demos } = new Function(`${fs.readFileSync(path.join(here, 'pages/data.js'), 'utf8')}; return { demos };`)();
-  const reader = open(big, { password: 'demo' });
-  const estimates = {
-    'transactions.jzm': {
-      fileId: reader.fileId, rows: reader.rowCount,
-      filters: [{ label: 'No filter', filter: null }, ...demos['transactions.jzm']].map(({ label, filter }) => ({ label, filter, estimate: reader.estimate(filter) })),
-    },
-  };
-  reader.close();
-  fs.writeFileSync(path.join(site, 'data/estimates.js'), [
-    "// What the Node and .NET libraries' estimate() says each of pick-file.html's filters will read in data/transactions.jzm",
-    '// (USER-GUIDE 9.6), worked out by make.mjs when it wrote the file: the browser reader has no estimate() of its own.',
-    `var estimates = ${JSON.stringify(estimates, null, 2)};`,
-    '',
-  ].join('\n'));
 }
 
 // Several tables: clients, and their transactions sorted by client and date, so a shape that nests each client's

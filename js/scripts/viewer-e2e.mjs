@@ -1216,7 +1216,7 @@ for (const name of chosen) {
     const triesOk = offered.length === 5 && tried.filter === '{"account":"ACC-1042"}' && triedTotal === SAMPLE.oneAccount;
     results.push({ browser: name, label: 'the from-disk sample: Try buttons send filters to the viewer (jazmin:filter), answered from the demo file\'s indexes', ok: triesOk, problems: triesOk ? [] : [JSON.stringify({ offered, tried, SAMPLE })] });
     // Newest 20 for the filter tried (reverse: true, against counting and reading the last page), and what it will read:
-    // the library's estimate() from make.mjs beside the browser reader's explain(), then the measured count.
+    // the browser reader's estimate() and explain(), which must equal the library's, then the measured count.
     await page.evaluate(`(document.getElementById('newest').click(), true)`);
     const newest = await waitFor(page, `document.getElementById('t-reverse') && { rows: [...document.querySelectorAll('#newest-rows tbody tr')].map((tr) => tr.cells[0].textContent + ' ' + tr.cells[1].textContent), note: document.getElementById('newest-note').textContent, timings: [document.getElementById('t-count').textContent, document.getElementById('t-reverse').textContent] }`, 'the newest 20', 30000);
     await page.evaluate(`(document.getElementById('estimate').click(), true)`);

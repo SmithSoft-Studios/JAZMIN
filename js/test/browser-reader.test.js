@@ -559,3 +559,19 @@ test('document pages: the browser reader gives package.pages and files and each 
   const asA = await JazminBrowser.open(new Uint8Array(fs.readFileSync(file)), { key: a.toString() });
   assert.deepEqual((await asA.files()).find((f) => f.path === 'board.html').page, { title: 'Board pack', order: 1, actions: { print: false } });
 });
+
+test('estimate(): the browser reader says what a read will cost exactly as the library does', async () => {
+  const cases = [
+    ['js-paged-key.jzm', { id: 7 }, {}], ['js-paged-key.jzm', { country: 'NA' }, {}], ['js-paged-key.jzm', { score: { gt: 50 } }, {}],
+    ['js-paged-key.jzm', null, {}], ['js-paged-key.jzm', null, { offset: 100 }], ['js-access.jzm', { score: { gt: 50 } }, {}],
+    ['js-access.jzm', null, { offset: 100 }],
+  ];
+  for (const [name, filter, options] of cases) {
+    const label = `${name} ${JSON.stringify(filter)} ${JSON.stringify(options)}`;
+    const [secret, nodeKey] = name === 'js-access.jzm' ? [keys.bob, keys.bob] : [keys.key, keys.key];
+    const library = open(path.join(dir, name), { key: nodeKey, accessState: false });
+    const browser = await JazminBrowser.open(new Uint8Array(fixture(name)), { key: secret });
+    assert.deepEqual(await browser.estimate(filter, options), library.estimate(filter, options), label);
+    library.close();
+  }
+});
