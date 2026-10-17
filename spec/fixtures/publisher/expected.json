@@ -1,0 +1,672 @@
+{
+  "comment": "Expected results of verifying each file (spec 6.9.8) at verifyAt, trusting only trustedRoots, holding revocationList. TEST KEYS ONLY: see README.md.",
+  "spec": "docs/rfc/draft-jazmin-format-03.md, section 6.9",
+  "verifyAt": "2026-10-17T12:00:00Z",
+  "trustedRoots": [
+    "pki/test-root.der"
+  ],
+  "revocationList": "status/revocation-list.jws",
+  "log": {
+    "origin": "log.jazmin.example/test",
+    "verifierKey": "log.jazmin.example/test+e1c813b3+AjBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABBATQM2UjxmgKXHd+srNPePRyiRgyYG81Ss+PB5hYKRj5apI461zg5IcqRfamhumyTeLBw2u0V1CdLBylKuonqE=",
+    "checkpoint": "log/checkpoint.txt",
+    "treeSize": 14
+  },
+  "oids": {
+    "arc": "2.25.75298837481848457984537899361864557046",
+    "uuid": "38a60751-917e-4991-bc8d-b130f0d8a1f6",
+    "id-jazmin-policy": "2.25.75298837481848457984537899361864557046.1",
+    "id-jazmin-document-signing": "2.25.75298837481848457984537899361864557046.2",
+    "id-jazmin-status": "2.25.75298837481848457984537899361864557046.3",
+    "id-jazmin-confirmation": "2.25.75298837481848457984537899361864557046.4",
+    "id-jazmin-publisher-kind": "2.25.75298837481848457984537899361864557046.5"
+  },
+  "secrets": {
+    "password": "Sable-Payroll-2026!",
+    "key": "jzk1-_0LTYdM-O313KoIXDKpU_IieoHoHWZGB-5GOGb2UR2MaXSvT",
+    "ownerKey": "jzk1-EnAFSq1LVUI3GyTnnaWjWAEVyLLrwrjzPN_QiDE6GGZ5FG5C",
+    "accessKey": "jza1-puknCS0IIQfjP7CqleUh-oXRPXoAJp8K6i_cMNkfEoKf4uDtk0E1OU91h8s"
+  },
+  "fixtures": [
+    {
+      "file": "signed-plain.jzm",
+      "description": "A payslip, not encrypted, signed by a certified company",
+      "encryption": "none",
+      "keys": {},
+      "fileDigest": "VzLTWwW91bL5cDuHW-g85pqtzXudiLuurJo2AkYP858",
+      "result": {
+        "status": "certified",
+        "name": "Sable Line Logistics (Pty) Ltd",
+        "organization": "Sable Line Logistics (Pty) Ltd",
+        "registration": "NTRZA-2020/123456/07",
+        "country": "ZA",
+        "domain": "sable.example",
+        "kind": "company",
+        "code": "JZ-SKWR6-7J7YZ",
+        "documentKind": "payslip",
+        "credential": "sable-line-logistics/2026",
+        "signedAt": "2026-10-01T09:00:00Z",
+        "timestamp": "2026-10-01T09:00:02Z",
+        "cosigners": [],
+        "facts": {
+          "period": "2026-09",
+          "recipient": "••••1234",
+          "gross": "18450.00",
+          "net": "14102.37",
+          "currency": "ZAR"
+        },
+        "factsNeedKey": false,
+        "statusAnswer": {
+          "status": "valid",
+          "from": null
+        },
+        "reason": null
+      },
+      "library": {
+        "reads": true,
+        "rows": 5
+      }
+    },
+    {
+      "file": "signed-password.jzm",
+      "description": "A payslip encrypted with a password: the facts are encrypted too (6.9.3)",
+      "encryption": "password",
+      "keys": {
+        "password": "Sable-Payroll-2026!"
+      },
+      "fileDigest": "FloV3ufcAe3HakQufOQFFTGoTQY5aOUpqIM7I6K2MtU",
+      "result": {
+        "status": "certified",
+        "name": "Sable Line Logistics (Pty) Ltd",
+        "organization": "Sable Line Logistics (Pty) Ltd",
+        "registration": "NTRZA-2020/123456/07",
+        "country": "ZA",
+        "domain": "sable.example",
+        "kind": "company",
+        "code": "JZ-CEYSY-DHH6Z",
+        "documentKind": "payslip",
+        "credential": "sable-line-logistics/2026",
+        "signedAt": "2026-10-01T09:05:00Z",
+        "timestamp": "2026-10-01T09:05:02Z",
+        "cosigners": [],
+        "facts": {
+          "period": "2026-09",
+          "recipient": "••••5678",
+          "gross": "26300.00",
+          "net": "18871.48",
+          "currency": "ZAR"
+        },
+        "factsNeedKey": true,
+        "statusAnswer": {
+          "status": "valid",
+          "from": null
+        },
+        "reason": null
+      },
+      "library": {
+        "reads": true,
+        "rows": 5
+      }
+    },
+    {
+      "file": "signed-shared.jzm",
+      "description": "An access-controlled (shared) statement: the signature covers the header and the owner's signature section",
+      "encryption": "access",
+      "keys": {
+        "ownerKey": "jzk1-EnAFSq1LVUI3GyTnnaWjWAEVyLLrwrjzPN_QiDE6GGZ5FG5C",
+        "accessKey": "jza1-puknCS0IIQfjP7CqleUh-oXRPXoAJp8K6i_cMNkfEoKf4uDtk0E1OU91h8s"
+      },
+      "fileDigest": "qchmGe5efgY0sh_fluqA9WLrFpfqGAMAipfyebo0uHc",
+      "result": {
+        "status": "certified",
+        "name": "Sable Line Logistics (Pty) Ltd",
+        "organization": "Sable Line Logistics (Pty) Ltd",
+        "registration": "NTRZA-2020/123456/07",
+        "country": "ZA",
+        "domain": "sable.example",
+        "kind": "company",
+        "code": "JZ-Y2B7Y-RKT9B",
+        "documentKind": "statement",
+        "credential": "sable-line-logistics/2026",
+        "signedAt": "2026-10-02T10:00:00Z",
+        "timestamp": "2026-10-02T10:00:02Z",
+        "cosigners": [],
+        "facts": {
+          "period": "2026-09",
+          "account": "••••4410",
+          "closing": "48210.55",
+          "currency": "ZAR"
+        },
+        "factsNeedKey": true,
+        "statusAnswer": {
+          "status": "valid",
+          "from": null
+        },
+        "reason": null
+      },
+      "library": {
+        "reads": true,
+        "rows": 5,
+        "accessRows": 3
+      }
+    },
+    {
+      "file": "signed-sole-trader.jzm",
+      "description": "An invoice from a sole trader (kind individual), no domain",
+      "encryption": "none",
+      "keys": {},
+      "fileDigest": "PRKhzfP1U4QX9X60ednLj8rF9jP4kJhl6Z1lo_r2idc",
+      "result": {
+        "status": "certified",
+        "name": "Thandi Mokoena",
+        "organization": "TM Bookkeeping",
+        "registration": null,
+        "country": "ZA",
+        "domain": null,
+        "kind": "individual",
+        "code": "JZ-J8S5N-C4QE4",
+        "documentKind": "invoice",
+        "credential": "tm-bookkeeping/2026",
+        "signedAt": "2026-10-03T14:30:00Z",
+        "timestamp": "2026-10-03T14:30:02Z",
+        "cosigners": [],
+        "facts": {
+          "number": "TMB-2026-0142",
+          "date": "2026-10-03",
+          "buyer": "Sable Line Logistics (Pty) Ltd",
+          "total": "6900.00",
+          "currency": "ZAR"
+        },
+        "factsNeedKey": false,
+        "statusAnswer": {
+          "status": "valid",
+          "from": null
+        },
+        "reason": null
+      },
+      "library": {
+        "reads": true,
+        "rows": 2
+      }
+    },
+    {
+      "file": "signed-cosigned.jzm",
+      "description": "Annual financial statements encrypted with a key, signed by the company and co-signed by its auditor",
+      "encryption": "key",
+      "keys": {
+        "key": "jzk1-_0LTYdM-O313KoIXDKpU_IieoHoHWZGB-5GOGb2UR2MaXSvT"
+      },
+      "fileDigest": "MGwFETcv05b-pAbuxGTlIUw00nJdWrp4eaUoaANSxHo",
+      "result": {
+        "status": "certified",
+        "name": "Sable Line Logistics (Pty) Ltd",
+        "organization": "Sable Line Logistics (Pty) Ltd",
+        "registration": "NTRZA-2020/123456/07",
+        "country": "ZA",
+        "domain": "sable.example",
+        "kind": "company",
+        "code": "JZ-QPDHM-9J0YM",
+        "documentKind": "annual-financial-statements",
+        "credential": "sable-line-logistics/2026",
+        "signedAt": "2026-10-08T11:00:00Z",
+        "timestamp": "2026-10-08T11:00:02Z",
+        "cosigners": [
+          {
+            "name": "Khumalo & Partners Incorporated",
+            "organization": "Khumalo & Partners Incorporated",
+            "registration": "NTRZA-2011/004321/21",
+            "country": "ZA",
+            "domain": "khumalo-audit.example",
+            "kind": "company"
+          }
+        ],
+        "facts": {
+          "year": "2026",
+          "revenue": "84210000.00",
+          "profit": "6120400.00",
+          "currency": "ZAR",
+          "auditor": "Khumalo & Partners Incorporated"
+        },
+        "factsNeedKey": true,
+        "statusAnswer": {
+          "status": "valid",
+          "from": null
+        },
+        "reason": null
+      },
+      "library": {
+        "reads": true,
+        "rows": 5
+      }
+    },
+    {
+      "file": "signed-paper.jzm",
+      "description": "A tax certificate with its QR code (6.9.7) in signed-paper.qr.txt",
+      "encryption": "none",
+      "keys": {},
+      "fileDigest": "byeu5yHgFGGTQQkueGYigeTljLmBdqEyA5TjXhi1YQ4",
+      "result": {
+        "status": "certified",
+        "name": "Sable Line Logistics (Pty) Ltd",
+        "organization": "Sable Line Logistics (Pty) Ltd",
+        "registration": "NTRZA-2020/123456/07",
+        "country": "ZA",
+        "domain": "sable.example",
+        "kind": "company",
+        "code": "JZ-3E5N9-8EMWX",
+        "documentKind": "tax-certificate",
+        "credential": "sable-line-logistics/2026",
+        "signedAt": "2026-10-10T12:00:00Z",
+        "timestamp": "2026-10-10T12:00:02Z",
+        "cosigners": [],
+        "facts": {
+          "year": "2026",
+          "recipient": "••••1234"
+        },
+        "factsNeedKey": false,
+        "statusAnswer": {
+          "status": "valid",
+          "from": null
+        },
+        "reason": null
+      },
+      "library": {
+        "reads": true,
+        "rows": 4
+      }
+    },
+    {
+      "file": "expired-certificate.jzm",
+      "description": "Signed in 2025 with a certificate that has since expired: the timestamp is inside its validity",
+      "encryption": "none",
+      "keys": {},
+      "fileDigest": "d5foipkKrUmCNqgPovLX5MylC01nfzsAf5RbnArWs0A",
+      "result": {
+        "status": "certified",
+        "name": "Sable Line Logistics (Pty) Ltd",
+        "organization": "Sable Line Logistics (Pty) Ltd",
+        "registration": "NTRZA-2020/123456/07",
+        "country": "ZA",
+        "domain": "sable.example",
+        "kind": "company",
+        "code": "JZ-3BXRJ-WBJWB",
+        "documentKind": "payslip",
+        "credential": "sable-line-logistics/2025",
+        "signedAt": "2025-06-02T08:00:00Z",
+        "timestamp": "2025-06-02T08:00:02Z",
+        "cosigners": [],
+        "facts": {
+          "period": "2025-05",
+          "recipient": "••••1234",
+          "gross": "15400.00",
+          "net": "12255.90",
+          "currency": "ZAR"
+        },
+        "factsNeedKey": false,
+        "statusAnswer": {
+          "status": "valid",
+          "from": null
+        },
+        "reason": null
+      },
+      "library": {
+        "reads": true,
+        "rows": 3
+      }
+    },
+    {
+      "file": "timestamp-outside.jzm",
+      "description": "Signed with the 2025 certificate after it expired: the timestamp is outside its validity",
+      "encryption": "none",
+      "keys": {},
+      "fileDigest": "Xrj3Y8mCvgzYoinxKWpdkr3BHsf4lX_9gGa1xjWzMzc",
+      "result": {
+        "status": "invalid",
+        "name": null,
+        "kind": null,
+        "code": null,
+        "facts": null,
+        "reason": "validity"
+      },
+      "library": {
+        "reads": true,
+        "rows": 3
+      }
+    },
+    {
+      "file": "revoked-before.jzm",
+      "description": "Signed with the payroll certificate before the date it is revoked from",
+      "encryption": "none",
+      "keys": {},
+      "fileDigest": "0gTzk4wleDhQG0brHFhS6lBJPnqD7hcuINtTyL8Px_s",
+      "result": {
+        "status": "certified",
+        "name": "Sable Line Logistics (Pty) Ltd",
+        "organization": "Sable Line Logistics (Pty) Ltd",
+        "registration": "NTRZA-2020/123456/07",
+        "country": "ZA",
+        "domain": "sable.example",
+        "kind": "company",
+        "code": "JZ-BSS35-7KCNS",
+        "documentKind": "payslip",
+        "credential": "sable-line-logistics/payroll-2026",
+        "signedAt": "2026-09-01T08:00:00Z",
+        "timestamp": "2026-09-01T08:00:02Z",
+        "cosigners": [],
+        "facts": {
+          "period": "2026-08",
+          "recipient": "••••4321",
+          "gross": "12800.00",
+          "net": "10795.55",
+          "currency": "ZAR"
+        },
+        "factsNeedKey": false,
+        "statusAnswer": {
+          "status": "valid",
+          "from": null
+        },
+        "reason": null
+      },
+      "library": {
+        "reads": true,
+        "rows": 3
+      }
+    },
+    {
+      "file": "revoked.jzm",
+      "description": "Signed with the payroll certificate after the date the revocation list revokes it from",
+      "encryption": "none",
+      "keys": {},
+      "fileDigest": "7GyBK_O4O5f7ZmCHzMCjVXj76y1_zrBUO0fO0F_RKsc",
+      "result": {
+        "status": "invalid",
+        "name": null,
+        "kind": null,
+        "code": null,
+        "facts": null,
+        "reason": "revoked"
+      },
+      "library": {
+        "reads": true,
+        "rows": 4
+      }
+    },
+    {
+      "file": "stripped-algorithm.jzm",
+      "description": "Signed with ES256 and ML-DSA-65; the ML-DSA-65 signature was removed, so 'algorithms' no longer matches",
+      "encryption": "none",
+      "keys": {},
+      "fileDigest": "t13L-V1Xl49gs1JrJfmLfRahJNfsD4pwN_hArWehJxM",
+      "result": {
+        "status": "invalid",
+        "name": null,
+        "kind": null,
+        "code": null,
+        "facts": null,
+        "reason": "algorithms"
+      },
+      "library": {
+        "reads": true,
+        "rows": 3
+      }
+    },
+    {
+      "file": "superseded.jzm",
+      "description": "A payslip its publisher replaced: the status at signing says superseded",
+      "encryption": "none",
+      "keys": {},
+      "fileDigest": "Zo_kI50kulkh5mWoz3adRLQAMdSl6iq1RLerK_DdFCA",
+      "result": {
+        "status": "superseded",
+        "name": "Sable Line Logistics (Pty) Ltd",
+        "organization": "Sable Line Logistics (Pty) Ltd",
+        "registration": "NTRZA-2020/123456/07",
+        "country": "ZA",
+        "domain": "sable.example",
+        "kind": "company",
+        "code": "JZ-365ET-N35BP",
+        "documentKind": "payslip",
+        "credential": "sable-line-logistics/2026",
+        "signedAt": "2026-10-09T08:00:00Z",
+        "timestamp": "2026-10-09T08:00:02Z",
+        "cosigners": [],
+        "facts": {
+          "period": "2026-09",
+          "recipient": "••••3456",
+          "gross": "14100.00",
+          "net": "11357.25",
+          "currency": "ZAR"
+        },
+        "factsNeedKey": false,
+        "statusAnswer": {
+          "status": "superseded",
+          "from": "2026-10-12T00:00:00Z"
+        },
+        "reason": null
+      },
+      "library": {
+        "reads": true,
+        "rows": 3
+      }
+    },
+    {
+      "file": "withdrawn.jzm",
+      "description": "A payslip issued in error: the status at signing says withdrawn",
+      "encryption": "none",
+      "keys": {},
+      "fileDigest": "HlFpVyJHFdlq0xC23ETahYZW2kmvqMvBMEfUASiauKA",
+      "result": {
+        "status": "withdrawn",
+        "name": "Sable Line Logistics (Pty) Ltd",
+        "organization": "Sable Line Logistics (Pty) Ltd",
+        "registration": "NTRZA-2020/123456/07",
+        "country": "ZA",
+        "domain": "sable.example",
+        "kind": "company",
+        "code": "JZ-GYZBX-AWEPW",
+        "documentKind": "payslip",
+        "credential": "sable-line-logistics/2026",
+        "signedAt": "2026-10-10T08:00:00Z",
+        "timestamp": "2026-10-10T08:00:02Z",
+        "cosigners": [],
+        "facts": {
+          "period": "2026-09",
+          "recipient": "••••9012",
+          "gross": "98000.00",
+          "net": "59618.78",
+          "currency": "ZAR"
+        },
+        "factsNeedKey": false,
+        "statusAnswer": {
+          "status": "withdrawn",
+          "from": "2026-10-11T00:00:00Z"
+        },
+        "reason": null
+      },
+      "library": {
+        "reads": true,
+        "rows": 3
+      }
+    },
+    {
+      "file": "untrusted-root.jzm",
+      "description": "Signed with a certificate naming Sable Line Logistics that chains to its own self-signed root, not a trusted one",
+      "encryption": "none",
+      "keys": {},
+      "fileDigest": "rUSOvyXNC2cb4sUlfWZ1B2DfA46IcRaDOiLQMJiT2FA",
+      "result": {
+        "status": "signed",
+        "name": null,
+        "kind": null,
+        "code": null,
+        "facts": null,
+        "reason": null
+      },
+      "library": {
+        "reads": true,
+        "rows": 4
+      }
+    },
+    {
+      "file": "changed-byte.jzm",
+      "description": "One byte before B changed ('Overtime (12 h)' to 'Overtime (72 h)') and its section's CRC fixed: readers show the new text, only the signature notices",
+      "derivedFrom": "signed-plain.jzm",
+      "encryption": "none",
+      "keys": {},
+      "result": {
+        "status": "changed",
+        "name": null,
+        "kind": null,
+        "code": null,
+        "facts": null,
+        "reason": "digest"
+      },
+      "library": {
+        "reads": true,
+        "rows": 5,
+        "text": "Overtime (72 h)"
+      }
+    },
+    {
+      "file": "changed-extra-byte.jzm",
+      "description": "One byte inserted between the block and the header (trailer offsets moved): the 16 bytes before the header are no longer the block's footer, so no block is found",
+      "derivedFrom": "signed-plain.jzm",
+      "encryption": "none",
+      "keys": {},
+      "result": {
+        "status": "none",
+        "name": null,
+        "kind": null,
+        "code": null,
+        "facts": null,
+        "reason": null
+      },
+      "library": {
+        "reads": true,
+        "rows": 5
+      }
+    },
+    {
+      "file": "changed-trailing-byte.jzm",
+      "description": "One byte appended after the trailer: the file has no valid trailer at its end (4.2); a verifier that finds the last valid trailer, as 11.2 does, finds bytes after it",
+      "derivedFrom": "signed-plain.jzm",
+      "encryption": "none",
+      "keys": {},
+      "result": {
+        "status": "changed",
+        "name": null,
+        "kind": null,
+        "code": null,
+        "facts": null,
+        "reason": "after-trailer"
+      },
+      "library": {
+        "reads": false
+      }
+    },
+    {
+      "file": "changed-gap.jzm",
+      "description": "One byte inserted between the header and the signature section of the shared file (trailer offsets moved): a byte after B that is not the block, the header or the signature section",
+      "derivedFrom": "signed-shared.jzm",
+      "encryption": "access",
+      "keys": {
+        "ownerKey": "jzk1-EnAFSq1LVUI3GyTnnaWjWAEVyLLrwrjzPN_QiDE6GGZ5FG5C",
+        "accessKey": "jza1-puknCS0IIQfjP7CqleUh-oXRPXoAJp8K6i_cMNkfEoKf4uDtk0E1OU91h8s"
+      },
+      "result": {
+        "status": "changed",
+        "name": null,
+        "kind": null,
+        "code": null,
+        "facts": null,
+        "reason": "coverage"
+      },
+      "library": {
+        "reads": true,
+        "rows": 5,
+        "accessRows": 3
+      }
+    },
+    {
+      "file": "appended.jzm",
+      "description": "signed-plain.jzm with a row appended by the library afterwards (11.2): the new header has no block before it",
+      "derivedFrom": "signed-plain.jzm",
+      "encryption": "none",
+      "keys": {},
+      "result": {
+        "status": "none",
+        "name": null,
+        "kind": null,
+        "code": null,
+        "facts": null,
+        "reason": null
+      },
+      "library": {
+        "reads": true,
+        "rows": 6
+      }
+    },
+    {
+      "file": "unsigned.jzm",
+      "description": "A file without a publisher signature",
+      "derivedFrom": null,
+      "encryption": "none",
+      "keys": {},
+      "result": {
+        "status": "none",
+        "name": null,
+        "kind": null,
+        "code": null,
+        "facts": null,
+        "reason": null
+      },
+      "library": {
+        "reads": true,
+        "rows": 2
+      }
+    }
+  ],
+  "statusAnswers": [
+    {
+      "file": "status/signed-plain.online.jws",
+      "for": "signed-plain.jzm",
+      "nonce": "ey84cIvmN9g4qAkuQV6dWQ",
+      "status": "valid",
+      "serial": "41d109d83053a835d55d1a15c6e2f6d2",
+      "time": "2026-10-17T11:59:00Z"
+    }
+  ],
+  "revocations": [
+    {
+      "serial": "64a698ad8fb98b22ffdd84b66e156274",
+      "certificate": "pki/sable-line-logistics-payroll.der",
+      "from": "2026-09-15T00:00:00Z"
+    }
+  ],
+  "confirmationReceipts": [
+    {
+      "file": "status/signed-plain.confirmation.jws",
+      "for": "signed-plain.jzm",
+      "party": "First Test Bank Ltd / FTB-000173",
+      "status": "valid",
+      "time": "2026-10-16T10:15:00Z"
+    }
+  ],
+  "qr": [
+    {
+      "file": "signed-paper.qr.txt",
+      "for": "signed-paper.jzm",
+      "certificate": "pki/sable-line-logistics.der",
+      "kid": "4c8f87922350410c",
+      "payload": {
+        "code": "JZ-3E5N9-8EMWX",
+        "kind": "tax-certificate",
+        "facts": {
+          "year": "2026",
+          "recipient": "••••1234"
+        },
+        "signed_at": 1791633600000
+      }
+    }
+  ]
+}

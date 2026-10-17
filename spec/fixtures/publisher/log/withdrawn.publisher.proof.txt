@@ -1,0 +1,11 @@
+c2sp.org/tlog-proof@v1
+index 12
+qSyDlw2/phep2VQ4/dQ4MzzFml+AQLqVk2nxtBXLSuM=
+WJqpvirwI8Pz/tL+NNrqUMNf+h/UkbGsPACV7N7H8YQ=
+olVBv7UwHhh6ABSvFKYAiH7bEss7ouI6lGbWFyhh4hU=
+
+log.jazmin.example/test
+14
+IfFm/RWhXGZj1bo3BZ/hYouEKOQnPfa/IXrdqsh9kN8=
+
+— log.jazmin.example/test 4cgTszBFAiEAkCNd5/9f7aD/NDhGIJmtEyY14c87n5IDX0xL82aCcFsCIF2XyFojBCbOfYfIuLDAUyU3SZSbe8LhFqUQvP1lgMoY

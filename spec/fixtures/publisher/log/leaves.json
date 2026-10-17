@@ -1,0 +1,120 @@
+{
+  "comment": "Entries of the test transparency log: leaf = SHA-256(PublisherSignatures.signed) (6.9.5), the entry RFC 9162 hashes as SHA-256(0x00 || leaf)",
+  "origin": "log.jazmin.example/test",
+  "treeSize": 14,
+  "rootHash": "IfFm/RWhXGZj1bo3BZ/hYouEKOQnPfa/IXrdqsh9kN8=",
+  "entries": [
+    {
+      "index": 0,
+      "file": "expired-certificate.jzm",
+      "role": "publisher",
+      "timestamp": "2025-06-02T08:00:02Z",
+      "leaf": "/xcycfvaVCxx1OUC7WiLmwl1a4kRaSIO6mPOoGjRFvA=",
+      "leafHash": "OHAsl17X6hbdfM3zzFbXpOWtruVgibJjUPWWBhvuoE8="
+    },
+    {
+      "index": 1,
+      "file": "timestamp-outside.jzm",
+      "role": "publisher",
+      "timestamp": "2026-02-01T08:00:02Z",
+      "leaf": "bqjTNzEGlTA4qxZf+zywh22Ndj0IaOSocXKWciF1KXw=",
+      "leafHash": "wgjTdvhmPFceOil06kjsQ2NNdb9NDwsTlG7znGKW6qM="
+    },
+    {
+      "index": 2,
+      "file": "revoked-before.jzm",
+      "role": "publisher",
+      "timestamp": "2026-09-01T08:00:02Z",
+      "leaf": "bKf5YgeXBnqhe4tttTSrmuIDtqy+OYbIRexhmla21ik=",
+      "leafHash": "EquInMP02xjHc1UBlKrw9+KRTJk4HqUhc5dDjDl+iFI="
+    },
+    {
+      "index": 3,
+      "file": "signed-plain.jzm",
+      "role": "publisher",
+      "timestamp": "2026-10-01T09:00:02Z",
+      "leaf": "w71GUmDrw1W1jeM2hEIMXOXCj7nnR7sEYxxxHVUWV3Q=",
+      "leafHash": "1KYdyc3k3sJ5+nQB3GQoNJrSDv8ethMe50HcU2c7MUw="
+    },
+    {
+      "index": 4,
+      "file": "signed-password.jzm",
+      "role": "publisher",
+      "timestamp": "2026-10-01T09:05:02Z",
+      "leaf": "noz1hxZ4cH03MzLEKSv66xxc8NGYUtvp8r4KcA/9nBk=",
+      "leafHash": "SagfdmN7Jd0AGoQnpfgpir2HfmEjjo0gudwQv/7UNe4="
+    },
+    {
+      "index": 5,
+      "file": "signed-shared.jzm",
+      "role": "publisher",
+      "timestamp": "2026-10-02T10:00:02Z",
+      "leaf": "lgE+BZvsqlyd0vWRHv0Srh1UwpyFjktcVXGXYMFxW50=",
+      "leafHash": "cTqOF52xSF3MdlcPO8bEbYY1ekTvVmuj05rmAUxrRlA="
+    },
+    {
+      "index": 6,
+      "file": "signed-sole-trader.jzm",
+      "role": "publisher",
+      "timestamp": "2026-10-03T14:30:02Z",
+      "leaf": "vfmHpTDi/kCqN1Lfvjz/cGkFkEFlJbvIrxsHgP3KAZY=",
+      "leafHash": "e74dd7+i+9o+4buUCdhBfl++4tigidQVE/SX71BFRAQ="
+    },
+    {
+      "index": 7,
+      "file": "revoked.jzm",
+      "role": "publisher",
+      "timestamp": "2026-10-05T08:00:02Z",
+      "leaf": "ikxtaINPujGGvM57H3H35FmqScRWs9ZT/Iryb7pbghg=",
+      "leafHash": "Z5Ryhuf9nBJakqg+zO4WeMptHNHH6BHO99whuLvXP3o="
+    },
+    {
+      "index": 8,
+      "file": "stripped-algorithm.jzm",
+      "role": "publisher",
+      "timestamp": "2026-10-07T08:00:02Z",
+      "leaf": "4EK04/bzKECcu3TD/B3I+kf/gYE+jKPrxY+ZJcb0wf8=",
+      "leafHash": "EZjh2dRekXMNcJrU2vxNfEZwdWUNmBbPW32h3bmwV/M="
+    },
+    {
+      "index": 9,
+      "file": "signed-cosigned.jzm",
+      "role": "publisher",
+      "timestamp": "2026-10-08T11:00:02Z",
+      "leaf": "UEDgzKrnWogggt/hTYx3dB6FCelAs6x8TxMJQOKVl0k=",
+      "leafHash": "+JHJUXNlIFpwyjN4vQ45KOSQ7NUXfXz4ZMHEBINj9LE="
+    },
+    {
+      "index": 10,
+      "file": "signed-cosigned.jzm",
+      "role": "cosigner",
+      "timestamp": "2026-10-08T15:00:02Z",
+      "leaf": "UEDgzKrnWogggt/hTYx3dB6FCelAs6x8TxMJQOKVl0k=",
+      "leafHash": "+JHJUXNlIFpwyjN4vQ45KOSQ7NUXfXz4ZMHEBINj9LE="
+    },
+    {
+      "index": 11,
+      "file": "superseded.jzm",
+      "role": "publisher",
+      "timestamp": "2026-10-09T08:00:02Z",
+      "leaf": "QUW6sk2N6rG3X+ThKFEiCYHQ6G12UWF/wZU3CXgTIFM=",
+      "leafHash": "2g5cA0KpIxFZBfjWwumgiIuK1CTvTGHHgQeKi52KwZg="
+    },
+    {
+      "index": 12,
+      "file": "withdrawn.jzm",
+      "role": "publisher",
+      "timestamp": "2026-10-10T08:00:02Z",
+      "leaf": "aIoELwy/YwBCSdRhIjoaOzCdsUxyRnvUuJl8pwdEBiw=",
+      "leafHash": "C8hsMK5cPsmH15HFfvJuhhpbf/fUfp2UhHXqCZpYMDE="
+    },
+    {
+      "index": 13,
+      "file": "signed-paper.jzm",
+      "role": "publisher",
+      "timestamp": "2026-10-10T12:00:02Z",
+      "leaf": "pkb++M2Na2Vs5Y1UQMpj56BZGSDheTgQmjAVoFbK0xc=",
+      "leafHash": "qSyDlw2/phep2VQ4/dQ4MzzFml+AQLqVk2nxtBXLSuM="
+    }
+  ]
+}
