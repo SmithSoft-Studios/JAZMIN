@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Transactions</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div>
+    <p class="eyebrow" data-meta="title"></p>
+    <h1>Transactions</h1>
+    <p class="muted">One client's card transactions and salary, newest first, from the <code>transactions</code> table.</p>
+  </div>
+  <div class="controls">
+    <select id="client" aria-label="Client"></select>
+  </div>
+</header>
+<aside class="about" aria-label="What this shows">
+  <strong>What this shows</strong>
+  <p>The second page: it reads the <code>transactions</code> table (sorted by client and date, so one client's rows
+    are found by a binary search) and the client list from the <code>clients</code> table, by name. No Print here.</p>
+  <p class="feature">Feature: document pages, several tables · <span class="ref">USER-GUIDE §19.7</span> and §24.1</p>
+</aside>
+
+<section class="kpis" id="kpis"></section>
+<p class="note" id="note" role="status"></p>
+<div class="scroll">
+  <table id="list">
+    <thead><tr><th>Date</th><th>Merchant</th><th class="hide-narrow">Category</th><th class="n">Amount</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script src="app.js"></script>
+<script>
+  (async () => {
+    const { money, day, since, cell } = app;
+    const $ = (id) => document.getElementById(id);
+    const { pickNow } = await app.clientPicker($('client'), async (client) => {
+      const started = performance.now();
+      const rows = await jazmin.query({ client: client.id }, { limit: 1000 }); // in date order: the file's sort order
+      const took = since(started);
+      rows.reverse(); // newest first
+      const sum = (list) => list.reduce((s, r) => s + Number(r.amount), 0);
+      const income = sum(rows.filter((r) => Number(r.amount) > 0));
+      const spent = sum(rows.filter((r) => Number(r.amount) < 0));
+      $('kpis').replaceChildren(...[['Client', `${client.name}`], ['Income', money(income)], ['Spent', money(spent)], ['Transactions', String(rows.length)]].map(([label, value]) => {
+        const div = document.createElement('div');
+        div.append(Object.assign(document.createElement('span'), { textContent: label }), Object.assign(document.createElement('strong'), { textContent: value }));
+        return div;
+      }));
+      $('note').textContent = `${rows.length} transactions of ${client.name} (${client.segment}, ${client.city}) · read in ${took}`;
+      $('list').tBodies[0].replaceChildren(...rows.map((t) => {
+        const tr = document.createElement('tr');
+        tr.append(cell(day(t.date), 'date'), cell(t.merchant), cell(t.category, 'hide-narrow'), cell(money(Number(t.amount)), `n ${Number(t.amount) < 0 ? 'out' : 'in'}`));
+        return tr;
+      }));
+      jazmin.ready({ page: 'transactions', rows: rows.length });
+    });
+    pickNow();
+  })();
+</script>
+</body>
+</html>

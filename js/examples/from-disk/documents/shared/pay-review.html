@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pay review 2027</title>
+<style>
+  :root { --ink: #1d2433; --muted: #5b6475; --line: #e1e5ec; --soft: #f4f6fa; --paper: #fff; --accent: #2456c9; --accent-soft: #e8efff; color-scheme: light dark; }
+  @media screen and (prefers-color-scheme: dark) {
+    :root { --ink: #e7eaf0; --muted: #a3abba; --line: #2e3544; --soft: #1b202b; --paper: #151922; --accent: #7aa2ff; --accent-soft: #1f2a44; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0 auto; max-width: 56rem; padding: 1.5rem 1.1rem 2.5rem; font: 14.5px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--paper); }
+  h1 { margin: 0 0 0.2rem; font-size: 1.5rem; }
+  h2 { font-size: 1rem; margin: 1.4rem 0 0.6rem; }
+  p { margin: 0.3rem 0; }
+  .muted { color: var(--muted); }
+  .eyebrow { margin: 0; color: var(--accent); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; font-size: 0.76rem; }
+  .about { margin: 1rem 0; padding: 0.6rem 0.9rem; border-left: 4px solid var(--accent); border-radius: 8px; background: var(--accent-soft); font-size: 0.9rem; }
+  .about > strong { display: block; color: var(--accent); font-size: 0.72rem; letter-spacing: 0.05em; text-transform: uppercase; }
+  .about .feature { color: var(--muted); font-size: 0.82rem; }
+  .locked { padding: 0.9rem 1rem; border: 1px dashed var(--accent); border-radius: 10px; background: var(--soft); }
+  .locked strong { display: block; margin-bottom: 0.2rem; }
+  .scroll { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+  th { color: var(--muted); font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.03em; }
+  .n { text-align: right; font-variant-numeric: tabular-nums; }
+  @media print { .about { display: none; } }
+</style>
+</head>
+<body>
+<p class="eyebrow">For HR only</p>
+<h1>Pay review 2027</h1>
+<p class="muted">This year's pay by branch, from the file's rows, and the proposed increases, from a locked file.</p>
+<aside class="about" aria-label="What this shows">
+  <strong>What this shows</strong>
+  <p>A page only HR's key knows of: it is marked on a file of the <code>hr</code> group (<code>page: { title, order }</code>),
+    so other keys see neither this tab nor its name. The proposed increases are in a file locked with a password: this
+    page gets it (<code>jazmin.file()</code>) only once it is unlocked.</p>
+  <p class="feature">Feature: pages only some keys see, locked files · USER-GUIDE §19.7 and §19.6</p>
+</aside>
+
+<h2>Pay by branch, 2026</h2>
+<div class="scroll"><table id="branches"><thead><tr><th>Branch</th><th class="n">People</th><th class="n">Salaries a month</th><th class="n">Bonuses</th></tr></thead><tbody></tbody></table></div>
+
+<h2>Proposed increases</h2>
+<div id="increases"></div>
+
+<script>
+  (async () => {
+    const money = (n) => `R ${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const td = (text, n) => Object.assign(document.createElement('td'), { textContent: text, className: n ? 'n' : '' });
+    const rows = await jazmin.query({}, { limit: 1000 });
+    const branches = new Map();
+    for (const r of rows) {
+      const b = branches.get(r.branch) || { people: 0, salaries: 0, bonuses: 0 };
+      b.people++;
+      b.salaries += Number(r.salary);
+      b.bonuses += Number(r.bonus);
+      branches.set(r.branch, b);
+    }
+    document.querySelector('#branches tbody').replaceChildren(...[...branches].map(([name, b]) => {
+      const tr = document.createElement('tr');
+      tr.append(td(name), td(String(b.people), true), td(money(b.salaries), true), td(money(b.bonuses), true));
+      return tr;
+    }));
+
+    // The locked file: null until the lock is open (the viewer then shows this page again, with it).
+    const file = await jazmin.file('hr/increases-2027.csv');
+    const box = document.getElementById('increases');
+    if (!file) {
+      box.innerHTML = '<div class="locked"><strong>🔒 Locked: hr/increases-2027.csv</strong>Open the viewer\'s <b>Files</b> tab, press '
+        + '<b>Unlock…</b> beside the file and type the lock\'s password. This page then shows the proposals.</div>';
+      jazmin.ready({ page: 'pay-review', increases: null });
+      return;
+    }
+    const [head, ...lines] = (await file.text()).trim().split('\n').map((l) => l.split(','));
+    const table = document.createElement('table');
+    table.innerHTML = '<thead><tr><th>Name</th><th>Branch</th><th>Role</th><th class="n">Salary</th><th class="n">Proposed</th><th class="n">Increase</th></tr></thead><tbody></tbody>';
+    table.tBodies[0].replaceChildren(...lines.map((l) => {
+      const tr = document.createElement('tr');
+      tr.append(td(l[0]), td(l[1]), td(l[2]), td(money(Number(l[3])), true), td(money(Number(l[4])), true), td(l[5], true));
+      return tr;
+    }));
+    const wrap = Object.assign(document.createElement('div'), { className: 'scroll' });
+    wrap.append(table);
+    box.replaceChildren(wrap);
+    jazmin.ready({ page: 'pay-review', increases: lines.length, columns: head.length });
+  })();
+</script>
+</body>
+</html>

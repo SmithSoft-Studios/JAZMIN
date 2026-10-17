@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Summary</title>
+<link rel="stylesheet" href="app.css">
+<!-- Chart.js from jsDelivr, as the file allows (package.allowedOrigins; this page is online: 'required'): an exact
+     version with its integrity hash, so the browser refuses a file that changed. -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.1/dist/chart.umd.min.js"
+  integrity="sha384-jb8JQMbMoBUzgWatfe6COACi2ljcDdZQ2OxczGA3bGNeWe+6DChMTBJemed7ZnvJ" crossorigin="anonymous"></script>
+</head>
+<body>
+<header class="top">
+  <div>
+    <p class="eyebrow" data-meta="title"></p>
+    <h1>Summary</h1>
+    <p class="muted">Every client's year at a glance: card spending by month and segment, where the money went, and who
+      the clients are.</p>
+  </div>
+  <span class="tag" id="online"></span>
+</header>
+<aside class="about" aria-label="What this shows">
+  <strong>What this shows</strong>
+  <p>The third page draws charts with Chart.js from jsDelivr, so this page alone says it needs to be online
+    (<code>online: 'required'</code> on the page): offline, the viewer says so on this tab and the other tabs still work.
+    Without the script, the figures show as a table.</p>
+  <p class="feature">Feature: document pages, a page that needs the internet · <span class="ref">USER-GUIDE §19.7</span> and §24.1</p>
+</aside>
+
+<section class="kpis" id="kpis"></section>
+<p class="note" id="note" role="status"></p>
+<section class="grid" id="charts">
+  <div class="card wide"><h2>Card spending by month, by client segment</h2><canvas id="months" aria-label="Card spending by month, by client segment"></canvas></div>
+  <div class="card"><h2>Spending by category</h2><canvas id="categories" aria-label="Spending by category"></canvas></div>
+  <div class="card"><h2>Clients by segment</h2><canvas id="segments" aria-label="Clients by segment"></canvas></div>
+</section>
+<section class="card" id="fallback" hidden>
+  <h2>Spending by category</h2>
+  <p class="muted">The charts need to be online: the figures follow.</p>
+  <table><thead><tr><th>Category</th><th class="n">Spent</th><th class="n">Payments</th></tr></thead><tbody id="fallback-rows"></tbody></table>
+</section>
+
+<script src="app.js"></script>
+<script>
+  (async () => {
+    const { money, since, cell } = app;
+    const $ = (id) => document.getElementById(id);
+    $('online').textContent = jazmin.online ? 'Online' : 'Offline';
+    const started = performance.now();
+    // Only the columns the charts need, from both tables: about 26,000 transactions and 250 clients.
+    const [rows, clients] = await Promise.all([
+      jazmin.query({}, { table: 'transactions', select: ['client', 'date', 'category', 'amount'], limit: 100000 }),
+      jazmin.query({}, { table: 'clients', select: ['id', 'segment'], limit: 1000 }),
+    ]);
+    $('note').textContent = `${rows.length.toLocaleString('en-US')} transactions and ${clients.length} clients read in ${since(started)}`;
+
+    // The join is the page's: each transaction's client, to its segment.
+    const SEGMENTS = ['Personal', 'Business', 'Private'];
+    const segmentOf = new Map(clients.map((c) => [c.id, c.segment]));
+    const months = Array.from({ length: 12 }, () => ({ income: 0, spent: 0, Personal: 0, Business: 0, Private: 0 }));
+    const categories = new Map();
+    for (const r of rows) {
+      const amount = Number(r.amount);
+      const m = months[new Date(r.date).getUTCMonth()];
+      if (amount > 0) m.income += amount;
+      else {
+        m.spent -= amount;
+        m[segmentOf.get(r.client)] -= amount;
+        const c = categories.get(r.category) || { name: r.category, spent: 0, payments: 0 };
+        c.spent -= amount;
+        c.payments++;
+        categories.set(r.category, c);
+      }
+    }
+    const byCategory = [...categories.values()].sort((a, b) => b.spent - a.spent);
+    const segments = SEGMENTS.map((s) => ({ name: s, clients: clients.filter((c) => c.segment === s).length }));
+    const income = months.reduce((s, m) => s + m.income, 0);
+    const spent = months.reduce((s, m) => s + m.spent, 0);
+    const inMillions = (v) => `R ${(v / 1e6).toFixed(1)} m`; // the bank's totals, in millions: they fit a phone
+    $('kpis').replaceChildren(...[['Income', inMillions(income)], ['Spent', inMillions(spent)], ['Saved', `${Math.round((1 - spent / income) * 100)}%`], ['Top category', byCategory[0].name]].map(([label, value]) => {
+      const div = document.createElement('div');
+      div.append(Object.assign(document.createElement('span'), { textContent: label }), Object.assign(document.createElement('strong'), { textContent: value }));
+      return div;
+    }));
+
+    if (typeof Chart !== 'function') { // the script from the internet isn't here: the figures as a table
+      $('charts').hidden = true;
+      $('fallback').hidden = false;
+      $('fallback-rows').replaceChildren(...byCategory.map((c) => {
+        const tr = document.createElement('tr');
+        tr.append(cell(c.name), cell(money(c.spent), 'n'), cell(c.payments.toLocaleString('en-US'), 'n'));
+        return tr;
+      }));
+      jazmin.ready({ page: 'summary', charts: 0 });
+      return;
+    }
+    const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+    const css = getComputedStyle(document.documentElement);
+    Chart.defaults.color = css.getPropertyValue('--muted').trim();
+    Chart.defaults.borderColor = css.getPropertyValue('--line').trim();
+    Chart.defaults.animation.duration = 400;
+    const palette = dark ? ['#5eead4', '#7aa2ff', '#fbbf24', '#f472b6', '#a78bfa', '#34d399', '#fb923c', '#94a3b8']
+      : ['#0f766e', '#2456c9', '#d97706', '#be185d', '#7c3aed', '#059669', '#ea580c', '#64748b'];
+    const millions = (v) => `R${(v / 1e6).toFixed(1)}m`;
+    const names = Array.from({ length: 12 }, (_, i) => new Date(Date.UTC(2026, i, 1)).toLocaleString('en-GB', { month: 'short', timeZone: 'UTC' }));
+    new Chart($('months'), {
+      type: 'bar',
+      data: { labels: names, datasets: SEGMENTS.map((s, i) => ({ label: s, data: months.map((m) => m[s]), backgroundColor: palette[i] })) },
+      options: { maintainAspectRatio: false, scales: { y: { stacked: true, ticks: { callback: millions } }, x: { stacked: true, grid: { display: false } } },
+        plugins: { tooltip: { callbacks: { label: (c) => `${c.dataset.label}: ${money(c.parsed.y)}` } } } },
+    });
+    new Chart($('categories'), {
+      type: 'doughnut',
+      data: { labels: byCategory.map((c) => c.name), datasets: [{ data: byCategory.map((c) => c.spent), backgroundColor: palette, borderWidth: 0 }] },
+      options: { maintainAspectRatio: false, cutout: '60%', plugins: { legend: { position: 'right' }, tooltip: { callbacks: { label: (c) => `${c.label}: ${money(c.parsed)}` } } } },
+    });
+    new Chart($('segments'), {
+      type: 'bar',
+      data: { labels: segments.map((s) => s.name), datasets: [{ data: segments.map((s) => s.clients), backgroundColor: palette.slice(0, 3), borderRadius: 6 }] },
+      options: { maintainAspectRatio: false, indexAxis: 'y', plugins: { legend: { display: false } }, scales: { x: { ticks: { precision: 0 } }, y: { grid: { display: false } } } },
+    });
+    jazmin.ready({ page: 'summary', charts: 3 });
+  })();
+</script>
+</body>
+</html>

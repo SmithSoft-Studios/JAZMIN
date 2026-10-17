@@ -1,0 +1,100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Statement</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div>
+    <p class="eyebrow" data-meta="title"></p>
+    <h1>Statement</h1>
+    <p class="muted screen-only">A client's statement for a quarter, laid out for A4: print it, or save it as a PDF.</p>
+  </div>
+  <div class="controls">
+    <select id="client" aria-label="Client"></select>
+    <select id="quarter" aria-label="Period">
+      <option value="0">Jan to Mar 2026</option><option value="1">Apr to Jun 2026</option>
+      <option value="2">Jul to Sep 2026</option><option value="3">Oct to Dec 2026</option>
+    </select>
+    <button id="print" type="button" hidden>Print</button>
+    <button id="pdf" type="button" class="primary" hidden>Save as PDF</button>
+  </div>
+</header>
+<aside class="about" aria-label="What this shows">
+  <strong>What this shows</strong>
+  <p>The fourth page is laid out for paper (<code>@page</code> A4, and <code>pdf: { format: 'A4' }</code> in its page
+    settings). Its Print and Save as PDF buttons show only when the viewer offers them here
+    (<code>jazmin.actions</code>); the list pages turn Print off.</p>
+  <p class="feature">Feature: document pages with their own print settings · <span class="ref">USER-GUIDE §19.7</span> and §24.1</p>
+</aside>
+
+<section class="letterhead">
+  <address id="holder"></address>
+  <div class="bank"><strong>Harbour Bank</strong><br><span class="muted">Statement of account (demo data)</span><br><span id="period"></span></div>
+</section>
+<section class="kpis" id="kpis"></section>
+<table id="lines">
+  <thead><tr><th>Date</th><th>Description</th><th class="n">In</th><th class="n">Out</th><th class="n">Balance</th></tr></thead>
+  <tbody></tbody>
+  <tfoot></tfoot>
+</table>
+<p class="note">Harbour Bank is a made-up bank: every name and figure in this file is demo data.</p>
+
+<script src="app.js"></script>
+<script>
+  (async () => {
+    const { money, day, cell } = app;
+    const $ = (id) => document.getElementById(id);
+    $('print').hidden = !jazmin.actions.print;
+    $('pdf').hidden = !jazmin.actions.pdf;
+    $('print').addEventListener('click', () => jazmin.print());
+    $('pdf').addEventListener('click', () => jazmin.savePdf());
+    let client = null;
+
+    async function draw() {
+      if (!client) return;
+      const q = Number($('quarter').value);
+      const from = Date.UTC(2026, q * 3, 1);
+      const to = Date.UTC(2026, q * 3 + 3, 1);
+      // One client's year, in date order (the table is sorted by client, then date): what came before the quarter
+      // makes the opening balance.
+      const rows = await jazmin.query({ client: client.id }, { limit: 1000 });
+      const opening = 2500 + (client.id * 7919) % 18000 + rows.filter((r) => new Date(r.date) < from).reduce((s, r) => s + Number(r.amount), 0);
+      const lines = rows.filter((r) => new Date(r.date) >= from && new Date(r.date) < to);
+      let balance = opening;
+      let paidIn = 0;
+      let paidOut = 0;
+      $('lines').tBodies[0].replaceChildren(...lines.map((t) => {
+        const amount = Number(t.amount);
+        balance += amount;
+        if (amount > 0) paidIn += amount; else paidOut -= amount;
+        const tr = document.createElement('tr');
+        tr.append(cell(day(t.date), 'date'), cell(t.merchant === 'Salary' ? 'Salary' : `${t.merchant} · ${t.category}`),
+          cell(amount > 0 ? money(amount) : '', 'n in'), cell(amount < 0 ? money(-amount) : '', 'n'), cell(money(balance), 'n'));
+        return tr;
+      }));
+      const foot = document.createElement('tr');
+      foot.append(cell(''), cell('Totals'), cell(money(paidIn), 'n'), cell(money(paidOut), 'n'), cell(money(balance), 'n'));
+      $('lines').tFoot.replaceChildren(foot);
+      $('holder').innerHTML = '<strong></strong><br><span></span><br><span class="muted"></span>';
+      $('holder').children[0].textContent = client.name;
+      $('holder').children[2].textContent = `${client.city} · ${client.segment} client`;
+      $('holder').children[4].textContent = `Client #${client.id}, since ${day(client.since)}`;
+      $('period').textContent = `${day(from)} to ${day(to - 86400000)}`;
+      $('kpis').replaceChildren(...[['Opening balance', money(opening)], ['Paid in', money(paidIn)], ['Paid out', money(paidOut)], ['Closing balance', money(balance)]].map(([label, value]) => {
+        const div = document.createElement('div');
+        div.append(Object.assign(document.createElement('span'), { textContent: label }), Object.assign(document.createElement('strong'), { textContent: value }));
+        return div;
+      }));
+      jazmin.ready({ page: 'statement', lines: lines.length, print: jazmin.actions.print });
+    }
+    const { pickNow } = await app.clientPicker($('client'), (c) => { client = c; draw(); });
+    $('quarter').addEventListener('change', draw);
+    pickNow();
+  })();
+</script>
+</body>
+</html>

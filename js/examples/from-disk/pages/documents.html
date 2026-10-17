@@ -21,9 +21,10 @@
 
   <aside class="about" aria-label="What this shows">
     <strong>What this shows</strong>
-    <p>Three documents, each a page stored in its file with the data: a report that saves itself as a PDF, a task
-      list that saves changes, and a dashboard that needs the internet. The viewer shows each in a sandbox.</p>
-    <p class="feature">Feature: documents (embedded files with a page) · <span class="ref">USER-GUIDE §19.3</span>, §19.5 and §24.1</p>
+    <p>Four documents, each stored in its file with the data: a report that saves itself as a PDF, a task list that
+      saves changes, a dashboard that needs the internet, and a client file of four pages shown as tabs. Each lists its
+      own scripts and styles (<code>package.files</code>), so the viewer's Files tab shows only the files people want.</p>
+    <p class="feature">Feature: documents (embedded files with a page) and document pages · <span class="ref">USER-GUIDE §19.3</span>, §19.5, §19.7 and §24.1</p>
   </aside>
 
   <section class="choices">
@@ -61,6 +62,18 @@
       </ul>
       <button id="open-dashboard" type="button" class="primary">Open the dashboard</button>
     </article>
+    <article class="panel choice">
+      <h2>A client file in four pages</h2>
+      <p>The bank's clients and their transactions, with a document of <strong>four pages</strong> that the viewer
+        shows as tabs: Clients, Transactions, a Summary with charts, and a Statement laid out for A4.</p>
+      <ul>
+        <li>Encrypted: the password is <code>demo</code></li>
+        <li>Each list page reads its own table and offers no Print; the Statement prints and saves a PDF</li>
+        <li>Only the Summary needs the internet (Chart.js, pinned, with its <code>integrity</code> hash): offline, the other tabs still work</li>
+        <li>Its script and stylesheet are its own files: the Files tab leaves them out</li>
+      </ul>
+      <button id="open-client-file" type="button" class="primary">Open the client file</button>
+    </article>
   </section>
   <p id="note" class="error" role="alert"></p>
 
@@ -76,7 +89,8 @@
     { path: 'report.css', file: 'report/report.css' },
     { path: 'report.js', file: 'report/report.js' },
   ],
-  package: { entry: 'index.html', pdf: { format: 'A4' } },
+  package: { entry: 'index.html', pdf: { format: 'A4' },
+    files: ['report.css', 'report.js', 'pdf.js'] },   // its own files: kept out of the Files tab
 });
 // report.js: const rows = jazmin.rows();   // its own table, sales
 //            const targets = await jazmin.query({}, { table: 'targets' });   // another, by name
@@ -95,6 +109,18 @@ applyChanges('tasks.jzm', changeFile, { password });
 // { updated: 2, added: 1, deleted: 0, conflicts: [], … }</code></pre>
       </div>
     </div>
+    <h3>The client file: pages as tabs</h3>
+    <pre class="code"><code>write('client-file.jzm', { clients, transactions }, { tables, password, files,
+  package: {
+    pages: [
+      { path: 'clients.html', title: 'Clients', table: 'clients', actions: { print: false } },
+      { path: 'transactions.html', title: 'Transactions', table: 'transactions', actions: { print: false } },
+      { path: 'summary.html', title: 'Summary', online: 'required' },     // Chart.js from jsDelivr
+      { path: 'statement.html', title: 'Statement', table: 'transactions', pdf: { format: 'A4' } },
+    ],
+    files: ['app.js', 'app.css'],                 // the pages' own files: not in the Files tab
+    allowedOrigins: ['https://cdn.jsdelivr.net'],
+  } });</code></pre>
   </section>
 </main>
 
@@ -115,6 +141,7 @@ applyChanges('tasks.jzm', changeFile, { password });
   $('open-report').addEventListener('click', () => show(data.report, 'report.jzm'));
   $('open-tasks').addEventListener('click', () => show(data.tasks, 'tasks.jzm'));
   $('open-dashboard').addEventListener('click', () => show(data.dashboard, 'dashboard.jzm'));
+  $('open-client-file').addEventListener('click', () => show(data.clientFile, 'client-file.jzm'));
 </script>
 </body>
 </html>

@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Text orders</title>
+<link rel="icon" href="favicon.png" type="image/png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="page wide">
+  <p class="crumbs"><a href="index.html">← All demos</a></p>
+  <div class="head">
+    <div>
+      <h1>Text orders: A2 before A10, and du Plessis with the Ds</h1>
+      <p>A wholesaler's customers, written twice. Plain order compares text character by character: capitals before
+        small letters, accented letters after <em>z</em>, and <em>Bakery 21</em> before <em>Bakery 7</em>. The other copy
+        is kept in an order that <strong>ignores case and accents</strong> and puts <strong>the numbers in names by
+        value</strong>, as people expect a list to read.</p>
+    </div>
+    <span id="status" class="badge" role="status" hidden></span>
+  </div>
+
+  <aside class="about" aria-label="What this shows">
+    <strong>What this shows</strong>
+    <p>The same 44 customers in two files: one sorted by <code>name</code> as plain text, one by
+      <code>{ column: 'name', nocase: true, natural: true }</code>. Rows come back in the file's order, so a search, a
+      page of rows and a read last first (<code>reverse: true</code>) all follow it, with no sort in the page.</p>
+    <p class="feature">Feature: other text orders (<code>nocase</code>, <code>natural</code>) · <span class="ref">USER-GUIDE §16.1</span> (spec 6.7)</p>
+  </aside>
+
+  <section class="panel">
+    <div class="toolbar">
+      <input id="search" type="search" class="grow" placeholder="Search names: try bakery, fresh, spaza or van" aria-label="Search customer names">
+      <button id="reverse" type="button" class="soft" aria-pressed="false">Last first</button>
+    </div>
+    <p id="note" class="hint muted" role="status"></p>
+    <div class="split">
+      <div>
+        <h2>Plain order</h2>
+        <p class="hint"><code>sortedBy: ['name']</code> · <span id="plain-sort"></span></p>
+        <ol id="plain" class="order-list"></ol>
+      </div>
+      <div>
+        <h2>Ignoring case and accents, numbers by value</h2>
+        <p class="hint"><code>sortedBy: [{ column: 'name', nocase: true, natural: true }]</code> · <span id="natural-sort"></span></p>
+        <ol id="natural" class="order-list"></ol>
+      </div>
+    </div>
+    <p class="hint muted"><span class="mark-sample">Marked</span> names start with a small or accented letter, or have a
+      number in them: the ones plain order puts somewhere a person wouldn't look.</p>
+  </section>
+
+  <section class="panel how">
+    <h2>How the files were written</h2>
+    <pre class="code"><code>// Written in the order the customers signed up, then put in order (a write takes rows already in order):
+write('customers.jzm', rows, { columns });
+update('customers.jzm', { sortedBy: [{ column: 'name', nocase: true, natural: true }] });
+
+// Reading: the rows come in that order; the reader says which order it is.
+reader.sort;       // [{ column: 'name', nocase: true, natural: true }]
+reader.sortedBy;   // undefined: only the plain leading keys of the order, which every reader relies on
+reader.query({ name: { icontains: 'bakery' } });   // Bakery 7, Bakery 21</code></pre>
+    <p class="hint">Filters still compare values exactly. Releases 1.0 to 1.6 read such a file correctly, with only the
+      plain part of its order; if they append to it, they drop the rest of the order.</p>
+  </section>
+</main>
+
+<!-- Only what this page uses: the core (or the full jazmin-browser.js). -->
+<script src="browser/jazmin-browser-core.js"></script>
+<script src="data.js"></script>
+<script src="demo.js"></script>
+<script>
+  const { $, since } = demo;
+  const surprising = (name) => /^[a-zà-ÿ]|^[À-Þ]|\d/.test(name); // a small or accented first letter, or a number
+  let readers = null;
+  let reverse = false;
+  let asked = 0;
+
+  async function show() {
+    const ask = ++asked;
+    const text = $('search').value.trim();
+    const filter = text ? { name: { icontains: text } } : null;
+    const started = performance.now();
+    const [plain, natural] = await Promise.all(readers.map((r) => r.query(filter, { limit: 100, reverse, total: false })));
+    if (ask !== asked) return;
+    $('note').textContent = `${natural.rows.length} of ${readers[1].rowCount} customers${text ? ` matching “${text}” (the name's text index)` : ''}${reverse ? ', last first' : ''} · both files read in ${since(started)}`;
+    for (const [id, rows] of [['plain', plain.rows], ['natural', natural.rows]]) {
+      $(id).replaceChildren(...rows.map((c) => {
+        const li = document.createElement('li');
+        li.append(Object.assign(document.createElement('span'), { className: surprising(c.name) ? 'mark' : '', textContent: c.name }),
+          Object.assign(document.createElement('small'), { textContent: `${c.account} · ${c.city}` }));
+        return li;
+      }));
+    }
+  }
+
+  (async () => {
+    try {
+      const started = performance.now();
+      readers = await Promise.all([data.customersPlain, data.customers].map(async (script) => JazminBrowser.open(await JazminBrowser.scriptBytes(script))));
+      $('status').hidden = false;
+      $('status').textContent = `2 files · ${readers[0].rowCount} customers each · opened in ${since(started)}`;
+      $('plain-sort').textContent = `reader.sortedBy: ${JSON.stringify(readers[0].sortedBy)}`;
+      $('natural-sort').textContent = `reader.sort: ${JSON.stringify(readers[1].sort)}`;
+      await show();
+    } catch (e) {
+      $('note').textContent = e.message || String(e);
+    }
+  })();
+  $('search').addEventListener('input', show);
+  $('reverse').addEventListener('click', () => {
+    reverse = !reverse;
+    $('reverse').setAttribute('aria-pressed', String(reverse));
+    show();
+  });
+</script>
+</body>
+</html>

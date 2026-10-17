@@ -10,6 +10,13 @@ var data = {
   shared: 'data/shared.jzm.js', // shared.html, with the keys in data/shared-keys.js
   remco: 'data/remco.jzm.js', // two-factor.html, with the key in data/two-factor-keys.js
   masked: 'data/payroll-masked.jzm.js', // masked.html, with the key and the lock's password in data/masked-keys.js
+  clientFile: 'data/client-file.jzm.js', // documents.html: a document of four pages
+  contracts: 'data/contracts.jzm.js', // two-factor.html: files locked with a lock that names the key service
+  customers: 'data/customers.jzm.js', // sort-order.html: in an order that ignores case and accents, numbers by value
+  customersPlain: 'data/customers-plain.jzm.js', // sort-order.html: the same rows in plain order
+  orders: 'data/orders.jzm.js', // nested.html: orders with their lines as nested columns
+  ordersJson: 'data/orders-json.jzm.js', // nested.html: the same orders with their lines as JSON text
+  inspections: 'data/inspections.jzm.js', // send-back.html, with the keys in data/inspection-keys.js
 };
 
 // Filters pick-file.html offers for a demo file, by its name: each button sends one to the viewer

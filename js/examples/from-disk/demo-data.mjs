@@ -235,3 +235,98 @@ export function payroll() {
   }
   return rows;
 }
+
+/**
+ * A wholesaler's business customers, for a table kept in an order that ignores case and accents and puts the numbers
+ * in names by value (USER-GUIDE 16.1): lower-case surname prefixes (du, le, van), accented names, and numbered shops.
+ */
+export function customers() {
+  const rnd = random(1610);
+  const names = [
+    'Acme Hardware', 'Bakery 21', 'Bakery 7', 'Bean There Coffee', 'Bloem Builders', 'café 21 Deli', 'Café Mozart', 'Cape Fresh Produce',
+    'Corner Deli', 'du Plessis Plumbing', 'du Toit Boerdery', 'Durban Fish Market', 'Éclair Patisserie', 'Elandsfontein Farms', "Émile's Bistro",
+    'Fresh Market 10', 'Fresh Market 12', 'Fresh Market 2', 'Garden Route Nurseries', 'Green Valley Foods', 'Harbour Fish Market',
+    'Isithebe Textiles', 'Jacaranda Florists', 'Karoo Lamb Co.', 'le Roux & Seuns', 'Lekker Braai Supplies', 'Mahlangu Motors',
+    'Mzansi Spaza 11', 'Mzansi Spaza 3', 'Nkosi Electrical', "Ouma's Rusks", 'Pillay Pharmacy', 'Protea Guest House', 'Sunrise Bakery',
+    'Table Bay Traders', 'The Tea Room', 'Umhlanga Surf Shop', 'van der Merwe Bouers', 'van Wyk Vervoer', 'Vaal Steel 40', 'Vaal Steel 9',
+    'Ziyabonga Catering', 'zebra Print Shop', 'Öhlmann Engineering',
+  ];
+  // In the order they signed up: not alphabetical, as a customer list usually is before it is sorted.
+  const order = names.map((name) => ({ name, at: rnd() })).sort((a, b) => a.at - b.at);
+  return order.map(({ name }, i) => ({
+    account: `C-${1001 + i}`, name, city: pick(rnd, CITIES),
+    balance: money(Math.round((rnd() < 0.2 ? -1 : 1) * rnd() ** 2 * 85000 * 100) / 100),
+  }));
+}
+
+/** The store's products, by SKU: what an order's lines are made of. */
+export const PRODUCTS = [
+  ['EL-2210', 'LED panel 600 × 600', 389], ['EL-1150', 'Extension lead 5 m', 149], ['EL-3002', 'Downlight 7 W', 59.9], ['EL-4410', 'Cable 2.5 mm² (100 m)', 1299],
+  ['HW-1042', 'Cordless drill 18 V', 1899], ['HW-1060', 'Drill bit set (19)', 249], ['HW-2001', 'Bolt M8 × 30 (50)', 89], ['HW-2010', 'Wood screws 4 × 40 (200)', 79],
+  ['HW-3300', 'Spirit level 600 mm', 219], ['HG-5100', 'Garden hose 30 m', 449], ['HG-5120', 'Hose connector set', 69], ['HG-5300', 'Potting soil 30 dm³', 54.9],
+  ['PT-7001', 'Wall paint white 20 l', 1199], ['PT-7020', 'Roller and tray set', 129], ['PT-7050', 'Masking tape 48 mm', 39.9], ['PL-6010', 'Mixer tap', 899],
+  ['PL-6100', 'PVC pipe 40 mm × 3 m', 119], ['PL-6150', 'Plumber’s tape', 19.9], ['SF-8001', 'Safety goggles', 79], ['SF-8020', 'Work gloves (pair)', 49.9],
+];
+
+/**
+ * A home-and-hardware store's online orders: each with its lines (a list of objects: SKU, product, quantity, price)
+ * and its delivery (an object: method and city), for nested columns (USER-GUIDE 4.2).
+ */
+export function orders(count = 5000) {
+  const rnd = random(4242);
+  const start = Date.UTC(2026, 6, 1);
+  const methods = ['Courier', 'Courier', 'Collect in store', 'Same-day'];
+  const out = [];
+  for (let i = 0; i < count; i++) {
+    const branch = pick(rnd, ['Cape Town', 'Johannesburg', 'Durban', 'Pretoria', 'Gqeberha']);
+    const lines = [];
+    const n = 1 + Math.floor(rnd() ** 1.6 * 7);
+    const used = new Set();
+    while (lines.length < n) {
+      const [sku, product, price] = PRODUCTS[Math.floor(rnd() ** 1.3 * PRODUCTS.length)];
+      if (used.has(sku)) continue;
+      used.add(sku);
+      lines.push({ sku, product, qty: 1 + Math.floor(rnd() ** 3 * 12), price: money(price) });
+    }
+    const method = pick(rnd, methods);
+    out.push({
+      order: `SO-${100001 + i}`, date: new Date(start + Math.floor((i / count) * 92 * 24) * 3600000 + Math.floor(rnd() * 60) * 60000),
+      customer: `${pick(rnd, FIRST_NAMES)} ${pick(rnd, LAST_NAMES)}`, branch,
+      delivery: { method, city: method === 'Collect in store' ? branch : rnd() < 0.85 ? branch : pick(rnd, CITIES) },
+      lines, total: money(lines.reduce((s, l) => s + l.qty * Number(l.price), 0)),
+    });
+  }
+  // In time order, numbered in that order (the files are sorted by date).
+  out.sort((a, b) => a.date - b.date).forEach((o, i) => { o.order = `SO-${100001 + i}`; });
+  return out;
+}
+
+/** Store inspections area managers made in three branches: the shared file people send new ones back to (15.6). */
+export function inspections() {
+  const rnd = random(5150);
+  const areas = ['Front of store', 'Tills', 'Stockroom', 'Fire exits', 'Garden centre', 'Paint counter', 'Loading bay'];
+  const notes = ['All in order.', 'Two lights out above aisle 4.', 'Fire exit partly blocked by pallets: cleared while there.',
+    'Price labels missing on the paint shelf.', 'Clean and well stocked.', 'Leak in the stockroom ceiling: reported to maintenance.',
+    'Trolley bay full: more trolley collections on Saturdays.', 'Tills 3 and 4 slow to start.', 'Good: new layout works well.'];
+  const inspectors = { 'Cape Town': 'Megan Fourie', Johannesburg: 'Kagiso Molefe', Durban: 'Sipho Dlamini' };
+  const rows = [];
+  for (const branch of Object.keys(inspectors)) {
+    for (let k = 0; k < 12; k++) {
+      const rating = 2 + Math.floor(rnd() * 4);
+      rows.push({
+        id: `${branch.slice(0, 3).toUpperCase()}-${String(k + 1).padStart(3, '0')}`, branch, inspector: inspectors[branch],
+        visited: new Date(Date.UTC(2026, 4, 4) + k * 14 * DAY + Math.floor(rnd() * 5) * DAY + (9 + Math.floor(rnd() * 7)) * 3600000),
+        area: pick(rnd, areas), rating, note: pick(rnd, notes), attachments: [],
+      });
+    }
+  }
+  return rows;
+}
+
+/** The executives' contracts: what the remuneration committee's contract file lists (its contracts are locked). */
+export function contracts() {
+  return executives().map((e, i) => ({
+    name: e.name, role: e.role, started: new Date(Date.UTC(2014 + (i * 3) % 11, (i * 5) % 12, 1)),
+    ends: new Date(Date.UTC(2027 + (i % 4), (i * 7) % 12, 1) - DAY), notice: [6, 3, 3, 3, 3, 3, 1, 3][i],
+  }));
+}
