@@ -22,6 +22,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   results. A File or Blob is hashed in 1 MiB slices with the script's own SHA-256 (about 200 MB/s), never loaded whole.
   `js/scripts/publisher-test-build.mjs` makes a test build that trusts the test root instead, for tests and demos only;
   its results say `test: true` (User Guide 26.5).
+- **The viewer shows who published a file** in a bar of its own (User Guide 26.6): Verified publisher or individual, the
+  document code and, under Details, the certificate, time-stamp, co-signers, signed facts and revocation check;
+  Withdrawn, Replaced, Signed (by an unknown key, no name) or Not valid with the reason. An encrypted file shows its
+  publisher before the password and its facts after. A certified document is **sealed**: shown without the network.
+  Embedded in another site's page, the viewer shows no name.
+- **Demo gallery:** `signatures.html`, eight signed files in a test build of the viewer, marked TEST.
+- **Test files:** `spec/fixtures/publisher/signed-document.jzm`, a certified payslip with its page, whose package asks
+  for a web font (the viewer's tests check it is shown without the network).
 
 ## 1.7.1 - 2026-10-17 (file format 1.0)
 Two fixes to the web viewer, and `estimate()` in the browser reader.

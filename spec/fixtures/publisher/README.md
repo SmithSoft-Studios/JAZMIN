@@ -35,6 +35,7 @@ library (1.7.1) gives the same result.
 | `signed-cosigned.jzm` | certified | Encrypted with a key; co-signed by an auditor |
 | `signed-sole-trader.jzm` | certified | Kind `individual`: Thandi Mokoena, trading as TM Bookkeeping |
 | `signed-paper.jzm` | certified | Its QR string (6.9.7) is `signed-paper.qr.txt` |
+| `signed-document.jzm` | certified | A payslip with its page; the package asks for a web font, so viewers show it without the network (6.9.8). The page reports what the viewer's policy refused |
 | `cross-certified.jzm` | certified | Signed under a new root readers don't have: the chain ends in a cross-certificate the trusted root signed |
 | `expired-certificate.jzm` | certified | Signed in 2025 with a certificate that has since expired |
 | `revoked-before.jzm` | certified | Signed before the date the revocation list revokes its certificate from |
@@ -55,7 +56,7 @@ library (1.7.1) gives the same result.
 | `unsigned.jzm` | none | No block |
 | `changed-trailing-byte.jzm` | not verified (`not-a-valid-file`) | One byte after the trailer: not a valid file (4.2); readers refuse it |
 
-A `signed` result shows no name, kind, code or facts. One signature's block in `signed-plain.jzm` is 4,911 bytes: the
+A `signed` result shows no name, kind, code or facts. One signature's block in `signed-plain.jzm` is about 4,910 bytes (4,914 in this run; ECDSA signatures vary by a few bytes): the
 leaf and issuing certificates 1,240, the time-stamping, status and log certificates the block shares 1,721, the stored
 status 579, the timestamp 506, the log receipt 459, the signed document 154, the facts 120.
 

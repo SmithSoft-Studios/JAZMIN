@@ -14,6 +14,9 @@
 // Every file is locked with the password "demo", except the report (open to anyone) and the shared file (access keys,
 // in data/shared-keys.js for this demo only: real keys never belong in a page). The payroll's key and its lock's
 // password are in data/masked-keys.js, for this demo only too.
+// - data/signatures/: signed files from spec/fixtures/publisher (signatures.html), with a TEST BUILD of the viewer and the
+//   reader that trusts their test root (viewer-test/, browser-test/: js/scripts/publisher-test-build.mjs). The released
+//   viewer beside it trusts SmithSoft's roots only.
 // Run: node examples/from-disk/make.mjs [folder] [--rows n]
 //      (default folder: examples/from-disk/site; --rows: transactions in transactions.jzm, 0 for none)
 import fs from 'node:fs';
@@ -21,6 +24,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { JazminKey, inspect, listFileUnlockTokens, listUnlockTokens, open, portableScript, update, write } from '../../src/index.js';
+import { testBuild } from '../../scripts/publisher-test-build.mjs';
 import {
   bank, branchSales, branchTargets, contracts, customers, executives, inspections, orders, payroll, staff, statement, tasks, transactions,
 } from './demo-data.mjs';
@@ -42,9 +46,33 @@ fs.copyFileSync(path.join(js, '../docs/images/jazmin-logo.png'), path.join(site,
 fs.copyFileSync(path.join(js, 'viewer/icon-32.png'), path.join(site, 'favicon.png'));
 fs.mkdirSync(path.join(site, 'browser'), { recursive: true });
 // The full script, and the core with its add-ons, which the demo pages load only as they need them.
-for (const name of ['jazmin-browser.js', 'jazmin-browser-core.js', 'jazmin-browser-shapes.js', 'jazmin-browser-writer.js', 'jazmin-browser-queries.js']) {
+const ADD_ONS = ['jazmin-browser-shapes.js', 'jazmin-browser-writer.js', 'jazmin-browser-queries.js', 'jazmin-browser-publisher.js'];
+for (const name of ['jazmin-browser.js', 'jazmin-browser-core.js', ...ADD_ONS]) {
   fs.copyFileSync(path.join(js, 'browser', name), path.join(site, 'browser', name));
 }
+
+// Publisher signatures (signatures.html): a TEST BUILD of the viewer and the reader, trusting the test root of
+// spec/fixtures/publisher and saying TEST on every result, and signed files from there. Never released.
+fs.mkdirSync(path.join(site, 'browser-test'), { recursive: true });
+for (const name of ['jazmin-browser-core.js', ...ADD_ONS]) {
+  const text = fs.readFileSync(path.join(js, 'browser', name), 'utf8');
+  fs.writeFileSync(path.join(site, 'browser-test', name), name === 'jazmin-browser-publisher.js' ? testBuild(text) : text);
+}
+fs.mkdirSync(path.join(site, 'viewer-test'), { recursive: true });
+for (const file of ['viewer.js', 'viewer.css', 'sandbox.js', 'icon-32.png']) fs.copyFileSync(path.join(js, 'viewer', file), path.join(site, 'viewer-test', file));
+fs.writeFileSync(path.join(site, 'viewer-test', 'index.html'), fs.readFileSync(path.join(js, 'viewer', 'index.html'), 'utf8')
+  .replaceAll('../browser/', '../browser-test/').replace('<title>JAZMIN viewer</title>', '<title>JAZMIN viewer (TEST BUILD)</title>')
+  .replace('<strong class="brand">JAZMIN viewer</strong>', '<strong class="brand">JAZMIN viewer · TEST BUILD</strong>'));
+const vectors = path.resolve(js, '../spec/fixtures/publisher');
+const signatures = path.join(site, 'data', 'signatures');
+fs.mkdirSync(signatures, { recursive: true });
+for (const name of ['signed-document.jzm', 'signed-password.jzm', 'signed-sole-trader.jzm', 'signed-cosigned.jzm', 'withdrawn.jzm', 'changed-byte.jzm', 'self-signed.jzm']) {
+  fs.copyFileSync(path.join(vectors, name), path.join(signatures, name));
+  fs.writeFileSync(path.join(signatures, `${name}.js`), portableScript(path.join(vectors, name)));
+}
+const vectorSecrets = JSON.parse(fs.readFileSync(path.join(vectors, 'expected.json'), 'utf8')).secrets;
+fs.writeFileSync(path.join(signatures, 'keys.js'),
+  `// The test files' key, for this demo only: a real key never belongs in a page.\nwindow.SIGNATURE_KEYS = ${JSON.stringify({ cosigned: vectorSecrets.key })};\n`);
 fs.mkdirSync(path.join(site, 'data'), { recursive: true });
 
 // Export shapes saved in the files (USER-GUIDE 21.7): offered by name in the viewer's Export menu and in shapes.html.

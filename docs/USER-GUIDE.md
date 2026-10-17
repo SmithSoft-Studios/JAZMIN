@@ -5204,3 +5204,22 @@ hashed by WebCrypto, about 1,200 MB/s.
 The released scripts trust only SmithSoft's roots. `js/scripts/publisher-test-build.mjs` makes a **test build** that
 trusts the test root of `spec/fixtures/publisher` instead, for tests and demos; its results say `test: true`. Never
 publish one.
+
+### 26.6 In the viewer
+
+The viewer (section 24) checks every file it opens and shows the result in a bar of its own, under its header, never
+inside the document:
+
+- **Verified publisher** (or **Verified individual** for a sole trader): the name, the document's kind and code, and
+  under **Details** the registration number, country and domain, when it was time-stamped, the credential that signed,
+  any co-signers, the signed facts, and how fresh the revocation check is. An encrypted file shows who published it
+  before its key or password is typed, and its facts once it opens.
+- **Withdrawn** or **Replaced**, **Signed** (by a key SmithSoft doesn't certify: no name), or **Not valid** with the
+  reason in plain words. A file without a publisher signature shows no bar.
+- **Sealed:** a certified document is shown without the network: its package's `allowedOrigins` are ignored, and the
+  viewer says the document asked for the internet (spec 6.9.8).
+- **Embedded in another site's page**, the viewer shows no name, only that the file is signed: the page around it could
+  draw anything beside it. A page opened from disk that shows the viewer from disk counts as the same site in Chrome,
+  Edge and Safari (Firefox doesn't say where the page around a frame comes from).
+
+The demo gallery's `signatures.html` shows each result in a test build of the viewer, marked TEST.

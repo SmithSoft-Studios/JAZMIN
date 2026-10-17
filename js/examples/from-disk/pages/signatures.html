@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Who published a file</title>
+<link rel="icon" href="favicon.png" type="image/png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="page wide">
+  <p class="crumbs"><a href="index.html">← All demos</a></p>
+  <div class="head">
+    <div>
+      <h1>Who published a file: verified publishers</h1>
+      <p>A file can carry a <strong>publisher signature</strong>: which company or sole trader published it (one SmithSoft
+        has checked), that not one byte has changed since, and the key facts signed with it, such as a payslip's
+        period and net pay. The viewer shows it in <strong>its own bar</strong>, above the document, because a
+        document's page could draw anything, a fake badge included.</p>
+    </div>
+  </div>
+
+  <aside class="about test-note" aria-label="A test build">
+    <strong>A test build: nothing here is a real certification</strong>
+    <p>These files are signed under the <strong>test root</strong> of <code>spec/fixtures/publisher</code>, whose keys are
+      published so anyone can make test files. They open in a <strong>test build</strong> of the viewer
+      (<code>viewer-test/</code>), which trusts that root and says TEST on every result. The released viewer trusts only
+      SmithSoft's roots, which are built in before 1.8.0 is released: there these files show as signed by an unknown key
+      (the last card).</p>
+  </aside>
+
+  <aside class="about" aria-label="What this shows">
+    <strong>What this shows</strong>
+    <p>Eight signed files in the viewer: a certified payslip whose page is shown without the internet, a locked payslip
+      whose publisher shows before the password, a sole trader, a co-signature, a withdrawn document, a changed one, one
+      signed with a key nobody certified, and the payslip in the released viewer.</p>
+    <p class="feature">Feature: publisher signatures (1.8, spec 6.9) · <span class="ref">USER-GUIDE §26</span></p>
+  </aside>
+
+  <div class="gallery signatures">
+    <section class="panel sample">
+      <span class="chip ok">Verified publisher</span>
+      <h2>A certified payslip</h2>
+      <p>Sable Line Logistics' payroll signed it. The bar shows who, and the document's code; <strong>Details</strong> shows
+        the registration number, when it was time-stamped, and the facts signed with it. The payslip's page asks for a web
+        font: a certified document is <strong>sealed</strong>, shown without the internet, so what it shows can't change.</p>
+      <button type="button" class="primary" data-sample="signed-document.jzm">Show in the test viewer</button>
+    </section>
+    <section class="panel sample">
+      <span class="chip ok">Verified publisher</span>
+      <h2>Who sent it, before the password</h2>
+      <p>A payslip locked with a password. The bar shows who published it before you type the password; the facts signed
+        with it appear once the password opens it. Password: <code>Sable-Payroll-2026!</code></p>
+      <button type="button" class="primary" data-sample="signed-password.jzm">Show in the test viewer</button>
+    </section>
+    <section class="panel sample">
+      <span class="chip ok">Verified individual</span>
+      <h2>A sole trader's invoice</h2>
+      <p>SmithSoft certifies sole traders too: Thandi Mokoena, trading as TM Bookkeeping. The bar says
+        <em>Verified individual</em>, and the invoice's number, buyer and total are its signed facts.</p>
+      <button type="button" class="primary" data-sample="signed-sole-trader.jzm">Show in the test viewer</button>
+    </section>
+    <section class="panel sample">
+      <span class="chip ok">Co-signed</span>
+      <h2>Signed, and co-signed by the auditor</h2>
+      <p>Annual financial statements signed by the company and co-signed by its auditor, Khumalo &amp; Partners: both
+        appear under <strong>Details</strong>. Removing the auditor's signature would make it not valid. Locked with a key:
+        <code id="cosigned-key"></code></p>
+      <button type="button" class="primary" data-sample="signed-cosigned.jzm">Show in the test viewer</button>
+    </section>
+    <section class="panel sample">
+      <span class="chip warn">Withdrawn</span>
+      <h2>Withdrawn by its publisher</h2>
+      <p>A payslip issued in error and withdrawn the next day. Its signature still holds, so the bar shows who published
+        it, and that it was withdrawn: don't use it.</p>
+      <button type="button" class="primary" data-sample="withdrawn.jzm">Show in the test viewer</button>
+    </section>
+    <section class="panel sample">
+      <span class="chip bad">Not valid</span>
+      <h2>Changed after it was signed</h2>
+      <p>The certified payslip with one character changed afterwards: 12 hours' overtime became 72. The data still opens,
+        and the bar says the file is not valid, so nobody is fooled by it.</p>
+      <button type="button" class="primary" data-sample="changed-byte.jzm">Show in the test viewer</button>
+    </section>
+    <section class="panel sample">
+      <span class="chip plain">Signed, not verified</span>
+      <h2>Signed with a key nobody certified</h2>
+      <p>Signed with a key its owner made, with "Sable Line Logistics" written in its own certificate. It hasn't changed
+        since, but the viewer shows <strong>no name</strong>: anyone can write any name in a certificate of their own.</p>
+      <button type="button" class="primary" data-sample="self-signed.jzm">Show in the test viewer</button>
+    </section>
+    <section class="panel sample">
+      <span class="chip plain">Signed, not verified</span>
+      <h2>The same payslip in the released viewer</h2>
+      <p>The released viewer trusts only SmithSoft's roots, not this test root: the certified payslip shows as signed by
+        an unknown key, with no name, and its page is shown as any other (it may load its font).</p>
+      <button type="button" data-sample="signed-document.jzm" data-viewer="released">Show in the released viewer</button>
+    </section>
+  </div>
+  <p id="error" class="error" role="alert"></p>
+  <p class="hint muted">Opened from disk in Firefox, the viewer in this page can't tell it is on the same site, so it
+    counts itself as embedded in another site's page and shows no publisher. Use Chrome, Edge or Safari, or serve the
+    folder (<code>node examples/from-disk/serve.mjs</code>).</p>
+</main>
+<script src="browser/jazmin-browser-core.js"></script>
+<script src="data/signatures/keys.js"></script>
+<script src="demo.js"></script>
+<script>
+  'use strict';
+  document.getElementById('cosigned-key').textContent = window.SIGNATURE_KEYS.cosigned;
+  for (const button of document.querySelectorAll('[data-sample]')) {
+    button.addEventListener('click', async () => {
+      const file = button.dataset.sample;
+      document.getElementById('error').textContent = '';
+      try {
+        const bytes = await JazminBrowser.scriptBytes(`data/signatures/${file}.js`);
+        demo.inViewer(bytes, file, { viewer: button.dataset.viewer === 'released' ? 'viewer/index.html' : 'viewer-test/index.html' });
+      } catch (error) {
+        document.getElementById('error').textContent = error.message;
+      }
+    });
+  }
+</script>
+</body>
+</html>

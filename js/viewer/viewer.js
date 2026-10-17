@@ -13,6 +13,7 @@
     blob: null, name: '', options: null, reader: null, readers: new Map(), filter: null, page: 0, total: 0, shown: null, answerTo: null,
     reportReveals: false, // the page that passed the file asked to hear of reveals (jazmin:revealed)
     pages: { pages: [], explicit: false }, pagePath: null, docReader: null, pagesOf: null, // the document's pages (spec 6.8)
+    publisher: null, publisherRun: null, publisherFirst: null, sealed: false, // who published the file (spec 6.9)
   };
 
   const status = (message) => { $('jz-status').textContent = message || ''; };
@@ -38,6 +39,10 @@
     $('jz-token').value = '';
     $('jz-token-row').hidden = true;
     $('jz-error').textContent = '';
+    state.publisher = null;
+    state.sealed = false;
+    showPublisher(null);
+    state.publisherFirst = checkPublisher(blob, {});
     try {
       await open({});
     } catch (error) {
@@ -62,6 +67,11 @@
     state.options = options;
     state.readers.set(reader.table, reader);
     state.reader = reader;
+    // The facts of an encrypted file need its key: checked again with the key that opened it.
+    const p = state.publisher;
+    if (p?.factsNeedKey && !p.facts && SHOWN_PUBLISHER.has(p.status) && (options.key || options.password)) {
+      checkPublisher(state.blob, options.key ? { key: options.key } : { password: options.password });
+    }
     await loadMasks(reader);
     await render(reader);
     status(describe(reader));
@@ -111,6 +121,151 @@
     else if (reader.encrypted) parts.push('encrypted');
     return parts.join(' · ');
   }
+
+  // ---- who published the file (spec 6.9) --------------------------------------------------------------
+
+  const SHOWN_PUBLISHER = new Set(['certified', 'withdrawn', 'superseded']);
+  const PUBLISHER_REASONS = {
+    digest: 'it was changed after it was signed',
+    coverage: 'bytes were added to it after it was signed',
+    block: 'its signature block is damaged',
+    algorithms: 'a signature was removed from it or swapped',
+    signature: "a signature doesn't match it",
+    chain: "a certificate wasn't issued by SmithSoft for signing documents",
+    timestamp: "its time-stamp doesn't hold",
+    log: "its signature isn't in SmithSoft's public log",
+    revoked: "the signer's certificate was revoked before it was signed",
+    facts: "its signed facts don't match",
+  };
+  // The facts of the kinds spec 6.9.3 names, in its order; other facts follow.
+  const FACT_ORDER = {
+    payslip: ['period', 'recipient', 'gross', 'net', 'currency'], statement: ['period', 'account', 'closing', 'currency'],
+    invoice: ['number', 'date', 'buyer', 'total', 'currency'], certificate: ['subject', 'issued', 'expires'], 'tax-certificate': ['year', 'recipient'],
+  };
+
+  /**
+   * Checks who published the file and shows it in the viewer's own bar, never in the document. Runs beside opening; a
+   * check that can't run (the key it was given is refused) leaves what was shown.
+   */
+  async function checkPublisher(blob, options) {
+    const run = {};
+    state.publisherRun = run;
+    const slow = setTimeout(() => {
+      if (state.publisherRun === run && !state.publisher) showPublisher({ status: 'checking' });
+    }, 300);
+    let result;
+    try {
+      await addOn('publisher');
+      result = await JazminBrowser.verifyPublisher(blob, options);
+    } catch {
+      result = state.publisher;
+    } finally {
+      clearTimeout(slow);
+    }
+    if (state.publisherRun !== run) return result;
+    state.publisher = result;
+    showPublisher(result);
+    return result;
+  }
+
+  /** Whether another site's page shows this viewer: there it shows no verified publisher (spec 6.9.8). */
+  function embeddedElsewhere() {
+    if (window.top === window) return false;
+    try {
+      return window.top.location.origin !== location.origin;
+    } catch {
+      // A page opened from disk that shows the viewer from disk: Chrome and Safari name the frames' origins.
+      const ancestors = location.ancestorOrigins;
+      return !(location.protocol === 'file:' && ancestors?.length && [...ancestors].every((o) => o === 'file://' || o === 'null'));
+    }
+  }
+
+  const when = (iso) => new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
+  const day = (iso) => new Date(iso).toLocaleDateString(undefined, { dateStyle: 'medium' });
+
+  function showPublisher(result) {
+    const bar = $('jz-publisher');
+    const status = result?.status;
+    bar.hidden = !status || status === 'none' || status === 'not-verified';
+    $('jz-publisher-details').hidden = true;
+    $('jz-publisher-more').hidden = true;
+    $('jz-publisher-more').setAttribute('aria-expanded', 'false');
+    $('jz-publisher-more').textContent = 'Details';
+    if (bar.hidden) return;
+    const shown = SHOWN_PUBLISHER.has(status);
+    const embedded = shown && embeddedElsewhere();
+    const test = shown && result.test === true;
+    bar.dataset.state = embedded ? 'embedded' : status === 'certified' && test ? 'test' : status;
+    const strong = (value) => Object.assign(document.createElement('strong'), { textContent: value });
+    const who = () => {
+      const trading = result.kind === 'individual' && result.organization && result.organization !== result.name ? `, trading as ${result.organization}` : '';
+      return [strong(`${result.name}${trading}`)];
+    };
+    const what = () => (result.code ? [` · ${result.documentKind || 'document'} ${result.code}`] : []);
+    let badge;
+    let parts;
+    if (status === 'checking') {
+      badge = 'Checking…';
+      parts = ['Checking who published this file…'];
+    } else if (embedded) {
+      badge = 'Signed';
+      parts = ["This file is signed. An embedded viewer doesn't show who published it: open the file in the JAZMIN viewer, or confirm it with SmithSoft."];
+    } else if (status === 'certified') {
+      badge = `${test ? 'TEST · ' : ''}${result.kind === 'individual' ? 'Verified individual' : 'Verified publisher'}`;
+      parts = [...who(), ...what(), test ? ' · signed under a test root, not a real certification' : ''];
+    } else if (status === 'withdrawn' || status === 'superseded') {
+      badge = `${test ? 'TEST · ' : ''}${status === 'withdrawn' ? 'Withdrawn' : 'Replaced'}`;
+      const from = result.statusAnswer?.status === status && result.statusAnswer.from ? ` on ${day(result.statusAnswer.from)}` : '';
+      parts = [...who(), status === 'withdrawn' ? ` withdrew this document${from}.` : ` issued a newer version of this document${from}.`,
+        ' Its signature is still valid.'];
+    } else if (status === 'signed') {
+      badge = 'Signed';
+      parts = ["Signed with a key SmithSoft doesn't certify. It hasn't changed since it was signed, but who signed it isn't known."];
+    } else if (status === 'changed') {
+      badge = 'Not valid';
+      parts = [`This file was signed, but ${PUBLISHER_REASONS[result.reason] ?? 'it changed after it was signed'}. Don't rely on it.`];
+    } else {
+      badge = 'Not valid';
+      parts = [`This file's publisher signature doesn't hold: ${PUBLISHER_REASONS[result.reason] ?? result.reason}. Don't rely on it.`];
+    }
+    $('jz-publisher-badge').textContent = badge;
+    $('jz-publisher-text').replaceChildren(...parts);
+    if (!shown || embedded) return;
+
+    // Details: the certificate, when it was signed, co-signers, the facts, and how fresh the status is.
+    const rows = [];
+    const row = (term, value) => {
+      if (value === null || value === undefined || value === '') return;
+      rows.push(Object.assign(document.createElement('dt'), { textContent: term }), Object.assign(document.createElement('dd'), { textContent: value }));
+    };
+    const note = (className, value) => rows.push(Object.assign(document.createElement('p'), { className, textContent: value }));
+    if (test) note('pub-warning', 'TEST BUILD: this viewer trusts a test root, whose keys are published. Nothing it shows as verified is real.');
+    row(result.kind === 'individual' ? 'Verified individual' : 'Verified publisher', result.name);
+    if (result.organization && result.organization !== result.name) row(result.kind === 'individual' ? 'Trading as' : 'Organisation', result.organization);
+    row('Registration', result.registration);
+    row('Country', result.country);
+    row('Domain', result.domain);
+    row('Document', result.code ? `${result.documentKind || 'document'} ${result.code}` : null);
+    row('Signed', result.timestamp ? `${when(result.timestamp)} (time-stamped)` : null);
+    row('Credential', result.credential);
+    for (const c of result.cosigners) row('Co-signed by', [c.name, c.registration].filter(Boolean).join(', '));
+    if (result.facts) {
+      const order = FACT_ORDER[result.documentKind] ?? [];
+      const names = [...order.filter((n) => n in result.facts), ...Object.keys(result.facts).filter((n) => !order.includes(n))];
+      for (const n of names) row(n.charAt(0).toUpperCase() + n.slice(1), result.facts[n]);
+    } else if (result.factsNeedKey) row('Signed facts', 'Unlock the file to see them.');
+    row('Revocation check', result.checkedAt ? `as of ${when(result.checkedAt)}, on this device` : 'none held: checked on this device only');
+    note('pub-note', "This is this viewer's own check. For a decision that matters, confirm the document with SmithSoft.");
+    $('jz-publisher-details').replaceChildren(...rows);
+    $('jz-publisher-more').hidden = false;
+  }
+
+  $('jz-publisher-more').addEventListener('click', () => {
+    const show = $('jz-publisher-details').hidden;
+    $('jz-publisher-details').hidden = !show;
+    $('jz-publisher-more').setAttribute('aria-expanded', String(show));
+    $('jz-publisher-more').textContent = show ? 'Hide details' : 'Details';
+  });
 
   // ---- showing a file ----------------------------------------------------------------------------
 
@@ -923,7 +1078,7 @@
       button.type = 'button';
       button.textContent = p.title;
       button.dataset.page = p.path;
-      if ((p.online ?? state.docReader.package?.online) === 'required') {
+      if (!state.sealed && (p.online ?? state.docReader.package?.online) === 'required') {
         button.classList.add('needs-online');
         button.title = 'Needs to be online';
       }
@@ -936,7 +1091,9 @@
   }
 
   async function showDocument(reader, path = state.pagePath) {
-    const settings = reader.package || {};
+    // A certified document is sealed (spec 6.9.8): shown without the network, whatever its package asks for.
+    state.sealed = SHOWN_PUBLISHER.has((await state.publisherFirst)?.status);
+    const settings = state.sealed ? { ...reader.package, allowedOrigins: [], online: undefined, asked: reader.package?.online } : reader.package || {};
     const { pages } = state.pages;
     const page = pages.find((p) => p.path === path) ?? pages.find((p) => p.path === settings.entry) ?? pages[0];
     state.pagePath = page.path;
@@ -988,9 +1145,18 @@
    * device is offline. A document of several pages speaks of the page.
    */
   function showOnline(settings, reader, page) {
+    const what = state.pages.pages.length > 1 ? 'page' : 'document';
+    if (state.sealed) {
+      const asked = page?.online ?? settings.asked;
+      $('jz-online').hidden = asked !== 'required' && asked !== 'optional';
+      $('jz-online').textContent = `This ${what} asked for the internet. It's shown without it, because its publisher is verified: what it shows can't change.`;
+      $('jz-offline').hidden = true;
+      $('jz-frame').hidden = false;
+      waitingForNetwork = null;
+      return true;
+    }
     const wanted = page?.online ?? settings.online;
     const online = wanted === 'required' || wanted === 'optional' ? wanted : null;
-    const what = state.pages.pages.length > 1 ? 'page' : 'document';
     $('jz-online').hidden = !online;
     $('jz-online').textContent = online === 'required' ? `This ${what} needs to be online.` : `Parts of this ${what} need to be online.`;
     const offline = online === 'required' && navigator.onLine === false;
@@ -1150,7 +1316,7 @@
   // ---- the browser reader's add-ons: loaded when first needed ---------------------------------------
   // The page loads the reader's core (jazmin-browser-core.js); export shapes and the writer come from add-ons beside it,
   // loaded the first time they are needed. A copy saved as one HTML file has them all inline.
-  const ADD_ONS = { shapes: 'shapeSchema', writer: 'writeChanges' }; // add-on -> a function it adds
+  const ADD_ONS = { shapes: 'shapeSchema', writer: 'writeChanges', publisher: 'verifyPublisher' }; // add-on -> a function it adds
   const addOnLoads = {};
 
   /** Loads jazmin-browser-<name>.js (once), unless JazminBrowser already has it (the full script, or a saved copy). */

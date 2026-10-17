@@ -1,8 +1,8 @@
 {
   "comment": "Entries of the test transparency log (6.9.5): \"JAZMIN/1/log\" || SHA-256(signed) || SHA-256(value); leaf hash SHA-256(0x00 || entry)",
   "origin": "log.jazmin.example/test",
-  "treeSize": 17,
-  "rootHash": "kpchmOihVikdb2aRIKny4O6+ZTEdG9n6o4vN5xMJmsw=",
+  "treeSize": 18,
+  "rootHash": "8SQZKHOX/6bUtFmd9KUtBRA8pfXJQKNDEwIJnWIEyx0=",
   "entries": [
     {
       "index": 0,
@@ -10,8 +10,8 @@
       "role": "publisher",
       "inFile": true,
       "timestamp": "2025-06-02T08:00:02Z",
-      "entry": "SkFaTUlOLzEvbG9nQKIqBMfQOqzxEzS5n3UShTrt+PwnTR2XjEQKgWzvgm6shMM+Gz3aKgozlAAZRS3vU8LU4AUC1spVB2tZtf++Sg==",
-      "leafHash": "Mpyv4uh6Bs0APvPg4FUsELuKRXhN/uoEiAsFmyC6M7o="
+      "entry": "SkFaTUlOLzEvbG9nbUVJnGld4lj2slTHTv61AdncgqGjJkj3EPzy7HOxvZGoNeTLc3+BTxylYBumFxncZ8VfJ5c2g5tvNxTf4HaS9A==",
+      "leafHash": "NTpBCoJE1wVRAG7B4hyVYqmJSU+SzO2F1sIBNZHkbVc="
     },
     {
       "index": 1,
@@ -19,8 +19,8 @@
       "role": "publisher",
       "inFile": true,
       "timestamp": "2026-02-01T08:00:02Z",
-      "entry": "SkFaTUlOLzEvbG9n+9XGxRfZsw/vKsh6auTXWg3ysjXGKRd++EZNcLYWkgN7BVuhp1Nxs2bJQ6CmMQ8zwCNEyPRBxgmzJRRVINkIWg==",
-      "leafHash": "ETXmM2nT/9vaTBtCs2N/fOXnAJmtjOK3efPvH/Z+WSM="
+      "entry": "SkFaTUlOLzEvbG9nWhwszlS+ZsBRwrw6n+sY5nEvvKP52Yt07z4hYzq7XsskGY19ZNJmz3jlCcMOt82jSS28kavMBiIIkH4DCKZHww==",
+      "leafHash": "AM54wFfdXHxM7lJ/W5cpSybUjGQKMSsva3ViH/7ElaE="
     },
     {
       "index": 2,
@@ -28,8 +28,8 @@
       "role": "publisher",
       "inFile": true,
       "timestamp": "2026-09-01T08:00:02Z",
-      "entry": "SkFaTUlOLzEvbG9nBtB6u4ROZ72sx7aCC2HqR6dFXJzwdk9L/+I6XmvntvfPIFpbkxKFA0yDoWc4FoUHATiiwVGCU0sp6S3dtfkbzA==",
-      "leafHash": "a3uE5xv7w9B6s5OrDOzCuzbCH+jilNnT6kHIVLYR3Kc="
+      "entry": "SkFaTUlOLzEvbG9n/20niBkkl8O6DNYt3H8G3WW/VVP4hWgY9cnWpY96+t/FLGbfzJJ7kMlBjtAisV8mAshAHO00r+JyeEiSrK+ERQ==",
+      "leafHash": "O8SoANXy8qfzPl7lsGmuFY7BTj/PEEjeujFT1Fz5Vn8="
     },
     {
       "index": 3,
@@ -37,8 +37,8 @@
       "role": "publisher",
       "inFile": true,
       "timestamp": "2026-10-01T09:00:02Z",
-      "entry": "SkFaTUlOLzEvbG9nFesf4267ZvzJvPnG+OpNg3GRIZ+gG6wOopWKY5UeV06m4sV2Df8qiNa/o3yE5LYcCdTaE64Tl7Zay4AVyqe4YA==",
-      "leafHash": "8LJxjiWImCyiwCH07S3mqttCuQER4ScIZCeSGbBWJ08="
+      "entry": "SkFaTUlOLzEvbG9nCr4cYPxjouq/c2k2lTtPCP59kisCADpcsYSsqatSHZCd2tMn1Xh3mNqndIPF8EmE8J7fwmMAhK6gKDX8uy8/wQ==",
+      "leafHash": "i2ljy39TkkPQj4eFeV2zMICaw97Qz2JPoCq5ewXUS5s="
     },
     {
       "index": 4,
@@ -46,116 +46,125 @@
       "role": "publisher",
       "inFile": true,
       "timestamp": "2026-10-01T09:05:02Z",
-      "entry": "SkFaTUlOLzEvbG9nWuRbMY6jNTro9lTWd3UjvOfTvKahTwFQoV8BynNbcX42e+/3qJQPHtFWg/LD8v3izm0K7h+1ZWNQrLgfg1ijCQ==",
-      "leafHash": "VLo1C7xgKalA9N03ZUD06R3YEjvo54lru1DDpWze74o="
+      "entry": "SkFaTUlOLzEvbG9nyYIxzyqBNCt8fE5Yl70xkaa8PsbP27medPFTHvsUsuldy7p7W5uEa/e5z6gpcmFCpogZI6BgiQsQXWA729xjKg==",
+      "leafHash": "moUWeJwc6R7L63VRj/U50QIYdfZT0fIGU9QwJBFHar0="
     },
     {
       "index": 5,
+      "file": "signed-document.jzm",
+      "role": "publisher",
+      "inFile": true,
+      "timestamp": "2026-10-01T09:10:02Z",
+      "entry": "SkFaTUlOLzEvbG9nsnsn8+QC8TWfR7ZJL/5BdJ4eOIMPc64BNOO6po9bRQ00mzCRk9v4Q3gm5l4sh6B9cGId0ivbcalQ9zHZqYrKLQ==",
+      "leafHash": "M2V7SuZRXVf9ub+Y7b/mEwvuSmFBf3JeZM143wrCY58="
+    },
+    {
+      "index": 6,
       "file": "signed-shared.jzm",
       "role": "publisher",
       "inFile": true,
       "timestamp": "2026-10-02T10:00:02Z",
-      "entry": "SkFaTUlOLzEvbG9nckrJsW0UL+y8R+pHTDccwMgOdqGZXkZzTm6x1zc/N+k9fht9QDAa/v/SOOcd0QhqxXChevkaWwW5VkbbF+zBzA==",
-      "leafHash": "UAJ9uFyO0HEo09k5owZnElunSO/DH3KlNfHj5caKHEE="
+      "entry": "SkFaTUlOLzEvbG9nBJarOuKf8Y81CrGjeBwqxiyjlbrcsEl3VnD0bXfzGSwTDnXLM/E1F0iiDHtMf7i3eMdaMHSytkbYb61jSJgUkg==",
+      "leafHash": "+Ke46OlMy9NnOlyzFItlRGw29tFIcjSlrl/12uJcz7c="
     },
     {
-      "index": 6,
+      "index": 7,
       "file": "signed-sole-trader.jzm",
       "role": "publisher",
       "inFile": true,
       "timestamp": "2026-10-03T14:30:02Z",
-      "entry": "SkFaTUlOLzEvbG9nzrK9FTvD5l3Gqonowzwn2SNMl9BTi3OIqWfbgPE9/YZu9Y5Y9OlU1wtBKuJYTHLWRBUOL0pMrsbsmQ+9q6H0Tg==",
-      "leafHash": "RQXZCHosAUXu9EdEUqnFSj6RvqgxQ5buSgT3Lw0DsLY="
+      "entry": "SkFaTUlOLzEvbG9n0r6NhHZNiJuNnqyzJY9iFxY0z7OqsYHyQfOcqtafQU5MxarHictba483KJzoetJgi4o+l1l2cf+TG4Pz/vO5qg==",
+      "leafHash": "RVbJd9tMrB5/CM4NGcvR85Jy4n8lSnvbBTDT2iY+Ako="
     },
     {
-      "index": 7,
+      "index": 8,
       "file": "revoked.jzm",
       "role": "publisher",
       "inFile": true,
       "timestamp": "2026-10-05T08:00:02Z",
-      "entry": "SkFaTUlOLzEvbG9nOzuOj7uUbRPzoLJSxTyNwZA/QJSLPbkYwQ6HujrX3xz+Sykt7CVKNTDGhCPTblry17p8ItDqCAaabfzL75ZCNw==",
-      "leafHash": "50YH8OdMLTDjWFPM4WfTITHZHAURWlZuDIY8tbutCqU="
+      "entry": "SkFaTUlOLzEvbG9nAhNb+fuPprwJtovD+GVB5yV504zR7qNkdC5Za0kaFmMVsT1lRPqafSqN+p8MqX6IJH5gQHCn1F8h/fNEXwwO6w==",
+      "leafHash": "Ph19VV/ljZx79U8UzO6rm9XwRREpSCarQrOgCw0ci2g="
     },
     {
-      "index": 8,
+      "index": 9,
       "file": "cross-certified.jzm",
       "role": "publisher",
       "inFile": true,
       "timestamp": "2026-10-06T08:00:02Z",
-      "entry": "SkFaTUlOLzEvbG9nc9Ciaurw1u1cRZ/sWYmImiOVJipYEMCEIAWIDDcn1ymyV4tS9aFPM/1L1jNEaxDbPnTcvltGjGp+2lC26yJjwA==",
-      "leafHash": "MqUsdCMk9FbY9aGAgcFk5ypGtbFEDWyZxfCe7hPEDog="
+      "entry": "SkFaTUlOLzEvbG9nILu+OPWtIbB4unfzSSSDnxfyI9b8kjdih/9IdczTsKOfH/ZqAUUgY06jDzZfRy2sa5Zab6DuzJNAuVTPy4uahA==",
+      "leafHash": "ZD3G9LRckEz8r7cd58oHuPgxe7RuQ+v3Lpbyuzo5WUw="
     },
     {
-      "index": 9,
+      "index": 10,
       "file": "stripped-algorithm.jzm",
       "role": "publisher",
       "inFile": true,
       "timestamp": "2026-10-07T08:00:02Z",
-      "entry": "SkFaTUlOLzEvbG9nLE+YTRMWkrkJKVgl50VdEUAUEKPhsXTz0q9j2ZaXM3aDtTreKmBrEgRf5F4jFMyWQJUDrZ4sogfWBon0mrDrmg==",
-      "leafHash": "o+15P7MxqPeZiOdh4VubWE3+nT/RtBAFJy0H9VNjJxc="
+      "entry": "SkFaTUlOLzEvbG9nV4d84Ke4KdE0xD02ZnJcMKakV4UlwwVYG4LiT8x/Yggl7D91JwxBHFF6CNuXi3NMZRcSW0jVNkl2oLpQsoAvIg==",
+      "leafHash": "w2tXkA784C32rrjqFMg2/QUWi6ntDvqQBxsTk7MPGgk="
     },
     {
-      "index": 10,
+      "index": 11,
       "file": "signed-cosigned.jzm",
       "role": "publisher",
       "inFile": true,
       "timestamp": "2026-10-08T11:00:02Z",
-      "entry": "SkFaTUlOLzEvbG9nVzSR7NqlaydyPNcYgn7tJT8pHSDhbH3PvizXoD/j1heHtdTyAvv/MsWTio65LGtx1lckNbUsLWFZ5m4SKO+d3Q==",
-      "leafHash": "1TNFzvQUZFVu1GX6GBAlqVFntlLaMIl4Niy5CDpV1Fs="
+      "entry": "SkFaTUlOLzEvbG9nAOy/NfIbQOBUH2O54y1ZA7EhboxxRaMeuryKzTqOCqfeuqQvJxW5HR+nTSwZdCR/U/RWG7VGm0RS75n6ZD7gPQ==",
+      "leafHash": "vayJmkxAeX5DLIaPE0Et6R9Nz/8OtMXQV8AUxE5QbRk="
     },
     {
-      "index": 11,
+      "index": 12,
       "file": "stripped-cosignature.jzm",
       "role": "publisher",
       "inFile": true,
       "timestamp": "2026-10-08T12:00:02Z",
-      "entry": "SkFaTUlOLzEvbG9nB/LYZbZV6qsz/cCOYcDImvrWniDgjvNfA6gCb46hHbi9lYrcww4qgfw9+lvXcQ5ZweVZOSF2tZUiY9WyvVSkMw==",
-      "leafHash": "4iggO/hDQcxyPsjw9ijdi2fFi5mg8/aqhdGvLhbrVoA="
+      "entry": "SkFaTUlOLzEvbG9n39KTQUxx2b9OM2e23LEtp34JzIoH9wGaRGiz5TN4fqVAGpxeUGnAmUjCtrhtMPLaBvoKJjgfpqC2La0Fs+Celw==",
+      "leafHash": "z5jIYf/EiPhJU7n+eiYB94RFbqctKsMHM78BylFIqDE="
     },
     {
-      "index": 12,
+      "index": 13,
       "file": "signed-cosigned.jzm",
       "role": "cosigner",
       "inFile": true,
       "timestamp": "2026-10-08T15:00:02Z",
-      "entry": "SkFaTUlOLzEvbG9nVzSR7NqlaydyPNcYgn7tJT8pHSDhbH3PvizXoD/j1hcF0RKzSN4WmSKcYTbBeoUaPtfp1VgbsGkyy11DIFWBOQ==",
-      "leafHash": "omEcl2xuVdd8W0nEUYW1YM9mTqg5Si4FFLbzkPonIEE="
+      "entry": "SkFaTUlOLzEvbG9nAOy/NfIbQOBUH2O54y1ZA7EhboxxRaMeuryKzTqOCqe32wyswSxNJApg3zAOc+c2ML9y3mKmO6P+qAJXMxg7Nw==",
+      "leafHash": "4fWQvI3S086ZK8vtMULCvE1bRA8nPuy+EpX3dXaKC4Q="
     },
     {
-      "index": 13,
+      "index": 14,
       "file": "stripped-cosignature.jzm",
       "role": "cosigner",
       "inFile": false,
       "timestamp": "2026-10-08T16:00:02Z",
-      "entry": "SkFaTUlOLzEvbG9nB/LYZbZV6qsz/cCOYcDImvrWniDgjvNfA6gCb46hHbgtz6R/cY0eLjPQ5fZyz5/2rZH5Q5oBqcgzZlE55jeEjw==",
-      "leafHash": "Aao9b8aXJwjm4ZrFE0aFUSSlpcjBJUwoTMEIu6mJ5jM="
+      "entry": "SkFaTUlOLzEvbG9n39KTQUxx2b9OM2e23LEtp34JzIoH9wGaRGiz5TN4fqX9G1x5Pk+x8OOo+cT4mebNYI/7c9jXv9lj309Rs4W7Hw==",
+      "leafHash": "wbBfEZy43meUXgjK2LI+pWLq3zNT9tMJxNIOQTzX3lU="
     },
     {
-      "index": 14,
+      "index": 15,
       "file": "superseded.jzm",
       "role": "publisher",
       "inFile": true,
       "timestamp": "2026-10-09T08:00:02Z",
-      "entry": "SkFaTUlOLzEvbG9n3PmEW7t9Rk9kgNmcYDQ3CsfKF5vrex2ieH5c11npzo2ImpuFrhufo/5LaOjy84U6J1876hG6Ulxwxhh1eaUvyA==",
-      "leafHash": "5CBRRBut3wlGrHQRP+7Rf10KGFJ3igHitADYNEr6gGE="
+      "entry": "SkFaTUlOLzEvbG9nTTsI446E3hqRhnNARh6UvoI6Wm2CBQvGSArwRNvSyZ44ytHAbaeSb6EuhMazKYqDDf+Uzpg9EhJDlWhAnMyI3Q==",
+      "leafHash": "9uKaYK3wuqkJDq2Z00IzvcDKnHqYBBi31h68ZUKXifk="
     },
     {
-      "index": 15,
+      "index": 16,
       "file": "withdrawn.jzm",
       "role": "publisher",
       "inFile": true,
       "timestamp": "2026-10-10T08:00:02Z",
-      "entry": "SkFaTUlOLzEvbG9n6+cyf7QZTT+kzX75Hfyug5ki7qWMPMxQ3wNIQuktRE3rpRAqVHhwrjZ28j7Xfw4Qvnw96aaP+ia9Q4bMycb8aQ==",
-      "leafHash": "psSn1uew5dLPoe/Y9BqEr0AqP9KES1JnJ4oZQd+jYig="
+      "entry": "SkFaTUlOLzEvbG9n1UpK4w9Buh/MYVuGe7mk+YBX2uWzTWj0aPKo6Joq8HkaD2y5HQWTJlV5WMUIaDwgaZy3215p3lS9jjZ4HorFcw==",
+      "leafHash": "PYcoIs0OPlJWZGjzgZmuEFXFZgzTLPRY6zJCgQAZipM="
     },
     {
-      "index": 16,
+      "index": 17,
       "file": "signed-paper.jzm",
       "role": "publisher",
       "inFile": true,
       "timestamp": "2026-10-10T12:00:02Z",
-      "entry": "SkFaTUlOLzEvbG9n0y/csRZE54YDtnXso8tXednxUyLU3jPsryxBZqEhuaOmcxM75T0XXRm9yvkutkynWNJyCUQPPzGvOrpz6GV40w==",
-      "leafHash": "WCDQe6iJnPdga/XKxCob3vhRw55RZTGmBV/NSoEMhSE="
+      "entry": "SkFaTUlOLzEvbG9nj9SbsyLLvyS09pGGgbQrrcaSGwFrZ2cn1CkkZ7gmy5TCnTcOCrIO7YjHv6sBVFWKVeGCnxDIzxXnpkXfPaeDKw==",
+      "leafHash": "06DV3BCGXPuvJu5Z6Eag6ONNunOXMW9GyFkKBXWPhLE="
     }
   ]
 }

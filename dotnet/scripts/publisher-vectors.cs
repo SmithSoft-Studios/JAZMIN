@@ -125,6 +125,10 @@ var specs = new List<Spec>
         At("2026-10-08T11:00:00Z"), "key", Content.FinancialStatements(), "valid", "certified") { CosignedAt = At("2026-10-08T15:00:00Z") },
     new("signed-paper.jzm", "A tax certificate with its QR code (6.9.7) in signed-paper.qr.txt", sable, Normal(), null, At("2026-10-10T12:00:00Z"), "none",
         Content.TaxCertificate(), "valid", "certified"),
+    new("signed-document.jzm", "A payslip with its page (a document) whose package asks for a web font: certified, so viewers show it without the network (6.9.8)",
+        sable, Normal(), null, At("2026-10-01T09:10:00Z"), "none",
+        Content.PayslipDocument("••••2244", "2026-09", ("Basic salary", "earning", 21500.00m), ("Overtime (6 h)", "earning", 1612.50m),
+            ("PAYE", "deduction", -4405.90m), ("UIF", "deduction", -177.12m), ("Medical aid", "deduction", -1840.00m)), "valid", "certified"),
     new("cross-certified.jzm", "Signed under a new root that readers don't have built in: the chain carries a cross-certificate the trusted root signed", sableRoot2,
         [issuing2, cross2], null, At("2026-10-06T08:00:00Z"), "none",
         Payslip("••••2468", "2026-09", ("Basic salary", "earning", 17350.00m), ("PAYE", "deduction", -3402.15m), ("UIF", "deduction", -173.50m)), "valid", "certified"),
@@ -601,6 +605,8 @@ sealed class Content(string kind, JsonObject facts, JazminColumn[] columns, List
     public string Kind => kind;
     public JsonObject Facts => facts;
     public List<object?[]> Rows => rows;
+    public IReadOnlyList<JazminFileInput>? Files { get; init; } // a document: its page (spec 6.8)
+    public JazminPackage? Package { get; init; }
 
     public byte[] Write(string tmp, Spec spec, string password, JazminKey masterKey, JazminKey ownerKey, JazminAccessKey accessKey)
     {
@@ -616,6 +622,8 @@ sealed class Content(string kind, JsonObject facts, JazminColumn[] columns, List
                 options.Access = new JazminAccessOptions { PartitionBy = partitionBy, Grants = [new JazminGrant(accessKey) { Rows = ["ACC-4410"], Label = "Account 4410" }] };
                 break;
         }
+        options.Files = Files;
+        options.Package = Package;
         using (var writer = JazminWriter.Create(path, columns, options))
             foreach (var row in rows) writer.WriteValues(row);
         var bytes = System.IO.File.ReadAllBytes(path);
@@ -625,6 +633,74 @@ sealed class Content(string kind, JsonObject facts, JazminColumn[] columns, List
 
     private static readonly JazminColumn[] PayslipColumns =
         [new("line", JazminType.Int), new("item", JazminType.String), new("type", JazminType.String), new("amount", JazminType.Decimal)];
+
+    /**
+     * A payslip with its page: a document (spec 6.8) whose package asks for a web font from fonts.example.com (made up).
+     * Certified, it is sealed (6.9.8): viewers show it without the network. The page reports the requests the viewer's
+     * policy refused (jazmin.ready({ refused })), so the viewer's tests can check it.
+     */
+    public static Content PayslipDocument(string recipient, string period, params (string Item, string Type, decimal Amount)[] lines)
+    {
+        var payslip = Payslip(recipient, period, lines);
+        return new Content(payslip.Kind, payslip.Facts, PayslipColumns, payslip.Rows,
+            new JsonObject { ["document"] = "payslip", ["employer"] = "Sable Line Logistics (Pty) Ltd", ["period"] = period })
+        {
+            Files = [new JazminFileInput("index.html", Encoding.UTF8.GetBytes(PayslipPage))],
+            Package = new JazminPackage { Entry = "index.html", Title = "Payslip", AllowedOrigins = ["https://fonts.example.com"], Online = JazminOnline.Optional },
+        };
+    }
+
+    private const string PayslipPage = """
+        <!doctype html>
+        <html lang="en">
+        <head>
+        <meta charset="utf-8">
+        <title>Payslip</title>
+        <script>
+          window.refused = [];
+          document.addEventListener('securitypolicyviolation', (e) => window.refused.push(e.effectiveDirective + ' ' + new URL(e.blockedURI).host));
+        </script>
+        <link rel="stylesheet" href="https://fonts.example.com/css2?family=Inter">
+        <style>
+          body { margin: 28px; font: 15px/1.5 Inter, system-ui, sans-serif; color: #1d2430; }
+          h1 { margin: 0 0 4px; font-size: 22px; }
+          .who { margin: 0 0 18px; color: #5b6475; }
+          table { width: 100%; max-width: 640px; border-collapse: collapse; }
+          th, td { padding: 7px 10px; border-bottom: 1px solid #d9dde5; text-align: left; }
+          td.amount, th.amount { text-align: right; font-variant-numeric: tabular-nums; }
+          tfoot td { font-weight: 700; border-bottom: 0; }
+        </style>
+        </head>
+        <body>
+        <h1>Payslip</h1>
+        <p class="who" id="who"></p>
+        <table>
+          <thead><tr><th>Item</th><th>Type</th><th class="amount">Amount (ZAR)</th></tr></thead>
+          <tbody id="lines"></tbody>
+          <tfoot><tr><td colspan="2">Net pay</td><td class="amount" id="net"></td></tr></tfoot>
+        </table>
+        <script>
+          const meta = jazmin.metadata || {};
+          document.getElementById('who').textContent = `${meta.employer || ''} · ${meta.period || ''}`;
+          const rows = jazmin.rows();
+          let net = 0;
+          for (const r of rows) {
+            const tr = document.createElement('tr');
+            for (const [value, cls] of [[r.item, ''], [r.type, ''], [Number(r.amount).toFixed(2), 'amount']]) {
+              const td = document.createElement('td');
+              td.textContent = value;
+              if (cls) td.className = cls;
+              tr.append(td);
+            }
+            document.getElementById('lines').append(tr);
+            net += Number(r.amount);
+          }
+          document.getElementById('net').textContent = net.toFixed(2);
+          addEventListener('load', () => setTimeout(() => jazmin.ready({ lines: rows.length, refused: window.refused }), 300));
+        </script>
+        </body>
+        </html>
+        """;
 
     public static Content Payslip(string recipient, string period, (string Item, string Type, decimal Amount)[] lines)
     {

@@ -72,7 +72,7 @@ var demo = (function () {
    * Shows the viewer over the page and hands it a file (bytes, as JazminBrowser.scriptBytes gives them): the page
    * opened from disk can't, but the viewer next to it reads what the page passes it. It asks for the password itself.
    */
-  function inViewer(bytes, name, { filter } = {}) {
+  function inViewer(bytes, name, { filter, viewer = 'viewer/index.html' } = {}) {
     let overlay = document.querySelector('.viewer-overlay');
     if (!overlay) {
       overlay = document.createElement('div');
@@ -100,7 +100,7 @@ var demo = (function () {
         window.addEventListener('message', opened);
       }
     };
-    frame.src = 'viewer/index.html';
+    frame.src = viewer;
     return overlay;
   }
 

@@ -1,13 +1,10 @@
 c2sp.org/tlog-proof@v1
-index 15
-5CBRRBut3wlGrHQRP+7Rf10KGFJ3igHitADYNEr6gGE=
-fEsNCki1s33qfzl4tDYe20sxsH+CmRjWQScPOS/NH7Q=
-U/mBPKeCJsJ9zsXT3SpOeFN97FF3AWnCiZ8/4os8kWM=
-JlUvHFkoJvwMHxYfNe2R4ky5TaLBoy2lR3NM0viJxXw=
-WCDQe6iJnPdga/XKxCob3vhRw55RZTGmBV/NSoEMhSE=
+index 16
+06DV3BCGXPuvJu5Z6Eag6ONNunOXMW9GyFkKBXWPhLE=
+eBaZqfVyTS5VPvcUjAZ/+2bELVZuOhiTKKm7Qxnu320=
 
 log.jazmin.example/test
-17
-kpchmOihVikdb2aRIKny4O6+ZTEdG9n6o4vN5xMJmsw=
+18
+8SQZKHOX/6bUtFmd9KUtBRA8pfXJQKNDEwIJnWIEyx0=
 
-— log.jazmin.example/test 4cgTszBEAiAufvK5FSYENli7jI4T/NwFI6gryR6xGlu5SGSW/1Mv5AIgSqsM7NDn3oQovh13/15NpHwj8VUAo9VkRcyqVznZZXU=
+— log.jazmin.example/test 4cgTszBGAiEAm0hRkjOiWgz76VLpCXhxYHl5+J1DM/wR/uyc8qUwgMQCIQC3FewMAoqUIXoAXLHme7phTjVQghyuw1y7ityGfRJJxA==

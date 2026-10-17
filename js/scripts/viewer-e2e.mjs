@@ -15,6 +15,7 @@ import {
   JazminAccessKey, JazminKey, applyChanges, exportString, fileSubmission, issueFileUnlockToken, issueUnlockToken, open, portableHtml, portableScript, write,
 } from '../src/index.js';
 import { TEMPLATE_READY, writeTemplate } from '../test/template-fixture.js';
+import { testBuild } from './publisher-test-build.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const fixtures = path.join(root, 'spec/fixtures');
@@ -349,8 +350,20 @@ write(path.join(temp, 'shared.jzm'), [{ id: 0, person: 'P1' }], {
 
 // ---- a static server for the repository (the viewer, the browser reader and the fixtures) ----------------
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json' };
+// The publisher check's test build (scripts/publisher-test-build.mjs), trusting the test root: the viewer under
+// /js/viewer-test/ loads the reader from /js/browser-test/, whose publisher add-on is the test build. Only here.
+const TEST_BUILDS = {
+  '/js/browser-test/jazmin-browser-publisher.js': testBuild(fs.readFileSync(path.join(root, 'js/browser/jazmin-browser-publisher.js'), 'utf8')),
+  '/js/browser-test/jazmin-browser.js': testBuild(fs.readFileSync(path.join(root, 'js/browser/jazmin-browser.js'), 'utf8')),
+  '/js/viewer-test/index.html': fs.readFileSync(path.join(root, 'js/viewer/index.html'), 'utf8').replaceAll('../browser/', '../browser-test/'),
+};
 const serve = (req, res) => {
-  const pathname = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+  let pathname = decodeURIComponent(new URL(req.url, 'http://x').pathname);
+  if (TEST_BUILDS[pathname]) {
+    res.writeHead(200, { 'content-type': TYPES[path.extname(pathname)] }).end(TEST_BUILDS[pathname]);
+    return;
+  }
+  pathname = pathname.replace(/^\/js\/(viewer|browser)-test\//, '/js/$1/');
   const [dirOf, rel] = pathname.startsWith('/e2e/') ? [temp, pathname.slice(5)] : [root, pathname];
   const file = path.join(dirOf, rel);
   if (!file.startsWith(dirOf) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
@@ -1067,6 +1080,59 @@ for (const name of chosen) {
       && heard[3] === 'post.jzm opened' && reached === false && unframed === '';
     results.push({ browser: name, label: 'across sites: a page passes the viewer files and hears opened / locked / failed; documents and unframed viewers take none', ok: crossOk, problems: crossOk ? [] : [JSON.stringify({ heard, reached, unframed })] });
 
+    // Publisher signatures (spec 6.9), in the viewer's own bar. The test build of the viewer trusts the test root and says
+    // so; the released viewer trusts SmithSoft's roots only, so the same file shows as signed by an unknown key.
+    const publisherShown = `(() => {
+      const bar = document.getElementById('jz-publisher');
+      return bar.hidden ? { hidden: true } : { state: bar.dataset.state, badge: document.getElementById('jz-publisher-badge').textContent,
+        text: document.getElementById('jz-publisher-text').textContent, details: document.getElementById('jz-publisher-details').textContent };
+    })()`;
+    const showSigned = async (viewer, file) => {
+      await page.navigate(`${base}/js/${viewer}/index.html`);
+      await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+      await page.evaluate(`fetch('/spec/fixtures/publisher/${file}').then((r) => r.blob()).then((b) => JazminViewer.choose(b, '${file}')).then(() => true)`);
+      await waitFor(page, `JazminViewer.state.publisher && JazminViewer.state.publisher.status`, `${file}: the publisher check`, 30000);
+      return page.evaluate(publisherShown);
+    };
+    const signedChecks = [];
+    const certified = await showSigned('viewer-test', 'signed-plain.jzm');
+    signedChecks.push(['signed-plain.jzm in the test viewer: a verified publisher, marked TEST, with its code and facts', certified.state === 'test'
+      && certified.badge === 'TEST · Verified publisher' && certified.text.includes('Sable Line Logistics (Pty) Ltd') && /JZ-[0-9A-Z]{5}-[0-9A-Z]{5}/.test(certified.text)
+      && certified.details.includes('TEST BUILD') && certified.details.includes('NTRZA-2020/123456/07') && certified.details.includes('14102.37'), certified]);
+    const released = await showSigned('viewer', 'signed-plain.jzm');
+    signedChecks.push(['signed-plain.jzm in the released viewer: signed by a key SmithSoft does not certify, no name', released.state === 'signed'
+      && released.badge === 'Signed' && !released.text.includes('Sable'), released]);
+    const individual = await showSigned('viewer-test', 'signed-sole-trader.jzm');
+    signedChecks.push(['signed-sole-trader.jzm: a verified individual, trading as', individual.badge === 'TEST · Verified individual'
+      && individual.text.includes('Thandi Mokoena, trading as TM Bookkeeping'), individual]);
+    for (const [file, state, words] of [['withdrawn.jzm', 'withdrawn', 'withdrew this document'], ['changed-byte.jzm', 'changed', 'changed after it was signed'],
+      ['self-signed.jzm', 'signed', "SmithSoft doesn't certify"], ['invalid-block-crc.jzm', 'invalid', 'signature block is damaged']]) {
+      const shown = await showSigned('viewer-test', file);
+      signedChecks.push([`${file}: ${state}`, shown.state === state && shown.text.includes(words), shown]);
+    }
+    const unsigned = await showSigned('viewer-test', 'unsigned.jzm');
+    signedChecks.push(['unsigned.jzm: no bar', unsigned.hidden === true, unsigned]);
+    // An encrypted file: who published it shows before the password; its facts once the password opens it.
+    const locked = await showSigned('viewer-test', 'signed-password.jzm');
+    await waitFor(page, `document.getElementById('jz-unlock')?.hidden === false`, 'the unlock form');
+    await page.evaluate(`(document.getElementById('jz-key').value = 'Sable-Payroll-2026!', document.getElementById('jz-unlock').requestSubmit(), true)`);
+    await waitFor(page, `JazminViewer.state.publisher && JazminViewer.state.publisher.facts`, 'the facts after the password', 30000);
+    const unlocked = await page.evaluate(publisherShown);
+    signedChecks.push(['signed-password.jzm: the publisher before the password, the facts after it', locked.state === 'test'
+      && locked.details.includes('Unlock the file to see them') && unlocked.details.includes('18871.48'), { locked, unlocked }]);
+    // A certified document is sealed: its page is shown without the network though its package allows a font's origin.
+    const sealedDoc = async (viewer) => {
+      await showSigned(viewer, 'signed-document.jzm');
+      const ready = await waitFor(page, 'JazminViewer.state.lastReady && JazminViewer.state.lastReady.info', `signed-document.jzm's page in ${viewer}`, 30000);
+      return { ...ready, note: await page.evaluate(`document.getElementById('jz-online').hidden ? '' : document.getElementById('jz-online').textContent`) };
+    };
+    const sealedTest = await sealedDoc('viewer-test');
+    const sealedReleased = await sealedDoc('viewer');
+    signedChecks.push(['signed-document.jzm: certified, shown without the network (the font refused); the released viewer allows it', sealedTest.lines === 5
+      && sealedTest.refused.some((r) => /^style-src(-elem)? fonts\.example\.com$/.test(r)) && sealedTest.note.includes('asked for the internet')
+      && sealedReleased.lines === 5 && sealedReleased.refused.length === 0, { sealedTest, sealedReleased }]);
+    for (const [label, ok, shown] of signedChecks) results.push({ browser: name, label: `publisher: ${label}`, ok, problems: ok ? [] : [JSON.stringify(shown)] });
+
     // Files made into scripts, opened with openScript(): from disk (one in another folder, by its file:/// address), or
     // over HTTP where the browser's automation can't open files from disk.
     const keyRows = open(path.join(fixtures, 'js-key.jzm'), { key: keys.key }).rowCount;
@@ -1289,6 +1355,19 @@ for (const name of chosen) {
       && payrollRevealed.value === `R ${Number(SAMPLE.masked.firstSalary).toLocaleString('en-US', { minimumFractionDigits: 2 })}` && /^1[45] s$/.test(payrollRevealed.countdown)
       && payrollUnlocked.masked === SAMPLE.masked.unlockedCsv && payrollUnlocked.revealed === SAMPLE.masked.revealedCsv && payrollJson === SAMPLE.masked.revealedJson;
     results.push({ browser: name, label: `the demo gallery: masked columns, unlocked with the lock's password, and their exports masked and revealed, as the library gives them${fromDisk ? ', from disk' : ' (over HTTP)'}`, ok: payrollOk, problems: payrollOk ? [] : [JSON.stringify({ payrollShown, payrollRevealed, payrollLocked: { masked: payrollLocked.masked?.slice(0, 200), revealed: payrollLocked.revealed?.slice(0, 200) }, payrollUnlocked: { masked: payrollUnlocked.masked?.slice(0, 200), revealed: payrollUnlocked.revealed?.slice(0, 200) }, json: payrollJson?.slice(0, 200), expected: { csv: SAMPLE.masked.csv.slice(0, 200), revealed: SAMPLE.masked.revealedCsv.slice(0, 200) } })] });
+    // signatures.html: the certified payslip in the gallery's test viewer, marked TEST; the same file in the released one.
+    // Over HTTP, where the test can reach into the viewer in the page.
+    await page.navigate(`${base}/e2e/sample/signatures.html`);
+    await waitFor(page, `!!document.querySelector('[data-sample]')`, 'the signatures page');
+    const overlayViewer = `document.querySelector('.viewer-overlay iframe').contentWindow`;
+    const overlayPublisher = `document.querySelector('.viewer-overlay iframe') && ${overlayViewer}.JazminViewer?.state?.publisher?.status
+      && ({ status: ${overlayViewer}.JazminViewer.state.publisher.status, badge: ${overlayViewer}.document.getElementById('jz-publisher-badge').textContent })`;
+    await page.evaluate(`(document.querySelector('[data-sample="signed-document.jzm"]:not([data-viewer])').click(), true)`);
+    const galleryTest = await waitFor(page, overlayPublisher, 'the certified payslip in the test viewer', 30000);
+    await page.evaluate(`(document.querySelector('.viewer-overlay button').click(), document.querySelector('[data-viewer="released"]').click(), true)`);
+    const galleryReleased = await waitFor(page, overlayPublisher, 'the payslip in the released viewer', 30000);
+    const signaturesOk = galleryTest.status === 'certified' && galleryTest.badge === 'TEST · Verified publisher' && galleryReleased.status === 'signed';
+    results.push({ browser: name, label: `the demo gallery: a certified payslip in the test viewer, marked TEST, and signed by an unknown key in the released viewer (over HTTP)`, ok: signaturesOk, problems: signaturesOk ? [] : [JSON.stringify({ galleryTest, galleryReleased })] });
     await page.navigate(sample('documents.html'));
     await waitFor(page, `!!document.getElementById('open-report')`, 'the documents page');
     await page.evaluate(`(window.statuses = [], addEventListener('message', (e) => e.data?.type === 'jazmin:status' && statuses.push(e.data.state + ' ' + e.data.name)), document.getElementById('open-report').click(), true)`);
