@@ -64,6 +64,7 @@ dotnet add package Jazmin.AspNetCore    # .NET: serve embedded files from ASP.NE
 ## Documentation
 
 - [User guide](docs/USER-GUIDE.md): JavaScript, TypeScript and .NET examples; migrating from Newtonsoft; benchmarks; security
+- [Samples and demos](docs/SAMPLES.md): where each feature is shown, in code (JavaScript and .NET) and in the demo gallery
 - [Format specification (RFC draft)](docs/rfc/draft-jazmin-format-03.md) and its [Protocol Buffers schema](spec/jazmin.proto)
 - [Research summary](docs/RESEARCH.md): JSON/XML/CSV, BSON/MongoDB, Parquet, compression and cryptography
 - [Security review package](docs/SECURITY-REVIEW.md): threat model, key hierarchy and the internal review's findings
