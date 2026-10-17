@@ -12,7 +12,7 @@ import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import {
-  JazminAccessKey, JazminKey, applyChanges, exportString, issueFileUnlockToken, issueUnlockToken, open, portableHtml, portableScript, write,
+  JazminAccessKey, JazminKey, applyChanges, exportString, fileSubmission, issueFileUnlockToken, issueUnlockToken, open, portableHtml, portableScript, write,
 } from '../src/index.js';
 import { TEMPLATE_READY, writeTemplate } from '../test/template-fixture.js';
 
@@ -310,7 +310,25 @@ const SAMPLE = (() => {
     firstSalary: [...payroll.rows({ limit: 1 })][0].salary,
   });
   payroll.close();
+  // The demos added in 1.7's gallery: what the library says they should show. Keys and passwords from the sample's demo
+  // key scripts (for the demo only).
+  const demoScript = (name, ...vars) => new Function(`${fs.readFileSync(path.join(temp, 'sample/data', name), 'utf8')}; return { ${vars.join(', ')} };`)();
+  const names = (file) => {
+    const reader = open(path.join(temp, 'sample/data', file));
+    const list = [...reader.rows()].map((r) => r.name);
+    reader.close();
+    return list;
+  };
+  const orders = open(path.join(temp, 'sample/data/orders.jzm'));
+  const gallery = {
+    estimate: demo.estimate({ account: 'ACC-1042' }),
+    natural: names('customers.jzm'), plain: names('customers-plain.jzm'),
+    ledPanels: orders.count({ lines: { any: { sku: 'EL-2210', qty: { gte: 5 } } } }),
+    ...demoScript('shared-keys.js', 'sharedLock'), ...demoScript('inspection-keys.js', 'fieldKeys'), ...demoScript('two-factor-keys.js', 'twoFactor'),
+  };
+  orders.close();
   return {
+    gallery,
     masked,
     statementRows: rows.length,
     closing: rand(closing),
@@ -1197,6 +1215,20 @@ for (const name of chosen) {
     const triedTotal = Number((/of ([\d\s.,  ]+) matching/.exec(tried.status)?.[1] ?? '').replace(/\D/g, ''));
     const triesOk = offered.length === 5 && tried.filter === '{"account":"ACC-1042"}' && triedTotal === SAMPLE.oneAccount;
     results.push({ browser: name, label: 'the from-disk sample: Try buttons send filters to the viewer (jazmin:filter), answered from the demo file\'s indexes', ok: triesOk, problems: triesOk ? [] : [JSON.stringify({ offered, tried, SAMPLE })] });
+    // Newest 20 for the filter tried (reverse: true, against counting and reading the last page), and what it will read:
+    // the library's estimate() from make.mjs beside the browser reader's explain(), then the measured count.
+    await page.evaluate(`(document.getElementById('newest').click(), true)`);
+    const newest = await waitFor(page, `document.getElementById('t-reverse') && { rows: [...document.querySelectorAll('#newest-rows tbody tr')].map((tr) => tr.cells[0].textContent + ' ' + tr.cells[1].textContent), note: document.getElementById('newest-note').textContent, timings: [document.getElementById('t-count').textContent, document.getElementById('t-reverse').textContent] }`, 'the newest 20', 30000);
+    await page.evaluate(`(document.getElementById('estimate').click(), true)`);
+    const estimated = await waitFor(page, `document.getElementById('first-took') && { plan: document.getElementById('plan-note').textContent, table: document.getElementById('estimate-table') ? [...document.querySelectorAll('#estimate-table tbody tr')].map((tr) => [...tr.cells].map((td) => td.textContent)) : null, count: document.getElementById('count-took').textContent }`, 'what it will read', 30000);
+    const est = SAMPLE.gallery.estimate;
+    const newestRows = newest.rows.map((r) => r.slice(0, 16));
+    const readsOk = newest.rows.length === 20 && newest.rows.every((r) => r.endsWith(' ACC-1042')) && JSON.stringify(newestRows) === JSON.stringify([...newestRows].sort().reverse())
+      && newest.note.startsWith(`${SAMPLE.oneAccount.toLocaleString('en-US')} matches. Both give the same 20 rows`) && newest.timings.every((t) => / (ms|s)$/.test(t))
+      && estimated.plan.includes(`an index: ${SAMPLE.oneAccount.toLocaleString('en-US')} candidate rows`)
+      && JSON.stringify(estimated.table?.map((r) => r.slice(1, 3))) === JSON.stringify([[est.chunks, est.rows], [est.countChunks, est.countRows]].map((r) => r.map((v) => v.toLocaleString('en-US'))))
+      && estimated.count.startsWith(`${SAMPLE.oneAccount.toLocaleString('en-US')} in `);
+    results.push({ browser: name, label: 'the from-disk sample: Newest 20 read last first (reverse: true) as the last page, and what a filter will read (estimate(), explain()) before it runs', ok: readsOk, problems: readsOk ? [] : [JSON.stringify({ newest, estimated, est })] });
 
     // The demo gallery, as a person uses it: export shapes (a chart from a saved shape, the saved list, the lab checking
     // as typed), several tables (a client and their spending through the saved linked shape), one file with three
@@ -1219,7 +1251,13 @@ for (const name of chosen) {
     await page.navigate(sample('shared.html'));
     await waitFor(page, `!!document.getElementById('open')`, 'the shared page');
     await page.evaluate(`(document.getElementById('open').click(), true)`);
-    const people = await waitFor(page, `!document.getElementById('people').hidden && [...document.querySelectorAll('.person')].map((p) => ({ who: p.querySelector('h2').textContent, rows: p.querySelector('.rows').textContent, columns: [...p.querySelectorAll('.columns-chips .chip:not(.off)')].map((c) => c.textContent), shapes: [...p.querySelectorAll('.shape-chips .chip')].map((c) => c.textContent), files: p.querySelectorAll('.file-list li').length, table: [...p.querySelectorAll('.rows-table th')].map((th) => th.textContent), shown: p.querySelectorAll('.rows-table tbody tr').length, hint: p.querySelector('.rows-hint').textContent, branches: p.querySelector('.rows-table th').textContent === 'branch' ? [...new Set([...p.querySelectorAll('.rows-table tbody tr')].map((tr) => tr.cells[0].textContent))] : null }))`, 'the three keys');
+    const people = await waitFor(page, `!document.getElementById('people').hidden && [...document.querySelectorAll('.person')].map((p) => ({ who: p.querySelector('h2').textContent, rows: p.querySelector('.rows').textContent, columns: [...p.querySelectorAll('.columns-chips .chip:not(.off)')].map((c) => c.textContent), shapes: [...p.querySelectorAll('.shape-chips .chip')].map((c) => c.textContent), files: p.querySelectorAll('.file-list li').length, table: [...p.querySelectorAll('.rows-table th')].map((th) => th.textContent), shown: p.querySelectorAll('.rows-table tbody tr').length, hint: p.querySelector('.rows-hint').textContent, branches: p.querySelector('.rows-table th').textContent === 'branch' ? [...new Set([...p.querySelectorAll('.rows-table tbody tr')].map((tr) => tr.cells[0].textContent))] : null, tabs: [...p.querySelectorAll('.page-chips .chip:not(.off)')].map((c) => c.textContent), locked: [...p.querySelectorAll('.file-list li.locked-file > a')].map((a) => a.textContent), unknown: p.querySelectorAll('.unknown-files .chip').length }))`, 'the three keys');
+    // HR's locked file: a wrong password refused, then the lock's password opens it, here in the page.
+    const hrLock = `document.querySelectorAll('.person')[2].querySelector('.lock-box')`;
+    await page.evaluate(`(${hrLock}.querySelector('input').value = 'wrong', ${hrLock}.querySelector('form').requestSubmit(), true)`);
+    const lockWrong = await waitFor(page, `${hrLock}.querySelector('.error').textContent`, 'the wrong lock password');
+    await page.evaluate(`(${hrLock}.querySelector('input').value = ${JSON.stringify(SAMPLE.gallery.sharedLock.password)}, ${hrLock}.querySelector('form').requestSubmit(), true)`);
+    const lockOpened = await waitFor(page, `${hrLock}.querySelector('.took') && document.querySelectorAll('.person')[2].querySelector('.file-output').textContent.split(String.fromCharCode(10)).slice(0, 2)`, 'the HR file unlocked');
     // The masked payroll: masked with the key alone (the masked export equal to the revealed one), then unlocked: a value
     // revealed with its countdown, and both exports as the library gives them, in CSV and in JSON.
     await page.navigate(sample('masked.html'));
@@ -1248,18 +1286,95 @@ for (const name of chosen) {
     await page.evaluate(`(document.getElementById('open-tasks').click(), true)`);
     await waitFor(page, `statuses.length > 1`, 'the task list in the viewer', 30000);
     await page.evaluate(`(document.getElementById('open-dashboard').click(), true)`);
-    const documentStatuses = await waitFor(page, `statuses.length > 2 && statuses`, 'the dashboard in the viewer', 30000);
+    await waitFor(page, `statuses.length > 2`, 'the dashboard in the viewer', 30000);
+    await page.evaluate(`(document.getElementById('open-client-file').click(), true)`);
+    const documentStatuses = await waitFor(page, `statuses.length > 3 && statuses`, 'the client file in the viewer', 30000);
     const galleryOk = shapesShown.status.startsWith(`${SAMPLE.statementRows} transactions · 4 saved shapes · opened in `) && shapesShown.bars === SAMPLE.categories
       && JSON.stringify(shapesShown.saved) === JSON.stringify(['Chart data', 'Merchants', 'Spending by category', 'Statement']) && shapesShown.output === '['
       && labMistake === "Shape at categories[].spent.$sum: unknown or hidden column 'amont'"
       && JSON.stringify(tablesShown) === JSON.stringify(SAMPLE.bank) && JSON.stringify(perSegment) === JSON.stringify(SAMPLE.perSegment)
       && JSON.stringify(people) === JSON.stringify([
-        { who: 'Cape Town manager', rows: '10 of 30', columns: ['branch', 'name', 'role', 'since', 'salary', 'bonus'], shapes: ['Cape Town pay', 'Headcount by role', 'Team list'], files: 2, table: ['name', 'role', 'salary'], shown: 6, hint: '(the first 6)', branches: null },
-        { who: 'Johannesburg team lead', rows: '10 of 30', columns: ['branch', 'name', 'role', 'since'], shapes: ['Headcount by role', 'Team list'], files: 2, table: ['name', 'role'], shown: 6, hint: '(the first 6)', branches: null },
-        { who: 'HR', rows: '30 of 30', columns: ['branch', 'name', 'role', 'since', 'salary', 'bonus'], shapes: ['Cape Town pay', 'Headcount by role', 'Pay by branch', 'Team list'], files: 5, table: ['branch', 'name', 'role', 'salary'], shown: 6, hint: '(2 from each branch)', branches: ['Cape Town', 'Johannesburg', 'Durban'] },
+        { who: 'Cape Town manager', rows: '10 of 30', columns: ['branch', 'name', 'role', 'since', 'salary', 'bonus'], shapes: ['Cape Town pay', 'Headcount by role', 'Team list'], files: 2, table: ['name', 'role', 'salary'], shown: 6, hint: '(the first 6)', branches: null, tabs: ['Handbook'], locked: [], unknown: 5 },
+        { who: 'Johannesburg team lead', rows: '10 of 30', columns: ['branch', 'name', 'role', 'since'], shapes: ['Headcount by role', 'Team list'], files: 2, table: ['name', 'role'], shown: 6, hint: '(the first 6)', branches: null, tabs: ['Handbook'], locked: [], unknown: 5 },
+        { who: 'HR', rows: '30 of 30', columns: ['branch', 'name', 'role', 'since', 'salary', 'bonus'], shapes: ['Cape Town pay', 'Headcount by role', 'Pay by branch', 'Team list'], files: 7, table: ['branch', 'name', 'role', 'salary'], shown: 6, hint: '(2 from each branch)', branches: ['Cape Town', 'Johannesburg', 'Durban'], tabs: ['Handbook', 'Pay review 2027'], locked: ['hr/increases-2027.csv'], unknown: 0 },
       ])
-      && JSON.stringify(documentStatuses) === JSON.stringify(['opened report.jzm', 'locked tasks.jzm', 'opened dashboard.jzm']);
-    results.push({ browser: name, label: `the demo gallery: export shapes, several tables, one file with three keys, documents in the viewer${fromDisk ? ', from disk' : ' (over HTTP)'}`, ok: galleryOk, problems: galleryOk ? [] : [JSON.stringify({ shapesShown, labMistake, tablesShown, perSegment, people, documentStatuses, SAMPLE })] });
+      && lockWrong === 'Wrong password: try again' && JSON.stringify(lockOpened) === JSON.stringify(['hr/increases-2027.csv', 'name,branch,role,salary,proposed,increase'])
+      && JSON.stringify(documentStatuses) === JSON.stringify(['opened report.jzm', 'locked tasks.jzm', 'opened dashboard.jzm', 'locked client-file.jzm']);
+    results.push({ browser: name, label: `the demo gallery: export shapes, several tables, one file with three keys (a page and a locked file only HR sees, unlocked in the page), documents in the viewer${fromDisk ? ', from disk' : ' (over HTTP)'}`, ok: galleryOk, problems: galleryOk ? [] : [JSON.stringify({ shapesShown, labMistake, tablesShown, perSegment, people, lockWrong, lockOpened, documentStatuses, SAMPLE: { ...SAMPLE, gallery: undefined } })] });
+
+    // Text orders, nested columns and a record written in the browser, as the library has them.
+    await page.navigate(sample('sort-order.html'));
+    const orderOf = (id) => `[...document.querySelectorAll('#${id} li > span')].map((e) => e.textContent)`;
+    const ordered = await waitFor(page, `document.querySelectorAll('#natural li').length > 0 && { natural: ${orderOf('natural')}, plain: ${orderOf('plain')} }`, 'the two orders');
+    await page.evaluate(`(document.getElementById('search').value = 'bakery', document.getElementById('search').dispatchEvent(new Event('input')), true)`);
+    const bakeries = await waitFor(page, `/matching/.test(document.getElementById('note').textContent) && { natural: ${orderOf('natural')}, plain: ${orderOf('plain')} }`, 'the search in both orders');
+    await page.navigate(sample('nested.html'));
+    const nested = await waitFor(page, `/orders ·/.test(document.getElementById('json-took').textContent) && { nested: document.getElementById('nested-took').textContent, json: document.getElementById('json-took').textContent, rows: document.querySelectorAll('#orders tbody tr').length, saved: document.getElementById('size-saved').textContent }`, 'the nested filter');
+    await page.navigate(sample('send-back.html'));
+    await waitFor(page, `!document.getElementById('form').hidden`, 'the inspection form');
+    // A small PNG as the photo (made here, as a camera's file would be chosen), then the file written in the browser.
+    await page.evaluate(`(async () => {
+      const canvas = Object.assign(document.createElement('canvas'), { width: 24, height: 16 });
+      canvas.getContext('2d').fillRect(0, 0, 24, 16);
+      const blob = await new Promise((r) => canvas.toBlob(r, 'image/png'));
+      const files = new DataTransfer();
+      files.items.add(new File([blob], 'exit.png', { type: 'image/png' }));
+      document.getElementById('photo').files = files.files;
+      document.getElementById('photo').dispatchEvent(new Event('change'));
+      document.getElementById('note').value = 'Fire exit partly blocked by pallets: cleared while there.';
+      return true;
+    })()`);
+    await waitFor(page, `!document.getElementById('preview').hidden`, 'the photo');
+    await page.evaluate(`(document.getElementById('form').requestSubmit(), true)`);
+    const sent = await waitFor(page, `!document.getElementById('result').hidden && written.blob.arrayBuffer().then((b) => ({ name: written.name, checked: document.getElementById('checked').textContent, bytes: btoa(String.fromCharCode(...new Uint8Array(b))) }))`, 'the file written in the browser');
+    // The owner's side: the filing service's checks (fileSubmission), without writing (dryRun).
+    let filing;
+    try {
+      filing = fileSubmission(path.join(temp, 'sample/data/inspections.jzm'), Buffer.from(sent.bytes, 'base64'), {
+        key: fs.readFileSync(path.join(temp, 'sample/filing/owner.key'), 'utf8').trim(), keyId: sent.name.split('.')[0], dryRun: true,
+      });
+    } catch (error) {
+      filing = { error: error.message };
+    }
+    const moreOk = JSON.stringify(ordered) === JSON.stringify({ natural: SAMPLE.gallery.natural, plain: SAMPLE.gallery.plain })
+      && JSON.stringify(bakeries) === JSON.stringify({ natural: ['Bakery 7', 'Bakery 21', 'Sunrise Bakery'], plain: ['Bakery 21', 'Bakery 7', 'Sunrise Bakery'] })
+      && nested.nested.startsWith(`${SAMPLE.gallery.ledPanels} orders · `) && nested.json.startsWith(`${SAMPLE.gallery.ledPanels} orders · `) && nested.rows === Math.min(12, SAMPLE.gallery.ledPanels) && /^\d+%$/.test(nested.saved)
+      && sent.name.startsWith(`${SAMPLE.gallery.fieldKeys[0].keyId}.`) && /^Checked: it opens with the submission key: 1 record .* and 1 file \(DUR-W\d+\/photo\.png, image\/png\)\.$/.test(sent.checked)
+      && filing.filed === 1 && filing.files === 1 && filing.sender === SAMPLE.gallery.fieldKeys[0].keyId;
+    results.push({ browser: name, label: `the demo gallery: text orders (nocase, natural) against plain, nested columns against JSON, an inspection written in the browser that the filing service accepts${fromDisk ? ', from disk' : ' (over HTTP)'}`, ok: moreOk, problems: moreOk ? [] : [JSON.stringify({ ordered, bakeries, nested, sent: { name: sent.name, checked: sent.checked }, filing, expected: { natural: SAMPLE.gallery.natural.slice(0, 5), ledPanels: SAMPLE.gallery.ledPanels } })] });
+
+    // Over HTTP, where the test can reach into the viewer in the page: the client file's pages as tabs (its own files
+    // and pages out of the Files tab), the report's Files tab without its own files, and the contracts' lock naming
+    // the key service (the service itself isn't run here: two-factor.html shows it working).
+    await page.navigate(`${base}/e2e/sample/documents.html`);
+    await waitFor(page, `!!document.getElementById('open-report')`, 'the documents page');
+    const inOverlay = `document.querySelector('.viewer-overlay iframe').contentWindow`;
+    await page.evaluate(`(document.getElementById('open-report').click(), true)`);
+    const reportFiles = await waitFor(page, `document.querySelector('.viewer-overlay iframe') && ${inOverlay}.JazminViewer?.state?.lastReady && [...${inOverlay}.document.querySelectorAll('#jz-files .path')].map((e) => e.textContent)`, 'the report in the viewer', 30000);
+    await page.evaluate(`(document.querySelector('.viewer-overlay .bar button').click(), document.getElementById('open-client-file').click(), true)`);
+    await waitFor(page, `document.querySelector('.viewer-overlay iframe') && ${inOverlay}.document?.getElementById('jz-unlock')?.hidden === false`, 'the client file locked', 30000);
+    await page.evaluate(`(${inOverlay}.document.getElementById('jz-key').value = 'demo', ${inOverlay}.document.getElementById('jz-unlock').requestSubmit(), true)`);
+    const shownPage = (what) => waitFor(page, `${inOverlay}.JazminViewer.state.lastReady?.info?.page === '${what}' && ${inOverlay}.JazminViewer.state.lastReady.info`, `the ${what} page`, 30000);
+    const clientsPage = await shownPage('clients');
+    const tabs = await page.evaluate(`[...${inOverlay}.document.querySelectorAll('#jz-pages button')].map((b) => b.textContent.trim())`);
+    const filesTab = await page.evaluate(`${inOverlay}.document.getElementById('jz-tab-files').hidden`);
+    await page.evaluate(`(${inOverlay}.document.querySelector('#jz-pages button[data-page="statement.html"]').click(), true)`);
+    const statementPage = await shownPage('statement');
+    await page.evaluate(`(${inOverlay}.document.querySelector('#jz-pages button[data-page="transactions.html"]').click(), true)`);
+    const transactionsPage = await shownPage('transactions');
+    await page.navigate(`${base}/js/viewer/index.html`);
+    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+    await page.evaluate(`fetch('/e2e/sample/data/contracts.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'contracts.jzm')).then(() => true)`);
+    await waitFor(page, `document.getElementById('jz-unlock')?.hidden === false`, 'the unlock form');
+    await page.evaluate(`(document.getElementById('jz-key').value = ${JSON.stringify(SAMPLE.gallery.twoFactor.contracts.key)}, document.getElementById('jz-unlock').requestSubmit(), true)`);
+    const contractFiles = await waitFor(page, `document.querySelectorAll('#jz-files li').length === 4 && [...document.querySelectorAll('#jz-files li')].map((li) => li.querySelector('.path').textContent + (li.querySelector('.locked') ? ':locked' : ''))`, 'the contracts listed');
+    await page.evaluate(`([...document.querySelectorAll('#jz-files li')].find((li) => li.querySelector('.locked')).querySelector('button').click(), true)`);
+    const signIn = await waitFor(page, `document.getElementById('jz-lock').open && document.getElementById('jz-lock-service').textContent`, 'the unlock dialog');
+    const pagesOk = JSON.stringify(reportFiles) === JSON.stringify(['index.html']) && JSON.stringify(tabs) === JSON.stringify(['Clients', 'Transactions', 'Summary', 'Statement'])
+      && filesTab === true && clientsPage.rows === 250 && statementPage.print === true && statementPage.lines > 0 && transactionsPage.rows > 0
+      && JSON.stringify(contractFiles) === JSON.stringify(['contracts/chief-executive.html:locked', 'contracts/chief-operating-officer.html:locked', 'contracts/financial-director.html:locked', 'terms-of-reference.html'])
+      && signIn === 'Sign in at localhost:5080';
+    results.push({ browser: name, label: "the demo gallery: the client file's four pages as tabs, documents' own files out of the Files tab, contracts locked by a lock that names the key service", ok: pagesOk, problems: pagesOk ? [] : [JSON.stringify({ reportFiles, tabs, filesTab, clientsPage, statementPage, transactionsPage, contractFiles, signIn })] });
     if (page.problems.length) results.push({ browser: name, label: 'page errors', ok: false, problems: page.problems });
   } catch (error) {
     results.push({ browser: name, label: 'run', ok: false, problems: [error.message] });
