@@ -5,6 +5,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased
 
+### Fixed
+- **.NET: a shared file whose owner key isn't a point on the curve** now fails with the usual JAZMIN error ("the
+  file's owner signature is invalid"). On Windows it surfaced as `PlatformNotSupportedException`, which .NET's
+  cryptography throws there for such a point.
+
 ### Added
 - **Publisher signatures (spec 6.9): `verifyPublisher`** (.NET `JazminFile.VerifyPublisher`) checks who published a
   file, that it hasn't changed since, the facts signed with it and its document code, with the stored status, a
