@@ -82,6 +82,14 @@ test('a revocation list or status answer that does not verify is ignored', () =>
   assert.equal(verify(answer.for, { statusAnswer: { answer: parts.join('.'), nonce: answer.nonce } }).status, 'certified');
 });
 
+test('a file that is not JAZMIN is not verified', () => {
+  const bytes = fs.readFileSync(path.join(dir, 'signed-plain.jzm'));
+  bytes[0] ^= 1; // the preamble's magic
+  const result = verifyWith(bytes, {}, trust);
+  assert.equal(result.status, 'not-verified');
+  assert.equal(result.reason, 'not-a-valid-file');
+});
+
 test('only the built-in roots are trusted: none yet, so a certified file shows as signed', () => {
   const file = path.join(dir, 'signed-plain.jzm');
   const result = verifyPublisher(file, { revocationList });

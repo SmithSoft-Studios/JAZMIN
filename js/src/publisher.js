@@ -65,7 +65,10 @@ function checkOptions(options) {
   if (statusAnswer !== undefined && (typeof statusAnswer?.answer !== 'string' || typeof statusAnswer?.nonce !== 'string')) {
     throw new JazminValidationError('statusAnswer must be { answer, nonce } (strings)');
   }
-  return { key: key === undefined || key === null ? null : parseAnyKey(key), password, revocationList, statusAnswer };
+  return {
+    key: key === undefined || key === null ? null : parseAnyKey(key), password, revocationList: revocationList?.trim(),
+    statusAnswer: statusAnswer && { answer: statusAnswer.answer.trim(), nonce: statusAnswer.nonce },
+  };
 }
 
 function context(trust) {
@@ -126,13 +129,13 @@ function verifyFrom(src, opts, ctx, fromFile) {
   for (let i = 0; i < sigs.length; i++) {
     if (sigs[i].algorithm !== 'ES256') continue; // reserved algorithms (ML-DSA-65) aren't known yet
     if (certs[i].length === 0) return empty('invalid', 'chain');
-    let key;
+    let key = null;
     try {
       key = keyOf(certs[i][0]);
     } catch {
-      return empty('invalid', 'chain');
+      // a key that isn't usable: the signature can't be checked
     }
-    if (!verifies('sha256', message, key, 'ieee-p1363', sigs[i].value)) return empty('invalid', 'signature');
+    if (!key || !verifies('sha256', message, key, 'ieee-p1363', sigs[i].value)) return empty('invalid', 'signature');
     checked.push({ sig: sigs[i], chain: checkChain(ctx, certs[i], ctx.ids?.signing) });
   }
   // "signed": the publisher's certificate doesn't chain to a trusted root. No name, facts or code.
@@ -839,7 +842,7 @@ function inclusion(index, size, leafHash, proof, root) {
  * not after the time of verifying. x5t#S256 names the certificate, which is in x5c or among the block's certificates.
  */
 function jws(ctx, text, eku, timeField, pool) {
-  const parts = text.trim().split('.');
+  const parts = text.split('.');
   if (parts.length !== 3 || !parts.every((p) => /^[A-Za-z0-9_-]+$/.test(p))) return null;
   try {
     const header = parseJsonText(Buffer.from(parts[0], 'base64url').toString('utf8'), 'JWS header', true);
@@ -871,8 +874,8 @@ function statusAnswer(ctx, text, pool, expect) {
   const p = ctx.ids ? jws(ctx, text, ctx.ids.status, 'time', pool) : null;
   if (!p || !STATUSES.has(p.status) || p.digest !== expect.d || p.code !== expect.code || p.nonce !== expect.nonce) return null;
   if (typeof p.nonce !== 'string' || Buffer.from(p.nonce, 'base64url').length < 16 || nameOf(p.certificate) !== expect.certificate) return null;
-  const from = p.status === 'valid' && p.from === undefined ? null : rfc3339(p.from);
-  if (p.status !== 'valid' && from === null) return null; // from is REQUIRED with revoked, withdrawn and superseded
+  const from = p.from === undefined || p.from === null ? null : rfc3339(p.from);
+  if (from === null && (p.status !== 'valid' || (p.from !== undefined && p.from !== null))) return null; // from is REQUIRED with revoked, withdrawn and superseded
   return { status: p.status, from, time: rfc3339(p.time), revokedFrom: p.status === 'revoked' ? from : null };
 }
 
