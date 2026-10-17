@@ -92,3 +92,17 @@ id-jazmin-log.
   `from`) isn't used, as if the block had none: 6.9.8 names no reason for it.
 - A block whose **first signature isn't the publisher's** (or with another role) is invalid with reason `algorithms`,
   the step 3 check it belongs to.
+
+The libraries (`js/test/publisher.test.js`, `dotnet/tests/Jazmin.Tests/PublisherTests.cs`) check every file here, and
+read these the same way:
+
+- A **key or password that doesn't open the file** leaves the facts unread (`facts` null); only facts that don't decrypt
+  with a key that reads the header are invalid (`facts`).
+- **Key slots after `B`** (the trailer points into the block or the header): changed (`coverage`), since every section
+  the trailer points to must be covered (6.9.1).
+- A **revocation with a reason name the reader doesn't know** still revokes; a list that doesn't verify, or lacks
+  `revoked` or an entry's `from`, isn't used. A certificate listed twice is revoked from the earlier `from`.
+- **Times** in statements are RFC 3339 UTC strings ending in `Z`; `+02:00`, no zone or an empty fraction make the
+  statement unusable.
+- A status answer whose `from` is present but malformed isn't used. Of statements with the same time, the first of the
+  stored status, the list and the online answer counts.
