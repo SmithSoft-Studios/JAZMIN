@@ -68,7 +68,7 @@ var statusCert = pki.Make("test-status", Util.Dn("JAZMIN Test Status 1 (TEST ONL
     At("2025-01-01T00:00:00Z"), At("2027-12-31T23:59:59Z"), Pki.Leaf(Oids.Status, false, null, null));
 var confirmCert = pki.Make("test-confirmation", Util.Dn("JAZMIN Test Confirmation 1 (TEST ONLY)", "JAZMIN test vectors"), false, issuing,
     At("2026-01-01T00:00:00Z"), At("2026-12-31T23:59:59Z"), Pki.Leaf(Oids.Confirmation, false, null, null));
-var logCert = pki.Make("test-log", Util.Dn("JAZMIN Test Log 1 (TEST ONLY)", "JAZMIN test vectors"), false, issuing,
+var logCert = pki.Make("test-log", Util.Dn("log.jazmin.example/test", "JAZMIN test vectors (TEST ONLY)"), false, issuing, // its commonName is the log's origin
     At("2025-01-01T00:00:00Z"), At("2027-12-31T23:59:59Z"), Pki.Leaf(Oids.Log, false, null, null));
 var tsa = pki.Make("test-timestamping", Util.Dn("JAZMIN Test Time-Stamping 1 (TEST ONLY)", "JAZMIN test vectors"), false, issuing,
     At("2025-01-01T00:00:00Z"), At("2027-12-31T23:59:59Z"), Pki.Leaf(Oids.TimeStamping, true, null, null));
@@ -133,7 +133,7 @@ var specs = new List<Spec>
             ("UIF", "deduction", -154.00m)), "valid", "certified"),
     new("timestamp-outside.jzm", "Signed with the 2025 certificate after it expired: the timestamp is outside its validity", sable2025, Normal(), null,
         At("2026-02-01T08:00:00Z"), "none", Payslip("••••1234", "2026-01", ("Basic salary", "earning", 16200.00m), ("PAYE", "deduction", -3105.20m),
-            ("UIF", "deduction", -162.00m)), "none", "invalid") { Reason = "validity" },
+            ("UIF", "deduction", -162.00m)), "none", "invalid") { Reason = "timestamp" },
     new("revoked-before.jzm", "Signed with the payroll certificate before the date it is revoked from", sablePayroll, Normal(), null, At("2026-09-01T08:00:00Z"), "none",
         Payslip("••••4321", "2026-08", ("Basic salary", "earning", 12800.00m), ("PAYE", "deduction", -1876.45m), ("UIF", "deduction", -128.00m)), "valid", "certified"),
     new("revoked.jzm", "Signed with the payroll certificate after the date it is revoked from. The status stored at signing says valid; the revocation list is more recent and wins",
@@ -208,7 +208,7 @@ Sig Sign(Cert signer, Cert[] chain, string role, byte[] signed, DateTimeOffset? 
 }
 
 // ---- the transparency log (6.9.5): an entry per signature, oldest first -------------------------------------------------
-var origin = "log.jazmin.example/test";
+var origin = logCert.X.GetNameInfo(X509NameType.SimpleName, false); // the log certificate's commonName (6.9.5)
 var entries = docs.SelectMany(d => d.Sigs.Concat(d.Stripped).Where(s => s.StampedAt is not null).Select(s => (Doc: d, Sig: s)))
     .OrderBy(e => e.Sig.StampedAt).ToList();
 var leaves = entries.Select(e => Merkle.Entry(e.Doc.Signed, e.Sig.Value)).ToList();
@@ -278,6 +278,11 @@ void Damaged(string name, string from, byte[] bytes, string description, string 
     var footer = (int)t.HeaderOffset - 16;
     var b = footer - (int)BinaryPrimitives.ReadUInt32LittleEndian(crc.AsSpan(footer));
     crc[b + (footer - b) / 2] ^= 0x01; // a byte in the middle of the payload; the CRC no longer matches
+    var reserved = (byte[])plain.Clone();
+    reserved[(int)t.HeaderOffset - 6] = 0x01; // the footer's reserved field, which the CRC doesn't cover
+    Damaged("invalid-block-reserved.jzm", "signed-plain.jzm", reserved,
+        "The block's footer has a non-zero reserved field: a damaged signature block (6.9.1)",
+        "invalid", "block", new JsonObject { ["reads"] = true, ["rows"] = 5 });
     Damaged("invalid-block-crc.jzm", "signed-plain.jzm", crc,
         "One byte of the block's payload changed (the block isn't covered by D, but its CRC no longer matches): a damaged signature block (6.9.1)",
         "invalid", "block", new JsonObject { ["reads"] = true, ["rows"] = 5 });
@@ -835,38 +840,21 @@ static class Jzm
         throw new InvalidOperationException("No slot for this key");
     }
 
-    /// <summary>The keyring's "data" secret of a file encrypted with a key or password (7.3): from the decrypted header.</summary>
-    public static byte[] KeyringData(byte[] f, Trailer t, byte[] master)
-    {
-        var at = (int)t.HeaderOffset;
-        var envelope = f.AsSpan(at, 16);
-        var payloadLength = (int)BinaryPrimitives.ReadUInt32LittleEndian(envelope[8..]);
-        var key = Util.Hkdf(master, f.AsSpan(24, 32).ToArray(), "JAZMIN/1/header");
-        var plain = Util.Open(key, f.AsSpan(at + 16, payloadLength), [.. f.AsSpan(8, 16), .. envelope[..8], .. "header"u8]);
-        var raw = Util.Decompress(envelope[0], plain);
-        var keyring = Pb.Field(raw, 8) ?? throw new InvalidOperationException("No keyring in the header");
-        return Pb.Field(keyring, 1) ?? throw new InvalidOperationException("No data secret in the keyring");
-    }
-
     /// <summary>
-    /// The key of the facts (6.9.3): the key a section named "publisher/facts" gets. With a key or password (7.3):
-    /// HKDF(master, keyring.data, "JAZMIN/1/publisher/facts"); access-controlled (7.6.3): HKDF(H, salt, "JAZMIN/1/publisher/facts").
+    /// The key of the facts (6.9.3), derived as the header's key is with its own label: HKDF(master, preamble salt,
+    /// "JAZMIN/1/publisher/facts") with a key or password, HKDF(H, preamble salt, "JAZMIN/1/publisher/facts") when access-controlled.
     /// </summary>
     public static byte[] FactsKey(byte[] f, Trailer t, string encryption, string password, JazminKey masterKey, JazminKey ownerKey)
     {
         var salt = f.AsSpan(24, 32).ToArray();
-        return encryption switch
+        var ikm = encryption switch
         {
-            "key" => Util.Hkdf(masterKey.ToBytes(), KeyringData(f, t, masterKey.ToBytes()), "JAZMIN/1/publisher/facts"),
-            "password" => Password(),
-            "access" => Util.Hkdf(HeaderSecret(f, t, ownerKey.ToBytes()), salt, "JAZMIN/1/publisher/facts"),
+            "key" => masterKey.ToBytes(),
+            "password" => Rfc2898DeriveBytes.Pbkdf2(Encoding.UTF8.GetBytes(password), salt, (int)BinaryPrimitives.ReadUInt32LittleEndian(f.AsSpan(56)), HashAlgorithmName.SHA256, 32),
+            "access" => HeaderSecret(f, t, ownerKey.ToBytes()),
             _ => throw new ArgumentException(encryption),
         };
-        byte[] Password()
-        {
-            var master = Rfc2898DeriveBytes.Pbkdf2(Encoding.UTF8.GetBytes(password), salt, (int)BinaryPrimitives.ReadUInt32LittleEndian(f.AsSpan(56)), HashAlgorithmName.SHA256, 32);
-            return Util.Hkdf(master, KeyringData(f, t, master), "JAZMIN/1/publisher/facts");
-        }
+        return Util.Hkdf(ikm, salt, "JAZMIN/1/publisher/facts");
     }
 
     /// <summary>The associated data of the facts (6.9.3): file_id || 00 01 00 00 || u32(length) || "publisher/facts".</summary>
@@ -882,44 +870,7 @@ static class Jzm
         Util.Seal(FactsKey(f, t, encryption, password, masterKey, ownerKey), plain, FactsAad(f.AsSpan(8, 16), plain.Length));
 }
 
-/// <summary>Protocol Buffers: encoding the 6.9.6 messages, and reading one field of a message.</summary>
-static class Pb
-{
-    public static byte[]? Field(ReadOnlySpan<byte> b, int wanted)
-    {
-        var pos = 0;
-        byte[]? found = null;
-        while (pos < b.Length)
-        {
-            var key = Varint(b, ref pos);
-            switch (key & 7)
-            {
-                case 0: Varint(b, ref pos); break;
-                case 1: pos += 8; break;
-                case 5: pos += 4; break;
-                case 2:
-                    var length = (int)Varint(b, ref pos);
-                    if ((int)(key >> 3) == wanted) found = b.Slice(pos, length).ToArray();
-                    pos += length;
-                    break;
-                default: throw new InvalidOperationException("wire type");
-            }
-        }
-        return found;
-    }
-
-    private static ulong Varint(ReadOnlySpan<byte> b, ref int pos)
-    {
-        ulong v = 0;
-        for (var shift = 0; ; shift += 7)
-        {
-            var x = b[pos++];
-            v |= (ulong)(x & 0x7F) << shift;
-            if (x < 0x80) return v;
-        }
-    }
-}
-
+/// <summary>Protocol Buffers encoding of the 6.9.6 messages.</summary>
 static class Proto
 {
     private static void Varint(MemoryStream s, ulong v)
@@ -1012,12 +963,15 @@ static class Tsa
     }
 }
 
-/// <summary>JSON Web Signatures in compact form, ES256 (6.9.5): x5c holds the signer and its issuing certificate, unless the block carries them.</summary>
+/// <summary>
+/// JSON Web Signatures in compact form, ES256 (6.9.5): x5t#S256 names the signer's certificate; x5c holds it and its issuing
+/// certificate unless the block carries them.
+/// </summary>
 static class Jws
 {
     public static string Sign(JsonObject payload, Cert signer, Cert? issuing)
     {
-        var header = new JsonObject { ["alg"] = "ES256" };
+        var header = new JsonObject { ["alg"] = "ES256", ["x5t#S256"] = Util.B64Url(SHA256.HashData(signer.Der)) };
         if (issuing is not null) header["x5c"] = new JsonArray(Convert.ToBase64String(signer.Der), Convert.ToBase64String(issuing.Der));
         var input = Util.B64Url(Encoding.UTF8.GetBytes(header.ToJsonString(Util.Compact))) + "." + Util.B64Url(Encoding.UTF8.GetBytes(payload.ToJsonString(Util.Compact)));
         var signature = signer.Key.SignData(Encoding.ASCII.GetBytes(input), HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
@@ -1292,16 +1246,6 @@ static class Util
         using var gcm = new AesGcm(key, 16);
         gcm.Decrypt(payload[..12], payload[12..^16], payload[^16..], plain, aad);
         return plain;
-    }
-
-    /// <summary>A section's payload after decryption, decompressed by its codec (4.3).</summary>
-    public static byte[] Decompress(byte codec, byte[] data)
-    {
-        if (codec == 0) return data;
-        var output = new MemoryStream();
-        using (Stream z = codec == 1 ? new DeflateStream(new MemoryStream(data), CompressionMode.Decompress) : new BrotliStream(new MemoryStream(data), CompressionMode.Decompress))
-            z.CopyTo(output);
-        return output.ToArray();
     }
 
     private static readonly uint[] CrcTable = Enumerable.Range(0, 256).Select(n =>

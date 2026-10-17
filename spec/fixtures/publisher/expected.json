@@ -34,7 +34,7 @@
       "description": "A payslip, not encrypted, signed by a certified company",
       "encryption": "none",
       "keys": {},
-      "fileDigest": "_Jgvux2t4BLPhCasGSR3vhnKW4bZHxnqmBWC5zq-CwM",
+      "fileDigest": "oN2g1f56ENjhbRx1Db7hAQjn9nTyyfviTvrPSelrMhE",
       "result": {
         "status": "certified",
         "name": "Sable Line Logistics (Pty) Ltd",
@@ -75,7 +75,7 @@
       "keys": {
         "password": "Sable-Payroll-2026!"
       },
-      "fileDigest": "uJ01fEZKnStHgX8s-W_DP5Q55agz1KPybHqiCudSEo8",
+      "fileDigest": "0KJ3qhkMX0-1NrV-j8EVP0X_jWHCCIlWFnn0X0MoXxA",
       "result": {
         "status": "certified",
         "name": "Sable Line Logistics (Pty) Ltd",
@@ -117,7 +117,7 @@
         "ownerKey": "jzk1-EnAFSq1LVUI3GyTnnaWjWAEVyLLrwrjzPN_QiDE6GGZ5FG5C",
         "accessKey": "jza1-puknCS0IIQfjP7CqleUh-oXRPXoAJp8K6i_cMNkfEoKf4uDtk0E1OU91h8s"
       },
-      "fileDigest": "NWRj1-yrefYlrirtE_eUoe7M740gZlPh_C3lfratYD0",
+      "fileDigest": "L8O2SXuBoReE415P_pjE6DC_33WfWhgJOXrucbHsUbw",
       "result": {
         "status": "certified",
         "name": "Sable Line Logistics (Pty) Ltd",
@@ -156,7 +156,7 @@
       "description": "An invoice from a sole trader (kind individual), no domain",
       "encryption": "none",
       "keys": {},
-      "fileDigest": "eDaUwQbfaFPzNBqzCAL5d7a3kdJpV7t_FjPUk3RQ1nU",
+      "fileDigest": "quFduS8cXJA0xUErFczIEn6v3vNnjKs1nJ-4GYReK0k",
       "result": {
         "status": "certified",
         "name": "Thandi Mokoena",
@@ -197,7 +197,7 @@
       "keys": {
         "key": "jzk1-_0LTYdM-O313KoIXDKpU_IieoHoHWZGB-5GOGb2UR2MaXSvT"
       },
-      "fileDigest": "9uMhVa-zJyYY5Mug1gUe6-smA7bUKfc_Pf8g__2qkJE",
+      "fileDigest": "oZJ2MYKEuyOvmrjzrIe2VCGt4R_jD0TzNYQs5h97vtY",
       "result": {
         "status": "certified",
         "name": "Sable Line Logistics (Pty) Ltd",
@@ -245,7 +245,7 @@
       "description": "A tax certificate with its QR code (6.9.7) in signed-paper.qr.txt",
       "encryption": "none",
       "keys": {},
-      "fileDigest": "v3bbJV0NLTefopk_OBq9IKdyE2zXNge_aRNzwX6AVEY",
+      "fileDigest": "h_L5kgN_5qxIXf8FOiUVcKlMw8dR3AAM29PmZAu6qgU",
       "result": {
         "status": "certified",
         "name": "Sable Line Logistics (Pty) Ltd",
@@ -281,7 +281,7 @@
       "description": "Signed under a new root that readers don't have built in: the chain carries a cross-certificate the trusted root signed",
       "encryption": "none",
       "keys": {},
-      "fileDigest": "lNfcHRF_ZwG2UKlNF--LbzfMY3WUmcpSdBVLPvPA5Tw",
+      "fileDigest": "iPKCm2T9990QLteSvU8rIF5KqPkU0MTw_2gWiLMujUw",
       "result": {
         "status": "certified",
         "name": "Sable Line Logistics (Pty) Ltd",
@@ -320,7 +320,7 @@
       "description": "Signed in 2025 with a certificate that has since expired: the timestamp is inside its validity",
       "encryption": "none",
       "keys": {},
-      "fileDigest": "xVFHyMF5-Ezz_RaKRRyRyitOPszmshJm5UZNQDcY3rU",
+      "fileDigest": "wieqltC_YSKP3Yue3OOx-bSMjZSBfXmpggZXDaggT-k",
       "result": {
         "status": "certified",
         "name": "Sable Line Logistics (Pty) Ltd",
@@ -359,14 +359,14 @@
       "description": "Signed with the 2025 certificate after it expired: the timestamp is outside its validity",
       "encryption": "none",
       "keys": {},
-      "fileDigest": "PNVxfLJE2qfUkY08MxYzRrJ2gXsGFs1GmywPMtQL-Hc",
+      "fileDigest": "qHPVenL-W4umkL6n7jIAupbcrT4orgX_NIhzUC9Jy5k",
       "result": {
         "status": "invalid",
         "name": null,
         "kind": null,
         "code": null,
         "facts": null,
-        "reason": "validity"
+        "reason": "timestamp"
       },
       "library": {
         "reads": true,
@@ -378,7 +378,7 @@
       "description": "Signed with the payroll certificate before the date it is revoked from",
       "encryption": "none",
       "keys": {},
-      "fileDigest": "8oObOGat2qlkKLZwnr7PdWmUx9UdEAzWqcFgOHrltWA",
+      "fileDigest": "UUoibJrm61B-rWjFiQfZezvUzA4ql2ce72lycF6Bj14",
       "result": {
         "status": "certified",
         "name": "Sable Line Logistics (Pty) Ltd",
@@ -417,7 +417,7 @@
       "description": "Signed with the payroll certificate after the date it is revoked from. The status stored at signing says valid; the revocation list is more recent and wins",
       "encryption": "none",
       "keys": {},
-      "fileDigest": "wVt9zVO1cdtaQmr4xfFuPlA7U11MUdldX4CR1y2KXyE",
+      "fileDigest": "YaA6DUpd8ZUeeRmxkvP1HJcnyK7QcclTKTSJ_VkzuDM",
       "result": {
         "status": "invalid",
         "name": null,
@@ -436,7 +436,7 @@
       "description": "Signed with ES256 and ML-DSA-65; the ML-DSA-65 signature was removed, so 'algorithms' no longer matches",
       "encryption": "none",
       "keys": {},
-      "fileDigest": "uYYKAz8JNnr7LkWB0n4mlb5Ry54gEHQC3qsEekcaJ0Q",
+      "fileDigest": "homqni-MUPzY60vp3PpkqAr8oLF-CuXMwKAPIc3u8Fg",
       "result": {
         "status": "invalid",
         "name": null,
@@ -455,7 +455,7 @@
       "description": "Signed by the company and co-signed by its auditor (both ES256); the co-signature was removed, so 'algorithms' no longer matches",
       "encryption": "none",
       "keys": {},
-      "fileDigest": "U-uuQegiPxlQlA97a1PiCRZGqo2lPzVThao5RszO6cU",
+      "fileDigest": "svXa_zncyBiVwZP9bdT7JH1P9xYpWhRpmvhXEQAzlak",
       "result": {
         "status": "invalid",
         "name": null,
@@ -474,7 +474,7 @@
       "description": "A payslip its publisher replaced: the status at signing says superseded",
       "encryption": "none",
       "keys": {},
-      "fileDigest": "Oo7zucXzK3DPWihDC0uPFOgBKwGQ9qunqK6dslmsaMQ",
+      "fileDigest": "KiFN32VomhxKNL3k4thP2gV6tepWmMkFg_ed2AIVRXE",
       "result": {
         "status": "superseded",
         "name": "Sable Line Logistics (Pty) Ltd",
@@ -513,7 +513,7 @@
       "description": "A payslip issued in error: the status at signing says withdrawn",
       "encryption": "none",
       "keys": {},
-      "fileDigest": "H1fs0XoU_AcZDeP6OVAGLbMEbKPcm8dBkPywV-6ar20",
+      "fileDigest": "fblZd_xHG9IzNxCVAxPS7A0WzfIxNXw0yR6VrodPzXk",
       "result": {
         "status": "withdrawn",
         "name": "Sable Line Logistics (Pty) Ltd",
@@ -552,7 +552,7 @@
       "description": "Signed with a certificate naming Sable Line Logistics that chains to its own self-signed root, not a trusted one",
       "encryption": "none",
       "keys": {},
-      "fileDigest": "kbpLWXOlYBjMDmTKSIP0p6-2F3edPgGIIGUmQUhEf9I",
+      "fileDigest": "bIjlB-WCnyzgo6vinWjOog7rLp5MGAbqqN0aNM9dQpY",
       "result": {
         "status": "signed",
         "name": null,
@@ -571,7 +571,7 @@
       "description": "A chain with a cross-certificate signed by a root that isn't trusted, though it has the trusted root's name",
       "encryption": "none",
       "keys": {},
-      "fileDigest": "q6jyt6x8xW7ztxPkgYToI71HcB0sLVOxEsRKeBdCZxY",
+      "fileDigest": "1WyfIHf7-GV2jLzqT05urAa9s73Uy2VoxBH_HDB4yL8",
       "result": {
         "status": "signed",
         "name": null,
@@ -590,7 +590,7 @@
       "description": "Signed with one's own key: a self-signed certificate naming Sable Line Logistics, alone",
       "encryption": "none",
       "keys": {},
-      "fileDigest": "1r7eyZPAGJZWjUfJVOPY2SRhp_43rUAqxyeZt9OifW0",
+      "fileDigest": "kAr0XRCqYNMP6Pyo7VVOSK6e48fK8uJGkmYJyvfnzrA",
       "result": {
         "status": "signed",
         "name": null,
@@ -659,6 +659,25 @@
       },
       "library": {
         "reads": false
+      }
+    },
+    {
+      "file": "invalid-block-reserved.jzm",
+      "description": "The block's footer has a non-zero reserved field: a damaged signature block (6.9.1)",
+      "derivedFrom": "signed-plain.jzm",
+      "encryption": "none",
+      "keys": {},
+      "result": {
+        "status": "invalid",
+        "name": null,
+        "kind": null,
+        "code": null,
+        "facts": null,
+        "reason": "block"
+      },
+      "library": {
+        "reads": true,
+        "rows": 5
       }
     },
     {
@@ -780,7 +799,7 @@
       "file": "signed-paper.qr.txt",
       "for": "signed-paper.jzm",
       "certificate": "pki/sable-line-logistics.der",
-      "kid": "4d230efed5c28b60",
+      "kid": "d8e89bc2d10a736e",
       "payload": {
         "code": "JZ-3E5N9-8EMWX",
         "kind": "tax-certificate",
