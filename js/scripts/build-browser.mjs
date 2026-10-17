@@ -5,6 +5,7 @@
 //   jazmin-browser-shapes.js   export shapes and the file's saved shapes (reader.shapes(), { shape } exports)
 //   jazmin-browser-writer.js   writing files, and changes made through a document (writeChanges)
 //   jazmin-browser-queries.js  queries with arrow functions (JazminBrowser.from)
+//   jazmin-browser-publisher.js publisher signatures (JazminBrowser.verifyPublisher, spec 6.9)
 //
 // Each part is code at the top level of the script's function; it ends with `const API_<PART> = { ... };`, what it
 // adds to JazminBrowser. An add-on reaches the core's functions through an internal object the core leaves on
@@ -21,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 const ts = createRequire(import.meta.url)('typescript'); // a development tool here: nothing shipped depends on it
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../browser');
-const PARTS = ['core', 'shapes', 'writer', 'queries'];
+const PARTS = ['core', 'shapes', 'writer', 'queries', 'publisher'];
 const ADD_ONS = PARTS.slice(1);
 const INTERNALS = "Symbol.for('jazmin.browser.internals')";
 

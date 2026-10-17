@@ -17,6 +17,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   1 MiB chunks. Only SmithSoft's built-in roots are trusted, and there is no way to add another; they are built in
   before this release, so until then signed files show as `signed`. Both libraries give the results
   `spec/fixtures/publisher/expected.json` names for every test file.
+- **Publisher signatures in the browser reader:** `JazminBrowser.verifyPublisher(file, options)` in
+  `jazmin-browser-publisher.js` (also in the full `jazmin-browser.js`; npm `…/browser/publisher`), with the libraries'
+  results. A File or Blob is hashed in 1 MiB slices with the script's own SHA-256 (about 200 MB/s), never loaded whole.
+  `js/scripts/publisher-test-build.mjs` makes a test build that trusts the test root instead, for tests and demos only;
+  its results say `test: true` (User Guide 26.5).
 
 ## 1.7.1 - 2026-10-17 (file format 1.0)
 Two fixes to the web viewer, and `estimate()` in the browser reader.

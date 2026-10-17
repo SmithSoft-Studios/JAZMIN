@@ -4762,11 +4762,12 @@ plain scripts (they work from `file://` too):
 
 | Script | What it has | Size (gzipped) |
 |---|---|---|
-| `jazmin-browser.js` | everything below | 321 KiB (84 KiB) |
-| `jazmin-browser-core.js` | opening, unlocking and reading files; JSON, CSV and XML exports | 184 KiB (49 KiB) |
+| `jazmin-browser.js` | everything below | 376 KiB (99 KiB) |
+| `jazmin-browser-core.js` | opening, unlocking and reading files; JSON, CSV and XML exports | 190 KiB (51 KiB) |
 | `jazmin-browser-shapes.js` | export shapes, `reader.shapes()`, exports with `{ shape }` | 44 KiB (11 KiB) |
 | `jazmin-browser-writer.js` | `createWriter`, `write`, `writeChanges` | 52 KiB (15 KiB) |
 | `jazmin-browser-queries.js` | `JazminBrowser.from` (queries with arrow functions) | 46 KiB (12 KiB) |
+| `jazmin-browser-publisher.js` | `JazminBrowser.verifyPublisher` (publisher signatures, section 26) | 50 KiB (15 KiB) |
 
 ```html
 <script src="jazmin-browser-core.js"></script>
@@ -4777,7 +4778,7 @@ A call that needs an add-on that isn't loaded says which one, for example "This 
 jazmin-browser-shapes.js, loaded after jazmin-browser-core.js". The core alone loads in about
 3 ms less than the full script, with about 360 KB less memory (Node 24, 1.7.0: 13.0 to 13.9 against
 16.2 to 16.4 ms, 1,051 against 1,409 KB; the median of 15 loads, measured twice). In npm they are
-`@smithsoft-studios/jazmin/browser/core`, `…/shapes`, `…/writer` and `…/queries`. The
+`@smithsoft-studios/jazmin/browser/core`, `…/shapes`, `…/writer`, `…/queries` and `…/publisher`. The
 from-disk sample's pages each load only what they use.
 
 ```js
@@ -5185,3 +5186,21 @@ A signed file carries the status SmithSoft gave it when it was signed. For a fre
 
 The most recent statement wins. A list or answer that doesn't verify is ignored, and `checkedAt` then shows how old
 the check is.
+
+### 26.5 In a browser
+
+The browser reader verifies as the libraries do, with the same results (`jazmin-browser-publisher.js`, or the full
+`jazmin-browser.js`):
+
+```js
+const result = await JazminBrowser.verifyPublisher(file, { password }); // a File, Blob, ArrayBuffer or Uint8Array
+```
+
+A key is the key's text (`jzk1-…` or `jza1-…`); as when opening, a browser never takes a shared file's master key. A
+`File` or `Blob` is never loaded whole: the file is hashed in 1 MiB slices with the script's own SHA-256, about
+200 MB/s (WebCrypto hashes only whole buffers; Node 24, measured three times on 64 MiB). Bytes already in memory are
+hashed by WebCrypto, about 1,200 MB/s.
+
+The released scripts trust only SmithSoft's roots. `js/scripts/publisher-test-build.mjs` makes a **test build** that
+trusts the test root of `spec/fixtures/publisher` instead, for tests and demos; its results say `test: true`. Never
+publish one.

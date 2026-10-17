@@ -55,7 +55,7 @@ test('each add-on, loaded after the core, adds what the full script has', () => 
     out.query = (await J.from(reader).take(2).toArray()).length;
     const written = await J.write([{ n: 1 }, { n: 2 }], { columns: [{ name: 'n', type: 'int' }] });
     out.written = (await (await J.open(written)).query({})).rows.length;`);
-  const parts = run(['jazmin-browser-core.js', 'jazmin-browser-shapes.js', 'jazmin-browser-writer.js', 'jazmin-browser-queries.js'], `
+  const parts = run(['jazmin-browser-core.js', 'jazmin-browser-shapes.js', 'jazmin-browser-writer.js', 'jazmin-browser-queries.js', 'jazmin-browser-publisher.js'], `
     const reader = await J.open(bytes, { key });
     out.api = Object.keys(J).sort();
     out.shapes = (await reader.shapes()).map((s) => s.name);
@@ -68,7 +68,7 @@ test('each add-on, loaded after the core, adds what the full script has', () => 
 });
 
 test('an add-on loaded without the core says so', () => {
-  for (const addOn of ['jazmin-browser-shapes.js', 'jazmin-browser-writer.js', 'jazmin-browser-queries.js']) {
+  for (const addOn of ['jazmin-browser-shapes.js', 'jazmin-browser-writer.js', 'jazmin-browser-queries.js', 'jazmin-browser-publisher.js']) {
     assert.throws(() => run([addOn], ''), new RegExp(`${addOn.replace(/\./g, '\\.')} needs jazmin-browser-core\\.js, loaded first`));
   }
 });

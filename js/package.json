@@ -34,7 +34,8 @@
     "./browser/core": "./browser/jazmin-browser-core.js",
     "./browser/shapes": "./browser/jazmin-browser-shapes.js",
     "./browser/writer": "./browser/jazmin-browser-writer.js",
-    "./browser/queries": "./browser/jazmin-browser-queries.js"
+    "./browser/queries": "./browser/jazmin-browser-queries.js",
+    "./browser/publisher": "./browser/jazmin-browser-publisher.js"
   },
   "files": [
     "src",
