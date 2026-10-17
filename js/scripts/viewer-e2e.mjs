@@ -402,6 +402,7 @@ write(path.join(temp, 'pages.jzm'), { clients: [{ id: 1 }, { id: 2 }], sales: [{
   files: [
     { path: 'clients.html', content: pageHtml('clients') }, { path: 'sales.html', content: pageHtml('sales') },
     { path: 'summary.html', content: pageHtml('summary') }, { path: 'app.js', content: '// the pages\' script' },
+    { path: 'jump.html', content: '<!doctype html><title>Jump</title><body><script>jazmin.navigate(\'clients.html\')</script></body>' },
     { path: 'fonts/inter.woff2', content: 'font' }, { path: 'terms.pdf', content: 'terms' },
   ],
   package: {
@@ -409,6 +410,7 @@ write(path.join(temp, 'pages.jzm'), { clients: [{ id: 1 }, { id: 2 }], sales: [{
       { path: 'clients.html', title: 'Clients', table: 'clients' },
       { path: 'sales.html', title: 'Sales', table: 'sales', actions: { print: false } },
       { path: 'summary.html', title: 'Summary', online: 'required' },
+      { path: 'jump.html', title: 'Jump' }, // goes to the Clients page itself (jazmin.navigate)
     ],
     files: ['app.js', 'fonts/'], allowedOrigins: ['https://cdn.jsdelivr.net'],
   },
@@ -817,13 +819,19 @@ for (const name of chosen) {
     await pageReady('clients');
     const pgBack = await page.evaluate(`document.getElementById('jz-offline').hidden && !document.getElementById('jz-frame').hidden`);
     await page.evaluate(`(window.jzOnline = true, true)`);
-    const pgPagesOk = pgTabs === 'Clients*, Sales, Summary' && pgListed === 'terms.pdf'
+    // A page that goes to another tab's page (jazmin.navigate): that tab is shown, highlighted, with its own table.
+    await page.evaluate(`(document.querySelector('#jz-pages button[data-page="sales.html"]').click(), true)`);
+    await pageReady('sales');
+    await page.evaluate(`(JazminViewer.state.lastReady = null, document.querySelector('#jz-pages button[data-page="jump.html"]').click(), true)`);
+    await pageReady('clients');
+    const pgJumped = await page.evaluate(`({ tab: document.querySelector('#jz-pages button[aria-current="page"]').dataset.page, table: JazminViewer.state.lastReady.info.table })`);
+    const pgPagesOk = pgTabs === 'Clients*, Sales, Summary, Jump' && pgListed === 'terms.pdf' && pgJumped.tab === 'clients.html' && pgJumped.table === 'clients'
       && pgClients.table === 'clients' && pgClients.rows === 2 && pgClients.print === true
       && pgSales.table === 'sales' && pgSales.rows === 3 && pgSales.print === false
       && pgSummary.note === 'This page needs to be online.' && pgSummary.frameHidden === true && pgBack === true;
     results.push({
       browser: name, label: 'document pages: a tab each in order, each with its table and buttons; offline only the page that needs the network waits; its own files unlisted', ok: pgPagesOk,
-      problems: pgPagesOk ? [] : [JSON.stringify({ pgTabs, pgListed, pgClients, pgSales, pgSummary, pgBack })],
+      problems: pgPagesOk ? [] : [JSON.stringify({ pgTabs, pgListed, pgClients, pgSales, pgSummary, pgBack, pgJumped })],
     });
 
     // A document that needs the network: the note says so; offline it waits with a message, then shows.

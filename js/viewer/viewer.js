@@ -1013,6 +1013,12 @@
       frame.contentWindow.postMessage(pendingPackage, '*');
       pendingPackage = null;
     } else if (m.type === 'jazmin:shown') {
+      // The page went to another of the document's pages (jazmin.navigate): show it as that tab, with its own table,
+      // buttons and network note. A page that isn't a tab (a page's own sub-page) leaves the tabs as they are.
+      if (m.page !== state.pagePath && state.pages.explicit && state.pages.pages.some((p) => p.path === m.page)) {
+        showDocument(state.docReader, m.page).catch((e) => status(e.message));
+        return;
+      }
       state.lastShown = { page: m.page, title: m.title, text: m.text, actions: m.actions };
       if (m.title) document.title = `${m.title} - JAZMIN viewer`;
     } else if (m.type === 'jazmin:ready') {
