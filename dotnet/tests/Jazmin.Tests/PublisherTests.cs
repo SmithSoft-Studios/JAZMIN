@@ -1,5 +1,7 @@
 using System.Buffers.Binary;
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Nodes;
 using Jazmin.Format;
 using Xunit;
@@ -186,13 +188,80 @@ public sealed class PublisherTests : IDisposable
         var allocated = GC.GetAllocatedBytesForCurrentThread() - before;
         Assert.Equal(JazminPublisherStatus.Changed, result.Status);
         Assert.Equal("digest", result.Reason);
-        Assert.InRange(counting.BytesRead, length, length + FormatConstants.PreambleSize); // each byte read once (the preamble twice)
+        Assert.InRange(counting.BytesRead, length, length + FormatConstants.PreambleSize); // each byte once, the preamble twice
         Assert.True(allocated < 4L << 20, $"{allocated:N0} bytes allocated for a {length:N0}-byte file");
 
-        // A file without a block: only the trailer and the 16 bytes before the header are read.
+        // A file without a block: only the trailer, the preamble and the 16 bytes before the header are read.
         using var unsignedFile = File.OpenRead(Path.Combine(Dir, "unsigned.jzm"));
         var unsigned = new CountingStream(unsignedFile);
         Assert.Equal(JazminPublisherStatus.None, JazminFile.VerifyPublisher(unsigned, null, leaveOpen: true, Trust).Status);
-        Assert.Equal(FormatConstants.TrailerSize + 16, unsigned.BytesRead);
+        Assert.Equal(FormatConstants.TrailerSize + FormatConstants.PreambleSize + 16, unsigned.BytesRead);
+    }
+
+    [Fact]
+    public void A_file_without_the_magic_is_not_verified_and_key_slots_after_B_are_not_covered()
+    {
+        var plain = File.ReadAllBytes(Path.Combine(Dir, "signed-plain.jzm"));
+        plain[0] ^= 0xff;
+        AssertSame(Fixture("changed-trailing-byte.jzm")["result"]!.AsObject(), JazminFile.VerifyPublisher(plain, null, Trust), "no magic");
+
+        // spec 6.9.1: every section the trailer points to lies in a covered range. The key slots moved to the header: after B.
+        var shared = File.ReadAllBytes(Path.Combine(Dir, "signed-shared.jzm"));
+        var trailer = shared.AsSpan(shared.Length - FormatConstants.TrailerSize);
+        Assert.NotEqual(0u, BinaryPrimitives.ReadUInt32LittleEndian(trailer[20..]));
+        BinaryPrimitives.WriteUInt64LittleEndian(trailer[12..], BinaryPrimitives.ReadUInt64LittleEndian(trailer));
+        BinaryPrimitives.WriteUInt32LittleEndian(trailer[36..], Crc32.Compute(trailer[..36]));
+        AssertSame(Fixture("changed-gap.jzm")["result"]!.AsObject(), JazminFile.VerifyPublisher(shared, null, Trust), "key slots after B");
+    }
+
+    /// <summary>A statement (6.9.5) signed with the test status key, its certificate and the issuing one in x5c.</summary>
+    private static string Statement(JsonObject payload)
+    {
+        using var key = ECDsa.Create();
+        key.ImportFromPem(File.ReadAllText(Path.Combine(Dir, "test-keys", "test-status.key.pem")));
+        var status = File.ReadAllBytes(Path.Combine(Dir, "pki", "test-status.der"));
+        var issuing = File.ReadAllBytes(Path.Combine(Dir, "pki", "test-issuing.der"));
+        var header = new JsonObject
+        {
+            ["alg"] = "ES256", ["x5t#S256"] = Base64Url.Encode(SHA256.HashData(status)),
+            ["x5c"] = new JsonArray(Convert.ToBase64String(status), Convert.ToBase64String(issuing)),
+        };
+        var input = Base64Url.Encode(Encoding.UTF8.GetBytes(header.ToJsonString())) + "." + Base64Url.Encode(Encoding.UTF8.GetBytes(payload.ToJsonString()));
+        return input + "." + Base64Url.Encode(key.SignData(Encoding.ASCII.GetBytes(input), HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation));
+    }
+
+    private static JsonNode PublisherCertificate => Expected["statusAnswers"]!.AsArray()[0]!["certificate"]!.DeepClone();
+
+    [Theory]
+    [InlineData("2026-10-17T11:59:00Z", true)]
+    [InlineData("2026-10-17T11:59:00.250Z", true)]
+    [InlineData("2026-10-17T13:59:00+02:00", false)] // the same instant, but not a UTC string
+    [InlineData("2026-10-17T11:59:00", false)]
+    [InlineData("2026-10-17T11:59:00.Z", false)]
+    public void Statement_times_are_UTC_with_Z(string time, bool used)
+    {
+        var fixture = Fixture("signed-plain.jzm");
+        var nonce = Base64Url.Encode(Enumerable.Range(1, 16).Select(i => (byte)i).ToArray());
+        var answer = Statement(new JsonObject
+        {
+            ["digest"] = (string)fixture["fileDigest"]!, ["certificate"] = PublisherCertificate, ["code"] = (string)fixture["result"]!["code"]!,
+            ["status"] = "valid", ["time"] = time, ["nonce"] = nonce,
+        });
+        var result = Verify("signed-plain.jzm", new JazminPublisherOptions { StatusAnswer = new JazminStatusAnswer(answer, nonce) });
+        Assert.Equal(JazminPublisherStatus.Certified, result.Status);
+        Assert.Equal(used, result.CheckedAt >= new DateTimeOffset(2026, 10, 17, 11, 59, 0, TimeSpan.Zero)); // else the older statements only
+    }
+
+    [Fact]
+    public void A_revocation_with_a_reason_this_reader_does_not_know_still_revokes()
+    {
+        var list = Statement(new JsonObject
+        {
+            ["issued"] = "2026-10-16T00:00:00Z", ["next"] = "2026-10-23T00:00:00Z",
+            ["revoked"] = new JsonArray(new JsonObject { ["certificate"] = PublisherCertificate, ["from"] = "2026-09-01T00:00:00Z", ["reason"] = "notAReasonName" }),
+        });
+        var result = Verify("signed-plain.jzm", new JazminPublisherOptions { RevocationList = list });
+        Assert.Equal(JazminPublisherStatus.Invalid, result.Status);
+        Assert.Equal("revoked", result.Reason);
     }
 }

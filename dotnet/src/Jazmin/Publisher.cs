@@ -624,8 +624,6 @@ internal static class Publisher
     /// <summary>A revocation list that verified (6.9.5): when it was issued, and the certificates it revokes from when.</summary>
     private sealed record Revocations(DateTimeOffset Issued, Dictionary<string, DateTimeOffset> Revoked);
 
-    private static readonly HashSet<string> Reasons = new(StringComparer.Ordinal) { "keyCompromise", "affiliationChanged", "superseded", "cessationOfOperation", "privilegeWithdrawn" };
-
     private static readonly JsonDocumentOptions UniqueNames = new() { AllowDuplicateProperties = false };
 
     // ---- the steps (spec 6.9.8) ------------------------------------------------------------------
@@ -650,16 +648,20 @@ internal static class Publisher
 
         public JazminPublisherResult Run()
         {
-            // 0. A file whose last bytes are not a valid trailer is not a valid file (4.2), and isn't verified (6.9.1).
+            // 0. A file that doesn't start with the magic, or whose last bytes are not a valid trailer, is not a valid file
+            // (4.2), and isn't verified (6.9.1).
             var size = file.Length;
             if (size < FormatConstants.PreambleSize + FormatConstants.TrailerSize) return Result(JazminPublisherStatus.NotVerified, "not-a-valid-file");
             Span<byte> t = stackalloc byte[FormatConstants.TrailerSize];
             file.Read(size - FormatConstants.TrailerSize, t);
             if (!t[40..].SequenceEqual(FormatConstants.Magic) || Crc32.Compute(t[..36]) != BinaryPrimitives.ReadUInt32LittleEndian(t[36..]))
                 return Result(JazminPublisherStatus.NotVerified, "not-a-valid-file");
+            var preamble = file.Read(0, FormatConstants.PreambleSize);
+            if (!preamble.AsSpan(0, 4).SequenceEqual(FormatConstants.Magic)) return Result(JazminPublisherStatus.NotVerified, "not-a-valid-file");
             var h = (long)BinaryPrimitives.ReadUInt64LittleEndian(t);
             long headerLength = BinaryPrimitives.ReadUInt32LittleEndian(t[8..]);
-            var slotsOffset = (long)BinaryPrimitives.ReadUInt64LittleEndian(t[12..]);
+            var slotsAt = BinaryPrimitives.ReadUInt64LittleEndian(t[12..]);
+            var slotsOffset = (long)slotsAt;
             long slotsLength = BinaryPrimitives.ReadUInt32LittleEndian(t[20..]);
             var signatureOffset = (long)BinaryPrimitives.ReadUInt64LittleEndian(t[24..]);
             long signatureLength = BinaryPrimitives.ReadUInt32LittleEndian(t[32..]);
@@ -684,9 +686,10 @@ internal static class Publisher
             var headerEnd = h + headerLength;
             if (signatureLength > 0 ? headerEnd != signatureOffset || signatureOffset + signatureLength != trailerStart : headerEnd != trailerStart)
                 return Result(JazminPublisherStatus.Changed, "coverage");
+            // Every section the trailer points to lies in a covered range: the key slots before B.
+            if (slotsLength > 0 && (slotsAt > (ulong)b || (ulong)slotsLength > (ulong)b - slotsAt)) return Result(JazminPublisherStatus.Changed, "coverage");
 
             // 2. D (6.9.2) and the file id.
-            var preamble = file.Read(0, FormatConstants.PreambleSize);
             var fileId = preamble.AsSpan(8, FormatConstants.FileIdSize);
             var d = FileDigest(fileId, b, h, headerLength, signatureOffset, signatureLength);
             if (!signed.FileId.Span.SequenceEqual(fileId) || !signed.FileDigest.Span.SequenceEqual(d)) return Result(JazminPublisherStatus.Changed, "digest");
@@ -915,7 +918,8 @@ internal static class Publisher
         /// <summary>
         /// The profile's rows (6.9.4): a root (and a cross-certificate) P-384 signed with ecdsa-with-SHA384 and path length 2;
         /// an issuing certificate P-256 signed with ecdsa-with-SHA384, path length 0; leaves P-256 signed with
-        /// ecdsa-with-SHA256, one extended key usage. Only the listed extensions, with their criticality. Null when inside it.
+        /// ecdsa-with-SHA256, one extended key usage. Only the listed extensions, with their criticality, and the key
+        /// identifiers the profile requires. Null when inside it.
         /// </summary>
         private string? Profile(Certificate c, Role role, string? eku)
         {
@@ -962,6 +966,9 @@ internal static class Publisher
                     if (usage != ((1 << 5) | (1 << 6))) return "key usage"; // keyCertSign, cRLSign
                 }
                 if (c.Find(Oid.Policies) is not { } policies || !Certificate.Oids(policies.Value, policies: true).Contains(_oids.Policy)) return "certificate policy";
+                // subjectKeyIdentifier in root, cross- and issuing certificates; authorityKeyIdentifier in every one but a root.
+                if (role != Role.Leaf && c.SubjectKeyId is null) return "no subjectKeyIdentifier";
+                if (role != Role.Root && c.AuthorityKeyId is null) return "no authorityKeyIdentifier";
                 return null;
             }
             catch (Exception e) when (e is AsnContentException or ArgumentException or OverflowException)
@@ -1398,9 +1405,8 @@ internal static class Publisher
                 var revoked = new Dictionary<string, DateTimeOffset>(StringComparer.Ordinal);
                 foreach (var entry in entries)
                 {
-                    if (entry is not JsonObject e || CertificateName(e["certificate"]) is not { } name || !TryTime(Text(e, "from"), out var from)
-                        || Text(e, "reason") is not { } reason || !Reasons.Contains(reason))
-                        return null;
+                    // The reason isn't checked: a name this reader doesn't know still revokes (fail closed).
+                    if (entry is not JsonObject e || CertificateName(e["certificate"]) is not { } name || !TryTime(Text(e, "from"), out var from)) return null;
                     if (!revoked.TryGetValue(name, out var earlier) || from < earlier) revoked[name] = from;
                 }
                 return new Revocations(verified.Time, revoked);
@@ -1553,13 +1559,23 @@ internal static class Publisher
     private static string? CertificateName(JsonNode? node) =>
         node is JsonObject o && Text(o, "issuer") is { } issuer && Text(o, "serial") is { } serial ? issuer + "/" + serial : null;
 
-    private static readonly string[] TimeFormats = ["yyyy-MM-dd'T'HH:mm:ssK", "yyyy-MM-dd'T'HH:mm:ss.FFFFFFFK"];
-
-    /// <summary>An RFC 3339 time with "Z" or an offset.</summary>
+    /// <summary>
+    /// A time as statements give it (6.9.5): RFC 3339 in UTC, "yyyy-MM-ddTHH:mm:ss", optional fractional seconds, and "Z".
+    /// An offset such as +02:00 is not a UTC time. Fractions finer than 100 ns are cut to 100 ns.
+    /// </summary>
     private static bool TryTime(string? text, out DateTimeOffset time)
     {
         time = default;
-        return text is { Length: > 19 } && (text[^1] is 'Z' or 'z' || text[^6] is '+' or '-')
-            && DateTimeOffset.TryParseExact(text.ToUpperInvariant(), TimeFormats, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal, out time);
+        if (text is not { Length: >= 20 } || text[^1] != 'Z') return false;
+        var body = text.AsSpan(0, text.Length - 1);
+        if (body.Length > 19)
+        {
+            if (body[19] != '.' || body.Length == 20) return false;
+            foreach (var c in body[20..])
+                if (!char.IsAsciiDigit(c)) return false;
+            if (body.Length > 27) body = body[..27];
+        }
+        return DateTimeOffset.TryParseExact(body, body.Length == 19 ? "yyyy-MM-dd'T'HH:mm:ss" : "yyyy-MM-dd'T'HH:mm:ss.FFFFFFF", CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out time);
     }
 }
