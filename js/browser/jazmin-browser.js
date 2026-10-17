@@ -201,7 +201,12 @@
    * verifies against that point only when the point is d's.
    */
   async function verifySignature(publicKey, message, signature) {
-    const key = await subtle.importKey('raw', publicKey, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+    let key;
+    try {
+      key = await subtle.importKey('raw', publicKey, { name: 'ECDSA', namedCurve: 'P-256' }, false, ['verify']);
+    } catch {
+      return false; // not a point on the curve: a signature that doesn't verify
+    }
     return subtle.verify({ name: 'ECDSA', hash: 'SHA-256' }, key, signature, message);
   }
 

@@ -226,10 +226,15 @@ export function sign(privateKey, message) {
 }
 
 export function verify(publicKey, message, signature) {
-  const key = crypto.createPublicKey({
-    key: { kty: 'EC', crv: 'P-256', x: publicKey.subarray(1, 33).toString('base64url'), y: publicKey.subarray(33).toString('base64url') },
-    format: 'jwk',
-  });
+  let key;
+  try {
+    key = crypto.createPublicKey({
+      key: { kty: 'EC', crv: 'P-256', x: publicKey.subarray(1, 33).toString('base64url'), y: publicKey.subarray(33).toString('base64url') },
+      format: 'jwk',
+    });
+  } catch {
+    return false; // not a point on the curve: a signature that doesn't verify
+  }
   return crypto.verify('sha256', message, { key, dsaEncoding: 'ieee-p1363' }, signature);
 }
 

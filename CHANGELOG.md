@@ -6,9 +6,9 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 
 ### Fixed
-- **.NET: a shared file whose owner key isn't a point on the curve** now fails with the usual JAZMIN error ("the
-  file's owner signature is invalid"). On Windows it surfaced as `PlatformNotSupportedException`, which .NET's
-  cryptography throws there for such a point.
+- **A shared file whose owner key isn't a point on the curve** now fails with the usual JAZMIN error ("the file's
+  owner signature is invalid") in every library. It surfaced as the platform's own error: `TypeError` in Node, a
+  WebCrypto `DataError` in the browser reader, and `PlatformNotSupportedException` in .NET on Windows.
 
 ### Added
 - **Publisher signatures (spec 6.9): `verifyPublisher`** (.NET `JazminFile.VerifyPublisher`) checks who published a
