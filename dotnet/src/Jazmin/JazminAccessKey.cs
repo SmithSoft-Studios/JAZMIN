@@ -203,9 +203,9 @@ internal static class OwnerSigning
             });
             return ecdsa.VerifyData(message, signature, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
         }
-        catch (CryptographicException)
+        catch (Exception e) when (e is CryptographicException or PlatformNotSupportedException)
         {
-            return false; // not a valid point on the curve
+            return false; // not a valid point on the curve (Windows reports it as PlatformNotSupportedException)
         }
     }
 

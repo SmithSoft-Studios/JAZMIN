@@ -132,6 +132,16 @@ public class AccessTests
     }
 
     [Fact]
+    public void OwnerSignature_FromAPointNotOnTheCurve_DoesNotVerify()
+    {
+        // A file's signature section names the owner's public key; one that isn't a point on P-256 is a signature that
+        // doesn't verify (a JAZMIN error for the reader), whatever exception the platform's ECDSA throws for it.
+        var signature = new byte[64];
+        byte[][] points = [[0x04, .. new byte[64]], [0x04, .. Enumerable.Repeat((byte)1, 64)], [0x04, .. Enumerable.Repeat((byte)0xff, 64)]];
+        foreach (var point in points) Assert.False(OwnerSigning.Verify(point, [1, 2, 3], signature));
+    }
+
+    [Fact]
     public void OwnersGrantList_GivesEachKeysExtraFileGroups()
     {
         var shared = TestData.Write(Columns, Rows, new JazminWriteOptions
