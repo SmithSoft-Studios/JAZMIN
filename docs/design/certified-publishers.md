@@ -106,7 +106,7 @@ library that refuses anything outside it (no general X.509 parsing, so no large 
 |---|---|---|---|
 | SmithSoft root | ECDSA P-384, offline | about 20 years | issuing certificates only |
 | Issuing | ECDSA P-256, in a security module | about 2 years | publisher, status and time-stamping certificates only (path length 0) |
-| Publisher | ECDSA P-256, in SmithSoft's security module (hosted signing) | 1 year | documents only (not a CA; "JAZMIN document signing" key usage) |
+| Publisher | ECDSA P-256, kept by SmithSoft's signing service | 1 year | documents only (not a CA; "JAZMIN document signing" key usage) |
 | Status, time-stamping, log | ECDSA P-256, in a security module | about 1 year | status answers, timestamps, log checkpoints |
 
 **Who a publisher certificate names:**
@@ -226,8 +226,10 @@ it was signed, and how fresh the revocation check is.
 1. **Repositories (2026-10-16):** verification public here; SmithSoft's services in a separate private repository;
    Scout a client with no secrets.
 2. **Certificates (2026-10-16):** a strict X.509 profile, built to change and for use worldwide (as above).
-3. **Hosting (2026-10-16):** AWS, Cape Town; keys in AWS KMS's security modules, the root offline in SmithSoft's own.
-4. **Licence model first (2026-10-16):** hosted signing (keys never leave the security module; every signature counted).
+3. **Operations (2026-10-16):** where the services run, how keys are kept, and how signing is licensed are decided in
+   SmithSoft's private plan. This note says only what a file carries and how anyone checks it.
+4. **Signing through SmithSoft's service (2026-10-16):** publishers sign through SmithSoft's signing service, so a
+   publisher's key can't be copied from the publisher.
 5. **Who (2026-10-17):** registered companies **and** sole traders, from launch.
 6. **Trust store (2026-10-17):** SmithSoft's roots only.
 7. **Timestamps (2026-10-17):** SmithSoft's own RFC 3161 service.
