@@ -1,9 +1,10 @@
 # Certified publishers: signatures only SmithSoft can certify
 
-Status: **decided** (owner, 2026-10-16 and 2026-10-17), for 1.8.0. The decisions are listed at the end. **Next:**
-spec text (a new section 6.9) and test vectors made with a test root, then the libraries. This note covers what goes
-in a file and how anyone checks it. How SmithSoft runs the services that issue certificates and sign is private, and
-is not part of this repository.
+Status: **decided** (owner, 2026-10-16 and 2026-10-17), for 1.8.0. The decisions are listed at the end.
+**Specified:** spec 6.9. **Next:** test vectors made with a test root, then the libraries.
+
+This note covers what goes in a file and how anyone checks it. How SmithSoft runs the services that issue
+certificates and sign is private, and is not part of this repository.
 
 ## The idea in plain words
 
@@ -67,14 +68,14 @@ A signature proves who signed which bytes; fraud happens in what people **read**
 few **facts**, typed by document kind and signed with it, for example:
 
 ```
-type: payslip · period: 2026-09 · recipient: ••••1234 · net pay: R 12,345.67 · code: JZ-7F3K-92QD
+type: payslip · period: 2026-09 · recipient: ••••1234 · net pay: R 12,345.67 · code: JZ-7F3K9-2QD40
 ```
 
 - **Standard kinds** (payslip, statement, invoice, certificate, tax certificate, and more later) have standard fact
   names, so people and software read them the same way; a publisher can add facts of its own.
 - The **viewer shows the facts in its own frame**, beside the badge, never the page's rendering of them. If the page
   shows something else, the viewer's facts are the truth.
-- The **document code** is short and easy to type or read out (`JZ-7F3K-92QD`). With it, anyone can confirm the
+- The **document code** is short and easy to type or read out (`JZ-7F3K9-2QD40`). With it, anyone can confirm the
   document on SmithSoft's portal, from a photocopy or over the phone.
 - **Document status:** besides key revocation, a publisher can **withdraw** one document (issued in error) or mark it
   **superseded** (a corrected payslip). The online check and the portal show it.
@@ -84,10 +85,9 @@ type: payslip · period: 2026-09 · recipient: ••••1234 · net pay: R 12
 ## Sealed certified documents
 
 A JAZMIN document's page may load things from the internet (`allowedOrigins`). For a **certified** document that
-would let it show different content after it was signed. So a certified document's pages are **sealed**: viewers let
-them load only files pinned by an integrity hash (scripts, styles, fonts), and no data at all from the network. A
-certified document that needs more is shown with the badge and the note **"Parts of this document come from the
-internet and are not covered by the signature"**.
+would let it show different content after it was signed. So a certified document's pages are **sealed**: viewers
+show them with no network access at all, and say so when the document asked for the internet. Everything a certified
+page uses travels in the file. (Files on the internet pinned by their digest may be allowed in a later revision.)
 
 ## On paper
 

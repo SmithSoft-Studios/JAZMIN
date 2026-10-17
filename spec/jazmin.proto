@@ -229,3 +229,37 @@ message ChunkMap {
   repeated bytes partitions = 2;                     // partition ids, each listed once
   repeated uint32 partition_of = 3 [packed = true];  // per chunk ordinal: an index into partitions
 }
+
+// A publisher signature (section 6.9): the payload of the block just before the header, found by its footer
+// (magic "JZPS"). Unencrypted; the facts inside it are encrypted in encrypted files.
+message PublisherSignatures {
+  bytes signed = 1;                     // a SignedDocument, encoded: the bytes every signature signs
+  repeated PublisherSignature signatures = 2;
+  bytes facts = 3;                      // salt || JCS(facts), encrypted as the header is in encrypted files
+  string status = 4;                    // a status answer (JWS) obtained at signing
+  repeated string witnesses = 15;       // reserved: witnesses' cosignatures of the log checkpoint
+}
+
+// What a publisher signature signs (6.9.2), after the text "JAZMIN/1/publisher".
+message SignedDocument {
+  uint32 version = 1;                   // 1
+  bytes file_id = 2;
+  bytes file_digest = 3;                // D: every byte but the block and the trailer (6.9.2)
+  string code = 4;                      // the document code, e.g. "JZ-7F3K9-2QD40"
+  string kind = 5;                      // the document kind ("payslip", "statement", ...), or ""
+  bytes facts_digest = 6;               // SHA-256(salt || JCS(facts)), or empty
+  repeated string algorithms = 7;       // every signature algorithm in the block (no downgrade)
+  string credential = 8;                // which credential signed, as the certifier names it
+  int64 signed_at = 9;                  // milliseconds, as the signer claims it (the timestamp proves it)
+  bytes holder = 15;                    // reserved: holder binding
+}
+
+// One signature over a SignedDocument (6.9.2).
+message PublisherSignature {
+  string algorithm = 1;                 // "ES256" (r || s, 64 bytes)
+  bytes value = 2;
+  repeated bytes certificates = 3;      // DER: the signer's certificate, then its issuing certificate
+  string role = 4;                      // "publisher" or "cosigner"
+  bytes timestamp = 5;                  // an RFC 3161 TimeStampToken over SHA-256(value)
+  bytes log_receipt = 6;                // RFC 9162 inclusion proof and C2SP checkpoint
+}
