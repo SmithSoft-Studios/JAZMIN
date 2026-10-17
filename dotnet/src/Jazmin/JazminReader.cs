@@ -1190,7 +1190,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     }
 
     /// <summary>The key-slot and signature sections are stored unencrypted and uncompressed (spec 7.6.4); anything else is refused.</summary>
-    private static byte[] PlainSection(byte[] section, string sectionId) =>
+    internal static byte[] PlainSection(byte[] section, string sectionId) =>
         section.Length >= FormatConstants.EnvelopeSize && section[0] == (byte)JazminCodec.None && section[1] == 0
             ? section
             : throw new JazminFormatException($"Section '{sectionId}' must be stored as is");

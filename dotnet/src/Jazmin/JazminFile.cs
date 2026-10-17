@@ -1509,6 +1509,53 @@ public static class JazminFile
             (flags & FormatConstants.FlagAppended) != 0);
     }
 
+    /// <summary>
+    /// Verifies the file's publisher signature (spec 6.9.8): who published it, whether it changed since it was signed, and
+    /// its facts (an encrypted file's with <see cref="JazminPublisherOptions.Key"/>, AccessKey or Password). Reads the
+    /// trailer, the signature block and the bytes the signature covers, at most 1 MiB at a time: never the whole file.
+    /// Trusts only the roots built into this library. A file that isn't valid gives NotVerified, not an exception.
+    /// </summary>
+    public static JazminPublisherResult VerifyPublisher(string path, JazminPublisherOptions? options = null) =>
+        VerifyPublisher(path, options, JazminPublisherTrust.BuiltIn());
+
+    /// <summary>Verifies a file's publisher signature from its bytes (see the overload that takes a path).</summary>
+    public static JazminPublisherResult VerifyPublisher(byte[] data, JazminPublisherOptions? options = null) =>
+        VerifyPublisher(data, options, JazminPublisherTrust.BuiltIn());
+
+    /// <summary>
+    /// Verifies a file's publisher signature from a readable, seekable stream (see the overload that takes a path). The
+    /// stream is closed afterwards unless <paramref name="leaveOpen"/>.
+    /// </summary>
+    public static JazminPublisherResult VerifyPublisher(Stream stream, JazminPublisherOptions? options = null, bool leaveOpen = false) =>
+        VerifyPublisher(stream, options, leaveOpen, JazminPublisherTrust.BuiltIn());
+
+    /// <summary>With the trust given (tests: a test root and arc, and the time to verify at).</summary>
+    internal static JazminPublisherResult VerifyPublisher(string path, JazminPublisherOptions? options, JazminPublisherTrust trust)
+    {
+        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 0, FileOptions.SequentialScan);
+        return Publisher.Verify(stream, null, options, trust);
+    }
+
+    internal static JazminPublisherResult VerifyPublisher(byte[] data, JazminPublisherOptions? options, JazminPublisherTrust trust)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        return Publisher.Verify(null, data, options, trust);
+    }
+
+    internal static JazminPublisherResult VerifyPublisher(Stream stream, JazminPublisherOptions? options, bool leaveOpen, JazminPublisherTrust trust)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        try
+        {
+            if (!stream.CanSeek || !stream.CanRead) throw new JazminValidationException("The stream must be readable and seekable");
+            return Publisher.Verify(stream, null, options, trust);
+        }
+        finally
+        {
+            if (!leaveOpen) stream.Dispose();
+        }
+    }
+
     // The longest text V8 holds (Chrome, Edge, Node): a larger file can't be loaded as a script there.
     private const long MaxScriptText = 536_870_888 - 1024;
 
