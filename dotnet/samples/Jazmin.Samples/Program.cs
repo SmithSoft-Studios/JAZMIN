@@ -639,7 +639,296 @@ using (var payView = JazminReader.Open(payPath, new JazminReadOptions { AccessKe
     //     export: id,name,account\r\n1,Thandi,•••• •••• •••• 4821\r\n -> id,name,account\r\n1,Thandi,4821 0393 7712 4821\r\n
 }
 
+// --- 34. Progress and Stop on a long read (USER-GUIDE 22.1): a progress report after each chunk with the chunks read,
+// the chunks planned and the matches so far; a cancellation token stops the read before its next chunk, and it throws
+// OperationCanceledException. Find takes both in JazminQueryOptions; Count and CountAsync as arguments. Here Stop is
+// pressed part-way, from the progress report. (ReportNow, at the end of this file, reports at once, so the lines print
+// in order; Progress<T> reports later, on the thread pool or an app's UI thread.)
+var visitsPath = Path.Combine(dir, "visits.jzm");
+string[] visitCities = ["Durban", "Cape Town", "Pretoria", "Polokwane"];
+using (var writer = JazminWriter.Create(visitsPath,
+    [
+        new JazminColumn("id", JazminType.Int) { Nullable = false }, new JazminColumn("customer", JazminType.String) { Indexes = [JazminIndexKind.Sorted] },
+        new JazminColumn("city", JazminType.String), new JazminColumn("amount", JazminType.Int),
+    ]))
+{
+    for (var i = 0; i < 100_000; i++) writer.WriteValues((long)i, $"C{i / 100 * 37 % 1000:000}", visitCities[i % 4], (long)(i % 1000));
+}
+using (var visits = JazminReader.Open(visitsPath))
+{
+    var inDurban = JazminFilter.Eq("city", "Durban");
+    JazminReadProgress last = default;
+    var durban = visits.Count(inDurban, new ReportNow<JazminReadProgress>(p => last = p));
+    using var stop = new CancellationTokenSource();
+    var stopped = "";
+    try
+    {
+        visits.Find(inDurban, new JazminQueryOptions { CancellationToken = stop.Token, Progress = new ReportNow<JazminReadProgress>(p => { if (p.Done == 3) stop.Cancel(); }) }).Count();
+    }
+    catch (OperationCanceledException e)
+    {
+        stopped = e.GetType().Name;
+    }
+    using var stopAsync = new CancellationTokenSource(); // stopButton.Click += (_, _) => stopAsync.Cancel();
+    var stoppedAsync = "";
+    try
+    {
+        await visits.CountAsync(inDurban, new ReportNow<JazminReadProgress>(p => { if (p.Done == 5) stopAsync.Cancel(); }), stopAsync.Token);
+    }
+    catch (OperationCanceledException e)
+    {
+        stoppedAsync = e.GetType().Name;
+    }
+    Console.WriteLine($"34. {durban} in Durban, {last.Done} of {last.Total} chunks read; Find stopped after 3: {stopped}; CountAsync stopped after 5: {stoppedAsync}");
+    // 34. 25000 in Durban, 25 of 25 chunks read; Find stopped after 3: OperationCanceledException; CountAsync stopped after 5: OperationCanceledException
+}
+
+// --- 35. Progress for a rewrite (USER-GUIDE 16.1): Update and Compact report the stage, done and total in up to three
+// stages: Sort (only when the order changes), Write (after each chunk) and Indexes (at the end). A cancellation token
+// stops it at its next report and leaves the file as it was. Here, the last report of each stage.
+var rewriteStages = new Dictionary<JazminWriteStage, string>();
+JazminFile.Update(visitsPath, new JazminUpdate
+{
+    SortedBy = ["city", "id"],
+    Progress = new ReportNow<JazminWriteProgress>(p => rewriteStages[p.Stage] = $"{p.Stage} {p.Done}/{p.Total}"),
+});
+Console.WriteLine($"35. [{string.Join(", ", rewriteStages.Values)}]");
+// 35. [Sort 100000/100000, Write 100000/100000, Indexes 1/1]
+
+// --- 36. What a read would cost, before it runs (USER-GUIDE 9.6): Estimate reads no rows, only the chunk directories,
+// statistics and indexes. Find reads at most Chunks/Rows; Count reads CountChunks (0 when an index answers it).
+using (var planned = JazminReader.Open(visitsPath))
+{
+    string CostOf(JazminFilter filter)
+    {
+        var e = planned.Estimate(filter);
+        return $"find {e.Chunks} chunks/{e.Rows} rows, count {e.CountChunks} chunks";
+    }
+    Console.WriteLine($"36. customer (indexed): {CostOf(JazminFilter.Eq("customer", "C074"))}; amount (no index): {CostOf(JazminFilter.Eq("amount", 500L))}");
+    // 36. customer (indexed): find 4 chunks/100 rows, count 0 chunks; amount (no index): find 25 chunks/100000 rows, count 25 chunks
+}
+
+// --- 37. What viewers offer for each stored file (USER-GUIDE 19.3): List = false keeps a page's script out of viewers'
+// lists of the file's files, and in a shared file GroupActions gives each file group its own actions: here HR may
+// download the payslips and staff may only view them. The owner sees each group's actions.
+var payslipsOwner = JazminKey.Generate();
+var hrKey = payslipsOwner.CreateAccessKey();
+var staffKey = payslipsOwner.CreateAccessKey();
+var payslipsPath = Path.Combine(dir, "payslips.jzm");
+using (var writer = JazminWriter.Create(payslipsPath, [new JazminColumn("id", JazminType.Int)], new JazminWriteOptions
+{
+    Key = payslipsOwner,
+    Files =
+    [
+        new JazminFileInput("index.html", "<h1>Payslips</h1><script src=\"app.js\"></script>"u8.ToArray()),
+        new JazminFileInput("app.js", "jazmin.query({});"u8.ToArray()) { Actions = new JazminFileActions { List = false } },
+        new JazminFileInput("payslips.pdf", "Payslips, March"u8.ToArray())
+        {
+            Groups = ["hr", "staff"],
+            GroupActions = new Dictionary<string, JazminFileActions> { ["hr"] = new() { Save = true }, ["staff"] = new() { Save = false } },
+        },
+    ],
+    Package = new JazminPackage { Entry = "index.html" },
+    Access = new JazminAccessOptions { Grants = [new JazminGrant(hrKey) { Files = ["hr"], Label = "HR" }, new JazminGrant(staffKey) { Files = ["staff"], Label = "Staff" }] },
+}))
+{
+    writer.WriteValues(1L);
+}
+foreach (var (label, accessKey) in new[] { ("HR", hrKey), ("Staff", staffKey) })
+{
+    using var view = JazminReader.Open(payslipsPath, new JazminReadOptions { AccessKey = accessKey });
+    Console.WriteLine($"{(label == "HR" ? "37." : "   ")} {label}: {string.Join("; ", view.Files.Select(f => $"{f.Path} list {f.Actions?.List ?? true}, save {f.Actions?.Save ?? true}"))}");
+}
+using (var asOwner = JazminReader.Open(payslipsPath, new JazminReadOptions { Key = payslipsOwner }))
+    Console.WriteLine($"    owner: {string.Join(", ", asOwner.Files.Single(f => f.Path == "payslips.pdf").GroupActions!.Select(g => $"{g.Key} save {g.Value?.Save}"))}");
+// 37. HR: app.js list False, save True; index.html list True, save True; payslips.pdf list True, save True
+//     Staff: app.js list False, save True; index.html list True, save True; payslips.pdf list True, save False
+//     owner: hr save True, staff save False
+
+// --- 38. A document that needs the internet (USER-GUIDE 24.1): Online Required when it doesn't work offline (a chart
+// library from a CDN), Optional when it works with less (a font that falls back). It needs AllowedOrigins, the only
+// sites its pages may load from. Viewers then say it needs to be online, and offline show a message instead.
+var salesBytes = new MemoryStream();
+using (var writer = new JazminWriter(salesBytes, [new JazminColumn("month", JazminType.String), new JazminColumn("sales", JazminType.Int)], new JazminWriteOptions
+{
+    Files = [new JazminFileInput("index.html", "<canvas id=\"chart\"></canvas><script src=\"https://cdn.jsdelivr.net/npm/chart.js@4.4.6\"></script>"u8.ToArray())],
+    Package = new JazminPackage { Entry = "index.html", Online = JazminOnline.Required, AllowedOrigins = ["https://cdn.jsdelivr.net"] },
+}, leaveOpen: true))
+{
+    writer.WriteValues("Jan", 120L);
+    writer.WriteValues("Feb", 135L);
+}
+using (var sales = JazminReader.Open(salesBytes.ToArray()))
+    Console.WriteLine($"38. entry {sales.Package!.Entry}, online {sales.Package.Online}, allowed origins [{string.Join(", ", sales.Package.AllowedOrigins!)}]");
+// 38. entry index.html, online Required, allowed origins [https://cdn.jsdelivr.net]
+
+// --- 39. Document pages (USER-GUIDE 19.7, 19.2): viewers show each page as a tab, in order. One reads the clients
+// table, one needs the internet, one has only Print and PDF buttons. Package.Files names the pages' own files (a folder
+// ends in '/'), which viewers keep out of the Files tab. The package is in the header every key reads, so a page only
+// some keys may know of is marked on its file instead: only the directors see the Board pack tab, or that the file exists.
+var boardOwner = JazminKey.Generate();
+var director = boardOwner.CreateAccessKey();
+var clerk = boardOwner.CreateAccessKey();
+var bankPath = Path.Combine(dir, "bank.jzm");
+using (var writer = JazminWriter.Create(bankPath, new JazminWriteOptions
+{
+    Tables =
+    [
+        new JazminTable("clients", [new JazminColumn("clientId", JazminType.String), new JazminColumn("name", JazminType.String)]),
+        new JazminTable("transactions", [new JazminColumn("clientId", JazminType.String), new JazminColumn("amount", JazminType.Decimal)]),
+    ],
+    Key = boardOwner,
+    Access = new JazminAccessOptions { Grants = [new JazminGrant(director) { Files = ["directors"], Label = "Director" }, new JazminGrant(clerk) { Label = "Clerk" }] },
+    Files =
+    [
+        new JazminFileInput("clients.html", "<h1>Clients</h1>"u8.ToArray()),
+        new JazminFileInput("summary.html", "<h1>Summary</h1>"u8.ToArray()),
+        new JazminFileInput("statement.html", "<h1>Statement</h1>"u8.ToArray()),
+        new JazminFileInput("assets/app.js", "jazmin.query({});"u8.ToArray()),
+        new JazminFileInput("assets/style.css", "h1 { color: navy }"u8.ToArray()),
+        new JazminFileInput("board.html", "<h1>Board pack</h1>"u8.ToArray()) { Groups = ["directors"], Page = new JazminPage { Title = "Board pack", Order = 1 } },
+    ],
+    Package = new JazminPackage
+    {
+        // Entry is left out: it is the first page, the one older viewers show.
+        Pages =
+        [
+            new JazminPage { Path = "clients.html", Title = "Clients", Table = "clients" },
+            new JazminPage { Path = "summary.html", Title = "Summary", Online = JazminOnline.Required }, // the other tabs still work offline
+            new JazminPage { Path = "statement.html", Title = "Statement", Actions = new JazminFileActions { Image = false } },
+        ],
+        Files = ["assets/"],
+        AllowedOrigins = ["https://cdn.jsdelivr.net"],
+    },
+}))
+{
+    writer.WriteValues("C1", "Acme");
+    writer.StartTable("transactions");
+    writer.WriteValues("C1", 10.00m);
+}
+foreach (var (label, accessKey) in new[] { ("Director", director), ("Clerk", clerk) })
+{
+    using var view = JazminReader.Open(bankPath, new JazminReadOptions { AccessKey = accessKey });
+    IEnumerable<string> tabs = [.. view.Package!.Pages!.Select(p => p.Title!), .. view.Files.Where(f => f.Page is not null).Select(f => $"{f.Page!.Title} ({f.Path})")];
+    Console.WriteLine($"{(label == "Director" ? "39." : "   ")} {label} [{string.Join(", ", tabs)}]");
+}
+// 39. Director [Clients, Summary, Statement, Board pack (board.html)]
+//     Clerk [Clients, Summary, Statement]
+
+// --- 40. Locks and key services (USER-GUIDE 19.6): Package.KeyService names the service that gives out the file's
+// online locks' tokens, and a lock can name its own, so the medical aid signs its own people in (with its own 2FA) and
+// holds only its lock's token. A service that stores tokens instead of the owner key lists them with ListFileUnlockTokens.
+var clinic = JazminKey.Generate();
+var patient = clinic.CreateAccessKey();
+var visitPath = Path.Combine(dir, "visit.jzm");
+using (var writer = JazminWriter.Create(visitPath, [new JazminColumn("id", JazminType.Int)], new JazminWriteOptions
+{
+    Key = clinic,
+    Access = new JazminAccessOptions { Grants = [new JazminGrant(patient)] },
+    Files = [new JazminFileInput("scan.png", "The scan"u8.ToArray()) { Lock = "medical" }, new JazminFileInput("invoice.pdf", "The invoice"u8.ToArray()) { Lock = "billing" }],
+    Locks = new Dictionary<string, JazminLockOptions?>
+    {
+        ["medical"] = new() { Online = true, KeyService = "https://keys.medicalaid.example" },
+        ["billing"] = new() { Online = true },
+    },
+    Package = new JazminPackage { KeyService = "https://keys.clinic.example" },
+}))
+{
+    writer.WriteValues(1L);
+}
+using (var patientView = JazminReader.Open(visitPath, new JazminReadOptions { AccessKey = patient }))
+{
+    Console.WriteLine($"40. {string.Join(", ", patientView.Locks.Select(l => $"{l.Id}: {l.KeyService}"))}");
+    patientView.Unlock("medical", unlockToken: JazminFile.IssueFileUnlockToken(visitPath, clinic, "medical")); // the medical aid's service
+    var billingToken = JazminFile.ListFileUnlockTokens(visitPath, clinic).Single(t => t.LockId == "billing").Token; // the clinic's service
+    patientView.Unlock("billing", unlockToken: billingToken);
+    Console.WriteLine($"    {System.Text.Encoding.UTF8.GetString(patientView.ReadFile("scan.png"))} / {System.Text.Encoding.UTF8.GetString(patientView.ReadFile("invoice.pdf"))}");
+    // 40. billing: https://keys.clinic.example/, medical: https://keys.medicalaid.example/
+    //     The scan / The invoice
+}
+
+// --- 41. Masking and unmasking later (USER-GUIDE 15.7): an update with the owner key masks a column that wasn't masked
+// and unmasks one that was. Nobody gains access: the clerk saw the phone number and now sees its last 4 digits; the
+// salary was masked and is now plain.
+var hrOwner = JazminKey.Generate();
+var hrClerk = hrOwner.CreateAccessKey();
+var staffPath = Path.Combine(dir, "staff.jzm");
+using (var writer = JazminWriter.Create(staffPath,
+    [
+        new JazminColumn("id", JazminType.Int), new JazminColumn("name", JazminType.String), new JazminColumn("phone", JazminType.String),
+        new JazminColumn("salary", JazminType.Decimal) { Mask = new JazminMask("hr") },
+    ],
+    new JazminWriteOptions
+    {
+        Key = hrOwner, Access = new JazminAccessOptions { Grants = [new JazminGrant(hrClerk)] },
+        Locks = new Dictionary<string, JazminLockOptions?> { ["hr"] = new() { Password = "correct horse battery staple" } },
+    }))
+{
+    writer.WriteValues(1L, "Thandi", "082 555 0199", 42000.00m);
+}
+string AsClerk()
+{
+    using var view = JazminReader.Open(staffPath, new JazminReadOptions { AccessKey = hrClerk });
+    var row = view.Rows().First();
+    return $"{{{string.Join(", ", row.Select(c => FormattableString.Invariant($"{c.Key}: {c.Value}")))}}} masked [{string.Join(", ", view.Masked.Select(m => m.Column))}]";
+}
+var beforeMasks = AsClerk();
+JazminFile.Update(staffPath, new JazminUpdate
+{
+    Key = hrOwner,
+    Masks = new Dictionary<string, JazminMask?> { ["phone"] = new JazminMask("hr") { Show = JazminMaskShow.LastOf(4) }, ["salary"] = null },
+});
+Console.WriteLine($"41. {beforeMasks} -> {AsClerk()}");
+// 41. {id: 1, name: Thandi, phone: 082 555 0199} masked [salary] -> {id: 1, name: Thandi, salary: 42000.00, phone_shown: ••••0199} masked [phone]
+
+// --- 42. Regrouping partitions (USER-GUIDE 17.4): in a shared file each append starts new chunks, one per person it
+// adds rows for, so many small syncs leave each person's rows in many small chunks. Compact keeps them;
+// Compact(path, key, regroup: true) writes each person's rows together.
+var syncOwner = JazminKey.Generate();
+var syncsPath = Path.Combine(dir, "syncs.jzm");
+using (var writer = JazminWriter.Create(syncsPath, [new JazminColumn("person", JazminType.String), new JazminColumn("visit", JazminType.Int)], new JazminWriteOptions
+{
+    Key = syncOwner,
+    Access = new JazminAccessOptions
+    {
+        PartitionBy = "person",
+        Grants = [new JazminGrant(syncOwner.CreateAccessKey()) { Rows = ["ann"] }, new JazminGrant(syncOwner.CreateAccessKey()) { Rows = ["ben"] }],
+    },
+}))
+{
+    writer.WriteValues("ann", 0L);
+    writer.WriteValues("ben", 0L);
+}
+for (var day = 1L; day <= 5; day++)
+{
+    JazminFile.Append(syncsPath, new JazminAppend
+    {
+        Key = syncOwner,
+        Insert = [new Dictionary<string, object?> { ["person"] = "ann", ["visit"] = day }, new Dictionary<string, object?> { ["person"] = "ben", ["visit"] = day }],
+    });
+}
+long SyncChunks()
+{
+    using var view = JazminReader.Open(syncsPath, new JazminReadOptions { Key = syncOwner });
+    return view.Storage().Tables[0].Chunks;
+}
+var appendedChunks = SyncChunks();
+JazminFile.Compact(syncsPath, syncOwner);
+var compactedChunks = SyncChunks();
+JazminFile.Compact(syncsPath, syncOwner, regroup: true);
+Console.WriteLine($"42. {appendedChunks} chunks after 5 syncs; compacted: {compactedChunks}; regrouped: {SyncChunks()}");
+// 42. 12 chunks after 5 syncs; compacted: 12; regrouped: 2
+
 Directory.Delete(dir, true);
+
+/// <summary>
+/// Reports at once, on the thread doing the work, so a console program prints in order. Progress&lt;T&gt; reports
+/// later, on the thread pool (or on the UI thread of an app, which is what a progress bar needs).
+/// </summary>
+public sealed class ReportNow<T>(Action<T> report) : IProgress<T>
+{
+    public void Report(T value) => report(value);
+}
 
 public readonly record struct Money(long Cents, string Currency);
 
