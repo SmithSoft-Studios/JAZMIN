@@ -235,9 +235,10 @@ message ChunkMap {
 message PublisherSignatures {
   bytes signed = 1;                     // a SignedDocument, encoded: the bytes every signature signs
   repeated PublisherSignature signatures = 2; // the publisher's first, then any co-signers
-  bytes facts = 3;                      // salt || JCS(facts), encrypted as the header is in encrypted files
+  bytes facts = 3;                      // salt || JCS(facts); encrypted in encrypted files, with its own key (6.9.3)
   string status = 4;                    // a status answer (JWS) obtained at signing
-  repeated bytes certificates = 5;      // DER: certificates the block shares (time-stamping, status, log), each once
+  repeated bytes certificates = 5;      // DER, each once: time-stamping, status and log certificates, and their
+                                        // issuing (or cross-) certificates when no signature's chain carries them
   repeated string witnesses = 15;       // reserved: witnesses' cosignatures of the log checkpoint
 }
 

@@ -953,9 +953,10 @@ signature doesn't cover.
   leaves: a signed file that is changed this way shows as not signed, never
   as signed. A relying party that expects a signature MUST treat "none" as
   failure, and confirms with the certifier (6.9.8).
-- Magic present, but a wrong CRC, an unknown `version`, a `block_length`
-  that would start the payload inside the preamble, or a payload that isn't
-  a valid `PublisherSignatures`: **invalid** (a damaged signature block).
+- Magic present, but a wrong CRC, an unknown `version`, a non-zero
+  `reserved`, a `block_length` that would start the payload inside the
+  preamble, or a payload that isn't a valid `PublisherSignatures`: **invalid**
+  (a damaged signature block, reason `block`).
 - Any byte after `B` other than the block, the header and the signature
   section, or a file digest that doesn't match: **changed**.
 - A file whose last bytes are not a valid trailer is not a valid file (4.2)
@@ -1004,12 +1005,18 @@ a guess of the facts from being confirmed against the digest.
 
 - **Stored** in `PublisherSignatures.facts` as `salt || JCS(facts)`. In a file
   that isn't encrypted, as it is. In an encrypted file, encrypted with
-  AES-256-GCM (7.1) under the key a section named `publisher/facts` gets in
-  that file (7.3, 7.6.3: the header's key material), uncompressed, stored as
-  `nonce (12) || ciphertext || tag (16)`, with the associated data
+  AES-256-GCM (7.1), uncompressed, stored as `nonce (12) || ciphertext || tag
+  (16)`, with the associated data
   `file_id || 0x00 0x01 0x00 0x00 || u32(length of salt || JCS(facts)) || "publisher/facts"`
-  (the form of 7.4 for an envelope with codec 0 and the ENCRYPTED flag). Every
-  key that reads the header reads the facts, and nobody else.
+  (the form of 7.4 for an envelope with codec 0 and the ENCRYPTED flag), under
+  the key derived as the header's key is, with its own label:
+
+  ```
+  key or password files:   HKDF-SHA256(ikm = master, salt = preamble.salt, info = "JAZMIN/1/publisher/facts")
+  access-controlled files: HKDF-SHA256(ikm = H,      salt = preamble.salt, info = "JAZMIN/1/publisher/facts")
+  ```
+
+  Every key that reads the header reads the facts, and nobody else.
 - **Kinds** with their fact names, in this version: `payslip` (`period`,
   `recipient`, `gross`, `net`, `currency`), `statement` (`period`, `account`,
   `closing`, `currency`), `invoice` (`number`, `date`, `buyer`, `total`,
@@ -1035,6 +1042,7 @@ X.509 processing is needed):
 | Certificate | Key | Signed with | CA | Key usage (critical) | Extended key usage |
 |---|---|---|---|---|---|
 | Root | ECDSA P-384 | ecdsa-with-SHA384 (self) | yes, path length 2 | keyCertSign, cRLSign | none |
+| Cross-certificate | ECDSA P-384 (a new root's key) | ecdsa-with-SHA384 (by a trusted root) | yes, path length 2 | keyCertSign, cRLSign | none |
 | Issuing | ECDSA P-256 | ecdsa-with-SHA384 (by a root) | yes, path length 0 | keyCertSign, cRLSign | none |
 | Publisher | ECDSA P-256 | ecdsa-with-SHA256 | no | digitalSignature | `id-jazmin-document-signing` |
 | Status | ECDSA P-256 | ecdsa-with-SHA256 | no | digitalSignature | `id-jazmin-status` |
@@ -1047,8 +1055,9 @@ X.509 processing is needed):
   certificatePolicies (holding `id-jazmin-policy`), subjectKeyIdentifier,
   authorityKeyIdentifier, subjectAltName (publisher certificates only), and
   `id-jazmin-publisher-kind` (publisher certificates only, non-critical, a
-  UTF8String `company` or `individual`). Each certificate has exactly one of
-  the extended key usages above.
+  UTF8String `company` or `individual`). Each leaf certificate (publisher,
+  status, confirmation, log, time-stamping) has exactly one of the extended
+  key usages above; root, cross- and issuing certificates have none.
 - **A publisher certificate's subject** holds `commonName` (the verified
   name), `countryName` (ISO 3166-1), and for a company `organizationName` and
   `organizationIdentifier` (2.5.4.97) in the ETSI form [EN319412-1]: `NTR`,
@@ -1057,7 +1066,9 @@ X.509 processing is needed):
   `organizationName` is the trading name when there is one. A verified domain
   is in subjectAltName as a dNSName.
 - **Chains** are the leaf, then its issuing certificate, then optionally a
-  **cross-certificate**: a root's key certified by another root. A chain is
+  **cross-certificate**: a root's key certified by another root. A reader
+  finds a certificate's issuer by its issuer name and authorityKeyIdentifier,
+  among the chain and the block's shared certificates (6.9.6). A chain is
   trusted when the issuing certificate is signed by a trusted root, or by the
   root in the cross-certificate and the cross-certificate is signed by a
   trusted root. No other chain is accepted. This is how a new root works
@@ -1084,15 +1095,19 @@ X.509 processing is needed):
   and its leaf hash is `SHA-256(0x00 || entry)`, so each signature, a
   co-signature included, has its own leaf, and the log holds no facts.
   Checkpoints are C2SP signed notes [C2SP] in the `tlog-checkpoint` form,
-  signed with signature type `0x02` (ECDSA P-256) by a log certificate's key
-  (6.9.4); the key ID is the first 4 bytes of the SHA-256 of the key's DER
-  SubjectPublicKeyInfo. A signature's **receipt** is a C2SP `tlog-proof@v1`
+  signed with signature type `0x02` (ECDSA P-256: a DER-encoded ECDSA
+  signature over the SHA-256 of the note's text) by a log certificate's key
+  (6.9.4). The log's **origin**, which is also the key name on the signature
+  line, is the log certificate's `commonName`; the key ID is the first 4
+  bytes of the SHA-256 of the key's DER SubjectPublicKeyInfo. The log
+  certificate MUST be valid at the time the signature's timestamp proves. A signature's **receipt** is a C2SP `tlog-proof@v1`
   text: the entry's index, its inclusion proof and the checkpoint.
   Checkpoints MAY carry witnesses' cosignatures (`PublisherSignatures.witnesses`
   is reserved for them).
 - **Status, revocation lists and receipts** are JSON Web Signatures
-  [RFC7515] in compact form, algorithm `ES256`. The signer's certificate is in
-  `x5c` unless the block already carries it. Times are RFC 3339 UTC strings;
+  [RFC7515] in compact form, algorithm `ES256`. The protected header names
+  the signer's certificate with `x5t#S256` (its SHA-256 thumbprint), and
+  carries it in `x5c` unless the block already does. Times are RFC 3339 UTC strings;
   digests and nonces are base64url without padding; serial numbers are
   lowercase hexadecimal; a certificate is named by `{ "issuer", "serial" }`,
   `issuer` being the base64url SHA-256 of its issuing certificate's DER
@@ -1111,11 +1126,14 @@ X.509 processing is needed):
   - **Confirmation receipt** (confirmation certificate): `{ "party", "digest",
     "code", "facts", "status", "time" }`, `facts` being the facts' digest and
     `party` the relying party's account.
-- **Which status wins:** of the statements a reader has (the status stored in
-  the block, a revocation list, an online answer for its own nonce), the most
-  recent by its `time` or `issued`. Co-signers' certificates are checked
-  against revocation lists or online answers; the stored status covers only
-  the publisher's.
+- **Which status wins**, question by question:
+  - *Is a certificate revoked?* The most recent, by `time` or `issued`, of the
+    statements about it a reader has: the status stored in the block (for the
+    publisher's certificate), revocation lists, and online answers for its own
+    nonce. Co-signers' certificates are checked with lists and online answers.
+  - *Is the document withdrawn or superseded?* Only status answers say so (a
+    list doesn't): the most recent of the stored status and online answers.
+  - `from` is REQUIRED with `revoked`, `withdrawn` and `superseded`.
 - A **withdrawn** or **superseded** document is one its publisher took back
   or replaced; its signature is still valid, and readers SHOULD say so.
 
@@ -1127,7 +1145,8 @@ PublisherSignatures {                // the block's payload
   repeated PublisherSignature signatures = 2;   // the publisher's first, then any co-signers
   bytes facts = 3;                   // salt || JCS(facts); encrypted in encrypted files (6.9.3)
   string status = 4;                 // a status answer at signing (6.9.5)
-  repeated bytes certificates = 5;   // DER: certificates shared by the block (time-stamping, status, log), each once
+  repeated bytes certificates = 5;   // DER: certificates shared by the block, each once: time-stamping, status, log,
+                                     // and their issuing (or cross-) certificates when no signature's chain carries them
   repeated string witnesses = 15;    // reserved
 }
 SignedDocument {
@@ -1181,14 +1200,19 @@ To verify a file, a reader:
 
 Its result is one of:
 
-- **certified**: steps 1 to 5 pass with a trusted chain; with the verified
-  name, kind and code, and the facts when it could read them;
+- **certified**: steps 1 to 5 pass with trusted chains for the publisher and
+  every co-signer; with the verified name, kind and code, and the facts when
+  it could read them;
 - **signed**: steps 1 to 3 pass, but the publisher's certificate doesn't chain
   to a trusted root (including a self-signed certificate: signing with one's
   own key). Readers MUST NOT show any name, facts or code from it, only that
   the document was signed by an unknown key and not changed since;
 - **changed**, **withdrawn** or **superseded**, **invalid** (with the reason),
   or **none** (6.9.1).
+
+An **invalid** result names its reason: `block` (a damaged block, 6.9.1),
+`algorithms`, `signature`, `chain` (including a co-signer whose chain isn't
+trusted beside a trusted publisher), `timestamp`, `log`, `revoked` or `facts`.
 
 Readers that show a result:
 
