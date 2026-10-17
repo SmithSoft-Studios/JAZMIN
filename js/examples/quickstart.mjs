@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, compact, createFileHandler, exportFile, exportString, fromCSV, issueFileUnlockToken, issueUnlockToken,
-  open, openAsync,
+  listFileUnlockTokens, open, openAsync,
   applyChanges, fileSubmission, from, portableHtml, portableScript, rotateKey, toJSON, toXML, update, write, writeAsync, writeChanges,
 } from '../src/index.js';
 
@@ -448,5 +448,207 @@ console.log('    export:', JSON.stringify(masked32), '->', JSON.stringify(reveal
 payView.close();
 // 32. { id: 1, name: 'Thandi', account_shown: '•••• •••• •••• 4821' } -> 4821 0393 7712 4821
 //     export: "id,name,account\r\n1,Thandi,•••• •••• •••• 4821\r\n" -> "id,name,account\r\n1,Thandi,4821 0393 7712 4821\r\n"
+
+// 33. Progress and Stop on a long read (USER-GUIDE 22.1): onProgress is called after each chunk with the chunks read,
+// the chunks planned and the matches so far; an AbortSignal stops the read before its next chunk. A stopped read throws
+// (or rejects with) the signal's reason, an AbortError. Here Stop is pressed part-way, from onProgress.
+const visits = path.join(dir, 'visits.jzm');
+const visitCities = ['Durban', 'Cape Town', 'Pretoria', 'Polokwane'];
+write(visits, Array.from({ length: 100_000 }, (_, i) => ({
+  id: i, customer: `C${String((Math.floor(i / 100) * 37) % 1000).padStart(3, '0')}`, city: visitCities[i % 4], amount: i % 1000,
+})), {
+  columns: [{ name: 'id', type: 'int', nullable: false }, { name: 'customer', type: 'string', index: 'sorted' }, { name: 'city', type: 'string' }, { name: 'amount', type: 'int' }],
+});
+const visitsReader = open(visits);
+let last33;
+const durban33 = visitsReader.count({ city: 'Durban' }, { onProgress: (p) => { last33 = p; } });
+const stop33 = new AbortController();
+let stopped33;
+try {
+  visitsReader.count({ city: 'Durban' }, { signal: stop33.signal, onProgress: ({ done }) => { if (done === 3) stop33.abort(); } });
+} catch (error) {
+  stopped33 = error.name;
+}
+const stopAsync33 = new AbortController(); // stopButton.onclick = () => stopAsync33.abort();
+let stoppedAsync33;
+try {
+  await visitsReader.countAsync({ city: 'Durban' }, { signal: stopAsync33.signal, onProgress: ({ done }) => { if (done === 5) stopAsync33.abort(); } });
+} catch (error) {
+  stoppedAsync33 = error.name;
+}
+visitsReader.close();
+console.log('33.', `${durban33} in Durban, ${last33.done} of ${last33.total} chunks read;`, `stopped after 3: ${stopped33};`, `countAsync stopped after 5: ${stoppedAsync33}`);
+// 33. 25000 in Durban, 25 of 25 chunks read; stopped after 3: AbortError; countAsync stopped after 5: AbortError
+
+// 34. Progress for a rewrite (USER-GUIDE 16.1): update() and compact() report { stage, done, total } in up to three
+// stages: 'sort' (only when the order changes), 'write' (after each chunk) and 'indexes' (at the end). A signal stops it
+// at its next report and leaves the file as it was. Here, the last report of each stage.
+const stages34 = new Map();
+update(visits, { sortedBy: ['city', 'id'], onProgress: (p) => stages34.set(p.stage, `${p.stage} ${p.done}/${p.total}`) });
+console.log('34.', [...stages34.values()]);
+// 34. [ 'sort 100000/100000', 'write 100000/100000', 'indexes 1/1' ]
+
+// 35. What a read would cost, before it runs (USER-GUIDE 9.6): estimate() reads no rows, only the chunk directories,
+// statistics and indexes. find() reads at most chunks/rows; count() reads countChunks (0 when an index answers it).
+const planned = open(visits);
+const costOf = (filter) => { const e = planned.estimate(filter); return `find ${e.chunks} chunks/${e.rows} rows, count ${e.countChunks} chunks`; };
+console.log('35.', `customer (indexed): ${costOf({ customer: 'C074' })};`, `amount (no index): ${costOf({ amount: 500 })}`);
+// 35. customer (indexed): find 4 chunks/100 rows, count 0 chunks; amount (no index): find 25 chunks/100000 rows, count 25 chunks
+
+// 36. What viewers offer for each stored file (USER-GUIDE 19.3): list: false keeps a page's script out of viewers' lists
+// of the file's files, and in a shared file groupActions gives each file group its own actions: here HR may download
+// the payslips and staff may only view them. The owner sees each group's actions.
+const payOwner36 = JazminKey.generate();
+const hr36 = payOwner36.createAccessKey();
+const staff36 = payOwner36.createAccessKey();
+const payslips = path.join(dir, 'payslips.jzm');
+write(payslips, [{ id: 1 }], {
+  columns: [{ name: 'id', type: 'int' }], key: payOwner36,
+  files: [
+    { path: 'index.html', content: '<h1>Payslips</h1><script src="app.js"></script>' },
+    { path: 'app.js', content: 'jazmin.query({});', actions: { list: false } },
+    { path: 'payslips.pdf', content: 'Payslips, March', groups: ['hr', 'staff'], groupActions: { hr: { save: true }, staff: { save: false } } },
+  ],
+  package: { entry: 'index.html' },
+  access: { grants: [{ key: hr36, files: ['hr'], label: 'HR' }, { key: staff36, files: ['staff'], label: 'Staff' }] },
+});
+for (const [label, accessKey] of [['HR', hr36], ['Staff', staff36]]) {
+  const view = open(payslips, { key: accessKey });
+  console.log(label === 'HR' ? '36.' : '   ', `${label}:`, view.files.map((f) => `${f.path} ${JSON.stringify(f.actions ?? {})}`).join(', '));
+  view.close();
+}
+const payslipsOwner = open(payslips, { key: payOwner36 });
+console.log('    owner:', payslipsOwner.files.find((f) => f.path === 'payslips.pdf').groupActions);
+payslipsOwner.close();
+// 36. HR: app.js {"list":false}, index.html {}, payslips.pdf {"save":true}
+//     Staff: app.js {"list":false}, index.html {}, payslips.pdf {"save":false}
+//     owner: { hr: { save: true }, staff: { save: false } }
+
+// 37. A document that needs the internet (USER-GUIDE 24.1): online: 'required' when it doesn't work offline (a chart
+// library from a CDN), 'optional' when it works with less (a font that falls back). It needs allowedOrigins, the only
+// sites its pages may load from. Viewers then say it needs to be online, and offline show a message instead.
+const sales = open(write(null, [{ month: 'Jan', sales: 120 }, { month: 'Feb', sales: 135 }], {
+  files: [{ path: 'index.html', content: '<canvas id="chart"></canvas><script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.6"></script>' }],
+  package: { entry: 'index.html', online: 'required', allowedOrigins: ['https://cdn.jsdelivr.net'] },
+}));
+console.log('37.', JSON.stringify(sales.package));
+sales.close();
+// 37. {"entry":"index.html","allowedOrigins":["https://cdn.jsdelivr.net"],"online":"required"}
+
+// 38. Document pages (USER-GUIDE 19.7): viewers show each page as a tab, in order. One reads the clients table, one
+// needs the internet, one has only Print and PDF buttons. package.files names the pages' own files (a folder ends in
+// '/'), which viewers keep out of the Files tab. The package is in the header every key reads, so a page only some
+// keys may know of is marked on its file instead: only the directors see the Board pack tab, or that the file exists.
+const bankOwner38 = JazminKey.generate();
+const director = bankOwner38.createAccessKey();
+const clerk = bankOwner38.createAccessKey();
+const bank = path.join(dir, 'bank.jzm');
+write(bank, { clients: [{ clientId: 'C1', name: 'Acme' }], transactions: [{ clientId: 'C1', amount: '10.00' }] }, {
+  tables: [
+    { name: 'clients', columns: [{ name: 'clientId', type: 'string' }, { name: 'name', type: 'string' }] },
+    { name: 'transactions', columns: [{ name: 'clientId', type: 'string' }, { name: 'amount', type: 'decimal' }] },
+  ],
+  key: bankOwner38,
+  access: { grants: [{ key: director, files: ['directors'], label: 'Director' }, { key: clerk, label: 'Clerk' }] },
+  files: [
+    { path: 'clients.html', content: '<h1>Clients</h1>' },
+    { path: 'summary.html', content: '<h1>Summary</h1>' },
+    { path: 'statement.html', content: '<h1>Statement</h1>' },
+    { path: 'assets/app.js', content: 'jazmin.query({});' },
+    { path: 'assets/style.css', content: 'h1 { color: navy }' },
+    { path: 'board.html', content: '<h1>Board pack</h1>', groups: ['directors'], page: { title: 'Board pack', order: 1 } },
+  ],
+  package: {
+    pages: [ // entry is left out: it is the first page, the one older viewers show
+      { path: 'clients.html', title: 'Clients', table: 'clients' },
+      { path: 'summary.html', title: 'Summary', online: 'required' }, // the other tabs still work offline
+      { path: 'statement.html', title: 'Statement', actions: { image: false } },
+    ],
+    files: ['assets/'],
+    allowedOrigins: ['https://cdn.jsdelivr.net'],
+  },
+});
+for (const [label, accessKey] of [['Director', director], ['Clerk', clerk]]) {
+  const view = open(bank, { key: accessKey });
+  const tabs = [...view.package.pages.map((p) => p.title), ...view.files.filter((f) => f.page).map((f) => `${f.page.title} (${f.path})`)];
+  console.log(label === 'Director' ? '38.' : '   ', label, tabs);
+  view.close();
+}
+// 38. Director [ 'Clients', 'Summary', 'Statement', 'Board pack (board.html)' ]
+//     Clerk [ 'Clients', 'Summary', 'Statement' ]
+
+// 39. Locks and key services (USER-GUIDE 19.6): package.keyService names the service that gives out the file's online
+// locks' tokens, and a lock can name its own, so the medical aid signs its own people in (with its own 2FA) and holds
+// only its lock's token. A service that stores tokens instead of the owner key lists them with listFileUnlockTokens.
+const clinic = JazminKey.generate();
+const patient = clinic.createAccessKey();
+const visit39 = path.join(dir, 'visit.jzm');
+write(visit39, [{ id: 1 }], {
+  columns: [{ name: 'id', type: 'int' }], key: clinic, access: { grants: [{ key: patient }] },
+  files: [{ path: 'scan.png', content: 'The scan', lock: 'medical' }, { path: 'invoice.pdf', content: 'The invoice', lock: 'billing' }],
+  locks: { medical: { online: true, keyService: 'https://keys.medicalaid.example' }, billing: { online: true } },
+  package: { keyService: 'https://keys.clinic.example' },
+});
+const patientView = open(visit39, { key: patient });
+console.log('39.', patientView.locks.map((l) => `${l.id}: ${l.keyService}`).join(', '));
+patientView.unlock('medical', { unlockToken: issueFileUnlockToken(visit39, clinic, 'medical') }); // the medical aid's service
+const billingToken = listFileUnlockTokens(visit39, clinic).find((t) => t.lockId === 'billing').token; // the clinic's service
+patientView.unlock('billing', { unlockToken: billingToken });
+console.log('   ', patientView.readFile('scan.png').toString(), '/', patientView.readFile('invoice.pdf').toString());
+patientView.close();
+// 39. billing: https://keys.clinic.example/, medical: https://keys.medicalaid.example/
+//     The scan / The invoice
+
+// 40. Masking and unmasking later (USER-GUIDE 15.7): an update with the owner key masks a column that wasn't masked and
+// unmasks one that was. Nobody gains access: the clerk saw the phone number and now sees its last 4 digits; the salary
+// was masked and is now plain.
+const hrOwner40 = JazminKey.generate();
+const clerk40 = hrOwner40.createAccessKey();
+const staffFile = path.join(dir, 'staff.jzm');
+write(staffFile, [{ id: 1, name: 'Thandi', phone: '082 555 0199', salary: '42000.00' }], {
+  columns: [{ name: 'id', type: 'int' }, { name: 'name', type: 'string' }, { name: 'phone', type: 'string' }, { name: 'salary', type: 'decimal', mask: { lock: 'hr' } }],
+  key: hrOwner40, access: { grants: [{ key: clerk40 }] }, locks: { hr: { password: 'correct horse battery staple' } },
+});
+const asClerk = () => {
+  const view = open(staffFile, { key: clerk40 });
+  const seen40 = [[...view.rows()][0], view.masked.map((m) => m.column)];
+  view.close();
+  return seen40;
+};
+const before40 = asClerk();
+update(staffFile, { key: hrOwner40, masks: { phone: { lock: 'hr', show: { last: 4 } }, salary: null } });
+console.log('40.', ...before40, '->', ...asClerk());
+// 40. { id: 1, name: 'Thandi', phone: '082 555 0199' } [ 'salary' ] -> { id: 1, name: 'Thandi', salary: '42000.00', phone_shown: '••••0199' } [ 'phone' ]
+
+// 41. Regrouping partitions (USER-GUIDE 17.4): in a shared file each append starts new chunks, one per person it adds
+// rows for, so many small syncs leave each person's rows in many small chunks. compact() keeps them;
+// compact({ regroup: true }) writes each person's rows together.
+const syncOwner = JazminKey.generate();
+const syncs = path.join(dir, 'syncs.jzm');
+write(syncs, [{ person: 'ann', visit: 0 }, { person: 'ben', visit: 0 }], {
+  columns: [{ name: 'person', type: 'string' }, { name: 'visit', type: 'int' }], key: syncOwner,
+  access: { partitionBy: 'person', grants: [{ key: syncOwner.createAccessKey(), rows: ['ann'] }, { key: syncOwner.createAccessKey(), rows: ['ben'] }] },
+});
+for (let day = 1; day <= 5; day++) append(syncs, { key: syncOwner, insert: [{ person: 'ann', visit: day }, { person: 'ben', visit: day }] });
+const chunks41 = () => {
+  const view = open(syncs, { key: syncOwner });
+  const { chunks } = view.storage().tables[0];
+  view.close();
+  return chunks;
+};
+const appended41 = chunks41();
+compact(syncs, { key: syncOwner });
+const compacted41 = chunks41();
+compact(syncs, { key: syncOwner, regroup: true });
+console.log('41.', `${appended41} chunks after 5 syncs; compacted: ${compacted41}; regrouped: ${chunks41()}`);
+// 41. 12 chunks after 5 syncs; compacted: 12; regrouped: 2
+
+// 42. Column arrays for charts (USER-GUIDE 9.11): one array per column instead of an object per row, far less memory.
+// Numbers and dates come as Float64Array (dates in milliseconds), bools as Uint8Array, other types as plain arrays.
+const chartReader = open(visits);
+const { rowCount, values } = chartReader.columnArrays({ customer: 'C074' }, { select: ['id', 'amount'] });
+console.log('42.', rowCount, 'rows;', values.amount.constructor.name, [...values.amount.slice(0, 3)], 'total', values.amount.reduce((a, b) => a + b, 0));
+chartReader.close();
+// 42. 100 rows; Float64Array [ 201, 205, 209 ] total 24950
 
 fs.rmSync(dir, { recursive: true, force: true });
