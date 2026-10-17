@@ -1151,7 +1151,8 @@ for (const name of chosen) {
       await waitFor(page, `document.getElementById('jz-unlock')?.hidden === false`, 'the unlock form');
       await page.evaluate(`(document.getElementById('jz-key').value = ${JSON.stringify(keys[who])}, document.getElementById('jz-unlock').requestSubmit(), true)`);
       await waitFor(page, `/^Rows 1/.test(${dataStatus})`, `js-shapes-access.jzm with ${who}'s key`);
-      savedFor[who] = await page.evaluate(`[...document.querySelectorAll('#jz-saved-list .saved-shape .name')].map((e) => e.textContent)`);
+      // The saved shapes are listed after the rows show: wait for them (both keys can use some).
+      savedFor[who] = await waitFor(page, `document.querySelectorAll('#jz-saved-list .saved-shape .name').length > 0 && [...document.querySelectorAll('#jz-saved-list .saved-shape .name')].map((e) => e.textContent)`, `${who}'s saved shapes`);
     }
     await page.evaluate(NO_DOWNLOADS);
     await page.evaluate(`(window.jzSaved = null, document.querySelector('#jz-saved-list [aria-label="Export Countries as JSON"]').click(), true)`);
@@ -1257,7 +1258,8 @@ for (const name of chosen) {
     await page.evaluate(`(${hrLock}.querySelector('input').value = 'wrong', ${hrLock}.querySelector('form').requestSubmit(), true)`);
     const lockWrong = await waitFor(page, `${hrLock}.querySelector('.error').textContent`, 'the wrong lock password');
     await page.evaluate(`(${hrLock}.querySelector('input').value = ${JSON.stringify(SAMPLE.gallery.sharedLock.password)}, ${hrLock}.querySelector('form').requestSubmit(), true)`);
-    const lockOpened = await waitFor(page, `${hrLock}.querySelector('.took') && document.querySelectorAll('.person')[2].querySelector('.file-output').textContent.split(String.fromCharCode(10)).slice(0, 2)`, 'the HR file unlocked');
+    // The time taken shows as the file's text is written: wait for the text too.
+    const lockOpened = await waitFor(page, `${hrLock}.querySelector('.took') && document.querySelectorAll('.person')[2].querySelector('.file-output').textContent.length > 0 && document.querySelectorAll('.person')[2].querySelector('.file-output').textContent.split(String.fromCharCode(10)).slice(0, 2)`, 'the HR file unlocked');
     // The masked payroll: masked with the key alone (the masked export equal to the revealed one), then unlocked: a value
     // revealed with its countdown, and both exports as the library gives them, in CSV and in JSON.
     await page.navigate(sample('masked.html'));
