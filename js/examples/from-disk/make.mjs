@@ -20,8 +20,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { JazminKey, inspect, listUnlockTokens, portableScript, write } from '../../src/index.js';
-import { bank, branchSales, branchTargets, executives, payroll, staff, statement, tasks, transactions } from './demo-data.mjs';
+import { JazminKey, inspect, listFileUnlockTokens, listUnlockTokens, open, portableScript, update, write } from '../../src/index.js';
+import {
+  bank, branchSales, branchTargets, contracts, customers, executives, inspections, orders, payroll, staff, statement, tasks, transactions,
+} from './demo-data.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const js = path.resolve(here, '../..');
@@ -96,6 +98,23 @@ if (rows) {
     ],
   });
   console.log(`${(fs.statSync(big).size / 1048576).toFixed(1)} MB in ${((Date.now() - started) / 1000).toFixed(1)} s`);
+  // What each Try filter (pages/data.js) will read, from the library's estimate() (USER-GUIDE 9.6): the browser reader
+  // has no estimate(), so pick-file.html shows these beside its own explain(), for this file (its id) only.
+  const { demos } = new Function(`${fs.readFileSync(path.join(here, 'pages/data.js'), 'utf8')}; return { demos };`)();
+  const reader = open(big, { password: 'demo' });
+  const estimates = {
+    'transactions.jzm': {
+      fileId: reader.fileId, rows: reader.rowCount,
+      filters: [{ label: 'No filter', filter: null }, ...demos['transactions.jzm']].map(({ label, filter }) => ({ label, filter, estimate: reader.estimate(filter) })),
+    },
+  };
+  reader.close();
+  fs.writeFileSync(path.join(site, 'data/estimates.js'), [
+    "// What the Node and .NET libraries' estimate() says each of pick-file.html's filters will read in data/transactions.jzm",
+    '// (USER-GUIDE 9.6), worked out by make.mjs when it wrote the file: the browser reader has no estimate() of its own.',
+    `var estimates = ${JSON.stringify(estimates, null, 2)};`,
+    '',
+  ].join('\n'));
 }
 
 // Several tables: clients, and their transactions sorted by client and date, so a shape that nests each client's
@@ -145,7 +164,8 @@ write(reportFile, { sales: branchSales(), targets: branchTargets() }, {
   links: [{ name: 'target', from: { table: 'sales', columns: ['branch'] }, to: { table: 'targets', columns: ['branch'] } }],
   metadata: { company: 'Harbour & Co. Stores', title: 'Sales report', period: 'January to June 2026', currency: 'ZAR' },
   files: pageFiles('report'),
-  package: { entry: 'index.html', title: 'Sales report, January to June 2026', pdf: { format: 'A4', printBackground: true } },
+  // Its own files (USER-GUIDE 19.7): the page loads them, and viewers keep them out of the Files tab.
+  package: { entry: 'index.html', title: 'Sales report, January to June 2026', pdf: { format: 'A4', printBackground: true }, files: ['report.css', 'report.js', 'pdf.js'] },
   shapes: [{ name: 'Revenue by branch', default: true, shape: { $groupBy: 'branch', $sort: ['branch'], $rows: { branch: 'branch', revenue: { $sum: 'revenue' }, orders: { $sum: 'orders' } } } }],
 });
 fs.writeFileSync(`${reportFile}.js`, portableScript(reportFile));
@@ -157,7 +177,7 @@ write(tasksFile, tasks(), {
   ],
   metadata: { title: 'Team tasks, November 2026' },
   files: pageFiles('tasks'),
-  package: { entry: 'index.html', title: 'Team tasks', edit: { key: ['id'], columns: ['task', 'owner', 'due', 'status', 'priority'], add: true, delete: true } },
+  package: { entry: 'index.html', title: 'Team tasks', files: ['tasks.css', 'tasks.js'], edit: { key: ['id'], columns: ['task', 'owner', 'due', 'status', 'priority'], add: true, delete: true } },
   password: 'demo',
 });
 fs.writeFileSync(`${tasksFile}.js`, portableScript(tasksFile));
@@ -170,11 +190,36 @@ write(dashboardFile, branchSales(), {
   metadata: { company: 'Harbour & Co. Stores', title: 'Sales dashboard', period: 'January to June 2026', currency: 'ZAR' },
   files: pageFiles('dashboard'),
   package: {
-    entry: 'index.html', title: 'Sales dashboard, January to June 2026', online: 'required',
+    entry: 'index.html', title: 'Sales dashboard, January to June 2026', online: 'required', files: ['dashboard.css', 'dashboard.js'],
     allowedOrigins: ['https://fonts.googleapis.com', 'https://fonts.gstatic.com', 'https://cdn.jsdelivr.net'],
   },
 });
 fs.writeFileSync(`${dashboardFile}.js`, portableScript(dashboardFile));
+// A document of four pages, shown by the viewer as tabs (USER-GUIDE 19.7): the bank's clients and transactions (one
+// table each), a summary that needs the internet for its charts, and a statement laid out for A4. Its script and
+// stylesheet are its own files (package.files), which viewers keep out of the Files tab.
+const clientFile = path.join(site, 'data/client-file.jzm');
+write(clientFile, { clients, transactions: bankRows }, {
+  tables: [
+    { name: 'clients', sortedBy: ['id'], columns: [{ name: 'id', type: 'int', nullable: false }, { name: 'name', type: 'string', index: 'trigram' }, { name: 'city', type: 'string' }, { name: 'segment', type: 'string', index: 'sorted' }, { name: 'since', type: 'datetime' }] },
+    { name: 'transactions', sortedBy: ['client', 'date'], columns: [{ name: 'client', type: 'int', nullable: false }, { name: 'date', type: 'datetime' }, { name: 'merchant', type: 'string' }, { name: 'category', type: 'string' }, { name: 'amount', type: 'decimal' }] },
+  ],
+  metadata: { title: 'Harbour Bank client file, 2026 (demo data)', currency: 'ZAR' },
+  password: 'demo',
+  files: pageFiles('client-file'),
+  package: {
+    title: 'Client file 2026',
+    pages: [
+      { path: 'clients.html', title: 'Clients', table: 'clients', actions: { print: false } },
+      { path: 'transactions.html', title: 'Transactions', table: 'transactions', actions: { print: false } },
+      { path: 'summary.html', title: 'Summary', online: 'required' },
+      { path: 'statement.html', title: 'Statement', table: 'transactions', pdf: { format: 'A4', printBackground: true } },
+    ],
+    files: ['app.js', 'app.css'],
+    allowedOrigins: ['https://cdn.jsdelivr.net'],
+  },
+});
+fs.writeFileSync(`${clientFile}.js`, portableScript(clientFile));
 
 // One file, three people: each access key sees its branch's rows (or all), the pay columns or not, and the files and
 // saved shapes of the groups it sees. The owner key stays out of the site: browsers refuse a shared file's owner key.
@@ -186,6 +231,14 @@ const people = [
 ].map((p) => ({ ...p, key: owner.createAccessKey() }));
 const notice = (title, text) => `<!doctype html><meta charset="utf-8"><title>${title}</title><body style="font:15px/1.5 system-ui,sans-serif;margin:2rem;max-width:40rem"><h1>${title}</h1><p>${text}</p>`;
 const sharedFile = path.join(site, 'data/shared.jzm');
+// HR's own page and a locked file (USER-GUIDE 19.7, 19.6): marked on files of the hr group, so only keys that see that
+// group know of them. The page reads the proposed increases, which a password lock keeps shut until HR opens it.
+const sharedLock = { lock: 'pay-review', file: 'hr/increases-2027.csv', password: 'review 2027' };
+const increases = ['name,branch,role,salary,proposed,increase',
+  ...staff().map((p, i) => {
+    const rate = [0.045, 0.055, 0.06, 0.07, 0.085][(i * 7) % 5];
+    return [p.name, p.branch, p.role, p.salary, (Number(p.salary) * (1 + rate)).toFixed(2), `${(rate * 100).toFixed(1)}%`].join(',');
+  })].join('\n');
 write(sharedFile, staff(), {
   columns: [
     { name: 'branch', type: 'string' }, { name: 'name', type: 'string' }, { name: 'role', type: 'string' }, { name: 'since', type: 'datetime' },
@@ -200,7 +253,12 @@ write(sharedFile, staff(), {
     { path: 'notices/johannesburg.html', content: notice('Johannesburg notice', 'Stock count in Johannesburg on Saturday.'), groups: ['Johannesburg'] },
     { path: 'notices/durban.html', content: notice('Durban notice', 'Welcome to the new Durban team members.'), groups: ['Durban'] },
     { path: 'hr/pay-bands.html', content: notice('Pay bands 2026', 'For HR only: the pay bands for each role.'), groups: ['hr'] },
+    { path: 'hr/pay-review.html', file: path.join(documents, 'shared/pay-review.html'), groups: ['hr'], page: { title: 'Pay review 2027', order: 1 } },
+    { path: sharedLock.file, content: `${increases}\n`, groups: ['hr'], lock: sharedLock.lock },
   ],
+  locks: { [sharedLock.lock]: { password: sharedLock.password } },
+  // The handbook is the document's page for everyone; HR's key adds the Pay review tab.
+  package: { title: 'Staff of Harbour & Co. Stores', pages: [{ path: 'handbook.html', title: 'Handbook' }] },
   shapes: [
     { name: 'Team list', description: 'Who works where, and since when', default: true, shape: { $sort: ['branch', 'name'], $rows: { name: 'name', role: 'role', branch: 'branch', since: 'since' } } },
     { name: 'Headcount by role', description: 'How many people in each role', shape: { $groupBy: 'role', $sort: ['role'], $rows: { role: 'role', people: { $count: true } } } },
@@ -213,6 +271,8 @@ fs.writeFileSync(path.join(site, 'data/shared-keys.js'), [
   '// The access keys shared.html opens data/shared.jzm with. FOR THIS DEMO ONLY: a real key is like a password, and never',
   '// belongs in a page or a file next to it. Made by make.mjs; each run makes new keys.',
   `var sharedKeys = ${JSON.stringify(people.map((p) => ({ label: p.label, sees: p.sees, key: p.key.export() })), null, 2)};`,
+  "// The password of the lock on HR's proposed increases (only HR's key sees the file): for this demo only, too.",
+  `var sharedLock = ${JSON.stringify(sharedLock, null, 2)};`,
   '',
 ].join('\n'));
 
@@ -232,10 +292,42 @@ write(remcoFile, executives(), {
   access: { grants: [{ key: remcoKey, label: 'Remuneration committee: Thandi Mokoena', rows: '*', columns: '*', mode: 'online', expiresIn: '30d' }] },
 });
 fs.writeFileSync(`${remcoFile}.js`, portableScript(remcoFile));
+// The committee's contract file: an ordinary (offline) access key opens it, but the contracts are locked with an online
+// lock that names the same key service (spec 6.8.2), so the viewer's Unlock… offers "Sign in at localhost:5080", which
+// gives the lock's token only after a code from the authenticator app (USER-GUIDE 19.6, 18.5).
+const service = 'http://localhost:5080';
+const contractsOwner = JazminKey.generate();
+const committee = contractsOwner.createAccessKey();
+const contractsFile = path.join(site, 'data/contracts.jzm');
+const contractRows = contracts();
+const isoDay = (d) => d.toISOString().slice(0, 10);
+const contractPage = (c) => notice(`Employment contract: ${c.role}`, `${c.name}, ${c.role}. Started ${isoDay(c.started)}; the contract runs to `
+  + `${isoDay(c.ends)}, with ${c.notice} months' notice. Salary, bonus and share awards as in the remuneration report. (Demo data: a `
+  + 'stand-in for the signed contract.)');
+const slug = (text) => text.toLowerCase().replace(/[^a-z]+/g, '-');
+write(contractsFile, contractRows, {
+  columns: [{ name: 'name', type: 'string' }, { name: 'role', type: 'string' }, { name: 'started', type: 'datetime' }, { name: 'ends', type: 'datetime' }, { name: 'notice', type: 'int' }],
+  metadata: { title: 'Executive contracts, for the remuneration committee (demo data)' },
+  key: contractsOwner,
+  access: { grants: [{ key: committee, label: 'Remuneration committee: Thandi Mokoena', rows: '*', columns: '*' }] },
+  files: [
+    { path: 'terms-of-reference.html', content: notice('Remuneration committee', 'Terms of reference: the committee reviews executive pay and contracts once a year.') },
+    ...contractRows.slice(0, 3).map((c) => ({ path: `contracts/${slug(c.role)}.html`, content: contractPage(c), lock: 'contracts' })),
+  ],
+  locks: { contracts: { online: true, keyService: `${service}/jazmin/unlock` } },
+});
+fs.writeFileSync(`${contractsFile}.js`, portableScript(contractsFile));
 fs.mkdirSync(path.join(site, 'key-service'), { recursive: true });
-const tokens = { files: [{ fileId: inspect(remcoFile).fileId, tokens: listUnlockTokens(remcoFile, remcoOwner) }] };
+const contractsId = inspect(contractsFile).fileId;
+const tokens = { files: [
+  { fileId: inspect(remcoFile).fileId, tokens: listUnlockTokens(remcoFile, remcoOwner) },
+  { fileId: contractsId, tokens: [], locks: listFileUnlockTokens(contractsFile, contractsOwner) },
+] };
 fs.writeFileSync(path.join(site, 'key-service/tokens.json'), `${JSON.stringify(tokens, null, 2)}\n`);
-const twoFactor = { user: 'thandi', label: 'Thandi Mokoena, remuneration committee', keyId: remcoKey.id, key: remcoKey.export(), service: 'http://localhost:5080' };
+const twoFactor = {
+  user: 'thandi', label: 'Thandi Mokoena, remuneration committee', keyId: remcoKey.id, key: remcoKey.export(), service,
+  contracts: { fileId: contractsId, lock: 'contracts', key: committee.export() },
+};
 fs.writeFileSync(path.join(site, 'data/two-factor-keys.js'), [
   '// The access key two-factor.html opens data/remco.jzm with, and who holds it. FOR THIS DEMO ONLY: a real key is like',
   '// a password, and never belongs in a page or a file next to it. Made by make.mjs; each run makes new keys.',
@@ -272,6 +364,70 @@ fs.writeFileSync(path.join(site, 'data/masked-keys.js'), [
   "// The access key masked.html opens data/payroll-masked.jzm with, and the password of the file's lock. FOR THIS DEMO",
   '// ONLY: a real key and password are never in a page or a file next to it. Made by make.mjs; each run makes a new key.',
   `var maskedDemo = ${JSON.stringify({ label: 'Payroll clerk: Megan Botha', key: clerk.export(), lock: 'payroll', password: payrollPassword }, null, 2)};`,
+  '',
+].join('\n'));
+
+// Text orders (USER-GUIDE 16.1, spec 6.7): the same customers written twice, in plain order and in an order that
+// ignores case and accents and puts the numbers in names by value (sort-order.html).
+const customerColumns = [{ name: 'account', type: 'string', nullable: false }, { name: 'name', type: 'string', index: 'trigram' }, { name: 'city', type: 'string' }, { name: 'balance', type: 'decimal' }];
+for (const [name, sortedBy] of [['customers-plain', ['name']], ['customers', [{ column: 'name', nocase: true, natural: true }]]]) {
+  const target = path.join(site, `data/${name}.jzm`);
+  // Written in the order the customers signed up, then put in the order by update() (a write takes rows in order).
+  write(target, customers(), { columns: customerColumns, metadata: { title: 'Wholesale customers (demo data)', currency: 'ZAR' } });
+  update(target, { sortedBy });
+  fs.writeFileSync(`${target}.js`, portableScript(target));
+}
+
+// Nested columns (USER-GUIDE 4.2): 5,000 orders with their lines (a list of objects) and delivery (an object), and the
+// same orders with those two as JSON text, to compare (nested.html).
+const orderRows = orders();
+const lineFields = [{ name: 'sku', type: 'string' }, { name: 'product', type: 'string' }, { name: 'qty', type: 'int' }, { name: 'price', type: 'decimal' }];
+for (const [name, delivery, lines] of [
+  ['orders', { name: 'delivery', type: 'object', fields: [{ name: 'method', type: 'string' }, { name: 'city', type: 'string' }] }, { name: 'lines', type: 'list', item: { type: 'object', fields: lineFields } }],
+  ['orders-json', { name: 'delivery', type: 'json' }, { name: 'lines', type: 'json' }],
+]) {
+  const target = path.join(site, `data/${name}.jzm`);
+  const started = Date.now();
+  write(target, orderRows, {
+    columns: [{ name: 'order', type: 'string', nullable: false }, { name: 'date', type: 'datetime' }, { name: 'customer', type: 'string' }, { name: 'branch', type: 'string', index: 'sorted' }, delivery, lines, { name: 'total', type: 'decimal' }],
+    sortedBy: ['date'], metadata: { title: 'Online orders, July to September 2026 (demo data)', currency: 'ZAR' },
+  });
+  fs.writeFileSync(`${target}.js`, portableScript(target));
+  console.log(`${name}.jzm: ${(fs.statSync(target).size / 1024).toFixed(0)} KB, written in ${Date.now() - started} ms`);
+}
+
+// Records sent back (USER-GUIDE 15.6, 24.3): store inspections, a shared file each area manager's key sees a branch of.
+// send-back.html opens it with the Durban manager's key, for its submission key, and writes a new inspection in the
+// browser. The owner key (filing/owner.key, FOR THIS DEMO ONLY) files it with the filing-service sample.
+const inspectionsOwner = JazminKey.generate();
+const inspectors = [['Durban', 'Sipho Dlamini'], ['Cape Town', 'Megan Fourie']].map(([branch, name]) => ({ branch, name, key: inspectionsOwner.createAccessKey() }));
+const inspectionsFile = path.join(site, 'data/inspections.jzm');
+write(inspectionsFile, inspections(), {
+  columns: [
+    { name: 'id', type: 'string', nullable: false }, { name: 'branch', type: 'string' }, { name: 'inspector', type: 'string' },
+    { name: 'visited', type: 'datetime' }, { name: 'area', type: 'string' }, { name: 'rating', type: 'int' }, { name: 'note', type: 'string' },
+    { name: 'attachments', type: 'json' },
+  ],
+  metadata: { company: 'Harbour & Co. Stores', title: 'Store inspections, 2026 (demo data)' },
+  key: inspectionsOwner,
+  access: { partitionBy: 'branch', grants: inspectors.map((p) => ({ key: p.key, label: `Area manager, ${p.branch}: ${p.name}`, rows: [p.branch], columns: '*' })) },
+});
+fs.writeFileSync(`${inspectionsFile}.js`, portableScript(inspectionsFile));
+fs.writeFileSync(path.join(site, 'data/inspection-keys.js'), [
+  "// The area managers' access keys send-back.html opens data/inspections.jzm with. FOR THIS DEMO ONLY: a real key is",
+  '// like a password, and never belongs in a page or a file next to it. Made by make.mjs; each run makes new keys.',
+  `var fieldKeys = ${JSON.stringify(inspectors.map((p) => ({ branch: p.branch, inspector: p.name, keyId: p.key.id, key: p.key.export() })), null, 2)};`,
+  '',
+].join('\n'));
+fs.mkdirSync(path.join(site, 'filing/inbox'), { recursive: true });
+fs.writeFileSync(path.join(site, 'filing/owner.key'), `${inspectionsOwner.export()}\n`);
+fs.writeFileSync(path.join(site, 'filing/README.txt'), [
+  "The owner's side of send-back.html. FOR THIS DEMO ONLY: owner.key is the master key of data/inspections.jzm. A real",
+  'owner key stays on the machine that files the records, never next to the pages.',
+  '',
+  'Put the .jzm files the page saves into inbox/, then, in the js folder of JAZMIN:',
+  '  node examples/filing-service/inbox.mjs --key-file <this folder>/owner.key <site>/data/inspections.jzm <this folder>/inbox',
+  '  node bin/jazmin.mjs script <site>/data/inspections.jzm      (send-back.html reads the file as a script)',
   '',
 ].join('\n'));
 

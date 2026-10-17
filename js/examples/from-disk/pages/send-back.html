@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Send a record back</title>
+<link rel="icon" href="favicon.png" type="image/png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="page wide">
+  <p class="crumbs"><a href="index.html">← All demos</a></p>
+  <div class="head">
+    <div>
+      <h1>Send a record back: a store inspection, written on this device</h1>
+      <p>Harbour &amp; Co.'s area managers inspect their stores with a phone, often where there is no signal. The page
+        writes each inspection, with its photo, into a small <code>.jzm</code> <strong>in the browser</strong>, locked
+        with the manager's <strong>submission key</strong>. Nothing is uploaded until it is sent; the owner files it into
+        the shared file.</p>
+    </div>
+    <span id="status" class="badge" role="status" hidden></span>
+  </div>
+
+  <aside class="about" aria-label="What this shows">
+    <strong>What this shows</strong>
+    <p>The shared file opened with the Durban manager's access key, for the submission key it holds
+      (<code>reader.submissionKey</code>). A form whose record (and photo) <code>JazminBrowser.createWriter</code> writes
+      into a file locked with that key, checked here and offered for download. Then how the owner files it with the
+      filing-service sample (<code>fileSubmission</code>).</p>
+    <p class="feature">Feature: writing files in the browser, records sent back to the owner · <span class="ref">USER-GUIDE §24.3</span> and §15.6</p>
+  </aside>
+
+  <div class="split send-split">
+    <section class="panel">
+      <h2>New inspection</h2>
+      <p class="muted" id="who">Opening the shared file…</p>
+      <form id="form" class="record-form" hidden>
+        <label for="area">Area of the store</label>
+        <select id="area" required>
+          <option>Front of store</option><option>Tills</option><option>Stockroom</option><option>Fire exits</option>
+          <option>Garden centre</option><option>Paint counter</option><option>Loading bay</option>
+        </select>
+        <fieldset class="rating">
+          <legend>Rating</legend>
+          <label><input type="radio" name="rating" value="1"> 1</label><label><input type="radio" name="rating" value="2"> 2</label>
+          <label><input type="radio" name="rating" value="3"> 3</label><label><input type="radio" name="rating" value="4" checked> 4</label>
+          <label><input type="radio" name="rating" value="5"> 5</label>
+        </fieldset>
+        <label for="note">What you found</label>
+        <textarea id="note" rows="3" required placeholder="e.g. Fire exit partly blocked by pallets: cleared while there."></textarea>
+        <label for="photo">Photo <span class="muted">(optional: JPEG, PNG or WebP)</span></label>
+        <input id="photo" type="file" accept="image/jpeg,image/png,image/webp" capture="environment">
+        <img id="preview" alt="The photo, as it will be sent" hidden>
+        <p class="hint muted" id="photo-note"></p>
+        <button type="submit" class="primary" id="write">Write the file</button>
+        <p id="error" class="error" role="alert"></p>
+      </form>
+    </section>
+
+    <section class="panel" id="result-panel">
+      <h2>The file to send</h2>
+      <p class="muted" id="result-empty">Fill in the form: the file is written here, on this device.</p>
+      <div id="result" hidden>
+        <div class="stats compact">
+          <div class="stat"><span>Written in</span><strong id="took"></strong></div>
+          <div class="stat"><span>Size</span><strong id="size"></strong></div>
+          <div class="stat"><span>Photo</span><strong id="photo-size"></strong></div>
+        </div>
+        <p id="checked" class="ok-line"></p>
+        <p class="file-name"><code id="file-name"></code></p>
+        <button type="button" class="primary" id="save">Save the file</button>
+        <p class="hint muted">Named <code>&lt;key id&gt;.&lt;time&gt;.jzm</code>, as the filing service's inbox expects. A
+          phone app would keep it until it has a signal, then upload it.</p>
+      </div>
+      <h3>Recent inspections in Durban</h3>
+      <p class="hint muted" id="recent-note"></p>
+      <div class="table-scroll" id="recent"></div>
+    </section>
+  </div>
+
+  <section class="panel how">
+    <h2>The owner files it</h2>
+    <p>Only the owner's key can change the shared file. The filing service checks that the sender still has a grant,
+      opens the file with the sender's submission key (so a file made without opening the shared file is refused), checks
+      the photo's first bytes and size, and appends the record into the sender's own branch. To try it on this computer,
+      save the file into <code>filing/inbox</code> beside these pages, then in a terminal, in the JAZMIN folder's
+      <code>js</code> folder:</p>
+    <div class="os-tabs" role="group" aria-label="Your terminal"><button type="button" class="soft" data-os="ps" aria-pressed="true">PowerShell</button><button type="button" class="soft" data-os="sh" aria-pressed="false">bash or zsh</button></div>
+    <pre class="code"><code id="commands"></code></pre>
+    <p class="hint">The first command files every batch in the inbox (<code>fileSubmission()</code>, in
+      <code>examples/filing-service</code>) and moves it to <code>filed/</code>, or to <code>rejected/</code> with the
+      reason. The second makes the shared file into a script again, so this page shows the new record after a reload.
+      <strong>For this demo only</strong>, the owner key is in <code>filing/owner.key</code>; a real one stays on the
+      machine that files the records.</p>
+    <div class="split">
+      <div>
+        <h3>On the device</h3>
+        <pre class="code"><code>const shared = await JazminBrowser.open(bytes, { key: accessKey });
+const writer = await JazminBrowser.createWriter({ columns, key: shared.submissionKey });
+await writer.writeRows([{ id, branch, area, rating, note, attachments: [`${id}/photo.jpg`] }]);
+await writer.addFile({ path: `${id}/photo.jpg`, content: photo });
+const blob = await writer.finish();   // keep it, send it when online</code></pre>
+      </div>
+      <div>
+        <h3>At the owner</h3>
+        <pre class="code"><code>fileSubmission('inspections.jzm', upload, { key: owner, keyId });
+// { sender, filed: 1, updated: 0, duplicates: 0, files: 1, ignoredColumns: [] }
+// The photo is stored at attachments/&lt;key id&gt;/&lt;sha256&gt;.jpg, and the record's
+// attachments become [{ path, name, type, size }].</code></pre>
+      </div>
+    </div>
+  </section>
+</main>
+
+<!-- Only what this page uses: the core, and the writer after it (or the full jazmin-browser.js). -->
+<script src="browser/jazmin-browser-core.js"></script>
+<script src="browser/jazmin-browser-writer.js"></script>
+<script src="data.js"></script>
+<script src="data/inspection-keys.js"></script>
+<script src="demo.js"></script>
+<script>
+  const { $, since, day } = demo;
+  const me = fieldKeys[0]; // the Durban area manager: FOR THIS DEMO ONLY, the key comes from data/inspection-keys.js
+  const COLUMNS = [ // the shared file's columns: the filing service files the ones the sender's grant covers
+    { name: 'id', type: 'string', nullable: false }, { name: 'branch', type: 'string' }, { name: 'inspector', type: 'string' },
+    { name: 'visited', type: 'datetime' }, { name: 'area', type: 'string' }, { name: 'rating', type: 'int' }, { name: 'note', type: 'string' },
+    { name: 'attachments', type: 'json' },
+  ];
+  const kb = (bytes) => (bytes < 1024 ? `${bytes} bytes` : `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB`);
+  let shared = null;
+  let photo = null; // { blob, name }
+  let written = null; // { blob, name }
+
+  async function showRecent() {
+    const { rows } = await shared.query({ branch: me.branch }, { reverse: true, limit: 5, total: false }); // the newest five
+    $('recent-note').textContent = `${shared.rowCount} inspections this key sees (its branch only); the newest five, last first:`;
+    $('recent').replaceChildren(demo.table(rows.map((r) => ({ ...r, visited: day(r.visited), rating: `${r.rating}/5` })), [['visited', 'Date'], ['area', 'Area'], ['rating', 'Rating'], ['note', 'Note']]));
+  }
+
+  (async () => {
+    try {
+      const started = performance.now();
+      shared = await JazminBrowser.open(await JazminBrowser.scriptBytes(data.inspections), { key: me.key });
+      $('who').textContent = `${me.inspector}, area manager, ${me.branch}. Opened the shared file in ${since(started)}: its submission key is now in this page.`;
+      $('status').hidden = false;
+      $('status').textContent = `${shared.metadata.title}`;
+      $('form').hidden = false;
+      await showRecent();
+    } catch (e) {
+      $('who').textContent = e.message || String(e);
+    }
+  })();
+
+  // A photo from a phone is often 3 to 5 MB: made at most 1,600 pixels wide here (as a JPEG) before it is written.
+  $('photo').addEventListener('change', async () => {
+    const file = $('photo').files[0];
+    photo = null;
+    $('preview').hidden = true;
+    $('photo-note').textContent = '';
+    if (!file) return;
+    let blob = file;
+    try {
+      const image = await createImageBitmap(file);
+      const scale = Math.min(1, 1600 / Math.max(image.width, image.height));
+      if (scale < 1) {
+        const canvas = Object.assign(document.createElement('canvas'), { width: Math.round(image.width * scale), height: Math.round(image.height * scale) });
+        canvas.getContext('2d').drawImage(image, 0, 0, canvas.width, canvas.height);
+        blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/jpeg', 0.85));
+        $('photo-note').textContent = `${image.width} × ${image.height} made ${canvas.width} × ${canvas.height}: ${kb(file.size)} became ${kb(blob.size)}.`;
+      } else {
+        $('photo-note').textContent = `${image.width} × ${image.height}, ${kb(file.size)}: sent as it is.`;
+      }
+    } catch {
+      $('photo-note').textContent = `${kb(file.size)}: sent as it is (this browser can't show it).`;
+    }
+    const ext = blob.type === 'image/png' ? 'png' : blob.type === 'image/webp' ? 'webp' : 'jpg';
+    photo = { blob, name: `photo.${ext}` };
+    $('preview').src = URL.createObjectURL(blob);
+    $('preview').hidden = false;
+  });
+
+  $('form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    $('error').textContent = '';
+    $('write').disabled = true;
+    try {
+      const now = new Date();
+      const stamp = now.toISOString().replace(/\D/g, '').slice(0, 14);
+      const id = `DUR-W${stamp}`;
+      const files = photo ? [{ path: `${id}/${photo.name}`, content: photo.blob }] : [];
+      const record = {
+        id, branch: me.branch, inspector: me.inspector, visited: now, area: $('area').value,
+        rating: Number(document.querySelector('input[name="rating"]:checked').value), note: $('note').value.trim(),
+        attachments: files.map((f) => f.path),
+      };
+      // Written on this device, locked with the submission key: only the owner, and this key's holder, can open it.
+      const started = performance.now();
+      const writer = await JazminBrowser.createWriter({ columns: COLUMNS, key: shared.submissionKey, metadata: { sentBy: me.inspector } });
+      await writer.writeRows([record]);
+      for (const f of files) await writer.addFile(f);
+      const blob = await writer.finish();
+      const took = since(started);
+      // Checked as the owner will open it: with the same submission key, which the owner works out from the owner key.
+      const check = await JazminBrowser.open(blob, { key: shared.submissionKey });
+      const [row] = (await check.query(null, { limit: 1, total: false })).rows;
+      const sent = await check.files();
+      written = { blob, name: `${me.keyId}.${stamp}.jzm` };
+      $('took').textContent = took;
+      $('size').textContent = kb(blob.size);
+      $('photo-size').textContent = photo ? kb(photo.blob.size) : 'none';
+      $('checked').textContent = `Checked: it opens with the submission key: ${check.rowCount} record (${row.id}, ${row.area}, ${row.rating} / 5)`
+        + `${sent.length ? ` and ${sent.length} file (${sent[0].path}, ${sent[0].type})` : ''}.`;
+      $('file-name').textContent = written.name;
+      $('result').hidden = false;
+      $('result-empty').hidden = true;
+    } catch (e) {
+      $('error').textContent = e.message || String(e);
+    } finally {
+      $('write').disabled = false;
+    }
+  });
+  $('save').addEventListener('click', () => written && demo.save(written.blob, written.name));
+
+  // ---- the owner's commands, with this folder's paths ----------------------------------------------------------
+  const here = decodeURIComponent(new URL('.', location.href).pathname).replace(/^\/([A-Za-z]:)/, '$1').replace(/\/$/, '');
+  const disk = location.protocol === 'file:' ? here : 'examples/from-disk/site';
+  const win = (p) => (/^[A-Za-z]:/.test(p) ? p.replace(/\//g, '\\') : p);
+  const commands = {
+    ps: `node examples/filing-service/inbox.mjs --key-file "${win(`${disk}/filing/owner.key`)}" "${win(`${disk}/data/inspections.jzm`)}" "${win(`${disk}/filing/inbox`)}"\nnode bin/jazmin.mjs script "${win(`${disk}/data/inspections.jzm`)}"`,
+    sh: `node examples/filing-service/inbox.mjs --key-file "${disk}/filing/owner.key" "${disk}/data/inspections.jzm" "${disk}/filing/inbox"\nnode bin/jazmin.mjs script "${disk}/data/inspections.jzm"`,
+  };
+  const showCommands = (os) => {
+    $('commands').textContent = commands[os];
+    for (const b of document.querySelectorAll('.os-tabs button')) b.setAttribute('aria-pressed', String(b.dataset.os === os));
+  };
+  for (const b of document.querySelectorAll('.os-tabs button')) b.addEventListener('click', () => showCommands(b.dataset.os));
+  showCommands(navigator.userAgent.includes('Windows') ? 'ps' : 'sh');
+</script>
+</body>
+</html>

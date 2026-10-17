@@ -23,6 +23,9 @@
   .os-tabs { display: flex; gap: 0.3rem; margin-top: 0.4rem; }
   .os-tabs button[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); }
   .locked { padding: 0.8rem 1rem; border-radius: 10px; background: var(--accent-soft); }
+  .lock-steps { padding-left: 1.3rem; }
+  .lock-steps li { margin: 0.45rem 0; }
+  .lock-steps button { margin-right: 0.4rem; }
   table { width: 100%; border-collapse: collapse; }
   th, td { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 1px solid var(--line); }
   th.number, td.number { text-align: right; font-variant-numeric: tabular-nums; }
@@ -45,8 +48,10 @@
   <aside class="about" aria-label="What this shows">
     <strong>What this shows</strong>
     <p>A file whose online access key opens it only with an unlock token, which the sample key service gives after a
-      code from an authenticator app: set the app up, see the key alone refused, then open the file with a code.</p>
-    <p class="feature">Feature: online keys with 2FA · <span class="ref">USER-GUIDE §18.5</span></p>
+      code from an authenticator app: set the app up, see the key alone refused, then open the file with a code. Then a
+      file whose <strong>stored files are locked</strong> with a lock that names the same key service: the viewer's
+      <strong>Sign in at localhost:5080</strong> gets the lock's token after a code, and the contracts open.</p>
+    <p class="feature">Feature: online keys with 2FA · <span class="ref">USER-GUIDE §18.5</span>; locks with a key service · §19.6 (spec 6.8.2)</p>
   </aside>
 
   <div class="steps">
@@ -92,6 +97,29 @@
       </div>
     </section>
 
+    <section class="panel step" id="step-lock" hidden>
+      <h2><span class="n"><span>4</span></span> A locked file, unlocked by signing in</h2>
+      <p><code>contracts.jzm</code> lists the executives' contracts. Thandi opens it with an ordinary access key, but the
+        contracts stored in it are <strong>locked</strong> with an online lock that names this key service
+        (<code>keyService: 'http://localhost:5080/jazmin/unlock'</code>). In the viewer, <strong>Unlock…</strong> beside
+        a contract offers <strong>Sign in at localhost:5080</strong>: a window of the service asks for her user and a
+        code, and sends the lock's token back to the viewer. The key, the file and its contents never reach the service.</p>
+      <div id="lock-browser" class="locked" hidden></div>
+      <ol class="lock-steps">
+        <li>The owner gives Thandi the lock (<code>POST /admin/locks</code>): <button type="button" id="give-lock">Give her the lock</button> <span id="lock-given" class="ok"></span></li>
+        <li><button type="button" class="primary" id="open-contracts" disabled>Open contracts.jzm in the viewer</button> The key is copied: paste it in the viewer.</li>
+        <li>In its <strong>Files</strong> tab, press <strong>Unlock…</strong> beside a contract, then <strong>Sign in at localhost:5080</strong>.</li>
+        <li>In the window: user <code id="lock-user"></code>, and a fresh code from the app (one not used in step 3: each code works once).</li>
+      </ol>
+      <p id="lock-result" class="error" role="alert"></p>
+      <pre class="code"><code>write('contracts.jzm', rows, { key: owner, access: { grants: [{ key: thandi }] },
+  files: [{ path: 'contracts/chief-executive.html', content, lock: 'contracts' }, …],
+  locks: { contracts: { online: true, keyService: 'http://localhost:5080/jazmin/unlock' } },
+});
+// The service holds the lock's token, listed with the owner key (never the key itself):
+{ fileId, tokens: [], locks: listFileUnlockTokens('contracts.jzm', owner) }   // key-service/tokens.json</code></pre>
+    </section>
+
     <section class="panel how">
       <h2>How it works</h2>
       <pre class="code"><code>// When the file is written, the owner makes the key an online one:
@@ -125,11 +153,16 @@ catch (e) {   // JazminUnlockRequiredError: e.fileId, e.keyId
   $('holder').textContent = twoFactor.label;
 
   // ---- step 1: the command, with this site's tokens file ------------------------------------------------------
-  const tokensPath = decodeURIComponent(new URL('key-service/tokens.json', location.href).pathname).replace(/^\/([A-Za-z]:)/, '$1');
+  // On disk the tokens file is beside this page; served (serve.mjs), it is in the folder the server serves.
+  const tokensPath = /^https?:$/.test(location.protocol) ? 'js/examples/from-disk/site/key-service/tokens.json'
+    : decodeURIComponent(new URL('key-service/tokens.json', location.href).pathname).replace(/^\/([A-Za-z]:)/, '$1');
   const windowsPath = /^[A-Za-z]:/.test(tokensPath) ? tokensPath.replace(/\//g, '\\') : tokensPath;
+  // The pages that may call the service, and the viewers its sign-in window answers: "null" for a page opened from disk
+  // (Firefox's origin there; Chrome sends null for its requests too), and this page's own origin when it is served.
+  const allowed = /^https?:$/.test(location.protocol) ? `null,${location.origin}` : 'null';
   const commands = {
-    ps: `$env:Jazmin__TokensFile = "${windowsPath}"\n$env:Jazmin__AllowedOrigins = "null"\ndotnet run --project dotnet/samples/Jazmin.KeyService --urls ${service}`,
-    sh: `export Jazmin__TokensFile="${tokensPath}"\nexport Jazmin__AllowedOrigins="null"\ndotnet run --project dotnet/samples/Jazmin.KeyService --urls ${service}`,
+    ps: `$env:Jazmin__TokensFile = "${windowsPath}"\n$env:Jazmin__AllowedOrigins = "${allowed}"\ndotnet run --project dotnet/samples/Jazmin.KeyService --urls ${service}`,
+    sh: `export Jazmin__TokensFile="${tokensPath}"\nexport Jazmin__AllowedOrigins="${allowed}"\ndotnet run --project dotnet/samples/Jazmin.KeyService --urls ${service}`,
   };
   const showCommand = (os) => {
     $('command').textContent = commands[os];
@@ -175,6 +208,7 @@ catch (e) {   // JazminUnlockRequiredError: e.fileId, e.keyId
       $('enrol-code').closest('.code-form').hidden = true;
       done('step-enrol');
       $('step-open').hidden = false;
+      $('step-lock').hidden = false;
       return;
     }
     if (setup.status !== 200) throw new Error(`The key service answered ${setup.status}: ${setup.text}`);
@@ -193,6 +227,7 @@ catch (e) {   // JazminUnlockRequiredError: e.fileId, e.keyId
       done('step-enrol');
       $('enrol-code').closest('.code-form').hidden = true;
       $('step-open').hidden = false;
+      $('step-lock').hidden = false;
     } catch (e) {
       $('enrol-result').textContent = e.message;
     }
@@ -247,6 +282,41 @@ catch (e) {   // JazminUnlockRequiredError: e.fileId, e.keyId
     }
   });
   $('open-code').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('unlock').click(); });
+  // ---- step 4: a locked file whose lock names the key service ------------------------------------------------------
+  $('lock-user').textContent = twoFactor.user;
+  // Chrome and Edge give a page opened from disk the origin "file://", which a window can't post a message to: the
+  // service's sign-in window couldn't hand the token back. Firefox gives such a page the origin "null", which works.
+  if (location.origin === 'file://') {
+    $('lock-browser').hidden = false;
+    $('lock-browser').innerHTML = '<strong>From disk, this step needs Firefox.</strong> Chrome and Edge give a page opened from disk the '
+      + 'origin <code>file://</code>, and a window can\'t send a message to that origin, so the sign-in window can\'t hand the token '
+      + 'back to the viewer (the sample service says so and stops). In Chrome or Edge, serve this folder instead: in the JAZMIN folder\'s '
+      + '<code>js</code> folder run <code>node examples/from-disk/serve.mjs</code>, open '
+      + '<a href="http://127.0.0.1:8417/two-factor.html">http://127.0.0.1:8417/two-factor.html</a>, and start the key service with the '
+      + 'command step 1 shows there (it allows that address too). You can still paste a token in the viewer by hand.';
+  }
+  $('give-lock').addEventListener('click', async () => {
+    $('lock-result').textContent = '';
+    try {
+      const given = await call('/admin/locks', { userId: twoFactor.user, fileId: twoFactor.contracts.fileId, lockId: twoFactor.contracts.lock });
+      if (given.status !== 204) throw new Error(`The key service answered ${given.status}: ${given.text}`);
+      $('lock-given').textContent = `Given: lock “${twoFactor.contracts.lock}” of file ${twoFactor.contracts.fileId.slice(0, 8)}…`;
+      $('open-contracts').disabled = false;
+    } catch (e) {
+      $('lock-result').textContent = e.message;
+    }
+  });
+  $('open-contracts').addEventListener('click', async () => {
+    $('lock-result').textContent = '';
+    try {
+      await navigator.clipboard.writeText(twoFactor.contracts.key).catch(() => {});
+      demo.inViewer(await JazminBrowser.scriptBytes(data.contracts), 'contracts.jzm');
+      done('step-lock');
+    } catch (e) {
+      $('lock-result').textContent = e.message || String(e);
+    }
+  });
+
   $('again').addEventListener('click', () => {
     $('opened').hidden = true;
     $('pay').replaceChildren();

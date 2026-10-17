@@ -18,8 +18,10 @@
     <aside class="about" aria-label="What this shows">
       <strong>What this shows</strong>
       <p>A start page that asks for any <code>.jzm</code> (Browse, or drop it), then hands it to the viewer, which
-        reads only the parts it needs. For the demo file, Try buttons send filters that the file's indexes answer.</p>
-      <p class="feature">Feature: the viewer in your own page (<code>jazmin:open</code>, <code>jazmin:filter</code>) · <span class="ref">USER-GUIDE §24.4</span></p>
+        reads only the parts it needs. For the demo file, Try buttons send filters that the file's indexes answer;
+        <strong>Newest 20</strong> reads the latest matches last first (<code>reverse: true</code>) against counting
+        and reading the last page, and <strong>What will this read?</strong> says what a filter costs before it runs.</p>
+      <p class="feature">Feature: the viewer in your own page (<code>jazmin:open</code>, <code>jazmin:filter</code>) · <span class="ref">USER-GUIDE §24.4</span>; newest first and estimates · §9.7, §9.6</p>
     </aside>
     <div id="drop" class="drop" role="button" tabindex="0" aria-label="Drop a .jzm file here, or press to choose one">
       <strong>Drop a .jzm file here</strong>
@@ -44,15 +46,31 @@
   <header class="bar">
     <span id="status" role="status"></span>
     <div id="tries" class="tries" hidden><span>Try:</span></div>
+    <div id="reads" class="tries reads" hidden><span>Read:</span><button id="newest" type="button">Newest 20</button><button id="estimate" type="button">What will this read?</button></div>
     <button id="another" type="button">Open another file</button>
   </header>
-  <iframe id="viewer" src="viewer/index.html" title="JAZMIN viewer"></iframe>
+  <div class="stage">
+    <iframe id="viewer" src="viewer/index.html" title="JAZMIN viewer"></iframe>
+    <aside id="panel" class="side-panel" hidden aria-labelledby="panel-title">
+      <div class="side-head"><h2 id="panel-title"></h2><button id="panel-close" type="button" class="soft" aria-label="Close">✕</button></div>
+      <p class="hint muted" id="panel-for"></p>
+      <div id="panel-body"></div>
+    </aside>
+  </div>
 </section>
 
+<!-- The browser reader's core, for Newest 20 and What will this read? (the viewer has its own), and what the library's
+     estimate() said about the demo file's filters when make.mjs wrote it. -->
+<script src="browser/jazmin-browser-core.js"></script>
 <script src="data.js"></script>
+<script src="data/estimates.js"></script>
 <script>
   const $ = (id) => document.getElementById(id);
   const viewer = $('viewer');
+  const DEMO = 'transactions.jzm';
+  const DEMO_PASSWORD = 'demo'; // the demo file's password, for this demo only: the viewer asks people for theirs
+  let chosen = null; // the chosen file (a reference to it on disk)
+  let current = { label: 'No filter', filter: null }; // the filter the Read buttons use: the last one tried
 
   /** The demo's filters for this file (data.js), as buttons that send one to the viewer when the file is open. */
   function offerFilters(name) {
@@ -60,7 +78,11 @@
     tries.replaceChildren(tries.firstElementChild);
     for (const { label, filter } of (window.demos && demos[name]) || []) {
       const button = Object.assign(document.createElement('button'), { type: 'button', textContent: label, title: JSON.stringify(filter) });
-      button.addEventListener('click', () => viewer.contentWindow.postMessage({ type: 'jazmin:filter', filter }, '*'));
+      button.addEventListener('click', () => {
+        viewer.contentWindow.postMessage({ type: 'jazmin:filter', filter }, '*');
+        current = { label, filter };
+        if (!$('panel').hidden) ($('panel').dataset.kind === 'newest' ? newest : estimate)();
+      });
       tries.append(button);
     }
   }
@@ -71,6 +93,9 @@
   /** Hands the viewer the chosen file (a reference to it on disk, not its contents), and shows the viewer. */
   function passFile(file) {
     if ($('browse').disabled) return;
+    chosen = file;
+    current = { label: 'No filter', filter: null };
+    $('panel').hidden = true;
     $('file-name').value = file.name;
     $('error').textContent = '';
     $('status').textContent = `Opening ${file.name}…`;
@@ -128,7 +153,104 @@
     }
     $('status').textContent = state === 'locked' ? `${name} is locked: type its password in the viewer` : `${name} is open`;
     $('tries').hidden = state !== 'opened' || $('tries').children.length < 2;
+    $('reads').hidden = state !== 'opened' || name !== DEMO;
   });
+
+  // ---- Newest 20 and What will this read? (the demo file): the page opens the chosen file itself too ----------------
+  const ms = (t) => (t < 10 ? `${t.toFixed(1)} ms` : t < 1000 ? `${Math.round(t)} ms` : `${(t / 1000).toFixed(2)} s`);
+  const kb = (bytes) => (bytes === 0 ? 'none' : bytes < 1048576 ? `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} KB` : `${(bytes / 1048576).toFixed(1)} MB`);
+  const n = (v) => v.toLocaleString('en-US');
+  const rand = (v) => `${v < 0 ? '−' : ''}R ${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const esc = (text) => String(text).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+  /** A freshly opened reader: what a query reads isn't already loaded by an earlier one, so timings are fair. */
+  const fresh = () => JazminBrowser.open(chosen, { password: DEMO_PASSWORD });
+  let asked = 0;
+
+  function panel(kind, title) {
+    $('panel').dataset.kind = kind;
+    $('panel').hidden = false;
+    $('panel-title').textContent = title;
+    $('panel-for').textContent = `For: ${current.label}${current.filter ? ` · ${JSON.stringify(current.filter)}` : ' (every row)'}. Try buttons change it.`;
+    $('panel-body').innerHTML = '<p class="muted">Reading…</p>';
+    return ++asked;
+  }
+  $('panel-close').addEventListener('click', () => { $('panel').hidden = true; });
+
+  /** The newest 20 matches: counted, then the last page read, against reverse: true. */
+  async function newest() {
+    const ask = panel('newest', 'Newest 20, newest first');
+    try {
+      const { filter } = current;
+      const counting = await fresh();
+      let t = performance.now();
+      const total = await counting.count(filter);
+      const { rows: lastPage } = await counting.query(filter, { offset: Math.max(0, total - 20), limit: 20, total: false });
+      const countThenPage = performance.now() - t;
+      const reversing = await fresh();
+      t = performance.now();
+      const { rows } = await reversing.query(filter, { reverse: true, limit: 20, total: false });
+      const reversed = performance.now() - t;
+      if (ask !== asked) return;
+      const same = JSON.stringify([...lastPage].reverse()) === JSON.stringify(rows);
+      $('panel-body').innerHTML = `
+        <div class="stats compact">
+          <div class="stat"><span>Count, then the last page</span><strong id="t-count">${ms(countThenPage)}</strong></div>
+          <div class="stat"><span><code>reverse: true</code></span><strong id="t-reverse">${ms(reversed)}</strong></div>
+        </div>
+        <p id="newest-note">${n(total)} matches. ${same ? 'Both give the same 20 rows' : 'The two reads differ'}${countThenPage > reversed ? `: last first is ${(countThenPage / reversed).toFixed(countThenPage / reversed < 10 ? 1 : 0)}× faster here` : ''}.
+          The file is sorted by date, so the reader starts at its last chunk and stops after 20 matches; the other way
+          counts every match first, then reads from the start of the last page.</p>
+        <pre class="code"><code>reader.query(filter, { reverse: true, limit: 20, total: false });</code></pre>
+        <div class="table-scroll"><table id="newest-rows"><thead><tr><th>Date</th><th>Account</th><th>Merchant</th><th class="number">Amount</th></tr></thead><tbody>${
+          rows.map((r) => `<tr><td>${r.date.toISOString().slice(0, 16).replace('T', ' ')}</td><td>${esc(r.account)}</td><td>${esc(r.merchant)}</td><td class="number${Number(r.amount) < 0 ? ' out' : ''}">${rand(Number(r.amount))}</td></tr>`).join('')
+        }</tbody></table></div>
+        <p class="hint muted">Each read on a freshly opened reader, in this browser. Press again to measure again.</p>`;
+    } catch (e) {
+      if (ask === asked) $('panel-body').innerHTML = `<p class="error">${esc(e.message || e)}</p>`;
+    }
+  }
+
+  /** Before reading: the library's estimate() (from make.mjs) and the browser reader's explain(); then what it read. */
+  async function estimate() {
+    const ask = panel('estimate', 'What will this read?');
+    try {
+      const { filter } = current;
+      const reader = await fresh();
+      let t = performance.now();
+      const plan = await reader.explain(filter);
+      const planned = performance.now() - t;
+      const known = window.estimates?.[DEMO];
+      const est = known && known.fileId === reader.fileId ? known.filters.find((f) => JSON.stringify(f.filter) === JSON.stringify(filter))?.estimate : null;
+      const counter = await fresh();
+      t = performance.now();
+      const total = await counter.count(filter);
+      const counted = performance.now() - t;
+      const first = await (await fresh()).explain(filter, { analyze: true, limit: 100 });
+      if (ask !== asked) return;
+      const how = plan.strategy === 'index' ? `an index: ${n(plan.candidateRows)} candidate rows` : `a scan of ${n(plan.chunks - plan.chunksSkipped)} of ${n(plan.chunks)} chunks (the sort order and chunk statistics skip ${n(plan.chunksSkipped)})`;
+      $('panel-body').innerHTML = `
+        <h3>Before reading</h3>
+        <p id="plan-note">The browser reader's <code>explain()</code>, in ${ms(planned)}: ${how}.</p>
+        ${est ? `<table class="estimate" id="estimate-table"><thead><tr><th><code>estimate()</code></th><th class="number">Chunks</th><th class="number">Rows</th><th class="number">Bytes</th></tr></thead><tbody>
+          <tr><td>Reading every match</td><td class="number">${n(est.chunks)}</td><td class="number">${n(est.rows)}</td><td class="number">${kb(est.bytes)}</td></tr>
+          <tr><td>Counting them</td><td class="number">${n(est.countChunks)}</td><td class="number">${n(est.countRows)}</td><td class="number">${kb(est.countBytes)}</td></tr></tbody></table>
+          <p class="hint muted">From the Node library's <code>estimate()</code>, which make.mjs ran when it wrote this file: the browser reader
+            has <code>explain()</code> but no <code>estimate()</code>. ${est.countChunks ? 'Counting has to read chunks: the filter needs the rows themselves.' : 'Counting reads no chunk: the indexes or chunk statistics answer it.'}</p>`
+        : '<p class="hint muted">The library\'s <code>estimate()</code> figures are for the demo file make.mjs wrote: this copy is another one.</p>'}
+        <h3>Then, measured here</h3>
+        <div class="stats compact">
+          <div class="stat"><span>Count</span><strong id="count-took">${n(total)} in ${ms(counted)}</strong></div>
+          <div class="stat"><span>First 100 rows</span><strong id="first-took">${ms(first.ms)}</strong></div>
+        </div>
+        <p id="first-note">The first 100 rows read ${kb(first.bytesRead)} in ${n(first.chunksRead)} chunk${first.chunksRead === 1 ? '' : 's'}
+          and ${n(first.indexPagesRead)} index section${first.indexPagesRead === 1 ? '' : 's'} (<code>explain(filter, { analyze: true, limit: 100 })</code>).</p>
+        <p class="hint muted">Each on a freshly opened reader. A program can warn before a slow query, or ask first, from these numbers.</p>`;
+    } catch (e) {
+      if (ask === asked) $('panel-body').innerHTML = `<p class="error">${esc(e.message || e)}</p>`;
+    }
+  }
+  $('newest').addEventListener('click', newest);
+  $('estimate').addEventListener('click', estimate);
 </script>
 </body>
 </html>

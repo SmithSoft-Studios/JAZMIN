@@ -14,17 +14,20 @@
     <div>
       <h1>One file, three people</h1>
       <p>The same <code>shared.jzm</code>, one copy, opened with three access keys. Each key unlocks only what its
-        grant allows: its branches' rows, the pay columns or not, and the <strong>files and saved shapes</strong> of
-        the groups it sees. What a key can't see isn't hidden by the page: it can't be decrypted at all.</p>
+        grant allows: its branches' rows, the pay columns or not, and the <strong>files, saved shapes and document
+        pages</strong> of the groups it sees. What a key can't see isn't hidden by the page: it can't be decrypted at
+        all. HR also has a <strong>locked file</strong>: its key sees it, but opening it takes a password too.</p>
     </div>
     <span id="status" class="badge" role="status" hidden></span>
   </div>
 
   <aside class="about" aria-label="What this shows">
     <strong>What this shows</strong>
-    <p>One file opened with three access keys, side by side: each card shows only the rows, columns, saved shapes and
-      files its key can decrypt.</p>
-    <p class="feature">Feature: access control, one file and many keys · <span class="ref">USER-GUIDE §15</span></p>
+    <p>One file opened with three access keys, side by side: each card shows only the rows, columns, saved shapes,
+      files and document tabs its key can decrypt. HR's key adds a <strong>Pay review</strong> tab, marked on a file of
+      the <code>hr</code> group, and sees a file locked with a password, which it can unlock here or in the viewer; the
+      other keys see neither the tab nor the file's name.</p>
+    <p class="feature">Feature: access control, pages only some keys see, locked files · <span class="ref">USER-GUIDE §15</span>, §19.7 and §19.6</p>
   </aside>
 
   <section id="start" class="panel unlock">
@@ -49,9 +52,23 @@
       { key: hr, rows: '*', columns: '*', files: ['hr'] },
     ],
   },
-  files: [{ path: 'hr/pay-bands.html', content, groups: ['hr'] }, …],
+  files: [
+    { path: 'handbook.html', content },                              // everyone's
+    { path: 'hr/pay-review.html', file, groups: ['hr'],
+      page: { title: 'Pay review 2027', order: 1 } },               // a tab only HR's key knows of
+    { path: 'hr/increases-2027.csv', content, groups: ['hr'], lock: 'pay-review' },
+    …],
+  locks: { 'pay-review': { password: 'review 2027' } },              // a password as well as the key
+  package: { pages: [{ path: 'handbook.html', title: 'Handbook' }] },
   shapes: [{ name: 'Pay by branch', groups: ['hr'], shape }, …],  // only for keys that see pay
-});</code></pre>
+});
+
+// In a page: the locked file is listed, but reading it needs the lock opened first.
+(await reader.files()).find((f) => f.lock);      // { path, …, lock: { id: 'pay-review', kind: 'password', unlocked: false } }
+await reader.unlock('pay-review', { password }); // a wrong one throws JazminKeyError</code></pre>
+    <p class="hint">The package settings (<code>pages</code>) are in the file's header, which every key reads, so only
+      the Handbook is listed there. HR's page is marked on its own file instead, in the <code>hr</code> group's
+      directory, which only keys that see that group can decrypt.</p>
     <p class="hint">A shape that uses <code>salary</code>, saved for a group whose keys can't all see that column, is
       refused when the file is written, naming the key. So each list above is exactly what its key can use.</p>
   </section>
@@ -68,13 +85,18 @@
   const ALL_COLUMNS = ['branch', 'name', 'role', 'since', 'salary', 'bonus']; // what the file has (the page knows; a key may not)
   const BRANCHES = ['Cape Town', 'Johannesburg', 'Durban']; // its branches, the partitions keys see
 
+  const ALL_TABS = ['Handbook', 'Pay review 2027']; // the document's tabs, as HR's key sees them (the page knows; a key may not)
+  let bytes = null;
+
   $('open').addEventListener('click', async () => {
     $('open').disabled = true;
     $('open').textContent = 'Opening…';
     try {
-      const bytes = await JazminBrowser.scriptBytes(data.shared); // one copy of the file, opened with each key
-      const cards = await Promise.all(sharedKeys.map((person) => card(bytes, person)));
-      $('people').replaceChildren(...cards);
+      bytes = await JazminBrowser.scriptBytes(data.shared); // one copy of the file, opened with each key
+      const views = await Promise.all(sharedKeys.map((person) => view(bytes, person)));
+      // Files any key sees: what a card's key can't see is named only because this page opened all three.
+      const everyFile = [...new Set(views.flatMap((v) => v.files.map((f) => f.path)))].sort();
+      $('people').replaceChildren(...views.map((v) => card(v, everyFile)));
       $('start').hidden = true;
       $('people').hidden = false;
       $('explained').hidden = false;
@@ -87,8 +109,8 @@
     }
   });
 
-  /** What one key sees: rows, columns, saved shapes (run on a click) and files. */
-  async function card(bytes, person) {
+  /** One key's view of the file: its reader, rows, saved shapes, files and the document's tabs. */
+  async function view(bytes, person) {
     const started = performance.now();
     const reader = await JazminBrowser.open(bytes, { key: person.key });
     const opened = since(started);
@@ -96,7 +118,14 @@
     // in a branch the key can't decrypt. (The first 6 rows of the file would all be Cape Town's.)
     const [shapes, files, ...byBranch] = await Promise.all([reader.shapes(), reader.files(),
       ...BRANCHES.map((branch) => reader.query({ branch }, { limit: 6, total: false }))]);
-    const seen = byBranch.map((r) => r.rows).filter((r) => r.length);
+    // The document's tabs, as the viewer shows them: the package's pages, then pages marked on files this key sees.
+    const tabs = [...(reader.package?.pages ?? []).map((p) => p.title),
+      ...files.filter((f) => f.page).sort((a, b) => (a.page.order ?? Infinity) - (b.page.order ?? Infinity)).map((f) => f.page.title)];
+    return { person, reader, opened, shapes, files, tabs, seen: byBranch.map((r) => r.rows).filter((r) => r.length) };
+  }
+
+  /** What one key sees: rows, columns, document tabs, saved shapes (run on a click) and files, a locked one too. */
+  function card({ person, reader, opened, shapes, files, tabs, seen }, everyFile) {
     const each = Math.ceil(6 / seen.length);
     const rows = seen.flatMap((r) => r.slice(0, each)).slice(0, 6);
     const visible = reader.columns.map((c) => c.name);
@@ -108,19 +137,29 @@
         <div class="stat"><span>Staff it sees</span><strong class="rows"></strong></div>
         <div class="stat"><span>Opened in</span><strong class="opened"></strong></div>
       </div>
+      <p class="summary"></p>
       <h3>Columns</h3><div class="chips columns-chips"></div>
       <h3>Rows <span class="hint muted rows-hint"></span></h3><div class="table-scroll rows-table"></div>
+      <h3>Document tabs</h3><div class="chips page-chips"></div>
       <h3>Saved shapes</h3><div class="chips shape-chips"></div><pre class="output small-output shape-output" hidden></pre>
-      <h3>Files</h3><ul class="file-list"></ul><pre class="output small-output file-output" hidden></pre>`;
+      <h3>Files</h3><ul class="file-list"></ul><div class="chips unknown-files"></div><pre class="output small-output file-output" hidden></pre>
+      <div class="toolbar"><button type="button" class="soft in-viewer">Open in the viewer</button><span class="hint muted copied" role="status"></span></div>`;
     el.querySelector('h2').textContent = person.label;
     el.querySelector('.sees').textContent = person.sees;
     el.querySelector('.rows').textContent = `${reader.rowCount} of ${reader.rowCount + reader.hiddenRowCount}`;
     el.querySelector('.opened').textContent = opened;
-    el.querySelector('.columns-chips').replaceChildren(...ALL_COLUMNS.map((name) => {
-      const chip = Object.assign(document.createElement('span'), { className: `chip${visible.includes(name) ? '' : ' off'}`, textContent: name });
-      if (!visible.includes(name)) chip.title = "This key can't decrypt this column, or learn its name";
+    const locked = files.filter((f) => f.lock);
+    const unknown = everyFile.filter((p) => !files.some((f) => f.path === p));
+    el.querySelector('.summary').textContent = `Sees ${visible.length} of ${ALL_COLUMNS.length} columns, ${files.length} of ${everyFile.length} files`
+      + `${locked.length ? ` (${locked.length} locked)` : ''} and ${tabs.length} of ${ALL_TABS.length} document tabs.`
+      + `${unknown.length ? ` The other ${unknown.length} files, struck through below, and the tabs it doesn't see aren't hidden by this page: the key can't decrypt them or learn their names.` : ''}`;
+    const chips = (names, on, why) => names.map((name) => {
+      const chip = Object.assign(document.createElement('span'), { className: `chip${on(name) ? '' : ' off'}`, textContent: name });
+      if (!on(name)) chip.title = why;
       return chip;
-    }));
+    });
+    el.querySelector('.columns-chips').replaceChildren(...chips(ALL_COLUMNS, (n) => visible.includes(n), "This key can't decrypt this column, or learn its name"));
+    el.querySelector('.page-chips').replaceChildren(...chips(ALL_TABS, (n) => tabs.includes(n), "This key doesn't know of this page: it is marked on a file of a group the key doesn't see"));
     // The columns that tell people apart: the branch only when the key sees more than one; pay when it sees pay.
     const oneBranch = seen.length <= 1;
     el.querySelector('.rows-hint').textContent = oneBranch ? `(the first ${rows.length})` : `(${each} from each branch)`;
@@ -137,21 +176,77 @@
       });
       return chip;
     }));
+    const fileOutput = el.querySelector('.file-output');
+    /** A stored file's text: a page's text only (it is the file's content, not this page's, so it isn't run here). */
+    async function showFile(f) {
+      const text = await (await reader.fileBlob(f.path)).text();
+      fileOutput.textContent = `${f.path}\n${f.type === 'text/html' ? new DOMParser().parseFromString(text, 'text/html').body.textContent.trim().replace(/\s*\n\s*/g, '\n') : text.split('\n').slice(0, 8).join('\n')}`;
+      fileOutput.hidden = false;
+    }
     el.querySelector('.file-list').replaceChildren(...files.map((f) => {
       const li = document.createElement('li');
       const link = Object.assign(document.createElement('a'), { href: '#', textContent: f.path });
       link.addEventListener('click', async (e) => {
         e.preventDefault();
-        // Its text only: a stored page is the file's content, not this page's, so it isn't run here (the viewer shows
-        // stored pages in a sandbox).
-        const page = new DOMParser().parseFromString(await (await reader.fileBlob(f.path)).text(), 'text/html');
-        const shown = el.querySelector('.file-output');
-        shown.textContent = `${f.path}\n${page.body.textContent.trim()}`;
-        shown.hidden = false;
+        try {
+          await showFile(f);
+        } catch (error) { // a locked file: listed, but its content needs the lock opened first
+          fileOutput.textContent = `${f.path}\n${error.message}`;
+          fileOutput.hidden = false;
+        }
       });
       li.append(link);
+      if (f.page) li.append(' ', Object.assign(document.createElement('span'), { className: 'chip', textContent: `tab: ${f.page.title}` }));
+      if (f.lock) li.append(lockForm(f, li));
       return li;
     }));
+    el.querySelector('.unknown-files').replaceChildren(...unknown.map((p) => Object.assign(document.createElement('span'), {
+      className: 'chip off', textContent: p, title: "Another key's file: this key can't decrypt it, or learn its name",
+    })));
+
+    /** The lock on a file: what it needs, and a form that opens it with reader.unlock(). */
+    function lockForm(f, li) {
+      li.classList.add('locked-file');
+      const box = document.createElement('div');
+      box.className = 'lock-box';
+      box.innerHTML = `<p class="lock-state"><span aria-hidden="true">🔒</span> Locked by <code></code>: this key sees the file,
+        and needs the lock's password as well to open it.</p><form class="unlock-form"><input type="password" autocomplete="off"
+        aria-label="The lock's password" placeholder="Password"><button type="submit" class="primary">Unlock</button></form>
+        <p class="hint muted">Demo password: <code></code></p><p class="error" role="alert"></p>`;
+      box.querySelector('.lock-state code').textContent = f.lock.id;
+      box.querySelector('.hint code').textContent = sharedLock.password;
+      box.querySelector('form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const error = box.querySelector('.error');
+        error.textContent = '';
+        const button = box.querySelector('button');
+        button.disabled = true;
+        const started = performance.now();
+        try {
+          await reader.unlock(f.lock.id, { password: box.querySelector('input').value });
+          box.querySelector('.lock-state').innerHTML = '<span aria-hidden="true">🔓</span> <strong>Unlocked</strong> in <span class="took"></span>: the file opens now, while the file stays open.';
+          box.querySelector('.took').textContent = since(started);
+          box.querySelector('form').remove();
+          box.querySelector('.hint').remove();
+          await showFile(f);
+        } catch (err) {
+          button.disabled = false;
+          error.textContent = err instanceof JazminBrowser.JazminKeyError ? 'Wrong password: try again' : (err.message || String(err));
+        }
+      });
+      return box;
+    }
+
+    // The viewer asks for the key itself (a page can't hand it a key): copy it, then paste it there.
+    el.querySelector('.in-viewer').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(person.key);
+        el.querySelector('.copied').textContent = 'Key copied: paste it in the viewer.';
+      } catch {
+        el.querySelector('.copied').textContent = 'Copy the key from data/shared-keys.js and paste it in the viewer.';
+      }
+      demo.inViewer(bytes, 'shared.jzm');
+    });
     return el;
   }
 </script>

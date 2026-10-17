@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clients</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div>
+    <p class="eyebrow" data-meta="title"></p>
+    <h1>Clients</h1>
+    <p class="muted">Every client of the branch network, from the file's <code>clients</code> table.</p>
+  </div>
+  <div class="controls">
+    <input id="search" type="search" placeholder="Search names, e.g. naidoo" aria-label="Search client names">
+  </div>
+</header>
+<aside class="about" aria-label="What this shows">
+  <strong>What this shows</strong>
+  <p>The first of this file's four pages, each a tab in the viewer. This one reads the <code>clients</code> table
+    (the page's <code>table</code>); a search uses its text index. The viewer offers no Print here
+    (<code>actions: { print: false }</code>): the Statement tab is the one to print.</p>
+  <p class="feature">Feature: document pages · <span class="ref">USER-GUIDE §19.7</span></p>
+</aside>
+
+<section class="kpis" id="kpis"></section>
+<div class="chips" id="segments" role="group" aria-label="Segment"></div>
+<p class="note" id="note" role="status"></p>
+<div class="scroll">
+  <table id="list">
+    <thead><tr><th>#</th><th>Name</th><th>City</th><th>Segment</th><th class="hide-narrow">Client since</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script src="app.js"></script>
+<script>
+  (async () => {
+    const { day, since, cell } = app;
+    const $ = (id) => document.getElementById(id);
+    const SEGMENTS = ['Personal', 'Business', 'Private'];
+    let segment = null;
+
+    // Counts: answered by the reader without reading rows where it can.
+    const total = await jazmin.count({});
+    const counts = await Promise.all(SEGMENTS.map((s) => jazmin.count({ segment: s })));
+    $('kpis').replaceChildren(...[['Clients', total], ...SEGMENTS.map((s, i) => [s, counts[i]])].map(([label, n]) => {
+      const div = document.createElement('div');
+      div.append(Object.assign(document.createElement('span'), { textContent: label }), Object.assign(document.createElement('strong'), { textContent: n.toLocaleString('en-US') }));
+      return div;
+    }));
+    $('segments').replaceChildren(...[null, ...SEGMENTS].map((s) => {
+      const b = Object.assign(document.createElement('button'), { type: 'button', textContent: s || 'All' });
+      b.setAttribute('aria-pressed', String(s === segment));
+      b.addEventListener('click', () => {
+        segment = s;
+        for (const other of $('segments').children) other.setAttribute('aria-pressed', String(other === b));
+        show();
+      });
+      return b;
+    }));
+
+    let shown = 0;
+    async function show() {
+      const ask = ++shown;
+      const text = $('search').value.trim();
+      const filter = { ...(text ? { name: { icontains: text } } : {}), ...(segment ? { segment } : {}) };
+      const started = performance.now();
+      const rows = await jazmin.query(filter, { limit: 300 });
+      if (ask !== shown) return; // a newer search is on its way
+      $('note').textContent = `${rows.length} of ${total} clients · ${since(started)}${text ? ' (the name index answered the search)' : ''}`;
+      $('list').tBodies[0].replaceChildren(...rows.map((c) => {
+        const tr = document.createElement('tr');
+        tr.append(cell(String(c.id), 'n'), cell(c.name), cell(c.city), cell(c.segment), cell(day(c.since), 'date hide-narrow'));
+        return tr;
+      }));
+      jazmin.ready({ page: 'clients', rows: rows.length });
+    }
+    $('search').addEventListener('input', show);
+    show();
+  })();
+</script>
+</body>
+</html>

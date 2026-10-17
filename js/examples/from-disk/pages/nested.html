@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Nested columns</title>
+<link rel="icon" href="favicon.png" type="image/png">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main class="page wide">
+  <p class="crumbs"><a href="index.html">← All demos</a></p>
+  <div class="head">
+    <div>
+      <h1>Nested columns: orders with their lines</h1>
+      <p>A home-and-hardware store's 5,000 online orders. Each order's <strong>lines</strong> (product, quantity, price)
+        are a list of objects, and its <strong>delivery</strong> an object, stored as columns are: numbers as numbers,
+        repeated text once per chunk. A filter reaches inside them, and the file is smaller than the same orders with
+        those two as JSON text.</p>
+    </div>
+    <span id="status" class="badge" role="status" hidden></span>
+  </div>
+
+  <aside class="about" aria-label="What this shows">
+    <strong>What this shows</strong>
+    <p>The same orders in two files: <code>lines</code> and <code>delivery</code> as nested columns, and as JSON text.
+      Filters with <code>any</code>, <code>all</code> and <code>match</code> look inside the nested ones, decoding only the
+      fields they need; the JSON file has to be read and parsed row by row to answer the same question.</p>
+    <p class="feature">Feature: nested columns, filters <code>any</code> / <code>all</code> / <code>match</code> · <span class="ref">USER-GUIDE §4.2</span> and §8.1</p>
+  </aside>
+
+  <section class="stats nested-stats">
+    <div class="panel stat"><span>Nested columns</span><strong id="size-nested">…</strong></div>
+    <div class="panel stat"><span>The same as JSON text</span><strong id="size-json">…</strong></div>
+    <div class="panel stat"><span>Smaller by</span><strong id="size-saved">…</strong></div>
+    <div class="panel stat"><span>Orders · lines</span><strong id="counts">…</strong></div>
+  </section>
+
+  <section class="panel">
+    <h2>Ask inside the orders</h2>
+    <div class="tabs" id="filters" role="tablist" aria-label="Filters"></div>
+    <pre class="code filter-code"><code id="filter-code"></code></pre>
+    <div class="split compare">
+      <div class="panel stat"><span>Nested columns: the filter, answered by the reader</span><strong id="nested-took">…</strong><small id="nested-how" class="muted"></small></div>
+      <div class="panel stat"><span>JSON text: every row read and checked in the page</span><strong id="json-took">…</strong><small id="json-how" class="muted"></small></div>
+    </div>
+    <p id="note" class="hint muted" role="status"></p>
+    <div class="table-scroll short">
+      <table id="orders">
+        <thead><tr><th>Order</th><th>Date</th><th class="wide-only">Customer</th><th>Delivery</th><th>Lines</th><th class="number">Total</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel how">
+    <h2>How the files were written</h2>
+    <pre class="code"><code>write('orders.jzm', orders, { sortedBy: ['date'], columns: [
+  { name: 'order', type: 'string' }, { name: 'date', type: 'datetime' }, { name: 'customer', type: 'string' },
+  { name: 'branch', type: 'string', index: 'sorted' },
+  { name: 'delivery', type: 'object', fields: [{ name: 'method', type: 'string' }, { name: 'city', type: 'string' }] },
+  { name: 'lines', type: 'list', item: { type: 'object', fields: [
+    { name: 'sku', type: 'string' }, { name: 'product', type: 'string' }, { name: 'qty', type: 'int' }, { name: 'price', type: 'decimal' },
+  ] } },
+  { name: 'total', type: 'decimal' },
+] });
+// orders-json.jzm: the same, with { name: 'lines', type: 'json' } and { name: 'delivery', type: 'json' }</code></pre>
+    <p class="hint">Nested columns can't be indexed or sorted by; files keep min/max statistics of their fields, so
+      <code>any</code> and <code>match</code> skip chunks where no item can match. Files with nested columns need JAZMIN
+      1.4 or later; earlier versions refuse them, never misread them.</p>
+  </section>
+</main>
+
+<!-- Only what this page uses: the core (or the full jazmin-browser.js). -->
+<script src="browser/jazmin-browser-core.js"></script>
+<script src="data.js"></script>
+<script src="demo.js"></script>
+<script>
+  const { $, since, rand, day } = demo;
+  const kb = (bytes) => `${Math.round(bytes / 1024)} KB`;
+  // Each question as a filter on the nested file, and the same check written in the page for the JSON file's rows.
+  const QUESTIONS = [
+    {
+      label: '5 or more LED panels', filter: { lines: { any: { sku: 'EL-2210', qty: { gte: 5 } } } },
+      check: (o) => o.lines.some((l) => l.sku === 'EL-2210' && l.qty >= 5), line: (l) => l.sku === 'EL-2210' && l.qty >= 5,
+    },
+    {
+      label: 'Every line under R 100', filter: { lines: { all: { price: { lt: '100' } } } },
+      check: (o) => o.lines.every((l) => Number(l.price) < 100), line: (l) => Number(l.price) < 100,
+    },
+    {
+      label: 'Same-day to Durban', filter: { delivery: { match: { method: 'Same-day', city: 'Durban' } } },
+      check: (o) => o.delivery.method === 'Same-day' && o.delivery.city === 'Durban', line: () => false,
+    },
+    {
+      label: 'A drill, from Cape Town', filter: { branch: 'Cape Town', lines: { any: { product: { icontains: 'drill' } } } },
+      check: (o) => o.branch === 'Cape Town' && o.lines.some((l) => /drill/i.test(l.product)), line: (l) => /drill/i.test(l.product),
+    },
+  ];
+  let files = null;
+  let asked = 0;
+
+  async function ask(q) {
+    const id = ++asked;
+    for (const b of $('filters').children) b.setAttribute('aria-selected', String(b.textContent === q.label));
+    $('filter-code').textContent = `reader.query(${JSON.stringify(q.filter)}, { limit: 12 })`;
+    // Each file freshly opened (from the bytes already in the page), so neither read reuses what an earlier one decoded.
+    // Both read every row once, to find every match: the nested file decodes only the fields the filter reads (and the
+    // order number); the JSON file parses each order's JSON text to check it.
+    const nested = await JazminBrowser.open(files.nested);
+    let t = performance.now();
+    let total = 0;
+    for await (const _ of nested.find(q.filter, { select: ['order'] })) total++; // eslint-disable-line no-unused-vars
+    const nestedTook = since(t);
+    const { rows } = await nested.query(q.filter, { limit: 12, total: false });
+    const json = await JazminBrowser.open(files.json);
+    t = performance.now();
+    let matches = 0;
+    for await (const order of json.find(null)) if (q.check(order)) matches++;
+    const jsonTook = since(t);
+    if (id !== asked) return;
+    $('nested-took').textContent = `${total.toLocaleString('en-US')} orders · ${nestedTook}`;
+    $('nested-how').textContent = 'found in the file: only the fields the filter reads decoded';
+    $('json-took').textContent = `${matches.toLocaleString('en-US')} orders · ${jsonTook}`;
+    $('json-how').textContent = `all ${json.rowCount.toLocaleString('en-US')} orders read, each one's JSON parsed and checked here`;
+    $('note').textContent = total === matches ? `The same ${total.toLocaleString('en-US')} orders both ways. The first ${rows.length}, with the lines that match in bold:` : `The two differ: ${total} and ${matches}`;
+    $('orders').tBodies[0].replaceChildren(...rows.map((o) => {
+      const tr = document.createElement('tr');
+      const cell = (text, className) => tr.appendChild(Object.assign(document.createElement('td'), { textContent: text, className: className || '' }));
+      cell(o.order);
+      cell(day(o.date), 'nowrap');
+      cell(o.customer, 'wide-only');
+      cell(`${o.delivery.method} · ${o.delivery.city}`);
+      const lines = cell('', 'lines');
+      for (const l of o.lines) {
+        lines.append(Object.assign(document.createElement('div'), { className: q.line(l) ? 'hit' : '', textContent: `${l.qty} × ${l.product} (${l.sku}) at ${rand(Number(l.price))}` }));
+      }
+      cell(rand(Number(o.total)), 'number');
+      return tr;
+    }));
+  }
+
+  (async () => {
+    try {
+      const started = performance.now();
+      const [nested, json] = await Promise.all([data.orders, data.ordersJson].map((s) => JazminBrowser.scriptBytes(s)));
+      files = { nested, json };
+      const reader = await JazminBrowser.open(nested);
+      const lines = (await reader.columnArrays(null, { select: ['total'] })).rowCount; // orders
+      let lineCount = 0;
+      for await (const o of reader.find(null, { select: ['lines'] })) lineCount += o.lines.length;
+      $('size-nested').textContent = kb(nested.length);
+      $('size-json').textContent = kb(json.length);
+      $('size-saved').textContent = `${Math.round((1 - nested.length / json.length) * 100)}%`;
+      $('counts').textContent = `${lines.toLocaleString('en-US')} · ${lineCount.toLocaleString('en-US')}`;
+      $('status').hidden = false;
+      $('status').textContent = `Both files opened in ${since(started)}`;
+      $('filters').replaceChildren(...QUESTIONS.map((q) => {
+        const b = Object.assign(document.createElement('button'), { type: 'button', textContent: q.label });
+        b.setAttribute('role', 'tab');
+        b.addEventListener('click', () => ask(q));
+        return b;
+      }));
+      await ask(QUESTIONS[0]);
+    } catch (e) {
+      $('note').textContent = e.message || String(e);
+    }
+  })();
+</script>
+</body>
+</html>

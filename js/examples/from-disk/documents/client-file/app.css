@@ -1,0 +1,70 @@
+/* The client file's pages (clients, transactions, summary, statement): one stylesheet, stored in the file and listed in
+   package.files, so viewers keep it out of the Files tab. Light and dark on screen; always light on paper. */
+:root {
+  --ink: #172033; --muted: #5d6679; --line: #e3e7ef; --soft: #f5f7fb; --paper: #fff; --accent: #0f766e; --accent-soft: #e6f4f2;
+  --in: #157347; --out: #b42318; color-scheme: light dark;
+}
+@media screen and (prefers-color-scheme: dark) {
+  :root { --ink: #e7eaf0; --muted: #a3abba; --line: #2e3544; --soft: #1b202b; --paper: #151922; --accent: #5eead4; --accent-soft: #123532; --in: #5fd39a; --out: #ff8a80; }
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body { margin: 0 auto; max-width: 64rem; padding: 1.5rem 1.25rem 2.5rem; font: 14.5px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; color: var(--ink); background: var(--paper); }
+h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.01em; }
+h2 { margin: 0 0 0.7rem; font-size: 1rem; }
+p { margin: 0.3rem 0; }
+.muted { color: var(--muted); }
+.eyebrow { margin: 0 0 0.15rem; color: var(--accent); font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; font-size: 0.76rem; }
+.top { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-end; gap: 0.75rem 1rem; padding-bottom: 1rem; border-bottom: 2px solid var(--ink); }
+.controls { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+input, select, button { font: inherit; padding: 0.45rem 0.7rem; border: 1px solid var(--line); border-radius: 8px; background: var(--paper); color: var(--ink); min-width: 0; }
+button { cursor: pointer; font-weight: 600; }
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--paper); }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); gap: 0.6rem; margin: 1rem 0; }
+.kpis div { padding: 0.7rem 0.9rem; border-radius: 10px; background: var(--soft); }
+.kpis span { display: block; color: var(--muted); font-size: 0.78rem; }
+.kpis strong { display: block; font-size: 1.2rem; font-variant-numeric: tabular-nums; }
+.chips { display: flex; flex-wrap: wrap; gap: 0.35rem; margin: 0.6rem 0; }
+.chips button { padding: 0.2rem 0.7rem; border-radius: 999px; font-size: 0.85rem; }
+.chips button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: var(--paper); }
+.note { color: var(--muted); font-size: 0.85rem; min-height: 1.4em; }
+.card { border: 1px solid var(--line); border-radius: 12px; padding: 1rem 1.1rem; margin-bottom: 1rem; break-inside: avoid; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+.grid .wide { grid-column: 1 / -1; }
+.card canvas { width: 100% !important; max-height: 17rem; }
+.scroll { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { padding: 0.42rem 0.5rem; border-bottom: 1px solid var(--line); text-align: left; }
+th { color: var(--muted); font-size: 0.74rem; text-transform: uppercase; letter-spacing: 0.03em; }
+td.n, th.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td.date { white-space: nowrap; }
+.in { color: var(--in); }
+.out { color: var(--out); }
+tfoot td { font-weight: 700; border-top: 2px solid var(--ink); border-bottom: 0; }
+.tag { display: inline-block; padding: 0 0.5rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 0.78rem; font-weight: 600; }
+@media (max-width: 640px) {
+  body { padding: 1rem 0.9rem 2rem; }
+  .grid { grid-template-columns: 1fr; }
+  .hide-narrow { display: none; }
+}
+
+/* What this page shows, and the feature (as in the from-disk sample's pages); not printed */
+.about { margin: 1rem 0 0; padding: 0.6rem 0.9rem; border-left: 4px solid var(--accent); border-radius: 8px; background: var(--accent-soft); font-size: 0.9rem; }
+.about > strong { display: block; color: var(--accent); font-size: 0.72rem; letter-spacing: 0.05em; text-transform: uppercase; }
+.about p { margin: 0.15rem 0 0; }
+.about .ref { white-space: nowrap; }
+.about .feature { color: var(--muted); font-size: 0.82rem; }
+
+/* The statement on paper: A4, the controls and the note left out */
+@page { size: A4; margin: 14mm; }
+.letterhead { display: flex; justify-content: space-between; gap: 1rem; flex-wrap: wrap; margin: 1.2rem 0; }
+.letterhead address { font-style: normal; }
+.letterhead .bank { text-align: right; }
+.letterhead .bank strong { font-size: 1.15rem; color: var(--accent); }
+@media print {
+  body { padding: 0; max-width: none; font-size: 11.5px; color: #000; background: #fff; }
+  .about, .controls, .screen-only { display: none !important; }
+  .kpis div { background: #f3f4f6; }
+  thead { display: table-header-group; }
+  tr { break-inside: avoid; }
+}
