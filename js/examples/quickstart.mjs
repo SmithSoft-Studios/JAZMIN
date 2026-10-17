@@ -6,7 +6,8 @@ import path from 'node:path';
 import {
   JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, compact, createFileHandler, exportFile, exportString, fromCSV, issueFileUnlockToken, issueUnlockToken,
   listFileUnlockTokens, open, openAsync,
-  applyChanges, fileSubmission, from, portableHtml, portableScript, rotateKey, toJSON, toXML, update, write, writeAsync, writeChanges,
+  applyChanges, fileSubmission, from, portableHtml, portableScript, rotateKey, toJSON, toXML, update, verifyPublisher, write, writeAsync,
+  writeChanges,
 } from '../src/index.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-examples-'));
@@ -650,5 +651,13 @@ const { rowCount, values } = chartReader.columnArrays({ customer: 'C074' }, { se
 console.log('42.', rowCount, 'rows;', values.amount.constructor.name, [...values.amount.slice(0, 3)], 'total', values.amount.reduce((a, b) => a + b, 0));
 chartReader.close();
 // 42. 100 rows; Float64Array [ 201, 205, 209 ] total 24950
+
+// 43. Publisher signatures (USER-GUIDE 26): who published a file, that it hasn't changed, and the facts signed with it.
+// A file written here has no publisher signature: 'none'. The repository's test files are signed under a test root no
+// release trusts, so they show as 'signed', with no name or facts, until SmithSoft's root is built in (1.8.0).
+const signedTestFile = new URL('../../spec/fixtures/publisher/signed-plain.jzm', import.meta.url);
+const signed43 = fs.existsSync(signedTestFile) ? verifyPublisher(new Uint8Array(fs.readFileSync(signedTestFile))) : null;
+console.log('43.', verifyPublisher(file).status, ...(signed43 ? [signed43.status, signed43.name] : []));
+// 43. none signed null
 
 fs.rmSync(dir, { recursive: true, force: true });

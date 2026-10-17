@@ -85,6 +85,12 @@ viewer.
 | A page only some keys see (19.7) | 38 | 39 | `shared.html` (HR's Pay review tab) |
 | A small file that opens itself from disk (24.4) | 18 | 20 | `small-file.html` |
 
+## Publisher signatures
+
+| Feature (USER-GUIDE) | JS | .NET | Demo |
+|---|---|---|---|
+| Who published a file, and that it hasn't changed (26) | 43 | 43 | The signed test files in [`spec/fixtures/publisher`](../spec/fixtures/publisher), each with its expected result; a viewer demo follows with SmithSoft's root |
+
 ## Elsewhere
 
 - **TypeScript:** [`js/examples/typescript`](../js/examples/typescript).

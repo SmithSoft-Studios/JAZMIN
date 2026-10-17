@@ -1185,6 +1185,66 @@ export class JazminSubmissionRejectedError extends JazminError {}
 export const TYPES: readonly JazminType[];
 
 export function open(source: string | Uint8Array, options?: ReadOptions): JazminReader;
+
+/**
+ * What verifyPublisher concludes (spec 6.9.8). 'certified': SmithSoft certified the publisher and nothing changed;
+ * 'signed': signed with a key no trusted root certifies (no name or facts shown); 'withdrawn' / 'superseded': still
+ * validly signed, but the publisher took it back or replaced it; 'changed', 'invalid' (with a reason), 'none' (no
+ * publisher signature), 'not-verified' (not a valid file).
+ */
+export type PublisherStatus = 'certified' | 'signed' | 'changed' | 'withdrawn' | 'superseded' | 'invalid' | 'none' | 'not-verified';
+
+/** Who signed: from the publisher's (or a co-signer's) certificate, as SmithSoft verified it. */
+export interface PublisherIdentity {
+  name: string | null;
+  organization: string | null;
+  /** The registration number in the ETSI form, for example 'NTRZA-2020/123456/07'. */
+  registration: string | null;
+  /** ISO 3166-1 country code. */
+  country: string | null;
+  /** The verified domain. */
+  domain: string | null;
+  kind: 'company' | 'individual' | null;
+}
+
+/** Everything but `status`, `reason` and `factsNeedKey` is null ([] for cosigners) unless the result is certified, withdrawn or superseded. */
+export interface PublisherResult extends PublisherIdentity {
+  status: PublisherStatus;
+  /** changed: 'digest' | 'coverage'; invalid: 'block' | 'algorithms' | 'signature' | 'chain' | 'timestamp' | 'log' | 'revoked' | 'facts'; not-verified: 'not-a-valid-file'. */
+  reason: string | null;
+  /** The document code, for example 'JZ-7F3K9-2QD40'. */
+  code: string | null;
+  /** The document kind: 'payslip', 'statement', 'invoice', 'certificate', 'tax-certificate' or another. */
+  documentKind: string | null;
+  /** Which credential signed, as SmithSoft names it. */
+  credential: string | null;
+  /** When the signer says it signed (RFC 3339 UTC). */
+  signedAt: string | null;
+  /** When it was signed, as the time-stamp proves (RFC 3339 UTC). */
+  timestamp: string | null;
+  cosigners: PublisherIdentity[];
+  /** The signed facts; null when there are none, or the file is encrypted and no key that opens it was given. */
+  facts: Record<string, string> | null;
+  /** The file is encrypted: the facts need its key or password. */
+  factsNeedKey: boolean;
+  /** The status stored in the file at signing, when it verifies. */
+  statusAnswer: { status: 'valid' | 'revoked' | 'withdrawn' | 'superseded'; from: string | null } | null;
+  /** How fresh the revocation check is: the newest statement used about the publisher's certificate. */
+  checkedAt: string | null;
+}
+
+export interface VerifyPublisherOptions {
+  /** The file's key, owner key or access key: reads the facts of an encrypted file. */
+  key?: KeyInput;
+  password?: string;
+  /** A revocation list from SmithSoft (a compact JWS). One that doesn't verify is ignored. */
+  revocationList?: string;
+  /** A status answer from SmithSoft's status service for your own random nonce (base64url, 16 bytes or more). */
+  statusAnswer?: { answer: string; nonce: string };
+}
+
+/** Verifies a file's publisher signature (spec 6.9). Only SmithSoft's built-in roots are trusted. */
+export function verifyPublisher(source: string | Uint8Array, options?: VerifyPublisherOptions): PublisherResult;
 /** open() for async code: the file's header region is read with non-blocking reads. */
 export function openAsync(source: string | Uint8Array, options?: ReadOptions): Promise<JazminReader>;
 /** write() for async code. With an async iterable of rows, options.columns is required. */

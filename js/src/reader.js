@@ -372,7 +372,7 @@ export function fileSource(fd, size) {
 }
 
 /** Random-access byte source over a file path or an in-memory buffer. */
-function openSource(source) {
+export function openSource(source) {
   if (source?.[SOURCE]) return source;
   if (typeof source === 'string') {
     const fd = fs.openSync(source, 'r');

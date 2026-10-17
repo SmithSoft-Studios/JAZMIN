@@ -47,6 +47,7 @@ They read and write exactly the same files.
 23. [Several tables in one file](#23-several-tables-in-one-file)
 24. [The viewer: open .jzm files in a browser](#24-the-viewer-open-jzm-files-in-a-browser)
 25. [The command-line tool](#25-the-command-line-tool)
+26. [Publisher signatures: who published a file](#26-publisher-signatures-who-published-a-file)
 
 ---
 
@@ -5108,3 +5109,79 @@ account: one value's rows lie in about 49 chunk(s), about 4,708 KB to read (inde
 - **In access-controlled files,** the advice also lists each partition's
   chunks, and suggests `compact({ regroup: true })` when appends have spread
   a partition over more chunks than its rows need (section 17.4).
+
+## 26. Publisher signatures: who published a file
+
+A file can carry a **publisher signature** (spec 6.9): proof of which company or sole trader published it, checked
+against certificates that SmithSoft issues after verifying who the publisher is. A reader learns:
+
+- **who** published it: the verified name, registration number, country and domain, and any co-signers (an auditor,
+  a second officer);
+- that **not one byte changed** since it was signed;
+- the **facts** the publisher signed with it (for a payslip: the period, gross and net pay), shown by your own
+  interface rather than by the document's pages, which could draw anything;
+- the **document code** (for example `JZ-7F3K9-2QD40`), short enough to type in or read out;
+- whether the publisher has since **withdrawn** or **replaced** it.
+
+Verifying is free, offline, and needs no key; a key or password only adds the facts of an encrypted file.
+
+> **Before 1.8.0:** the libraries verify signatures now, but trust only SmithSoft's roots, which are built in before
+> 1.8.0 is released. Until then a signed file shows as `signed`, never `certified`. The test files in
+> `spec/fixtures/publisher` are signed under a test root that no release trusts.
+
+### 26.1 Verifying
+
+```js
+import { verifyPublisher } from '@smithsoft-studios/jazmin';
+
+const result = verifyPublisher('payslip.jzm', { password: process.env.PAYSLIP_PASSWORD });
+if (result.status === 'certified') {
+  console.log(`${result.name} (${result.registration}), ${result.documentKind} ${result.code}`);
+  console.log(result.facts); // { period: '2026-09', recipient: '••••1234', gross: '18450.00', net: '14102.37', currency: 'ZAR' }
+}
+```
+
+```csharp
+var result = JazminFile.VerifyPublisher("payslip.jzm", new JazminPublisherOptions { Password = password });
+if (result.Status == JazminPublisherStatus.Certified)
+    Console.WriteLine($"{result.Name} ({result.Registration}), {result.DocumentKind} {result.Code}");
+```
+
+The source is a path, a `Buffer` (JavaScript), or a `byte[]` or seekable `Stream` (.NET). The file is never loaded
+whole: the verifier reads its end (the trailer, the signature block, the header) and hashes the rest in 1 MiB chunks.
+
+### 26.2 Results
+
+| `status` | Meaning | What to show |
+|---|---|---|
+| `certified` | Signed by a publisher SmithSoft certified; nothing changed | The name, kind, code and facts, in your own interface |
+| `signed` | Signed, but with a key no trusted root certifies (someone signed it with their own key) | Only "signed by an unknown key, not changed since". **Never** a name: anyone can put any name in their own certificate |
+| `withdrawn`, `superseded` | Validly signed, but the publisher took it back or replaced it | The publisher and that it is withdrawn or replaced |
+| `changed` | Bytes changed after signing (`reason`: `digest` or `coverage`) | Not valid |
+| `invalid` | The signature doesn't hold (`reason`: `block`, `algorithms`, `signature`, `chain`, `timestamp`, `log`, `revoked` or `facts`) | Not valid |
+| `none` | No publisher signature. Appending to, updating or compacting a signed file also removes it | Not signed. If you expected a signature, treat this as a failure |
+| `not-verified` | Not a valid JAZMIN file (`reason`: `not-a-valid-file`) | Not valid |
+
+`signedAt` is the time the signer claims; `timestamp` is the time an independent time-stamp proves, which is what
+counts. A certificate that has expired since still verifies documents signed while it was valid. `checkedAt` says how
+fresh the revocation check is.
+
+### 26.3 Showing a result
+
+- Show it in your application's own interface, never inside the document: a document's page could draw a fake badge.
+- A viewer embedded in someone else's page should not show `certified`; offer SmithSoft's portal instead.
+- For a decision that matters (a loan, a lease), confirm the document with SmithSoft rather than relying only on a
+  check made on the applicant's device.
+
+### 26.4 Revocation and status
+
+A signed file carries the status SmithSoft gave it when it was signed. For a fresher answer, pass what you hold:
+
+- `revocationList`: SmithSoft's revocation list (a compact JWS). A certificate revoked from a date makes documents
+  signed after that date `invalid` (`revoked`); earlier ones stay valid.
+- `statusAnswer: { answer, nonce }` (.NET `StatusAnswer = new JazminStatusAnswer(answer, nonce)`): an answer from
+  SmithSoft's status service for a random nonce of your own (16 bytes or more, base64url), so an old answer can't be
+  replayed.
+
+The most recent statement wins. A list or answer that doesn't verify is ignored, and `checkedAt` then shows how old
+the check is.

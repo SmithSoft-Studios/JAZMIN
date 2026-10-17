@@ -6,6 +6,7 @@ import { readJsonObjects } from './formats/json-stream.js';
 import { parseXml, readXmlRows, xmlPieces, xmlRecord } from './formats/xml.js';
 import { JazminReader, fileSource } from './reader.js';
 import { maskedView } from './masks.js';
+import { verifyPublisher as verifyWith } from './publisher.js';
 import { PREAMBLE_SIZE } from './constants.js';
 import { inferSchema } from './schema.js';
 import { TextColumnInference, textToValue, toObject } from './formats/text.js';
@@ -34,6 +35,15 @@ export {
   JazminAccessExpiredError, JazminError, JazminFileLockedError, JazminFormatError, JazminKeyError, JazminSubmissionRejectedError,
   JazminUnlockRequiredError, JazminValidationError,
 } from './errors.js';
+
+/**
+ * Verifies a file's publisher signature (spec 6.9): who published it, whether it changed since, and its signed facts.
+ * Options: { key } or { password } to read the facts of an encrypted file, { revocationList }, { statusAnswer }. Only
+ * SmithSoft's built-in roots are trusted; there is no way to add another.
+ */
+export function verifyPublisher(source, options) {
+  return verifyWith(source, options);
+}
 
 /** Opens a .jzm file path or Buffer for reading. Options: { key } or { password }. */
 export function open(source, options) {

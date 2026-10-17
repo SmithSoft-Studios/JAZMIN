@@ -3,6 +3,16 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## Unreleased
+
+### Added
+- **Publisher signatures (spec 6.9): `verifyPublisher`** (.NET `JazminFile.VerifyPublisher`) checks who published a
+  file, that it hasn't changed since, the facts signed with it and its document code, with the stored status, a
+  revocation list or an online status answer (User Guide section 26). It reads the file's end and hashes the rest in
+  1 MiB chunks. Only SmithSoft's built-in roots are trusted, and there is no way to add another; they are built in
+  before this release, so until then signed files show as `signed`. Both libraries give the results
+  `spec/fixtures/publisher/expected.json` names for every test file.
+
 ## 1.7.1 - 2026-10-17 (file format 1.0)
 Two fixes to the web viewer, and `estimate()` in the browser reader.
 
