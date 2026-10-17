@@ -923,11 +923,10 @@ a block has other bytes there, or none.
 | −6                            | 2    | reserved     | 0                                                     |
 | −4                            | 4    | magic        | ASCII `JZPS`                                          |
 
-The payload is a `PublisherSignatures` message (`spec/jazmin.proto`),
-unencrypted and uncompressed. A reader that finds the magic MUST check the
-CRC and that the payload starts after the preamble. Readers of releases 1.0
-to 1.7 see the block as unused bytes, as they see a previous header after an
-append (11.2), and read the file as before.
+The payload is a `PublisherSignatures` message (6.9.6), unencrypted and
+uncompressed. Readers of releases 1.0 to 1.7 see the block as unused bytes,
+as they see a previous header after an append (11.2), and read the file as
+before.
 
 **Coverage.** Let `B` be the offset where the block's payload starts. The
 signature covers every byte of the file except the block itself and the
@@ -939,15 +938,28 @@ trailer:
   (7.6.4), by their bytes;
 - and nothing else: the block, the header and (when present) the signature
   section MUST together fill the file from `B` to the trailer, with no other
-  byte. A reader that finds any other byte after `B` MUST treat the file as
-  changed after signing.
+  byte.
 
 The trailer's offsets locate the header and signature sections and are not
 covered: inserting the block moves them. Every section the trailer and the
 catalog point to lies in a covered range, so a reader never shows a byte the
-signature doesn't cover. An append (11.2) changes the preamble's flags and
-writes a new header elsewhere, so a signed file that is appended to, updated
-or compacted is no longer signed until it is signed again.
+signature doesn't cover.
+
+**What a reader concludes about the block:**
+
+- No magic before the header: the file has **no** publisher signature. This
+  is also what an append, update or compaction leaves (they write a new
+  header elsewhere), and what moving bytes between the block and the header
+  leaves: a signed file that is changed this way shows as not signed, never
+  as signed. A relying party that expects a signature MUST treat "none" as
+  failure, and confirms with the certifier (6.9.8).
+- Magic present, but a wrong CRC, an unknown `version`, a `block_length`
+  that would start the payload inside the preamble, or a payload that isn't
+  a valid `PublisherSignatures`: **invalid** (a damaged signature block).
+- Any byte after `B` other than the block, the header and the signature
+  section, or a file digest that doesn't match: **changed**.
+- A file whose last bytes are not a valid trailer is not a valid file (4.2)
+  and is not verified at all.
 
 #### 6.9.2. What Is Signed
 
@@ -960,23 +972,26 @@ D = SHA-256("JAZMIN/1/publisher-file" || file_id || SHA-256(bytes[0, B))
 
 `SignedDocument` (6.9.6) holds `D`, the file id, the document code and kind,
 the facts' digest, the credential that signed, the time the signer claims,
-and **every** signature algorithm used in the block. Each signature is over:
+and `algorithms`: **one entry per signature in the block, in the order of
+`signatures`**. Each signature is over:
 
 ```
 "JAZMIN/1/publisher" || the SignedDocument message's bytes, as stored in PublisherSignatures.signed
 ```
 
-Because every signature signs the list of algorithms, removing one
-signature (to leave only a weaker one) makes the others' list wrong: readers
-MUST treat a block whose signatures don't match `algorithms` exactly as
-invalid. Algorithms in this version: `ES256` (ECDSA P-256 with SHA-256, the
-signature as r || s, 64 bytes). `ML-DSA-65` (FIPS 204) is reserved for a
-later revision.
+Because every signature signs the whole list, removing or reordering any
+signature (to leave a weaker one, or to hide a co-signer) makes the list
+wrong: readers MUST treat a block whose signatures' algorithms don't equal
+`algorithms`, entry for entry, as **invalid**.
 
-**Co-signatures** (role `cosigner`) sign the same bytes with their own
-certified keys: a second officer, or an auditor. Each signature carries its
-certificates, an RFC 3161 timestamp over its value, and a transparency-log
-receipt (6.9.5).
+- The **first** signature has the role `publisher`; there is exactly one.
+  Any others have the role `cosigner` (a second officer, or an auditor), and
+  sign the same bytes with their own certified keys.
+- Algorithms in this version: `ES256` (ECDSA P-256 with SHA-256, the signature
+  as r || s, 64 bytes). `ML-DSA-65` (FIPS 204) is reserved for a later
+  revision.
+- Each signature carries its certificates (6.9.4), an RFC 3161 timestamp over
+  the SHA-256 of its value, and a transparency-log receipt (6.9.5).
 
 #### 6.9.3. Facts, Document Code and Kind
 
@@ -987,11 +1002,14 @@ Their digest is `SHA-256(salt || JCS(facts))`, where `salt` is 16 random
 bytes and `JCS` is the JSON Canonicalization Scheme [RFC8785]. The salt keeps
 a guess of the facts from being confirmed against the digest.
 
-- **Stored** in `PublisherSignatures.facts` as `salt || JCS(facts)`; in an
-  encrypted file, that value is encrypted exactly as the header section's
-  payload is, with the section identifier `publisher/facts` in place of
-  `header` (7.3, 7.4, 7.6.3), so every key that reads the header reads the
-  facts, and nobody else.
+- **Stored** in `PublisherSignatures.facts` as `salt || JCS(facts)`. In a file
+  that isn't encrypted, as it is. In an encrypted file, encrypted with
+  AES-256-GCM (7.1) under the key a section named `publisher/facts` gets in
+  that file (7.3, 7.6.3: the header's key material), uncompressed, stored as
+  `nonce (12) || ciphertext || tag (16)`, with the associated data
+  `file_id || 0x00 0x01 0x00 0x00 || u32(length of salt || JCS(facts)) || "publisher/facts"`
+  (the form of 7.4 for an envelope with codec 0 and the ENCRYPTED flag). Every
+  key that reads the header reads the facts, and nobody else.
 - **Kinds** with their fact names, in this version: `payslip` (`period`,
   `recipient`, `gross`, `net`, `currency`), `statement` (`period`, `account`,
   `closing`, `currency`), `invoice` (`number`, `date`, `buyer`, `total`,
@@ -1001,8 +1019,9 @@ a guess of the facts from being confirmed against the digest.
 - The **document code** is issued by the certifier's signing service:
   `JZ-` followed by two groups of five symbols of Crockford's Base32
   alphabet, separated by `-`, the last symbol a check (the sum of the other
-  nine symbols' values, each multiplied by its position from 1, modulo 32).
-  It is unique per signed document, and short enough to type or read out.
+  nine symbols' values, each multiplied by its position from 1, modulo 32);
+  for example `JZ-7F3K9-2QD40`. It is unique per signed document, and short
+  enough to type or read out.
 
 Readers SHOULD show the facts and the code in their own interface, beside the
 result (6.9.8), never relying on the document's pages to show them.
@@ -1010,66 +1029,93 @@ result (6.9.8), never relying on the document's pages to show them.
 #### 6.9.4. Certificates and Roots
 
 Certificates are X.509 v3 [RFC5280], DER-encoded, limited to this profile;
-readers MUST refuse any other (no general X.509 processing is needed):
+readers MUST refuse any other, with their own strict parser (no general
+X.509 processing is needed):
 
-| Certificate | Key | CA | Key usage | Extended key usage |
-|---|---|---|---|---|
-| Root | ECDSA P-384 | yes, path length 1 | keyCertSign, cRLSign | none |
-| Issuing | ECDSA P-256 | yes, path length 0 | keyCertSign, cRLSign | none |
-| Publisher | ECDSA P-256 | no | digitalSignature | `id-jazmin-document-signing` |
-| Status, confirmation | ECDSA P-256 | no | digitalSignature | `id-jazmin-status`, `id-jazmin-confirmation` |
-| Time-stamping | ECDSA P-256 | no | digitalSignature | id-kp-timeStamping (critical) |
+| Certificate | Key | Signed with | CA | Key usage (critical) | Extended key usage |
+|---|---|---|---|---|---|
+| Root | ECDSA P-384 | ecdsa-with-SHA384 (self) | yes, path length 2 | keyCertSign, cRLSign | none |
+| Issuing | ECDSA P-256 | ecdsa-with-SHA384 (by a root) | yes, path length 0 | keyCertSign, cRLSign | none |
+| Publisher | ECDSA P-256 | ecdsa-with-SHA256 | no | digitalSignature | `id-jazmin-document-signing` |
+| Status | ECDSA P-256 | ecdsa-with-SHA256 | no | digitalSignature | `id-jazmin-status` |
+| Confirmation | ECDSA P-256 | ecdsa-with-SHA256 | no | digitalSignature | `id-jazmin-confirmation` |
+| Log | ECDSA P-256 | ecdsa-with-SHA256 | no | digitalSignature | `id-jazmin-log` |
+| Time-stamping | ECDSA P-256 | ecdsa-with-SHA256 | no | digitalSignature | id-kp-timeStamping (critical) |
 
-- Signatures in certificates are ecdsa-with-SHA384 (root) or
-  ecdsa-with-SHA256; every certificate carries the certificate policy
-  `id-jazmin-policy`.
+- **Extensions** allowed, and no others: basicConstraints (critical),
+  keyUsage (critical), extKeyUsage (critical only for time-stamping),
+  certificatePolicies (holding `id-jazmin-policy`), subjectKeyIdentifier,
+  authorityKeyIdentifier, subjectAltName (publisher certificates only), and
+  `id-jazmin-publisher-kind` (publisher certificates only, non-critical, a
+  UTF8String `company` or `individual`). Each certificate has exactly one of
+  the extended key usages above.
 - **A publisher certificate's subject** holds `commonName` (the verified
   name), `countryName` (ISO 3166-1), and for a company `organizationName` and
   `organizationIdentifier` (2.5.4.97) in the ETSI form [EN319412-1]: `NTR`,
   the country, `-` and the registration number (for example
   `NTRZA-2020/123456/07`), or `LEIXG-` and an LEI. For a sole trader,
-  `organizationName` is the trading name when there is one. The extension
-  `id-jazmin-publisher-kind` holds `company` or `individual`. A verified
-  domain is in subjectAltName as a dNSName.
-- **Chains** are exactly root, issuing, leaf. Readers MUST check each
-  certificate's validity at the time the timestamp proves (6.9.5), its key
-  usage and extended key usage, and that the chain ends in a **trusted
-  root**.
-- **Trusted roots** are those built into the reader. A new root is trusted
-  when a certificate for its key is signed by a trusted root (a
-  cross-certificate) and carried in the block's chain; readers MUST NOT let
-  users or files add roots for this purpose.
+  `organizationName` is the trading name when there is one. A verified domain
+  is in subjectAltName as a dNSName.
+- **Chains** are the leaf, then its issuing certificate, then optionally a
+  **cross-certificate**: a root's key certified by another root. A chain is
+  trusted when the issuing certificate is signed by a trusted root, or by the
+  root in the cross-certificate and the cross-certificate is signed by a
+  trusted root. No other chain is accepted. This is how a new root works
+  before readers have it built in.
+- **Trusted roots** are those built into the reader. Readers MUST NOT let users
+  or files add roots for this purpose.
+- **Validity:** each certificate MUST be valid at the time the signature's
+  timestamp proves (6.9.5), not at the time of reading: a certificate that has
+  since expired still verifies documents signed while it was valid.
 - The object identifiers (`id-jazmin-*`) are under the certifier's arc
-  (IANA Private Enterprise Number, to be assigned); test vectors use an
-  arc under `2.25` [X.667] until then.
+  (IANA Private Enterprise Number, to be assigned). Test vectors use the arc
+  `2.999.1` (ITU-T X.660's arc for examples): `.1` policy, `.2` document
+  signing, `.3` status, `.4` confirmation, `.5` publisher kind, `.6` log.
 
 #### 6.9.5. Time, the Log and Status
 
 - **Timestamp:** an RFC 3161 TimeStampToken [RFC3161] over the SHA-256 of
-  the signature's value, from a time-stamping certificate in the same chain
-  of trust. The time it proves is the time of signing.
-- **Log receipt:** the signature's entry in the certifier's transparency
-  log: a Merkle inclusion proof as in [RFC9162], section 2.1, and the log's
-  signed checkpoint in the C2SP `tlog-checkpoint` form. Checkpoints MAY carry
-  witnesses' cosignatures in the C2SP `tlog-cosignature` form
-  (`PublisherSignatures.witnesses` is reserved for them). The log's leaf is
-  `SHA-256(PublisherSignatures.signed)`: the log holds no facts.
-- **Status at signing:** `PublisherSignatures.status` holds a status answer
-  (below) obtained when the file was signed, with the file digest as its
-  nonce, so the file can be checked later without the network.
-- **Status answers**, **revocation lists** and **confirmation receipts** are
-  JSON Web Signatures [RFC7515] in compact form, algorithm `ES256`, with the
-  signer's certificate chain in `x5c`:
-  - status answer, from a status certificate: `{ "digest", "serial", "code",
-    "status": "valid" | "revoked" | "withdrawn" | "superseded", "from"?,
-    "time", "nonce" }`, where `nonce` is the asker's random value
-    (base64url, at least 16 bytes);
-  - revocation list, from a status certificate: `{ "issued", "next",
-    "revoked": [{ "serial", "from", "reason" }] }`: a certificate revoked
-    "from" a time is invalid for signatures timestamped at or after it;
-  - confirmation receipt, from a confirmation certificate: `{ "party",
-    "digest", "code", "facts", "status", "time" }`, where `facts` is the
-    facts' digest and `party` the relying party's account.
+  the signature's value, signed by a time-stamping certificate whose chain is
+  trusted (6.9.4). The time it proves is the time of signing. A token SHOULD
+  NOT carry certificates the block already carries (6.9.6).
+- **The log:** the certifier's transparency log is a Merkle tree as in
+  [RFC9162] (2.1). The entry for a signature is
+  `"JAZMIN/1/log" || SHA-256(PublisherSignatures.signed) || SHA-256(the signature's value)`,
+  and its leaf hash is `SHA-256(0x00 || entry)`, so each signature, a
+  co-signature included, has its own leaf, and the log holds no facts.
+  Checkpoints are C2SP signed notes [C2SP] in the `tlog-checkpoint` form,
+  signed with signature type `0x02` (ECDSA P-256) by a log certificate's key
+  (6.9.4); the key ID is the first 4 bytes of the SHA-256 of the key's DER
+  SubjectPublicKeyInfo. A signature's **receipt** is a C2SP `tlog-proof@v1`
+  text: the entry's index, its inclusion proof and the checkpoint.
+  Checkpoints MAY carry witnesses' cosignatures (`PublisherSignatures.witnesses`
+  is reserved for them).
+- **Status, revocation lists and receipts** are JSON Web Signatures
+  [RFC7515] in compact form, algorithm `ES256`. The signer's certificate is in
+  `x5c` unless the block already carries it. Times are RFC 3339 UTC strings;
+  digests and nonces are base64url without padding; serial numbers are
+  lowercase hexadecimal; a certificate is named by `{ "issuer", "serial" }`,
+  `issuer` being the base64url SHA-256 of its issuing certificate's DER
+  SubjectPublicKeyInfo.
+  - **Status answer** (status certificate): `{ "digest": D, "certificate":
+    { "issuer", "serial" }, "code", "status": "valid" | "revoked" |
+    "withdrawn" | "superseded", "from"?, "time", "nonce" }`. `nonce` is the
+    asker's random value (at least 16 bytes); a status stored at signing uses
+    `D` as its nonce. It is about the `publisher` signature's certificate.
+  - **Revocation list** (status certificate): `{ "issued", "next",
+    "revoked": [{ "certificate": { "issuer", "serial" }, "from", "reason" }] }`,
+    `reason` one of RFC 5280's reason names (`keyCompromise`,
+    `affiliationChanged`, `superseded`, `cessationOfOperation`,
+    `privilegeWithdrawn`). A certificate revoked from a time is invalid for
+    signatures timestamped at or after it.
+  - **Confirmation receipt** (confirmation certificate): `{ "party", "digest",
+    "code", "facts", "status", "time" }`, `facts` being the facts' digest and
+    `party` the relying party's account.
+- **Which status wins:** of the statements a reader has (the status stored in
+  the block, a revocation list, an online answer for its own nonce), the most
+  recent by its `time` or `issued`. Co-signers' certificates are checked
+  against revocation lists or online answers; the stored status covers only
+  the publisher's.
 - A **withdrawn** or **superseded** document is one its publisher took back
   or replaced; its signature is still valid, and readers SHOULD say so.
 
@@ -1078,9 +1124,10 @@ readers MUST refuse any other (no general X.509 processing is needed):
 ```
 PublisherSignatures {                // the block's payload
   bytes signed = 1;                  // a SignedDocument, encoded: the bytes signatures sign
-  repeated PublisherSignature signatures = 2;
-  bytes facts = 3;                   // salt || JCS(facts), encrypted in encrypted files (6.9.3)
+  repeated PublisherSignature signatures = 2;   // the publisher's first, then any co-signers
+  bytes facts = 3;                   // salt || JCS(facts); encrypted in encrypted files (6.9.3)
   string status = 4;                 // a status answer at signing (6.9.5)
+  repeated bytes certificates = 5;   // DER: certificates shared by the block (time-stamping, status, log), each once
   repeated string witnesses = 15;    // reserved
 }
 SignedDocument {
@@ -1090,7 +1137,7 @@ SignedDocument {
   string code = 4;                   // the document code (6.9.3)
   string kind = 5;                   // the document kind (6.9.3), or ""
   bytes facts_digest = 6;            // SHA-256(salt || JCS(facts)), or empty
-  repeated string algorithms = 7;    // every signature algorithm in the block
+  repeated string algorithms = 7;    // one per signature, in order (6.9.2)
   string credential = 8;             // which credential signed, as the certifier names it
   int64 signed_at = 9;               // as the signer claims it (milliseconds); the timestamp proves it
   bytes holder = 15;                 // reserved: holder binding
@@ -1098,10 +1145,10 @@ SignedDocument {
 PublisherSignature {
   string algorithm = 1;              // "ES256"
   bytes value = 2;                   // the signature (6.9.2)
-  repeated bytes certificates = 3;   // DER: the signer's certificate, then its issuing certificate
+  repeated bytes certificates = 3;   // DER: the leaf, its issuing certificate, optionally a cross-certificate
   string role = 4;                   // "publisher" or "cosigner"
   bytes timestamp = 5;               // RFC 3161 TimeStampToken
-  bytes log_receipt = 6;             // RFC 9162 inclusion proof and checkpoint (6.9.5)
+  string log_receipt = 6;            // C2SP tlog-proof@v1 (6.9.5)
 }
 ```
 
@@ -1109,39 +1156,45 @@ PublisherSignature {
 
 A document's page MAY show a QR code of the form `JZ1:` followed by the Base45
 [RFC9285] encoding of the zlib-compressed bytes of a COSE_Sign1 [RFC9052]
-object, signed with the publisher's key (algorithm ES256), whose payload is a
-CBOR map of `code`, `kind`, `facts` and `signed_at`, and whose key
-identifier is the first 8 bytes of the SHA-256 of the publisher's
-certificate. A reader with that certificate checks it offline; the
-certifier's portal checks it online.
+object, signed with the publisher's key (algorithm ES256, `alg` -7, in the
+protected header with `kid` (label 4): the first 8 bytes of the SHA-256 of the
+publisher's certificate). Its payload is a CBOR map with text keys `code`,
+`kind`, `facts` (a map of text values) and `signed_at` (an integer,
+milliseconds). The QR carries no certificates: a reader needs the publisher's
+certificate (already held, or fetched from the certifier by `kid`) to check
+it offline; the certifier's portal checks it online.
 
 #### 6.9.8. Verifying, and What Readers Show
 
 To verify a file, a reader:
 
-1. finds the block (6.9.1), checks its CRC and that the bytes after `B` are
-   exactly the block, the header and the signature section;
+1. finds the block (6.9.1) and checks its CRC, version and coverage;
 2. computes `D` and checks it against `file_digest`, and the file id;
-3. checks that the signatures' algorithms match `algorithms` exactly, and
-   each signature it knows over `"JAZMIN/1/publisher" || signed`;
-4. checks each chain (6.9.4), the timestamp (inside the certificates'
-   validity), and the log receipt;
-5. checks revocation: the status carried in the block, a revocation list it
-   holds, or an online status answer for its own nonce;
+3. checks that `algorithms` equals the signatures' algorithms, entry for
+   entry, that the first signature is the publisher's, and each signature it
+   knows over `"JAZMIN/1/publisher" || signed`;
+4. checks each signature's chain (6.9.4), timestamp (inside the chain's
+   validity) and log receipt;
+5. checks revocation (6.9.5);
 6. with a key that reads the header, decrypts the facts and checks them
    against `facts_digest`.
 
-Its result is one of: **certified** (with the verified name, the facts and
-the code), **signed** (a valid signature whose chain doesn't end in a trusted
-root), **changed** (a block whose digest or coverage doesn't match), 
-**withdrawn** or **superseded**, **invalid** (with the reason), or **none**.
+Its result is one of:
+
+- **certified**: steps 1 to 5 pass with a trusted chain; with the verified
+  name, kind and code, and the facts when it could read them;
+- **signed**: steps 1 to 3 pass, but the publisher's certificate doesn't chain
+  to a trusted root (including a self-signed certificate: signing with one's
+  own key). Readers MUST NOT show any name, facts or code from it, only that
+  the document was signed by an unknown key and not changed since;
+- **changed**, **withdrawn** or **superseded**, **invalid** (with the reason),
+  or **none** (6.9.1).
 
 Readers that show a result:
 
 - SHOULD show it in their own interface, never inside the document's pages;
   a reader embedded in another site's page SHOULD NOT show a certified
   result, and SHOULD offer the certifier's portal instead;
-- MUST NOT show any name from a chain that doesn't end in a trusted root;
 - SHOULD show how fresh their revocation check is.
 
 **Sealed documents.** Viewers MUST show the pages of a file with a certified
@@ -1154,6 +1207,10 @@ digest.)
 **confirmation** is the certifier's statement, from its own service, that it
 signed this document and of its status, given as a confirmation receipt
 (6.9.5) or on the certifier's portal. Only the certifier can confirm.
+
+**Space.** The block is not a section the catalog lists, so tools that report
+a file's unused bytes SHOULD count it apart. A compaction or rewrite removes
+it (the file must be signed again).
 
 ## 7. Encryption and Keys
 
@@ -2177,9 +2234,10 @@ encoding), `roaring` (Roaring bitmap postings and deletes), `bloom-filter`
 - [RFC9052] CBOR Object Signing and Encryption (COSE): Structures and Process.
 - [RFC9162] Certificate Transparency Version 2.0 (Merkle tree hashing and proofs).
 - [RFC9285] The Base45 Data Encoding.
-- [C2SP] Transparency log checkpoints and cosignatures (c2sp.org/tlog-checkpoint, c2sp.org/tlog-cosignature).
+- [RFC3339] Date and Time on the Internet: Timestamps.
+- [C2SP] Signed notes, transparency log checkpoints, cosignatures and proofs (c2sp.org/signed-note, c2sp.org/tlog-checkpoint, c2sp.org/tlog-cosignature, c2sp.org/tlog-proof).
 - [EN319412-1] ETSI EN 319 412-1: Certificate Profiles; Overview and common data structures.
-- [X.667] ITU-T X.667: UUIDs and their use as object identifiers (the 2.25 arc).
+- [X.660] ITU-T X.660: object identifiers (the 2.999 arc for examples).
 
 ## Appendix A. Worked Example
 
@@ -2301,7 +2359,7 @@ indexes, embedded files) written by both reference implementations.
   the document's facts, code and kind with certificates chaining to a trusted
   root, with RFC 3161 timestamps, transparency-log receipts and the status at
   signing. No reader or writer feature: an append or rewrite by any release
-  leaves the file unsigned until it is signed again.
+  leaves the file without a signature until it is signed again.
 - **Since format 1.0, key services for locks (6.8.2):** `keyService` in the
   package settings and in directory and owner-directory locks. Readers that
   don't know it ignore it; writers of releases 1.0 to 1.6 leave it out when

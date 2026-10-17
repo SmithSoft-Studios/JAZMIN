@@ -54,8 +54,10 @@ A new optional section, the **publisher signature**, in any JAZMIN file (shared 
 6. **The status at signing time:** SmithSoft's signed statement that the certificate was valid then, so the file can
    be checked years later without asking anyone (long-term validation).
 
-Nothing after the section's final trailer is signed: a byte there means **"Changed after it was signed"**, and so does
-a later append or rewrite, until the file is signed again. Viewers never show unsigned bytes as signed. Readers that
+The signature covers every byte of the file except itself and the trailer. A changed byte shows as **"Changed after
+it was signed"**; an append or rewrite leaves the file **without** a signature until it is signed again (which is why
+a relying party that expects a signature treats "none" as a failure, and confirms with SmithSoft). Viewers never show
+unsigned bytes as signed. Readers that
 don't know the section ignore it and open the file as before, without a badge.
 
 The section also has **reserved fields**, unused at first: for **holder binding** (the person a document was made for
@@ -92,7 +94,7 @@ page uses travels in the file. (Files on the internet pinned by their digest may
 ## On paper
 
 A certified document's page can print a **signed QR code**: the facts and the document code, signed with the
-publisher's key and a compact certificate chain. SmithSoft's app checks it offline; the portal checks it online. A
+publisher's key (the reader needs the publisher's certificate, which SmithSoft's app holds or fetches). SmithSoft's app checks it offline; the portal checks it online. A
 photocopy or a photo still verifies; a doctored one fails.
 
 ## Certificates: a strict X.509 profile
