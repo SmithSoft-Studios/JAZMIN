@@ -3,7 +3,10 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
-## Unreleased
+## 1.7.1 - 2026-10-17 (file format 1.0)
+Two fixes to the web viewer, and `estimate()` in the browser reader.
+
+- **Compatibility:** the same file format, no breaking change. The .NET packages have no change beyond the version.
 
 ### Fixed
 - **The viewer in the npm package was missing files:** `viewer/index.html` refers to its icons and app manifest, and
