@@ -1228,7 +1228,8 @@ Console.WriteLine($"{plan.Strategy}: {plan.Cost!.Rows} rows, {plan.Cost.BytesRea
 **Before a query runs: `estimate()`** (1.7). It says what a read would cost without reading a row, from the chunk
 directories, statistics and indexes: `chunks`, `rows` and `bytes` that `find()` reads at most (a `limit` can end it
 sooner), and `countChunks`, `countRows` and `countBytes` that `count()` reads, 0 when indexes or statistics answer it.
-A program can warn before a slow query, or ask first, as JAZMIN Scout does. On the from-disk demo's 1,000,000
+A program can warn before a slow query, or ask first, as JAZMIN Scout does. The browser reader gives the same figures
+(`await reader.estimate(filter)`). On the from-disk demo's 1,000,000
 transactions (sorted by date, indexed by account):
 
 ```js
@@ -4799,6 +4800,7 @@ await JazminBrowser.toJSON(reader, { shape: 'Monthly totals' }); // one of them,
 await reader.columnArrays(null, { select: ['at', 'amount'] }); // arrays for charts (section 9.11)
 reader.submissionKey;                                  // the key to send records back with (section 15.6)
 await reader.explain({ id: 7 }, { analyze: true });    // as in the library (section 9.6)
+await reader.estimate({ id: 7 });                      // what a read will cost, before it runs, as in the library (9.6)
 const pdf = await reader.readFile('terms.pdf');
 // A locked file (section 19.6): files() and locks() say which; unlock with its password and/or unlock token first.
 await reader.unlock('contracts', { password });        // or { unlockToken: 'jzf1-…' } from the owner's key service
