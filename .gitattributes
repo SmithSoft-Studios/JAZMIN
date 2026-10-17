@@ -1,3 +1,5 @@
 *.jzm binary
 *.pdf binary
 *.png binary
+*.der binary
+spec/fixtures/publisher/log/*.txt text eol=lf
