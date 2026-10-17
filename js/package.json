@@ -43,7 +43,12 @@
     "viewer/index.html",
     "viewer/viewer.js",
     "viewer/viewer.css",
-    "viewer/sandbox.js"
+    "viewer/sandbox.js",
+    "viewer/sw.js",
+    "viewer/manifest.webmanifest",
+    "viewer/icon-32.png",
+    "viewer/icon-192.png",
+    "viewer/icon-512.png"
   ],
   "engines": {
     "node": ">=22"

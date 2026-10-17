@@ -5,6 +5,15 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased
 
+### Fixed
+- **The viewer in the npm package was missing files:** `viewer/index.html` refers to its icons and app manifest, and
+  registers `sw.js`, none of which npm 1.7.0 shipped. Served from `node_modules`, the tab icon and manifest failed to
+  load and the viewer couldn't be installed or work offline. The package now has them (about 175 KB), and a test
+  checks that it has every file the viewer refers to.
+- **The viewer's page tabs after `jazmin.navigate()`:** a document page that went to another of the document's pages
+  left the old tab highlighted (clicking it then did nothing) and kept the old page's table, buttons and network note.
+  The viewer now shows that page as its tab. A sub-page that isn't a tab leaves the tabs as they are.
+
 ### Added
 - **`estimate()` in the browser reader:** `await reader.estimate(filter, { offset })` says what a read will cost before
   it runs, with the same figures as the Node and .NET libraries (chunks, rows and bytes `find()` reads at most, and

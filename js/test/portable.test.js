@@ -72,3 +72,26 @@ test('portableScript: run as a page runs it, the script gives back the file, sti
   vm.runInNewContext(script, worker);
   assert.equal(worker.JazminScripts['js-key.jzm'].name, 'js-key.jzm');
 });
+
+test('the npm package has every file the viewer refers to: served from node_modules it is whole (icons, manifest, offline)', () => {
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const files = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).files;
+  const shipped = (rel) => files.some((f) => rel === f || rel.startsWith(`${f}/`));
+  const viewer = path.join(root, 'viewer');
+  const html = fs.readFileSync(path.join(viewer, 'index.html'), 'utf8');
+  const sw = fs.readFileSync(path.join(viewer, 'sw.js'), 'utf8');
+  const referred = new Set([
+    ...[...html.matchAll(/(?:href|src)="([^":?#]+)"/g)].map((m) => m[1]),
+    ...JSON.parse(sw.match(/const APP = (\[[^\]]*\])/)[1].replace(/'/g, '"')),
+    ...JSON.parse(fs.readFileSync(path.join(viewer, 'manifest.webmanifest'), 'utf8')).icons.map((i) => i.src),
+    'sw.js',
+  ]);
+  const missing = [];
+  for (const ref of referred) {
+    if (ref === './' || ref.startsWith('#')) continue;
+    const rel = path.posix.normalize(`viewer/${ref}`);
+    if (!fs.existsSync(path.join(root, rel))) missing.push(`${rel} (not in the repository)`);
+    else if (!shipped(rel)) missing.push(rel);
+  }
+  assert.deepEqual(missing, []);
+});
