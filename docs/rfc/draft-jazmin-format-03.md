@@ -1052,8 +1052,10 @@ X.509 processing is needed):
 
 - **Extensions** allowed, and no others: basicConstraints (critical),
   keyUsage (critical), extKeyUsage (critical only for time-stamping),
-  certificatePolicies (holding `id-jazmin-policy`), subjectKeyIdentifier,
-  authorityKeyIdentifier, subjectAltName (publisher certificates only), and
+  certificatePolicies (holding `id-jazmin-policy`), subjectKeyIdentifier
+  (REQUIRED in root, cross- and issuing certificates), authorityKeyIdentifier
+  (REQUIRED in every certificate but a root), subjectAltName (publisher
+  certificates only), and
   `id-jazmin-publisher-kind` (publisher certificates only, non-critical, a
   UTF8String `company` or `individual`). Each leaf certificate (publisher,
   status, confirmation, log, time-stamping) has exactly one of the extended
@@ -1075,9 +1077,11 @@ X.509 processing is needed):
   before readers have it built in.
 - **Trusted roots** are those built into the reader. Readers MUST NOT let users
   or files add roots for this purpose.
-- **Validity:** each certificate MUST be valid at the time the signature's
+- **Validity:** a signature's certificates MUST be valid at the time its
   timestamp proves (6.9.5), not at the time of reading: a certificate that has
-  since expired still verifies documents signed while it was valid.
+  since expired still verifies documents signed while it was valid. A status
+  or confirmation certificate MUST be valid at the `time` (or `issued`) of the
+  statement it signed.
 - The object identifiers (`id-jazmin-*`) are under the certifier's arc
   (IANA Private Enterprise Number, to be assigned). Test vectors use the arc
   `2.999.1` (ITU-T X.660's arc for examples): `.1` policy, `.2` document
@@ -1087,7 +1091,9 @@ X.509 processing is needed):
 
 - **Timestamp:** an RFC 3161 TimeStampToken [RFC3161] over the SHA-256 of
   the signature's value, signed by a time-stamping certificate whose chain is
-  trusted (6.9.4). The time it proves is the time of signing. A token SHOULD
+  trusted (6.9.4), with `id-jazmin-policy` as its TSTInfo policy. The time it
+  proves is the time of signing; `signed_at` is only what the signer claimed,
+  and readers use the timestamp. A token SHOULD
   NOT carry certificates the block already carries (6.9.6).
 - **The log:** the certifier's transparency log is a Merkle tree as in
   [RFC9162] (2.1). The entry for a signature is
@@ -1098,7 +1104,8 @@ X.509 processing is needed):
   signed with signature type `0x02` (ECDSA P-256: a DER-encoded ECDSA
   signature over the SHA-256 of the note's text) by a log certificate's key
   (6.9.4). The log's **origin**, which is also the key name on the signature
-  line, is the log certificate's `commonName`; the key ID is the first 4
+  line, is the log certificate's `commonName`, which MUST be a valid C2SP
+  origin (no spaces or `+`, for example `log.smithsoft.co.za/jazmin`); the key ID is the first 4
   bytes of the SHA-256 of the key's DER SubjectPublicKeyInfo. The log
   certificate MUST be valid at the time the signature's timestamp proves. A signature's **receipt** is a C2SP `tlog-proof@v1`
   text: the entry's index, its inclusion proof and the checkpoint.
@@ -1134,6 +1141,8 @@ X.509 processing is needed):
   - *Is the document withdrawn or superseded?* Only status answers say so (a
     list doesn't): the most recent of the stored status and online answers.
   - `from` is REQUIRED with `revoked`, `withdrawn` and `superseded`.
+  - A stored status that doesn't verify, or lacks a required field, is ignored,
+    as if the block had none.
 - A **withdrawn** or **superseded** document is one its publisher took back
   or replaced; its signature is still valid, and readers SHOULD say so.
 
@@ -1211,7 +1220,9 @@ Its result is one of:
   or **none** (6.9.1).
 
 An **invalid** result names its reason: `block` (a damaged block, 6.9.1),
-`algorithms`, `signature`, `chain` (including a co-signer whose chain isn't
+`algorithms` (the block's list of signatures: algorithms that don't match, a
+first signature that isn't the publisher's, more than one publisher, or an
+unknown role), `signature`, `chain` (including a co-signer whose chain isn't
 trusted beside a trusted publisher), `timestamp`, `log`, `revoked` or `facts`.
 
 Readers that show a result:
