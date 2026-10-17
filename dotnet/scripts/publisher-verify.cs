@@ -4,9 +4,9 @@
 #:property PublishAot=false
 // Checks the publisher-signature test vectors in spec/fixtures/publisher (written by publisher-vectors.cs): verifies
 // every file as spec 6.9.8 says, with nothing but the files and expected.json's inputs (the trusted root, the time, the
-// revocation list, the log's key and the files' keys), and compares each result with expected.json. Then checks the
-// status answers, the confirmation receipt, the QR string and the log, and opens every file with this repository's
-// library, which knows nothing of 6.9, to show that it still reads the rows (6.9.1).
+// revocation list and the files' keys), and compares each result with expected.json. Then checks the status answers,
+// the confirmation receipt, the QR string and the log, and opens every file with this repository's library, which
+// knows nothing of 6.9, to show that it still reads the rows (6.9.1).
 //
 //   dotnet run -c Release dotnet/scripts/publisher-verify.cs [-- <folder>]
 using System.Buffers.Binary;
@@ -25,7 +25,7 @@ var dir = args.Length > 0 ? args[0] : Path.Combine(Util.FindRepo(), "spec", "fix
 var expected = JsonNode.Parse(File.ReadAllText(Path.Combine(dir, "expected.json")))!.AsObject();
 var trust = new Trust(
     expected["trustedRoots"]!.AsArray().Select(p => Der.Parse(File.ReadAllBytes(Path.Combine(dir, (string)p!)))).ToList(),
-    (string)expected["log"]!["verifierKey"]!, Util.At((string)expected["verifyAt"]!));
+    Util.At((string)expected["verifyAt"]!));
 var failures = 0;
 var counts = new SortedDictionary<string, int>();
 void Count(string what, int n = 1) => counts[what] = counts.GetValueOrDefault(what) + n;
@@ -44,18 +44,35 @@ void Check(string label, Func<string?> check)
     Console.WriteLine($"{(problem is null ? "ok  " : "FAIL")} {label}{(problem is null ? "" : $"\n       {problem}")}");
 }
 
+// Whether .NET's own certificate class reads the test certificates' extensions (it could not with a 2.25 UUID arc).
+Check("X509Certificate2 reads every test certificate's extensions (arc 2.999.1)", () =>
+{
+    foreach (var path in Directory.GetFiles(Path.Combine(dir, "pki"), "*.der"))
+    {
+        var c = X509CertificateLoader.LoadCertificate(File.ReadAllBytes(path));
+        var oids = c.Extensions.Select(e => e.Oid!.Value).ToList();
+        if (oids.Any(string.IsNullOrEmpty)) return Path.GetFileName(path);
+        Count("certificates X509Certificate2 reads");
+    }
+    return null;
+});
+
 // The revocation list the verifier holds (6.9.5).
 Check("revocation list: a JWS from a status certificate chaining to the trusted root", () =>
 {
-    var (payload, _) = trust.Jws(File.ReadAllText(Path.Combine(dir, (string)expected["revocationList"]!)).Trim(), Oids.Status, "issued");
+    var (payload, _) = trust.Jws(File.ReadAllText(Path.Combine(dir, (string)expected["revocationList"]!)).Trim(), Oids.Status, "issued", []);
+    trust.ListIssued = Util.At((string)payload["issued"]!);
     foreach (var entry in payload["revoked"]!.AsArray())
-        trust.Revoked[(string)entry!["serial"]!] = Util.At((string)entry["from"]!);
+    {
+        if (!Util.Reasons.Contains((string?)entry!["reason"])) return $"reason {entry["reason"]}";
+        trust.Revoked[Util.Name(entry["certificate"]!)] = Util.At((string)entry["from"]!);
+    }
     Count("JWS verified");
     return trust.Revoked.Count == expected["revocations"]!.AsArray().Count ? null : "unexpected entries";
 });
 
 // Every file, without a key and with each of its keys.
-var digests = new Dictionary<string, (byte[] D, string Code, byte[] FactsDigest, byte[] Leaf)>();
+var digests = new Dictionary<string, (byte[] D, string Code, byte[] FactsDigest)>();
 foreach (var fixture in expected["fixtures"]!.AsArray().Select(f => f!.AsObject()))
 {
     var name = (string)fixture["file"]!;
@@ -64,7 +81,7 @@ foreach (var fixture in expected["fixtures"]!.AsArray().Select(f => f!.AsObject(
     var keys = fixture["keys"]!.AsObject();
     Check($"{name}: {want["status"]}{(want["reason"] is null ? "" : $" ({want["reason"]})")}, no key", () =>
     {
-        var result = Verifier.Verify(bytes, trust, null, out var info);
+        var result = Verifier.Verify(bytes, trust, null, counts, out var info);
         if (info is not null) digests[name] = info.Value;
         var noKey = (JsonObject)want.DeepClone();
         if (noKey["factsNeedKey"] is JsonValue v && (bool)v) noKey["facts"] = null;
@@ -74,7 +91,7 @@ foreach (var fixture in expected["fixtures"]!.AsArray().Select(f => f!.AsObject(
     foreach (var (kind, value) in keys)
         Check($"{name}: {want["status"]}, with the {kind}", () =>
         {
-            var result = Verifier.Verify(bytes, trust, new FileKey(kind, (string)value!), out _);
+            var result = Verifier.Verify(bytes, trust, new FileKey(kind, (string)value!), new SortedDictionary<string, int>(), out _);
             Count("files verified with a key");
             return Util.Same(result, want);
         });
@@ -100,20 +117,20 @@ foreach (var fixture in expected["fixtures"]!.AsArray().Select(f => f!.AsObject(
 foreach (var answer in expected["statusAnswers"]!.AsArray().Select(a => a!.AsObject()))
     Check($"{answer["file"]}: an online status answer for {answer["for"]} and its own nonce", () =>
     {
-        var (payload, _) = trust.Jws(File.ReadAllText(Path.Combine(dir, (string)answer["file"]!)).Trim(), Oids.Status, "time");
+        var (payload, _) = trust.Jws(File.ReadAllText(Path.Combine(dir, (string)answer["file"]!)).Trim(), Oids.Status, "time", []);
         var file = digests[(string)answer["for"]!];
         Count("JWS verified");
         return (string?)payload["nonce"] != (string?)answer["nonce"] ? "nonce"
             : (string?)payload["digest"] != Util.B64Url(file.D) ? "digest"
             : (string?)payload["code"] != file.Code ? "code"
-            : (string?)payload["serial"] != (string?)answer["serial"] ? "serial"
+            : !JsonNode.DeepEquals(payload["certificate"], answer["certificate"]) ? "certificate"
             : (string?)payload["status"] != (string?)answer["status"] ? "status"
             : Util.B64UrlDecode((string)payload["nonce"]!).Length < 16 ? "nonce shorter than 16 bytes" : null;
     });
 foreach (var receipt in expected["confirmationReceipts"]!.AsArray().Select(a => a!.AsObject()))
     Check($"{receipt["file"]}: a confirmation receipt for {receipt["for"]}", () =>
     {
-        var (payload, _) = trust.Jws(File.ReadAllText(Path.Combine(dir, (string)receipt["file"]!)).Trim(), Oids.Confirmation, "time");
+        var (payload, _) = trust.Jws(File.ReadAllText(Path.Combine(dir, (string)receipt["file"]!)).Trim(), Oids.Confirmation, "time", []);
         var file = digests[(string)receipt["for"]!];
         Count("JWS verified");
         return (string?)payload["digest"] != Util.B64Url(file.D) ? "digest"
@@ -129,13 +146,13 @@ foreach (var stapled in Directory.GetFiles(Path.Combine(dir, "status"), "*.statu
         return block?.Status == File.ReadAllText(stapled).Trim() ? null : "differs";
     });
 
-// The QR form (6.9.7).
+// The QR form (6.9.7): the publisher's certificate comes from the file it was printed from.
 foreach (var qr in expected["qr"]!.AsArray().Select(a => a!.AsObject()))
     Check($"{qr["file"]}: a COSE_Sign1 signed with the publisher's key, matching {qr["for"]}", () =>
     {
         var text = File.ReadAllText(Path.Combine(dir, (string)qr["file"]!)).Trim();
         var block = Verifier.ReadBlock(File.ReadAllBytes(Path.Combine(dir, (string)qr["for"]!)))!;
-        var certificate = Der.Parse(block.Signatures.Single(s => s.Role == "publisher").Certificates[0]);
+        var certificate = Der.Parse(block.Signatures[0].Certificates[0]);
         var (kid, payload) = Qr.Verify(text, certificate);
         var signed = Verifier.ParseSignedDocument(block.Signed);
         Count("QR codes verified");
@@ -147,22 +164,27 @@ foreach (var qr in expected["qr"]!.AsArray().Select(a => a!.AsObject()))
     });
 
 // The log (6.9.5): the checkpoint, the entries and every receipt.
-Check("log/checkpoint.txt: signed by the test log key; leaves.json and the proofs agree with it and with the blocks", () =>
+Check("log/checkpoint.txt: signed by the test log certificate's key; leaves.json and the proofs agree with it and with the blocks", () =>
 {
-    var checkpoint = File.ReadAllText(Path.Combine(dir, "log", "checkpoint.txt"));
-    var (size, root) = trust.Checkpoint(checkpoint) ?? throw new InvalidOperationException("checkpoint does not verify");
+    var pool = new[] { "test-log.der", "test-issuing.der" }.Select(n => Der.Parse(File.ReadAllBytes(Path.Combine(dir, "pki", n)))).ToList();
+    var (size, root) = trust.Checkpoint(File.ReadAllText(Path.Combine(dir, "log", "checkpoint.txt")), pool, trust.Now) ?? throw new InvalidOperationException("checkpoint does not verify");
     var leaves = JsonNode.Parse(File.ReadAllText(Path.Combine(dir, "log", "leaves.json")))!.AsObject();
     var entries = leaves["entries"]!.AsArray();
     if (size != entries.Count || size != (int)expected["log"]!["treeSize"]! || Convert.ToBase64String(root) != (string?)leaves["rootHash"]) return "tree size or root";
-    foreach (var entry in entries.Select(e => e!.AsObject()))
+    foreach (var e in entries.Select(e => e!.AsObject()))
     {
-        var file = (string)entry["file"]!;
-        var role = (string)entry["role"]!;
-        var proof = File.ReadAllBytes(Path.Combine(dir, "log", $"{Path.GetFileNameWithoutExtension(file)}.{role}.proof.txt"));
+        var file = (string)e["file"]!;
+        var role = (string)e["role"]!;
+        var proof = File.ReadAllText(Path.Combine(dir, "log", $"{Path.GetFileNameWithoutExtension(file)}.{role}.proof.txt"));
+        var entry = Convert.FromBase64String((string)e["entry"]!);
         var block = Verifier.ReadBlock(File.ReadAllBytes(Path.Combine(dir, file)))!;
-        if (!block.Signatures.Single(s => s.Role == role).LogReceipt.AsSpan().SequenceEqual(proof)) return $"{file} {role}: the proof file differs from the block's receipt";
-        if (Convert.ToBase64String(SHA256.HashData(block.Signed)) != (string?)entry["leaf"]) return $"{file}: leaf";
-        if (trust.Receipt(proof, block.Signed) != (int)entry["index"]!) return $"{file} {role}: receipt";
+        if ((bool)e["inFile"]!)
+        {
+            var signature = block.Signatures.Single(s => s.Role == role);
+            if (signature.LogReceipt != proof) return $"{file} {role}: the proof file differs from the block's receipt";
+            if (!Merkle.Entry(block.Signed, signature.Value).AsSpan().SequenceEqual(entry)) return $"{file} {role}: entry";
+        }
+        if (trust.Receipt(proof, entry, pool, trust.Now) != (int)e["index"]!) return $"{file} {role}: receipt";
         Count("log receipts checked");
     }
     return null;
@@ -188,138 +210,149 @@ return failures == 0 ? 0 : 1;
 
 static class Oids
 {
-    public const string Arc = "2.25.75298837481848457984537899361864557046";
+    public const string Arc = "2.999.1";
     public const string Policy = Arc + ".1";
     public const string DocumentSigning = Arc + ".2";
     public const string Status = Arc + ".3";
     public const string Confirmation = Arc + ".4";
     public const string PublisherKind = Arc + ".5";
+    public const string Log = Arc + ".6";
     public const string TimeStamping = "1.3.6.1.5.5.7.3.8";
     public const string P256 = "1.2.840.10045.3.1.7";
     public const string P384 = "1.3.132.0.34";
     public const string EcdsaSha256 = "1.2.840.10045.4.3.2";
     public const string EcdsaSha384 = "1.2.840.10045.4.3.3";
     public const string Sha256 = "2.16.840.1.101.3.4.2.1";
+    public const string BasicConstraints = "2.5.29.19", KeyUsage = "2.5.29.15", ExtKeyUsage = "2.5.29.37", Policies = "2.5.29.32",
+        SubjectKeyId = "2.5.29.14", AuthorityKeyId = "2.5.29.35", SubjectAltName = "2.5.29.17";
 }
 
 sealed record FileKey(string Kind, string Text);
 
-sealed record Signature(string Algorithm, byte[] Value, List<byte[]> Certificates, string Role, byte[] Timestamp, byte[] LogReceipt);
+sealed record Signature(string Algorithm, byte[] Value, List<byte[]> Certificates, string Role, byte[] Timestamp, string LogReceipt);
 
-sealed record Block(byte[] Signed, List<Signature> Signatures, byte[] Facts, string Status, long B, Trailer Trailer, int End);
+sealed record Block(byte[] Signed, List<Signature> Signatures, byte[] Facts, string Status, List<byte[]> Certificates, long B, Trailer Trailer);
 
 sealed record SignedDocument(uint Version, byte[] FileId, byte[] FileDigest, string Code, string Kind, byte[] FactsDigest, List<string> Algorithms, string Credential, long SignedAt);
 
 sealed record Trailer(long HeaderOffset, int HeaderLength, long KeySlotsOffset, int KeySlotsLength, long SignatureOffset, int SignatureLength);
 
-/// <summary>What the verifier trusts: the built-in roots, the log's key, the revocation list it holds, and its clock.</summary>
-sealed class Trust(List<Der> roots, string logVerifierKey, DateTimeOffset now)
+sealed record Chain(bool Trusted, string? Problem, Der Leaf, List<Der> Certificates)
+{
+    public bool ValidAt(DateTimeOffset t) => Certificates.All(c => t >= c.NotBefore && t <= c.NotAfter);
+}
+
+/// <summary>What the verifier trusts: the built-in roots, the revocation list it holds, and its clock.</summary>
+sealed class Trust(List<Der> roots, DateTimeOffset now)
 {
     public DateTimeOffset Now => now;
     public Dictionary<string, DateTimeOffset> Revoked { get; } = new();
-    private readonly (string Name, byte[] Id, ECDsa Key) _log = ParseVerifierKey(logVerifierKey);
-
-    /// <summary>name+hex(key id)+base64(0x02 || SPKI): a C2SP signed-note ECDSA verifier key.</summary>
-    private static (string, byte[], ECDsa) ParseVerifierKey(string vkey)
-    {
-        var parts = vkey.Split('+', 3);
-        var raw = Convert.FromBase64String(parts[2]);
-        if (raw[0] != 0x02) throw new InvalidOperationException("Not an ECDSA (0x02) verifier key");
-        var key = ECDsa.Create();
-        key.ImportSubjectPublicKeyInfo(raw.AsSpan(1), out _);
-        var id = SHA256.HashData(raw.AsSpan(1))[..4];
-        if (Convert.ToHexString(id).ToLowerInvariant() != parts[1]) throw new InvalidOperationException("Verifier key id");
-        return (parts[0], id, key);
-    }
+    public DateTimeOffset? ListIssued { get; set; }
 
     /// <summary>
-    /// A chain as a block or a JWS carries it: the signer's certificate, then its issuing certificate (6.9.4). Problem:
-    /// something outside the profile. Trusted: the issuing certificate is signed by a trusted root.
+    /// A chain as a signature lists it (6.9.4): the leaf, its issuing certificate, optionally a cross-certificate.
+    /// Trusted when it reaches a built-in root; Problem when a trusted chain is outside the profile.
     /// </summary>
-    public (bool Trusted, string? Problem, Der Leaf, Der Issuing, Der? Root) Chain(List<byte[]> ders, string eku)
+    public Chain Check(List<byte[]> listed, string eku)
     {
-        if (ders.Count != 2) return (false, "the chain is not a leaf and its issuing certificate", null!, null!, null);
-        Der leaf, issuing;
-        try
-        {
-            leaf = Der.Parse(ders[0]);
-            issuing = Der.Parse(ders[1]);
-        }
-        catch (Exception error)
-        {
-            return (false, $"not a certificate of the profile: {error.Message}", null!, null!, null);
-        }
-        var problem = Profile.Check(leaf, Profile.Role.Leaf, eku) ?? Profile.Check(issuing, Profile.Role.Issuing, null);
-        if (problem is not null) return (false, problem, leaf, issuing, null);
-        if (!leaf.Issuer.AsSpan().SequenceEqual(issuing.Subject) || !Profile.SignedBy(leaf, issuing))
-            return (false, "the leaf is not signed by the issuing certificate", leaf, issuing, null);
-        var root = roots.FirstOrDefault(r => issuing.Issuer.AsSpan().SequenceEqual(r.Subject) && Profile.SignedBy(issuing, r));
-        if (root is null) return (false, null, leaf, issuing, null);
-        problem = Profile.Check(root, Profile.Role.Root, null);
-        return (problem is null, problem, leaf, issuing, root);
+        var leaf = Der.Parse(listed[0]);
+        var untrusted = new Chain(false, null, leaf, [leaf]);
+        if (listed.Count is < 2 or > 3) return untrusted; // a self-signed certificate alone, or no chain the profile has
+        var issuing = Der.Parse(listed[1]);
+        var cross = listed.Count == 3 ? Der.Parse(listed[2]) : null;
+        if (!leaf.Issuer.AsSpan().SequenceEqual(issuing.Subject) || !Profile.SignedBy(leaf, issuing)) return untrusted;
+        Der? root;
+        if (cross is null) root = roots.FirstOrDefault(r => issuing.Issuer.AsSpan().SequenceEqual(r.Subject) && Profile.SignedBy(issuing, r));
+        else if (issuing.Issuer.AsSpan().SequenceEqual(cross.Subject) && Profile.SignedBy(issuing, cross))
+            root = roots.FirstOrDefault(r => cross.Issuer.AsSpan().SequenceEqual(r.Subject) && Profile.SignedBy(cross, r));
+        else root = null;
+        if (root is null) return untrusted;
+        var problem = Profile.Check(leaf, Profile.Role.Leaf, eku) ?? Profile.Check(issuing, Profile.Role.Issuing, null)
+            ?? (cross is null ? null : Profile.Check(cross, Profile.Role.Cross, null)) ?? Profile.Check(root, Profile.Role.Root, null);
+        return new Chain(true, problem, leaf, cross is null ? [leaf, issuing, root] : [leaf, issuing, cross, root]);
     }
 
-    public static bool ValidAt(Der c, DateTimeOffset t) => t >= c.NotBefore && t <= c.NotAfter;
+    /// <summary>The chain of a certificate the block shares (6.9.6): its issuing certificate and any cross-certificate, found among the block's certificates.</summary>
+    public Chain Build(Der leaf, List<Der> pool, string eku)
+    {
+        var issuing = pool.FirstOrDefault(c => c.Subject.AsSpan().SequenceEqual(leaf.Issuer) && Profile.SignedBy(leaf, c));
+        if (issuing is null) return Check([leaf.Raw], eku);
+        if (roots.Any(r => issuing.Issuer.AsSpan().SequenceEqual(r.Subject))) return Check([leaf.Raw, issuing.Raw], eku);
+        var cross = pool.FirstOrDefault(c => c.Subject.AsSpan().SequenceEqual(issuing.Issuer) && Profile.SignedBy(issuing, c));
+        return Check(cross is null ? [leaf.Raw, issuing.Raw] : [leaf.Raw, issuing.Raw, cross.Raw], eku);
+    }
 
-    /// <summary>An RFC 3161 token over SHA-256(value) from a trusted time-stamping certificate (6.9.5): the time it proves.</summary>
-    public DateTimeOffset? Timestamp(byte[] token, byte[] value)
+    /// <summary>An RFC 3161 token over SHA-256(value), by a time-stamping certificate whose chain is trusted (6.9.5): the time it proves.</summary>
+    public DateTimeOffset? Timestamp(byte[] token, byte[] value, List<Der> pool)
     {
         if (token.Length == 0 || !Rfc3161TimestampToken.TryDecode(token, out var decoded, out var used) || used != token.Length) return null;
         if (decoded.TokenInfo.HashAlgorithmId.Value != Oids.Sha256) return null;
-        if (!decoded.VerifySignatureForHash(SHA256.HashData(value), HashAlgorithmName.SHA256, out var signer, null) || signer is null) return null;
-        var tsa = Der.Parse(signer.RawData);
-        var issuing = decoded.AsSignedCms().Certificates.Cast<X509Certificate2>().Select(c => Der.Parse(c.RawData))
-            .FirstOrDefault(c => c.Subject.AsSpan().SequenceEqual(tsa.Issuer));
-        if (issuing is null) return null;
-        var chain = Chain([tsa.Raw, issuing.Raw], Oids.TimeStamping);
+        var candidates = new X509Certificate2Collection();
+        foreach (var c in pool) candidates.Add(X509CertificateLoader.LoadCertificate(c.Raw));
+        if (!decoded.VerifySignatureForHash(SHA256.HashData(value), HashAlgorithmName.SHA256, out var signer, candidates) || signer is null) return null;
+        var chain = Build(Der.Parse(signer.RawData), pool, Oids.TimeStamping);
         var at = decoded.TokenInfo.Timestamp;
-        return chain.Trusted && ValidAt(chain.Leaf, at) && ValidAt(chain.Issuing, at) && ValidAt(chain.Root!, at) ? at : null;
+        return chain.Trusted && chain.Problem is null && chain.ValidAt(at) ? at : null;
     }
 
-    /// <summary>A compact JWS (ES256, x5c) from a trusted certificate with this extended key usage, valid at the payload's time.</summary>
-    public (JsonObject Payload, Der Signer) Jws(string jws, string eku, string timeField)
+    /// <summary>
+    /// A compact JWS (ES256) from a trusted certificate with this extended key usage, valid at the payload's time. The
+    /// certificate is in x5c, or (when x5c is left out) among the block's certificates.
+    /// </summary>
+    public (JsonObject Payload, Der Signer) Jws(string jws, string eku, string timeField, List<Der> pool)
     {
         var parts = jws.Split('.');
         if (parts.Length != 3) throw new InvalidOperationException("not a compact JWS");
         var header = JsonNode.Parse(Util.B64UrlDecode(parts[0]))!.AsObject();
         if ((string?)header["alg"] != "ES256") throw new InvalidOperationException("alg");
-        var chain = Chain(header["x5c"]!.AsArray().Select(c => Convert.FromBase64String((string)c!)).ToList(), eku);
-        if (!chain.Trusted) throw new InvalidOperationException($"x5c: {chain.Problem ?? "not trusted"}");
-        using var key = chain.Leaf.Key();
+        var chains = header["x5c"] is JsonArray x5c
+            ? [Check(x5c.Select(c => Convert.FromBase64String((string)c!)).ToList(), eku)]
+            : pool.Where(c => Profile.Eku(c) == eku).Select(c => Build(c, pool, eku)).ToList();
         byte[] input = Encoding.ASCII.GetBytes(parts[0] + "." + parts[1]), signature = Util.B64UrlDecode(parts[2]);
-        if (!key.VerifyData(input, signature, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation))
-            throw new InvalidOperationException("signature");
-        var payload = JsonNode.Parse(Util.B64UrlDecode(parts[1]))!.AsObject();
-        var at = Util.At((string)payload[timeField]!);
-        if (!ValidAt(chain.Leaf, at) || !ValidAt(chain.Issuing, at) || at > now) throw new InvalidOperationException("time");
-        return (payload, chain.Leaf);
+        foreach (var chain in chains.Where(c => c.Trusted && c.Problem is null))
+        {
+            using var key = chain.Leaf.Key();
+            if (!key.VerifyData(input, signature, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation)) continue;
+            var payload = JsonNode.Parse(Util.B64UrlDecode(parts[1]))!.AsObject();
+            var at = Util.At((string)payload[timeField]!);
+            if (!chain.ValidAt(at) || at > now) throw new InvalidOperationException("time");
+            return (payload, chain.Leaf);
+        }
+        throw new InvalidOperationException("no trusted certificate signed it");
     }
 
-    /// <summary>A C2SP checkpoint signed by the log: its tree size and root hash.</summary>
-    public (long Size, byte[] Root)? Checkpoint(string note)
+    /// <summary>A C2SP checkpoint signed (type 0x02) by a trusted log certificate's key valid at <paramref name="at"/>: its tree size and root hash.</summary>
+    public (long Size, byte[] Root)? Checkpoint(string note, List<Der> pool, DateTimeOffset at)
     {
         var split = note.IndexOf("\n\n", StringComparison.Ordinal);
         if (split < 0) return null;
         var body = note[..(split + 1)];
-        var verified = false;
-        foreach (var line in note[(split + 2)..].Split('\n', StringSplitOptions.RemoveEmptyEntries))
-        {
-            var fields = line.Split(' ');
-            if (fields.Length != 3 || fields[0] != "—" || fields[1] != _log.Name) continue;
-            var raw = Convert.FromBase64String(fields[2]);
-            if (!raw.AsSpan(0, 4).SequenceEqual(_log.Id)) continue;
-            byte[] data = Encoding.UTF8.GetBytes(body), signature = raw[4..];
-            verified |= _log.Key.VerifyData(data, signature, HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence);
-        }
         var lines = body.TrimEnd('\n').Split('\n');
-        if (!verified || lines.Length < 3 || lines[0] != _log.Name) return null;
+        if (lines.Length < 3) return null;
+        var verified = false;
+        foreach (var log in pool.Where(c => Profile.Eku(c) == Oids.Log))
+        {
+            var chain = Build(log, pool, Oids.Log);
+            if (!chain.Trusted || chain.Problem is not null || !chain.ValidAt(at)) continue;
+            var id = SHA256.HashData(log.Spki)[..4];
+            using var key = log.Key();
+            foreach (var line in note[(split + 2)..].Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var fields = line.Split(' ');
+                if (fields.Length != 3 || fields[0] != "—" || fields[1] != lines[0]) continue; // the key name is the log's origin
+                var raw = Convert.FromBase64String(fields[2]);
+                if (raw.Length < 5 || !raw.AsSpan(0, 4).SequenceEqual(id)) continue;
+                byte[] data = Encoding.UTF8.GetBytes(body), signature = raw[4..];
+                verified |= key.VerifyData(data, signature, HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence);
+            }
+        }
+        if (!verified) return null;
         return (long.Parse(lines[1], NumberStyles.None, CultureInfo.InvariantCulture), Convert.FromBase64String(lines[2]));
     }
 
-    /// <summary>A receipt in the C2SP tlog-proof@v1 form for the leaf SHA-256(signed): the index it proves, or -1.</summary>
-    public long Receipt(byte[] receipt, byte[] signed)
+    /// <summary>A receipt (C2SP tlog-proof@v1) for this entry: the index it proves, or -1.</summary>
+    public long Receipt(string text, byte[] entry, List<Der> pool, DateTimeOffset at)
     {
-        var text = Encoding.UTF8.GetString(receipt);
         var pos = 0;
         string Line()
         {
@@ -336,17 +369,14 @@ sealed class Trust(List<Der> roots, string logVerifierKey, DateTimeOffset now)
         var index = long.Parse(l[6..], NumberStyles.None, CultureInfo.InvariantCulture);
         var proof = new List<byte[]>();
         while ((l = Line()).Length > 0) proof.Add(Convert.FromBase64String(l));
-        var checkpoint = Checkpoint(text[pos..]);
+        var checkpoint = Checkpoint(text[pos..], pool, at);
         if (checkpoint is null) return -1;
         var (size, root) = checkpoint.Value;
-        return Merkle.Verify(index, size, SHA256.HashData([0x00, .. SHA256.HashData(signed)]), proof, root) ? index : -1;
+        return Merkle.Verify(index, size, SHA256.HashData([0x00, .. entry]), proof, root) ? index : -1;
     }
 }
 
-/// <summary>
-/// A certificate read with a small, strict DER parser (no general X.509 processing, as 6.9.4 allows). Not
-/// X509Certificate2: on Windows, CryptoAPI can't hold an extension OID with a 128-bit arc, as the 2.25 test arc has.
-/// </summary>
+/// <summary>A certificate read with a small, strict DER parser (6.9.4: no general X.509 processing).</summary>
 sealed class Der
 {
     public required byte[] Raw { get; init; }
@@ -389,14 +419,9 @@ sealed class Der
         var tbs = new AsnReader(tbsBytes, rules).ReadSequence();
         var version = 1;
         var versionTag = new Asn1Tag(TagClass.ContextSpecific, 0, true);
-        if (tbs.PeekTag().HasSameClassAndValue(versionTag))
-        {
-            var v = tbs.ReadSequence(versionTag);
-            version = (int)v.ReadInteger() + 1;
-        }
+        if (tbs.PeekTag().HasSameClassAndValue(versionTag)) version = (int)tbs.ReadSequence(versionTag).ReadInteger() + 1;
         var serial = tbs.ReadIntegerBytes().ToArray();
-        var inner = tbs.ReadSequence();
-        if (inner.ReadObjectIdentifier() != signatureAlgorithm) throw new InvalidOperationException("signature algorithms differ");
+        if (tbs.ReadSequence().ReadObjectIdentifier() != signatureAlgorithm) throw new InvalidOperationException("signature algorithms differ");
         var issuer = tbs.ReadEncodedValue().ToArray();
         var validity = tbs.ReadSequence();
         DateTimeOffset Time() => validity.PeekTag().HasSameClassAndValue(Asn1Tag.UtcTime) ? validity.ReadUtcTime() : validity.ReadGeneralizedTime();
@@ -404,8 +429,7 @@ sealed class Der
         var notAfter = Time();
         var subject = tbs.ReadEncodedValue().ToArray();
         var spki = tbs.ReadEncodedValue().ToArray();
-        var spkiReader = new AsnReader(spki, rules).ReadSequence();
-        var keyAlgorithm = spkiReader.ReadSequence();
+        var keyAlgorithm = new AsnReader(spki, rules).ReadSequence().ReadSequence();
         var keyOid = keyAlgorithm.ReadObjectIdentifier();
         var curve = keyAlgorithm.HasData && keyAlgorithm.PeekTag().HasSameClassAndValue(Asn1Tag.ObjectIdentifier) ? keyAlgorithm.ReadObjectIdentifier() : "";
         var extensions = new List<(string, bool, byte[])>();
@@ -432,7 +456,7 @@ sealed class Der
         };
     }
 
-    /// <summary>The subject's attributes, by OID (each RDN a single attribute).</summary>
+    /// <summary>The subject's attributes, by OID.</summary>
     public Dictionary<string, string> SubjectAttributes()
     {
         var result = new Dictionary<string, string>();
@@ -454,9 +478,8 @@ sealed class Der
 /// <summary>The certificate profile of 6.9.4, checked strictly.</summary>
 static class Profile
 {
-    public enum Role { Root, Issuing, Leaf }
+    public enum Role { Root, Cross, Issuing, Leaf }
 
-    /// <summary>The key usage bits set (bit 0 digitalSignature, 5 keyCertSign, 6 cRLSign).</summary>
     private static HashSet<int> KeyUsage(byte[] value)
     {
         var bits = new AsnReader(value, AsnEncodingRules.DER).ReadBitString(out var unused);
@@ -474,42 +497,58 @@ static class Profile
         return list;
     }
 
+    /// <summary>The certificate's one extended key usage, or null.</summary>
+    public static string? Eku(Der c) => c.Extension(Oids.ExtKeyUsage) is { } e && OidSequence(e.Value, false) is [var only] ? only : null;
+
+    /// <summary>
+    /// The profile's rows: a root (and a cross-certificate, a root's key certified by another root) P-384 signed with
+    /// ecdsa-with-SHA384 and path length 2; an issuing certificate P-256 signed with ecdsa-with-SHA384, path length 0; leaves
+    /// P-256 signed with ecdsa-with-SHA256, one extended key usage. Only the listed extensions, with their criticality.
+    /// </summary>
     public static string? Check(Der c, Role role, string? eku)
     {
         if (c.Version != 3) return "not X.509 v3";
-        if (c.KeyAlgorithm != "1.2.840.10045.2.1" || c.Curve != (role == Role.Root ? Oids.P384 : Oids.P256)) return "key";
+        if (c.KeyAlgorithm != "1.2.840.10045.2.1" || c.Curve != (role is Role.Root or Role.Cross ? Oids.P384 : Oids.P256)) return "key";
         if (c.SignatureAlgorithm != (role == Role.Leaf ? Oids.EcdsaSha256 : Oids.EcdsaSha384)) return "signature algorithm";
-        var basic = c.Extension("2.5.29.19");
+        var publisher = role == Role.Leaf && eku == Oids.DocumentSigning;
+        foreach (var e in c.Extensions)
+        {
+            var allowed = e.Oid switch
+            {
+                Oids.BasicConstraints or Oids.KeyUsage => e.Critical,
+                Oids.ExtKeyUsage => role == Role.Leaf && e.Critical == (eku == Oids.TimeStamping),
+                Oids.Policies or Oids.SubjectKeyId or Oids.AuthorityKeyId => !e.Critical,
+                Oids.SubjectAltName => publisher && !e.Critical,
+                Oids.PublisherKind => publisher && !e.Critical
+                    && AsnDecoder.ReadCharacterString(e.Value, AsnEncodingRules.DER, UniversalTagNumber.UTF8String, out _) is "company" or "individual",
+                _ => false,
+            };
+            if (!allowed) return $"extension {e.Oid}";
+        }
         var ca = false;
         int? pathLength = null;
-        if (basic is { } b)
+        if (c.Extension(Oids.BasicConstraints) is { } b)
         {
             var seq = new AsnReader(b.Value, AsnEncodingRules.DER).ReadSequence();
             if (seq.HasData && seq.PeekTag().HasSameClassAndValue(Asn1Tag.Boolean)) ca = seq.ReadBoolean();
             if (seq.HasData) pathLength = (int)seq.ReadInteger();
         }
-        var usage = c.Extension("2.5.29.15") is { } u ? KeyUsage(u.Value) : null;
-        var extended = c.Extension("2.5.29.37");
+        var usage = c.Extension(Oids.KeyUsage) is { } u ? KeyUsage(u.Value) : null;
         if (role == Role.Leaf)
         {
             if (ca) return "a leaf that is a CA";
             if (usage is null || !usage.SetEquals([0])) return "key usage";
-            if (extended is null || OidSequence(extended.Value.Value, false) is not [var only] || only != eku) return "extended key usage";
-            if (eku == Oids.TimeStamping && !extended.Value.Critical) return "id-kp-timeStamping not critical";
+            if (Eku(c) != eku) return "extended key usage";
         }
         else
         {
-            if (basic is not { Critical: true } || !ca || pathLength != (role == Role.Root ? 1 : 0)) return "basic constraints";
+            if (!ca || pathLength != (role == Role.Issuing ? 0 : 2)) return "basic constraints";
             if (usage is null || !usage.SetEquals([5, 6])) return "key usage";
-            if (extended is not null) return "a CA with an extended key usage";
         }
-        if (c.Extension("2.5.29.32") is not { } policies || !OidSequence(policies.Value, true).Contains(Oids.Policy)) return "certificate policy";
-        foreach (var e in c.Extensions)
-            if (e.Critical && e.Oid is not ("2.5.29.19" or "2.5.29.15" or "2.5.29.37")) return $"unknown critical extension {e.Oid}";
+        if (c.Extension(Oids.Policies) is not { } policies || !OidSequence(policies.Value, true).Contains(Oids.Policy)) return "certificate policy";
         return null;
     }
 
-    /// <summary>Whether the issuer's key signed the certificate.</summary>
     public static bool SignedBy(Der child, Der issuer)
     {
         var hash = child.SignatureAlgorithm switch
@@ -529,7 +568,7 @@ static class Profile
         var attributes = c.SubjectAttributes();
         var kind = c.Extension(Oids.PublisherKind) is { } k ? AsnDecoder.ReadCharacterString(k.Value, AsnEncodingRules.DER, UniversalTagNumber.UTF8String, out _) : null;
         string? domain = null;
-        if (c.Extension("2.5.29.17") is { } san)
+        if (c.Extension(Oids.SubjectAltName) is { } san)
         {
             var names = new AsnReader(san.Value, AsnEncodingRules.DER).ReadSequence();
             var dns = new Asn1Tag(TagClass.ContextSpecific, 2);
@@ -545,51 +584,51 @@ static class Profile
     }
 }
 
-/// <summary>The verifying steps of 6.9.8.</summary>
+/// <summary>The verifying steps of 6.9.8, and what a reader concludes about the block (6.9.1).</summary>
 static class Verifier
 {
-    public static Trailer? ReadTrailer(byte[] f, int end)
+    /// <summary>A valid trailer at the file's end (4.2), or null.</summary>
+    public static Trailer? ReadTrailer(byte[] f)
     {
-        if (end < 64 + 44 || end > f.Length) return null;
-        var t = f.AsSpan(end - 44, 44);
+        if (f.Length < 64 + 44) return null;
+        var t = f.AsSpan(f.Length - 44, 44);
         if (!t[40..].SequenceEqual("JZM1"u8) || Util.Crc32(t[..36]) != BinaryPrimitives.ReadUInt32LittleEndian(t[36..])) return null;
         var trailer = new Trailer((long)BinaryPrimitives.ReadUInt64LittleEndian(t), (int)BinaryPrimitives.ReadUInt32LittleEndian(t[8..]),
             (long)BinaryPrimitives.ReadUInt64LittleEndian(t[12..]), (int)BinaryPrimitives.ReadUInt32LittleEndian(t[20..]),
             (long)BinaryPrimitives.ReadUInt64LittleEndian(t[24..]), (int)BinaryPrimitives.ReadUInt32LittleEndian(t[32..]));
         var last = Math.Max(trailer.HeaderOffset + trailer.HeaderLength, trailer.SignatureOffset + trailer.SignatureLength);
-        return trailer.HeaderOffset >= 64 && last == end - 44 ? trailer : null; // 4.2
+        return trailer.HeaderOffset >= 64 && last == f.Length - 44 ? trailer : null;
     }
 
-    /// <summary>
-    /// Step 1: the block before the header. A file that doesn't end with a valid trailer is looked at through its last
-    /// valid one (as 11.2 recovers appended files), with the bytes after it noted.
-    /// </summary>
-    public static (Block? Block, string? Problem, bool BytesAfter) FindBlock(byte[] f)
+    /// <summary>Step 1: the block before the header. Problem: magic present, but the block is damaged (invalid).</summary>
+    public static (Block? Block, string? Problem) FindBlock(byte[] f, Trailer t)
     {
-        var end = f.Length;
-        var t = ReadTrailer(f, end);
-        for (var e = f.Length - 1; t is null && e >= 64 + 44; e--)
-            if ((t = ReadTrailer(f, e)) is not null) end = e;
-        if (t is null) return (null, null, false);
         var h = (int)t.HeaderOffset;
-        if (h < 64 + 16 || !f.AsSpan(h - 4, 4).SequenceEqual("JZPS"u8)) return (null, null, end != f.Length);
+        if (h < 64 + 16 || !f.AsSpan(h - 4, 4).SequenceEqual("JZPS"u8)) return (null, null);
         var footer = f.AsSpan(h - 16, 16);
         var length = BinaryPrimitives.ReadUInt32LittleEndian(footer);
         var b = (long)h - 16 - length;
-        if (b < 64) return (null, "the block starts inside the preamble", end != f.Length);
-        if (BinaryPrimitives.ReadUInt16LittleEndian(footer[8..]) != 1 || BinaryPrimitives.ReadUInt16LittleEndian(footer[10..]) != 0) return (null, "block version", end != f.Length);
+        if (b < 64) return (null, "the payload would start inside the preamble");
+        if (BinaryPrimitives.ReadUInt16LittleEndian(footer[8..]) != 1) return (null, "unknown version");
         var payload = f.AsSpan((int)b, (int)length);
-        if (Util.Crc32(payload) != BinaryPrimitives.ReadUInt32LittleEndian(footer[4..])) return (null, "block CRC", end != f.Length);
-        var fields = Pb.Parse(payload);
-        var signatures = fields.Where(x => x.Field == 2).Select(x =>
+        if (Util.Crc32(payload) != BinaryPrimitives.ReadUInt32LittleEndian(footer[4..])) return (null, "CRC");
+        try
         {
-            var s = Pb.Parse(x.Data);
-            return new Signature(Pb.Text(s, 1), Pb.Bytes(s, 2), s.Where(y => y.Field == 3).Select(y => y.Data).ToList(), Pb.Text(s, 4), Pb.Bytes(s, 5), Pb.Bytes(s, 6));
-        }).ToList();
-        return (new Block(Pb.Bytes(fields, 1), signatures, Pb.Bytes(fields, 3), Pb.Text(fields, 4), b, t, end), null, end != f.Length);
+            var fields = Pb.Parse(payload);
+            var signatures = fields.Where(x => x.Field == 2).Select(x =>
+            {
+                var s = Pb.Parse(x.Data);
+                return new Signature(Pb.Text(s, 1), Pb.Bytes(s, 2), s.Where(y => y.Field == 3).Select(y => y.Data).ToList(), Pb.Text(s, 4), Pb.Bytes(s, 5), Pb.Text(s, 6));
+            }).ToList();
+            return (new Block(Pb.Bytes(fields, 1), signatures, Pb.Bytes(fields, 3), Pb.Text(fields, 4), fields.Where(x => x.Field == 5).Select(x => x.Data).ToList(), b, t), null);
+        }
+        catch (Exception)
+        {
+            return (null, "not a PublisherSignatures");
+        }
     }
 
-    public static Block? ReadBlock(byte[] f) => FindBlock(f).Block;
+    public static Block? ReadBlock(byte[] f) => ReadTrailer(f) is { } t ? FindBlock(f, t).Block : null;
 
     public static SignedDocument ParseSignedDocument(byte[] signed)
     {
@@ -603,19 +642,16 @@ static class Verifier
         ["status"] = status, ["name"] = null, ["kind"] = null, ["code"] = null, ["facts"] = null, ["reason"] = reason,
     };
 
-    public static JsonObject Verify(byte[] f, Trust trust, FileKey? key, out (byte[] D, string Code, byte[] FactsDigest, byte[] Leaf)? info)
+    public static JsonObject Verify(byte[] f, Trust trust, FileKey? key, SortedDictionary<string, int> counts, out (byte[] D, string Code, byte[] FactsDigest)? info)
     {
         info = null;
-        // 1. the block, and that the bytes after B are the block, the header and the signature section
-        var (block, problem, bytesAfter) = FindBlock(f);
+        void Count(string what) => counts[what] = counts.GetValueOrDefault(what) + 1;
+        // A file whose last bytes are not a valid trailer is not a valid file, and isn't verified (6.9.1).
+        if (ReadTrailer(f) is not { } t) return Result("not-verified", "not-a-valid-file");
+        // 1. the block, its CRC, version and coverage
+        var (block, problem) = FindBlock(f, t);
         if (problem is not null) return Result("invalid", "block");
         if (block is null) return Result("none", null);
-        if (bytesAfter) return Result("changed", "after-trailer");
-        var t = block.Trailer;
-        var trailerStart = block.End - 44;
-        var headerEnd = t.HeaderOffset + t.HeaderLength;
-        if (t.SignatureLength > 0 ? headerEnd != t.SignatureOffset || t.SignatureOffset + t.SignatureLength != trailerStart : headerEnd != trailerStart)
-            return Result("changed", "coverage");
         SignedDocument signed;
         try
         {
@@ -626,60 +662,84 @@ static class Verifier
             return Result("invalid", "block");
         }
         if (signed.Version != 1) return Result("invalid", "block");
+        var trailerStart = f.Length - 44;
+        var headerEnd = t.HeaderOffset + t.HeaderLength;
+        if (t.SignatureLength > 0 ? headerEnd != t.SignatureOffset || t.SignatureOffset + t.SignatureLength != trailerStart : headerEnd != trailerStart)
+            return Result("changed", "coverage");
         // 2. D and the file id
         var d = SHA256.HashData([
             .. "JAZMIN/1/publisher-file"u8, .. f.AsSpan(8, 16), .. SHA256.HashData(f.AsSpan(0, (int)block.B)),
             .. SHA256.HashData(f.AsSpan((int)t.HeaderOffset, t.HeaderLength)),
             .. SHA256.HashData(t.SignatureLength > 0 ? f.AsSpan((int)t.SignatureOffset, t.SignatureLength) : ReadOnlySpan<byte>.Empty)]);
         if (!signed.FileId.AsSpan().SequenceEqual(f.AsSpan(8, 16)) || !signed.FileDigest.AsSpan().SequenceEqual(d)) return Result("changed", "digest");
-        info = (d, signed.Code, signed.FactsDigest, SHA256.HashData(block.Signed));
-        // 3. the algorithms, and each signature this reader knows
-        if (!block.Signatures.Select(s => s.Algorithm).ToHashSet().SetEquals(signed.Algorithms)) return Result("invalid", "algorithms");
-        if (block.Signatures.Count(s => s.Role == "publisher") != 1 || block.Signatures.Any(s => s.Role is not ("publisher" or "cosigner"))) return Result("invalid", "block");
-        var known = block.Signatures.Where(s => s.Algorithm == "ES256").ToList();
-        if (known.All(s => s.Role != "publisher")) return Result("invalid", "algorithms");
-        var chains = new List<(Signature Sig, bool Trusted, Der Leaf, Der Issuing, Der? Root)>();
-        foreach (var s in known)
+        info = (d, signed.Code, signed.FactsDigest);
+        // 3. algorithms entry for entry, the publisher first, and each signature this reader knows
+        if (!block.Signatures.Select(s => s.Algorithm).SequenceEqual(signed.Algorithms)) return Result("invalid", "algorithms");
+        if (block.Signatures.Count == 0 || block.Signatures[0].Role != "publisher" || block.Signatures.Skip(1).Any(s => s.Role != "cosigner"))
+            return Result("invalid", "roles");
+        if (block.Signatures[0].Algorithm != "ES256") return Result("invalid", "algorithms");
+        var pool = new List<Der>();
+        try
         {
-            var chain = trust.Chain(s.Certificates, Oids.DocumentSigning);
-            if (chain.Problem is not null) return Result("invalid", "chain");
-            using var publicKey = chain.Leaf.Key();
+            foreach (var der in block.Signatures.SelectMany(s => s.Certificates).Concat(block.Certificates)) pool.Add(Der.Parse(der));
+        }
+        catch (Exception)
+        {
+            return Result("invalid", "chain");
+        }
+        var chains = new List<(Signature Sig, Chain Chain)>();
+        foreach (var s in block.Signatures.Where(s => s.Algorithm == "ES256"))
+        {
+            if (s.Certificates.Count == 0) return Result("invalid", "chain");
+            using var publicKey = Der.Parse(s.Certificates[0]).Key();
             byte[] message = [.. "JAZMIN/1/publisher"u8, .. block.Signed];
             if (!publicKey.VerifyData(message, s.Value, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation))
                 return Result("invalid", "signature");
-            chains.Add((s, chain.Trusted, chain.Leaf, chain.Issuing, chain.Root));
+            chains.Add((s, trust.Check(s.Certificates, Oids.DocumentSigning)));
         }
-        // 4. a chain that doesn't end in a trusted root gives "signed", with no name
-        if (chains.Any(c => !c.Trusted)) return Result("signed", null);
-        var times = new Dictionary<Signature, DateTimeOffset>();
-        foreach (var c in chains)
+        // "signed": the publisher's certificate doesn't chain to a trusted root. No name, facts or code.
+        if (!chains[0].Chain.Trusted) return Result("signed", null);
+        // 4. each chain, timestamp and log receipt
+        var times = new List<DateTimeOffset>();
+        foreach (var (sig, chain) in chains)
         {
-            if (trust.Timestamp(c.Sig.Timestamp, c.Sig.Value) is not { } at) return Result("invalid", "timestamp");
-            if (!Trust.ValidAt(c.Leaf, at) || !Trust.ValidAt(c.Issuing, at) || !Trust.ValidAt(c.Root!, at)) return Result("invalid", "validity");
-            if (trust.Receipt(c.Sig.LogReceipt, block.Signed) < 0) return Result("invalid", "log-receipt");
-            times[c.Sig] = at;
+            if (!chain.Trusted || chain.Problem is not null) return Result("invalid", "chain");
+            if (trust.Timestamp(sig.Timestamp, sig.Value, pool) is not { } at) return Result("invalid", "timestamp");
+            Count("timestamps verified");
+            if (!chain.ValidAt(at)) return Result("invalid", "validity");
+            if (trust.Receipt(sig.LogReceipt, Merkle.Entry(block.Signed, sig.Value), pool, at) < 0) return Result("invalid", "log-receipt");
+            Count("log receipts verified in files");
+            times.Add(at);
         }
-        var publisher = chains.Single(c => c.Sig.Role == "publisher");
-        var signedAt = times[publisher.Sig];
-        // 5. revocation: the status in the block, then the revocation list held
+        var publisher = chains[0].Chain;
+        var signedAt = times[0];
+        // 5. revocation: of the statements held, the most recent by its time (6.9.5); the stored one covers only the publisher.
         JsonObject? answer = null;
         if (block.Status.Length > 0)
         {
             try
             {
-                answer = trust.Jws(block.Status, Oids.Status, "time").Payload;
+                answer = trust.Jws(block.Status, Oids.Status, "time", pool).Payload;
             }
             catch (Exception)
             {
                 return Result("invalid", "status");
             }
+            Count("stored status answers verified");
             if ((string?)answer["digest"] != Util.B64Url(d) || (string?)answer["nonce"] != Util.B64Url(d) || (string?)answer["code"] != signed.Code
-                || (string?)answer["serial"] != publisher.Leaf.SerialHex)
+                || Util.Name(answer["certificate"]!) != Util.Name(publisher.Certificates[0], publisher.Certificates[1]))
                 return Result("invalid", "status");
-            if ((string?)answer["status"] == "revoked" && (answer["from"] is null || Util.At((string)answer["from"]!) <= signedAt)) return Result("invalid", "revoked");
         }
-        foreach (var c in chains)
-            if (trust.Revoked.TryGetValue(c.Leaf.SerialHex, out var from) && from <= times[c.Sig]) return Result("invalid", "revoked");
+        for (var i = 0; i < chains.Count; i++)
+        {
+            var chain = chains[i].Chain;
+            var statements = new List<(DateTimeOffset Time, DateTimeOffset? RevokedFrom)>();
+            if (i == 0 && answer is not null)
+                statements.Add((Util.At((string)answer["time"]!), (string?)answer["status"] == "revoked" ? Util.At((string)(answer["from"] ?? answer["time"])!) : null));
+            if (trust.ListIssued is { } issued)
+                statements.Add((issued, trust.Revoked.TryGetValue(Util.Name(chain.Certificates[0], chain.Certificates[1]), out var from) ? from : null));
+            if (statements.Count > 0 && statements.MaxBy(s => s.Time).RevokedFrom is { } revokedFrom && revokedFrom <= times[i]) return Result("invalid", "revoked");
+        }
         // 6. the facts, with a key that reads the header (or in a file that isn't encrypted)
         var encrypted = (BinaryPrimitives.ReadUInt16LittleEndian(f.AsSpan(4)) & 1) != 0;
         JsonNode? facts = null;
@@ -707,7 +767,7 @@ static class Verifier
         result["credential"] = signed.Credential;
         result["signedAt"] = Util.Iso(DateTimeOffset.FromUnixTimeMilliseconds(signed.SignedAt));
         result["timestamp"] = Util.Iso(signedAt);
-        result["cosigners"] = new JsonArray(chains.Where(c => c.Sig.Role == "cosigner").Select(c => (JsonNode)Profile.Identity(c.Leaf)).ToArray());
+        result["cosigners"] = new JsonArray(chains.Skip(1).Select(c => (JsonNode)Profile.Identity(c.Chain.Leaf)).ToArray());
         result["facts"] = facts;
         result["factsNeedKey"] = encrypted;
         if (answer is not null) result["statusAnswer"] = new JsonObject { ["status"] = answer["status"]!.DeepClone(), ["from"] = answer["from"]?.DeepClone() };
@@ -716,15 +776,15 @@ static class Verifier
     }
 }
 
-/// <summary>The facts of an encrypted file: decrypted with the header's key derivation and "publisher/facts" (6.9.3).</summary>
+/// <summary>The facts of an encrypted file (6.9.3): under the key a section named "publisher/facts" gets in it.</summary>
 static class Facts
 {
     public static byte[] Decrypt(byte[] f, Trailer t, byte[] stored, FileKey key)
     {
         var salt = f.AsSpan(24, 32).ToArray();
         var flags = BinaryPrimitives.ReadUInt16LittleEndian(f.AsSpan(4));
-        byte[] ikm;
-        if ((flags & 4) != 0)
+        byte[] factsKey;
+        if ((flags & 4) != 0) // 7.6.3: sections the header secret H locks
         {
             var secret = key.Kind switch
             {
@@ -732,15 +792,15 @@ static class Facts
                 "accessKey" => Util.ParseAccessKey(key.Text),
                 _ => throw new InvalidOperationException("an access-controlled file needs the owner key or an access key"),
             };
-            ikm = HeaderSecret(f, t, secret);
+            factsKey = Util.Hkdf(HeaderSecret(f, t, secret), salt, "JAZMIN/1/publisher/facts");
         }
-        else if ((flags & 2) != 0)
+        else // 7.3: section_key = HKDF(master, keyring["data"], "JAZMIN/1/" || section_id)
         {
-            if (key.Kind != "password") throw new InvalidOperationException("a password file needs its password");
-            ikm = Rfc2898DeriveBytes.Pbkdf2(Encoding.UTF8.GetBytes(key.Text), salt, (int)BinaryPrimitives.ReadUInt32LittleEndian(f.AsSpan(56)), HashAlgorithmName.SHA256, 32);
+            var master = (flags & 2) != 0
+                ? Rfc2898DeriveBytes.Pbkdf2(Encoding.UTF8.GetBytes(key.Text), salt, (int)BinaryPrimitives.ReadUInt32LittleEndian(f.AsSpan(56)), HashAlgorithmName.SHA256, 32)
+                : Util.ParseKey(key.Text);
+            factsKey = Util.Hkdf(master, KeyringData(f, t, master), "JAZMIN/1/publisher/facts");
         }
-        else ikm = Util.ParseKey(key.Text);
-        var factsKey = Util.Hkdf(ikm, salt, "JAZMIN/1/publisher/facts");
         var rawLength = stored.Length - 28;
         var envelope = new byte[8];
         envelope[1] = 0x01;
@@ -751,7 +811,26 @@ static class Facts
         return plain;
     }
 
-    /// <summary>H, from the key's slot (7.6.4): the key-slot list, its page (checked against its digest), the sealed bundle.</summary>
+    /// <summary>The keyring's "data" secret: the header decrypted (7.3, 7.4), decompressed (4.3) and read (Header.keyring.data).</summary>
+    private static byte[] KeyringData(byte[] f, Trailer t, byte[] master)
+    {
+        var at = (int)t.HeaderOffset;
+        var envelope = f.AsSpan(at, 16).ToArray();
+        var payloadLength = (int)BinaryPrimitives.ReadUInt32LittleEndian(envelope.AsSpan(8));
+        var stored = f.AsSpan(at + 16, payloadLength);
+        var plain = new byte[payloadLength - 28];
+        using (var gcm = new AesGcm(Util.Hkdf(master, f.AsSpan(24, 32).ToArray(), "JAZMIN/1/header"), 16))
+            gcm.Decrypt(stored[..12], stored[12..^16], stored[^16..], plain, [.. f.AsSpan(8, 16), .. envelope.AsSpan(0, 8), .. "header"u8]);
+        var raw = new MemoryStream();
+        if (envelope[0] == 0) raw.Write(plain);
+        else
+            using (Stream z = envelope[0] == 1 ? new DeflateStream(new MemoryStream(plain), CompressionMode.Decompress) : new BrotliStream(new MemoryStream(plain), CompressionMode.Decompress))
+                z.CopyTo(raw);
+        var keyring = Pb.Bytes(Pb.Parse(raw.ToArray()), 8);
+        return Pb.Bytes(Pb.Parse(keyring), 1);
+    }
+
+    /// <summary>H, from the key's slot (7.6.4).</summary>
     private static byte[] HeaderSecret(byte[] f, Trailer t, byte[] secret)
     {
         var id = SHA256.HashData([.. "JAZMIN/1/slot-id"u8, .. secret])[..8];
@@ -789,9 +868,11 @@ static class Facts
     }
 }
 
-/// <summary>RFC 9162 section 2.1.3.2: verifying an inclusion proof.</summary>
+/// <summary>The log (6.9.5): entries, and RFC 9162 section 2.1.3.2's inclusion proof check.</summary>
 static class Merkle
 {
+    public static byte[] Entry(byte[] signed, byte[] value) => [.. "JAZMIN/1/log"u8, .. SHA256.HashData(signed), .. SHA256.HashData(value)];
+
     public static bool Verify(long index, long size, byte[] leafHash, List<byte[]> proof, byte[] root)
     {
         if (index >= size) return false;
@@ -803,12 +884,11 @@ static class Merkle
             if ((fn & 1) == 1 || fn == sn)
             {
                 r = SHA256.HashData([0x01, .. p, .. r]);
-                if ((fn & 1) == 0)
-                    while ((fn & 1) == 0 && fn != 0)
-                    {
-                        fn >>= 1;
-                        sn >>= 1;
-                    }
+                while ((fn & 1) == 0 && fn != 0)
+                {
+                    fn >>= 1;
+                    sn >>= 1;
+                }
             }
             else r = SHA256.HashData([0x01, .. r, .. p]);
             fn >>= 1;
@@ -818,7 +898,7 @@ static class Merkle
     }
 }
 
-/// <summary>The QR form (6.9.7): "JZ1:" + Base45(zlib(COSE_Sign1)), ES256, key identifier SHA-256(certificate)[0..8].</summary>
+/// <summary>The QR form (6.9.7): "JZ1:" + Base45(zlib(COSE_Sign1)), alg -7 and kid in the protected header.</summary>
 static class Qr
 {
     private const string Base45 = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:";
@@ -937,6 +1017,8 @@ static class Pb
 
 static class Util
 {
+    public static readonly HashSet<string?> Reasons = ["keyCompromise", "affiliationChanged", "superseded", "cessationOfOperation", "privilegeWithdrawn"];
+
     public static string FindRepo()
     {
         foreach (var start in new[] { AppContext.GetData("EntryPointFileDirectoryPath") as string, Environment.CurrentDirectory })
@@ -957,7 +1039,11 @@ static class Util
         return Convert.FromBase64String(s.PadRight(s.Length + (4 - s.Length % 4) % 4, '='));
     }
 
-    /// <summary>The 32 bytes of a "jzk1-" key, its checksum checked (7.2).</summary>
+    /// <summary>A certificate's name in JWS payloads (6.9.5), as text to compare: issuer (SHA-256 of the issuing SPKI) and serial.</summary>
+    public static string Name(JsonNode name) => $"{(string?)name["issuer"]}/{(string?)name["serial"]}";
+
+    public static string Name(Der certificate, Der issuing) => $"{B64Url(SHA256.HashData(issuing.Spki))}/{certificate.SerialHex}";
+
     public static byte[] ParseKey(string text)
     {
         var raw = B64UrlDecode(text["jzk1-".Length..]);
@@ -965,7 +1051,6 @@ static class Util
         return raw[..32];
     }
 
-    /// <summary>The secret of a "jza1-" access key, its checksum checked (7.6.1).</summary>
     public static byte[] ParseAccessKey(string text)
     {
         var raw = B64UrlDecode(text["jza1-".Length..]);

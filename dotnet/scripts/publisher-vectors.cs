@@ -6,8 +6,8 @@
 // damaged ones, status answers, a revocation list, a confirmation receipt, a transparency log and expected.json.
 // Every key it makes is for tests only. Check the result with dotnet/scripts/publisher-verify.cs.
 //
-//   dotnet run -c Release dotnet/scripts/publisher-vectors.cs            keeps the certificates in pki/ when they exist
-//   dotnet run -c Release dotnet/scripts/publisher-vectors.cs -- --new-pki   makes them again
+//   dotnet run -c Release dotnet/scripts/publisher-vectors.cs               keeps the certificates in pki/ when they exist
+//   dotnet run -c Release dotnet/scripts/publisher-vectors.cs -- --new-pki  makes them again
 //
 // Keys come from fixed seeds, so they are the same on every run. ECDSA signatures, and the file ids, salts and nonces
 // the library writes, are random: the fixtures' bytes change on every run, their expected results don't.
@@ -33,40 +33,63 @@ foreach (var sub in new[] { "pki", "test-keys", "status", "log" }) Directory.Cre
 foreach (var old in Directory.GetFiles(outDir, "*.jzm").Concat(Directory.GetFiles(outDir, "*.qr.txt"))
              .Concat(Directory.GetFiles(Path.Combine(outDir, "status"))).Concat(Directory.GetFiles(Path.Combine(outDir, "log"))))
     File.Delete(old);
+if (newPki)
+    foreach (var old in Directory.GetFiles(Path.Combine(outDir, "pki")).Concat(Directory.GetFiles(Path.Combine(outDir, "test-keys"))))
+        File.Delete(old);
 var tmp = Directory.CreateTempSubdirectory("jazmin-publisher-").FullName;
 
 // ---- the TEST PKI (spec 6.9.4) --------------------------------------------------------------------------------------
 var pki = new Pki(Path.Combine(outDir, "pki"), Path.Combine(outDir, "test-keys"), newPki);
-var root = pki.Make("test-root", Util.Dn("JAZMIN Test Root CA (TEST ONLY)", "JAZMIN test vectors"), true, null,
-    Util.At("2025-01-01T00:00:00Z"), Util.At("2044-12-31T23:59:59Z"), Pki.Ca(1));
+DateTimeOffset At(string iso) => Util.At(iso);
+X500DistinguishedName Sable() => Util.Dn("Sable Line Logistics (Pty) Ltd", "Sable Line Logistics (Pty) Ltd", "NTRZA-2020/123456/07");
+var rootName = Util.Dn("JAZMIN Test Root CA (TEST ONLY)", "JAZMIN test vectors");
+var root2Name = Util.Dn("JAZMIN Test Root CA 2 (TEST ONLY)", "JAZMIN test vectors");
+var root = pki.Make("test-root", rootName, true, null, At("2025-01-01T00:00:00Z"), At("2044-12-31T23:59:59Z"), Pki.Ca(2));
 var issuing = pki.Make("test-issuing", Util.Dn("JAZMIN Test Issuing CA 1 (TEST ONLY)", "JAZMIN test vectors"), false, root,
-    Util.At("2025-01-01T00:00:00Z"), Util.At("2027-12-31T23:59:59Z"), Pki.Ca(0));
-var sable = pki.Make("sable-line-logistics", Util.Dn("Sable Line Logistics (Pty) Ltd", "Sable Line Logistics (Pty) Ltd", "NTRZA-2020/123456/07"), false, issuing,
-    Util.At("2026-01-01T00:00:00Z"), Util.At("2026-12-31T23:59:59Z"), Pki.Leaf(Oids.DocumentSigning, false, "company", "sable.example"));
-var sable2025 = pki.Make("sable-line-logistics-2025", Util.Dn("Sable Line Logistics (Pty) Ltd", "Sable Line Logistics (Pty) Ltd", "NTRZA-2020/123456/07"), false, issuing,
-    Util.At("2025-01-01T00:00:00Z"), Util.At("2025-12-31T23:59:59Z"), Pki.Leaf(Oids.DocumentSigning, false, "company", "sable.example"));
-var sablePayroll = pki.Make("sable-line-logistics-payroll", Util.Dn("Sable Line Logistics (Pty) Ltd", "Sable Line Logistics (Pty) Ltd", "NTRZA-2020/123456/07"), false, issuing,
-    Util.At("2026-03-01T00:00:00Z"), Util.At("2027-02-28T23:59:59Z"), Pki.Leaf(Oids.DocumentSigning, false, "company", "sable.example"));
+    At("2025-01-01T00:00:00Z"), At("2027-12-31T23:59:59Z"), Pki.Ca(0));
+// A new root, not built into readers: trusted through a cross-certificate the trusted root signs.
+var root2 = pki.Make("test-root-2", root2Name, true, null, At("2026-06-01T00:00:00Z"), At("2046-05-31T23:59:59Z"), Pki.Ca(2));
+var cross2 = pki.Make("test-root-2-cross", root2Name, true, root, At("2026-06-01T00:00:00Z"), At("2036-05-31T23:59:59Z"), Pki.Ca(2), keyName: "test-root-2");
+var issuing2 = pki.Make("test-issuing-2", Util.Dn("JAZMIN Test Issuing CA 2 (TEST ONLY)", "JAZMIN test vectors"), false, root2,
+    At("2026-06-01T00:00:00Z"), At("2028-05-31T23:59:59Z"), Pki.Ca(0));
+var sable = pki.Make("sable-line-logistics", Sable(), false, issuing,
+    At("2026-01-01T00:00:00Z"), At("2026-12-31T23:59:59Z"), Pki.Leaf(Oids.DocumentSigning, false, "company", "sable.example"));
+var sable2025 = pki.Make("sable-line-logistics-2025", Sable(), false, issuing,
+    At("2025-01-01T00:00:00Z"), At("2025-12-31T23:59:59Z"), Pki.Leaf(Oids.DocumentSigning, false, "company", "sable.example"));
+var sablePayroll = pki.Make("sable-line-logistics-payroll", Sable(), false, issuing,
+    At("2026-03-01T00:00:00Z"), At("2027-02-28T23:59:59Z"), Pki.Leaf(Oids.DocumentSigning, false, "company", "sable.example"));
+var sableRoot2 = pki.Make("sable-line-logistics-root-2", Sable(), false, issuing2,
+    At("2026-07-01T00:00:00Z"), At("2027-06-30T23:59:59Z"), Pki.Leaf(Oids.DocumentSigning, false, "company", "sable.example"));
 var thandi = pki.Make("tm-bookkeeping", Util.Dn("Thandi Mokoena", "TM Bookkeeping"), false, issuing,
-    Util.At("2026-02-01T00:00:00Z"), Util.At("2027-01-31T23:59:59Z"), Pki.Leaf(Oids.DocumentSigning, false, "individual", null));
+    At("2026-02-01T00:00:00Z"), At("2027-01-31T23:59:59Z"), Pki.Leaf(Oids.DocumentSigning, false, "individual", null));
 var auditor = pki.Make("khumalo-partners", Util.Dn("Khumalo & Partners Incorporated", "Khumalo & Partners Incorporated", "NTRZA-2011/004321/21"), false, issuing,
-    Util.At("2026-01-01T00:00:00Z"), Util.At("2026-12-31T23:59:59Z"), Pki.Leaf(Oids.DocumentSigning, false, "company", "khumalo-audit.example"));
+    At("2026-01-01T00:00:00Z"), At("2026-12-31T23:59:59Z"), Pki.Leaf(Oids.DocumentSigning, false, "company", "khumalo-audit.example"));
 var statusCert = pki.Make("test-status", Util.Dn("JAZMIN Test Status 1 (TEST ONLY)", "JAZMIN test vectors"), false, issuing,
-    Util.At("2025-01-01T00:00:00Z"), Util.At("2027-12-31T23:59:59Z"), Pki.Leaf(Oids.Status, false, null, null));
+    At("2025-01-01T00:00:00Z"), At("2027-12-31T23:59:59Z"), Pki.Leaf(Oids.Status, false, null, null));
 var confirmCert = pki.Make("test-confirmation", Util.Dn("JAZMIN Test Confirmation 1 (TEST ONLY)", "JAZMIN test vectors"), false, issuing,
-    Util.At("2026-01-01T00:00:00Z"), Util.At("2026-12-31T23:59:59Z"), Pki.Leaf(Oids.Confirmation, false, null, null));
+    At("2026-01-01T00:00:00Z"), At("2026-12-31T23:59:59Z"), Pki.Leaf(Oids.Confirmation, false, null, null));
+var logCert = pki.Make("test-log", Util.Dn("JAZMIN Test Log 1 (TEST ONLY)", "JAZMIN test vectors"), false, issuing,
+    At("2025-01-01T00:00:00Z"), At("2027-12-31T23:59:59Z"), Pki.Leaf(Oids.Log, false, null, null));
 var tsa = pki.Make("test-timestamping", Util.Dn("JAZMIN Test Time-Stamping 1 (TEST ONLY)", "JAZMIN test vectors"), false, issuing,
-    Util.At("2025-01-01T00:00:00Z"), Util.At("2027-12-31T23:59:59Z"), Pki.Leaf(Oids.TimeStamping, true, null, null));
+    At("2025-01-01T00:00:00Z"), At("2027-12-31T23:59:59Z"), Pki.Leaf(Oids.TimeStamping, true, null, null));
 // Someone else's PKI that copies Sable Line Logistics' name: a self-signed root, an issuing CA and a leaf.
-var fakeRoot = pki.Make("untrusted-root", Util.Dn("Sable Line Logistics (Pty) Ltd", "Sable Line Logistics (Pty) Ltd", "NTRZA-2020/123456/07"), true, null,
-    Util.At("2026-01-01T00:00:00Z"), Util.At("2036-01-01T00:00:00Z"), Pki.Ca(1));
+var fakeRoot = pki.Make("untrusted-root", Sable(), true, null, At("2026-01-01T00:00:00Z"), At("2036-01-01T00:00:00Z"), Pki.Ca(2));
 var fakeIssuing = pki.Make("untrusted-issuing", Util.Dn("Sable Line Logistics Issuing CA", "Sable Line Logistics (Pty) Ltd"), false, fakeRoot,
-    Util.At("2026-01-01T00:00:00Z"), Util.At("2028-01-01T00:00:00Z"), Pki.Ca(0));
-var fakeSable = pki.Make("untrusted-sable-line-logistics", Util.Dn("Sable Line Logistics (Pty) Ltd", "Sable Line Logistics (Pty) Ltd", "NTRZA-2020/123456/07"), false, fakeIssuing,
-    Util.At("2026-01-01T00:00:00Z"), Util.At("2027-01-01T00:00:00Z"), Pki.Leaf(Oids.DocumentSigning, false, "company", "sable.example"));
-var logKey = Pki.TestKey("test-log", false);
-File.WriteAllText(Path.Combine(outDir, "test-keys", "test-log.key.pem"), Pki.KeyWarning + logKey.ExportPkcs8PrivateKeyPem() + "\n");
-File.WriteAllText(Path.Combine(outDir, "pki", "test-log.pub.pem"), logKey.ExportSubjectPublicKeyInfoPem() + "\n");
+    At("2026-01-01T00:00:00Z"), At("2028-01-01T00:00:00Z"), Pki.Ca(0));
+var fakeSable = pki.Make("untrusted-sable-line-logistics", Sable(), false, fakeIssuing,
+    At("2026-01-01T00:00:00Z"), At("2027-01-01T00:00:00Z"), Pki.Leaf(Oids.DocumentSigning, false, "company", "sable.example"));
+// A cross-certificate from a root that isn't trusted, though it has the trusted root's name.
+var fakeTestRoot = pki.Make("untrusted-test-root", rootName, true, null, At("2026-01-01T00:00:00Z"), At("2036-01-01T00:00:00Z"), Pki.Ca(2));
+var fakeRoot2 = pki.Make("untrusted-root-2", root2Name, true, null, At("2026-06-01T00:00:00Z"), At("2036-05-31T23:59:59Z"), Pki.Ca(2));
+var fakeCross = pki.Make("untrusted-root-2-cross", root2Name, true, fakeTestRoot, At("2026-06-01T00:00:00Z"), At("2036-05-31T23:59:59Z"), Pki.Ca(2),
+    keyName: "untrusted-root-2");
+var fakeIssuing2 = pki.Make("untrusted-issuing-2", Util.Dn("JAZMIN Test Issuing CA 2 (TEST ONLY)", "JAZMIN test vectors"), false, fakeRoot2,
+    At("2026-06-01T00:00:00Z"), At("2028-05-31T23:59:59Z"), Pki.Ca(0));
+var fakeSable2 = pki.Make("untrusted-sable-line-logistics-2", Sable(), false, fakeIssuing2,
+    At("2026-07-01T00:00:00Z"), At("2027-06-30T23:59:59Z"), Pki.Leaf(Oids.DocumentSigning, false, "company", "sable.example"));
+// Signing with one's own key: a self-signed publisher certificate, alone.
+var selfSigned = pki.Make("self-signed-sable-line-logistics", Sable(), false, null,
+    At("2026-01-01T00:00:00Z"), At("2027-01-01T00:00:00Z"), Pki.Leaf(Oids.DocumentSigning, false, "company", "sable.example"));
 
 // ---- the files' keys (tests only) ------------------------------------------------------------------------------------
 var password = "Sable-Payroll-2026!";
@@ -75,63 +98,76 @@ var ownerKey = JazminKey.Parse(Util.KeyText(Util.Seed("jazmin-key/statement-owne
 var accessKey = new JazminAccessKey(Util.Seed("jazmin-access-key/account-4410", 32), SHA256.HashData(ownerKey.OwnerPublicKey)[..8]);
 
 // ---- what each signed file holds -------------------------------------------------------------------------------------
-var verifyAt = Util.At("2026-10-17T12:00:00Z");
-var revokedFrom = Util.At("2026-09-15T00:00:00Z");
+var verifyAt = At("2026-10-17T12:00:00Z");
+var revokedFrom = At("2026-09-15T00:00:00Z");
+var sableIdentity = Util.Identity("Sable Line Logistics (Pty) Ltd", "Sable Line Logistics (Pty) Ltd", "NTRZA-2020/123456/07", "ZA", "sable.example", "company");
 var identities = new Dictionary<Cert, JsonObject>
 {
-    [sable] = Util.Identity("Sable Line Logistics (Pty) Ltd", "Sable Line Logistics (Pty) Ltd", "NTRZA-2020/123456/07", "ZA", "sable.example", "company"),
-    [sable2025] = Util.Identity("Sable Line Logistics (Pty) Ltd", "Sable Line Logistics (Pty) Ltd", "NTRZA-2020/123456/07", "ZA", "sable.example", "company"),
-    [sablePayroll] = Util.Identity("Sable Line Logistics (Pty) Ltd", "Sable Line Logistics (Pty) Ltd", "NTRZA-2020/123456/07", "ZA", "sable.example", "company"),
+    [sable] = sableIdentity, [sable2025] = sableIdentity, [sablePayroll] = sableIdentity, [sableRoot2] = sableIdentity,
     [thandi] = Util.Identity("Thandi Mokoena", "TM Bookkeeping", null, "ZA", null, "individual"),
     [auditor] = Util.Identity("Khumalo & Partners Incorporated", "Khumalo & Partners Incorporated", "NTRZA-2011/004321/21", "ZA", "khumalo-audit.example", "company"),
 };
 Content Payslip(string recipient, string period, params (string Item, string Type, decimal Amount)[] lines) => Content.Payslip(recipient, period, lines);
+Cert[] Normal() => [issuing];
 var specs = new List<Spec>
 {
-    new("signed-plain.jzm", "A payslip, not encrypted, signed by a certified company", sable, null, Util.At("2026-10-01T09:00:00Z"), "none",
+    new("signed-plain.jzm", "A payslip, not encrypted, signed by a certified company", sable, Normal(), null, At("2026-10-01T09:00:00Z"), "none",
         Payslip("••••1234", "2026-09", ("Basic salary", "earning", 16200.00m), ("Overtime (12 h)", "earning", 2250.00m), ("PAYE", "deduction", -3317.63m),
             ("UIF", "deduction", -184.50m), ("Pension fund", "deduction", -845.50m)), "valid", "certified"),
-    new("signed-password.jzm", "A payslip encrypted with a password: the facts are encrypted too (6.9.3)", sable, null, Util.At("2026-10-01T09:05:00Z"), "password",
+    new("signed-password.jzm", "A payslip encrypted with a password: the facts are encrypted too (6.9.3)", sable, Normal(), null, At("2026-10-01T09:05:00Z"), "password",
         Payslip("••••5678", "2026-09", ("Basic salary", "earning", 24500.00m), ("Travel allowance", "earning", 1800.00m), ("PAYE", "deduction", -5121.40m),
             ("UIF", "deduction", -177.12m), ("Medical aid", "deduction", -2130.00m)), "valid", "certified"),
-    new("signed-shared.jzm", "An access-controlled (shared) statement: the signature covers the header and the owner's signature section", sable, null,
-        Util.At("2026-10-02T10:00:00Z"), "access", Content.Statement(), "valid", "certified"),
-    new("signed-sole-trader.jzm", "An invoice from a sole trader (kind individual), no domain", thandi, null, Util.At("2026-10-03T14:30:00Z"), "none",
+    new("signed-shared.jzm", "An access-controlled (shared) statement: the signature covers the header and the owner's signature section", sable, Normal(), null,
+        At("2026-10-02T10:00:00Z"), "access", Content.Statement(), "valid", "certified"),
+    new("signed-sole-trader.jzm", "An invoice from a sole trader (kind individual), no domain", thandi, Normal(), null, At("2026-10-03T14:30:00Z"), "none",
         Content.Invoice(), "valid", "certified"),
-    new("signed-cosigned.jzm", "Annual financial statements encrypted with a key, signed by the company and co-signed by its auditor", sable, auditor,
-        Util.At("2026-10-08T11:00:00Z"), "key", Content.FinancialStatements(), "valid", "certified") { CosignedAt = Util.At("2026-10-08T15:00:00Z") },
-    new("signed-paper.jzm", "A tax certificate with its QR code (6.9.7) in signed-paper.qr.txt", sable, null, Util.At("2026-10-10T12:00:00Z"), "none",
+    new("signed-cosigned.jzm", "Annual financial statements encrypted with a key, signed by the company and co-signed by its auditor", sable, Normal(), auditor,
+        At("2026-10-08T11:00:00Z"), "key", Content.FinancialStatements(), "valid", "certified") { CosignedAt = At("2026-10-08T15:00:00Z") },
+    new("signed-paper.jzm", "A tax certificate with its QR code (6.9.7) in signed-paper.qr.txt", sable, Normal(), null, At("2026-10-10T12:00:00Z"), "none",
         Content.TaxCertificate(), "valid", "certified"),
-    new("expired-certificate.jzm", "Signed in 2025 with a certificate that has since expired: the timestamp is inside its validity", sable2025, null,
-        Util.At("2025-06-02T08:00:00Z"), "none", Payslip("••••1234", "2025-05", ("Basic salary", "earning", 15400.00m), ("PAYE", "deduction", -2990.10m),
+    new("cross-certified.jzm", "Signed under a new root that readers don't have built in: the chain carries a cross-certificate the trusted root signed", sableRoot2,
+        [issuing2, cross2], null, At("2026-10-06T08:00:00Z"), "none",
+        Payslip("••••2468", "2026-09", ("Basic salary", "earning", 17350.00m), ("PAYE", "deduction", -3402.15m), ("UIF", "deduction", -173.50m)), "valid", "certified"),
+    new("expired-certificate.jzm", "Signed in 2025 with a certificate that has since expired: the timestamp is inside its validity", sable2025, Normal(), null,
+        At("2025-06-02T08:00:00Z"), "none", Payslip("••••1234", "2025-05", ("Basic salary", "earning", 15400.00m), ("PAYE", "deduction", -2990.10m),
             ("UIF", "deduction", -154.00m)), "valid", "certified"),
-    new("timestamp-outside.jzm", "Signed with the 2025 certificate after it expired: the timestamp is outside its validity", sable2025, null,
-        Util.At("2026-02-01T08:00:00Z"), "none", Payslip("••••1234", "2026-01", ("Basic salary", "earning", 16200.00m), ("PAYE", "deduction", -3105.20m),
+    new("timestamp-outside.jzm", "Signed with the 2025 certificate after it expired: the timestamp is outside its validity", sable2025, Normal(), null,
+        At("2026-02-01T08:00:00Z"), "none", Payslip("••••1234", "2026-01", ("Basic salary", "earning", 16200.00m), ("PAYE", "deduction", -3105.20m),
             ("UIF", "deduction", -162.00m)), "none", "invalid") { Reason = "validity" },
-    new("revoked-before.jzm", "Signed with the payroll certificate before the date it is revoked from", sablePayroll, null, Util.At("2026-09-01T08:00:00Z"), "none",
+    new("revoked-before.jzm", "Signed with the payroll certificate before the date it is revoked from", sablePayroll, Normal(), null, At("2026-09-01T08:00:00Z"), "none",
         Payslip("••••4321", "2026-08", ("Basic salary", "earning", 12800.00m), ("PAYE", "deduction", -1876.45m), ("UIF", "deduction", -128.00m)), "valid", "certified"),
-    new("revoked.jzm", "Signed with the payroll certificate after the date the revocation list revokes it from", sablePayroll, null, Util.At("2026-10-05T08:00:00Z"), "none",
+    new("revoked.jzm", "Signed with the payroll certificate after the date it is revoked from. The status stored at signing says valid; the revocation list is more recent and wins",
+        sablePayroll, Normal(), null, At("2026-10-05T08:00:00Z"), "none",
         Payslip("••••4321", "2026-09", ("Basic salary", "earning", 12800.00m), ("Bonus", "earning", 40000.00m), ("PAYE", "deduction", -13980.00m),
-            ("UIF", "deduction", -177.12m)), "none", "invalid") { Reason = "revoked" },
-    new("stripped-algorithm.jzm", "Signed with ES256 and ML-DSA-65; the ML-DSA-65 signature was removed, so 'algorithms' no longer matches", sable, null,
-        Util.At("2026-10-07T08:00:00Z"), "none", Payslip("••••7788", "2026-09", ("Basic salary", "earning", 19800.00m), ("PAYE", "deduction", -3840.00m),
+            ("UIF", "deduction", -177.12m)), "valid", "invalid") { Reason = "revoked" },
+    new("stripped-algorithm.jzm", "Signed with ES256 and ML-DSA-65; the ML-DSA-65 signature was removed, so 'algorithms' no longer matches", sable, Normal(), null,
+        At("2026-10-07T08:00:00Z"), "none", Payslip("••••7788", "2026-09", ("Basic salary", "earning", 19800.00m), ("PAYE", "deduction", -3840.00m),
             ("UIF", "deduction", -177.12m)), "valid", "invalid") { Reason = "algorithms", Algorithms = ["ES256", "ML-DSA-65"] },
-    new("superseded.jzm", "A payslip its publisher replaced: the status at signing says superseded", sable, null, Util.At("2026-10-09T08:00:00Z"), "none",
+    new("stripped-cosignature.jzm", "Signed by the company and co-signed by its auditor (both ES256); the co-signature was removed, so 'algorithms' no longer matches",
+        sable, Normal(), auditor, At("2026-10-08T12:00:00Z"), "none",
+        Payslip("••••1357", "2026-09", ("Basic salary", "earning", 21000.00m), ("PAYE", "deduction", -4200.00m), ("UIF", "deduction", -177.12m)), "valid", "invalid")
+    { CosignedAt = At("2026-10-08T16:00:00Z"), StripCosigner = true, Reason = "algorithms" },
+    new("superseded.jzm", "A payslip its publisher replaced: the status at signing says superseded", sable, Normal(), null, At("2026-10-09T08:00:00Z"), "none",
         Payslip("••••3456", "2026-09", ("Basic salary", "earning", 14100.00m), ("PAYE", "deduction", -2601.75m), ("UIF", "deduction", -141.00m)),
-        "superseded", "superseded") { StatusFrom = Util.At("2026-10-12T00:00:00Z"), StatusTime = Util.At("2026-10-12T09:00:00Z") },
-    new("withdrawn.jzm", "A payslip issued in error: the status at signing says withdrawn", sable, null, Util.At("2026-10-10T08:00:00Z"), "none",
+        "superseded", "superseded") { StatusFrom = At("2026-10-12T00:00:00Z"), StatusTime = At("2026-10-12T09:00:00Z") },
+    new("withdrawn.jzm", "A payslip issued in error: the status at signing says withdrawn", sable, Normal(), null, At("2026-10-10T08:00:00Z"), "none",
         Payslip("••••9012", "2026-09", ("Basic salary", "earning", 98000.00m), ("PAYE", "deduction", -38204.10m), ("UIF", "deduction", -177.12m)),
-        "withdrawn", "withdrawn") { StatusFrom = Util.At("2026-10-11T00:00:00Z"), StatusTime = Util.At("2026-10-12T09:00:00Z") },
-    new("untrusted-root.jzm", "Signed with a certificate naming Sable Line Logistics that chains to its own self-signed root, not a trusted one", fakeSable, null,
-        Util.At("2026-10-08T09:00:00Z"), "none", Payslip("••••1234", "2026-09", ("Basic salary", "earning", 16200.00m), ("Performance bonus", "earning", 85000.00m),
-            ("PAYE", "deduction", -38410.00m), ("UIF", "deduction", -177.12m)), "none", "signed") { Untrusted = true },
+        "withdrawn", "withdrawn") { StatusFrom = At("2026-10-11T00:00:00Z"), StatusTime = At("2026-10-12T09:00:00Z") },
+    new("untrusted-root.jzm", "Signed with a certificate naming Sable Line Logistics that chains to its own self-signed root, not a trusted one", fakeSable,
+        [fakeIssuing], null, At("2026-10-08T09:00:00Z"), "none", Payslip("••••1234", "2026-09", ("Basic salary", "earning", 16200.00m),
+            ("Performance bonus", "earning", 85000.00m), ("PAYE", "deduction", -38410.00m), ("UIF", "deduction", -177.12m)), "none", "signed") { Untrusted = true },
+    new("cross-untrusted.jzm", "A chain with a cross-certificate signed by a root that isn't trusted, though it has the trusted root's name", fakeSable2,
+        [fakeIssuing2, fakeCross], null, At("2026-10-08T09:30:00Z"), "none", Payslip("••••1234", "2026-09", ("Basic salary", "earning", 16200.00m),
+            ("Retention bonus", "earning", 60000.00m), ("PAYE", "deduction", -27400.00m), ("UIF", "deduction", -177.12m)), "none", "signed") { Untrusted = true },
+    new("self-signed.jzm", "Signed with one's own key: a self-signed certificate naming Sable Line Logistics, alone", selfSigned, [], null,
+        At("2026-10-08T10:00:00Z"), "none", Payslip("••••1234", "2026-09", ("Basic salary", "earning", 16200.00m), ("PAYE", "deduction", -3105.20m)),
+        "none", "signed") { Untrusted = true },
 };
 
 var docs = new List<Doc>();
 var tokenSerial = 0;
 foreach (var spec in specs)
 {
-    var issuer = spec.Untrusted ? fakeIssuing : issuing;
     var file = spec.Content.Write(tmp, spec, password, masterKey, ownerKey, accessKey);
     var trailer = Jzm.ReadTrailer(file, file.Length) ?? throw new InvalidOperationException($"{spec.File}: no trailer");
     var digest = Jzm.FileDigest(file, trailer.HeaderOffset, trailer);
@@ -139,48 +175,63 @@ foreach (var spec in specs)
     var factsDigest = SHA256.HashData(factsPlain);
     var factsStored = spec.Encryption == "none" ? factsPlain : Jzm.EncryptFacts(file, trailer, spec.Encryption, factsPlain, password, masterKey, ownerKey);
     var code = Util.DocumentCode(spec.File);
-    var signed = Proto.SignedDocument(file[8..24], digest, code, spec.Content.Kind, factsDigest, spec.Algorithms,
+    string[] algorithms = spec.Algorithms ?? (spec.Cosigner is null ? ["ES256"] : ["ES256", "ES256"]); // one per signature, in order
+    var signed = Proto.SignedDocument(file[8..24], digest, code, spec.Content.Kind, factsDigest, algorithms,
         Util.Credential(spec.Publisher), spec.SignedAt.ToUnixTimeMilliseconds());
     var doc = new Doc(spec, file, trailer, digest, signed, factsStored, factsDigest, code);
-    doc.Sigs.Add(Sign(spec.Publisher, issuer, "publisher", signed, spec.Untrusted ? null : spec.SignedAt.AddSeconds(2)));
-    if (spec.Cosigner is not null) doc.Sigs.Add(Sign(spec.Cosigner, issuing, "cosigner", signed, spec.CosignedAt!.Value.AddSeconds(2)));
+    doc.Sigs.Add(Sign(spec.Publisher, spec.Chain, "publisher", signed, spec.Untrusted ? null : spec.SignedAt.AddSeconds(2)));
+    if (spec.Cosigner is not null)
+    {
+        var cosignature = Sign(spec.Cosigner, [issuing], "cosigner", signed, spec.CosignedAt!.Value.AddSeconds(2));
+        if (spec.StripCosigner) doc.Stripped.Add(cosignature);
+        else doc.Sigs.Add(cosignature);
+    }
     if (spec.Stapled != "none")
-        doc.Status = Jws.Sign(Util.StatusAnswer(digest, spec.Publisher, code, spec.Stapled, spec.StatusFrom, spec.StatusTime ?? spec.SignedAt.AddSeconds(5), digest), statusCert, issuing);
+        doc.Status = Jws.Sign(Util.StatusAnswer(digest, spec.Publisher, spec.Chain[0], code, spec.Stapled, spec.StatusFrom, spec.StatusTime ?? spec.SignedAt.AddSeconds(5), digest),
+            statusCert, null); // no x5c: the block carries the status certificate
+    if (!spec.Untrusted)
+    {
+        doc.Shared.Add(tsa);
+        if (doc.Status.Length > 0) doc.Shared.Add(statusCert);
+        doc.Shared.Add(logCert);
+        if (!doc.Sigs.Any(s => s.Chain.Contains(issuing))) doc.Shared.Add(issuing); // the shared certificates' issuing certificate
+    }
     docs.Add(doc);
 }
 
-Sig Sign(Cert signer, Cert issuer, string role, byte[] signed, DateTimeOffset? stampAt)
+Sig Sign(Cert signer, Cert[] chain, string role, byte[] signed, DateTimeOffset? stampAt)
 {
-    var value = signer.Key.SignData([.. "JAZMIN/1/publisher"u8, .. signed], HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
-    byte[] stamp = stampAt is null ? [] : Tsa.Stamp(value, stampAt.Value, tsa, issuing, ++tokenSerial);
-    return new Sig(role, signer, issuer, value, stamp, stampAt);
+    byte[] message = [.. "JAZMIN/1/publisher"u8, .. signed];
+    var value = signer.Key.SignData(message, HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
+    byte[] stamp = stampAt is null ? [] : Tsa.Stamp(value, stampAt.Value, tsa, ++tokenSerial);
+    return new Sig(role, signer, chain, value, stamp, stampAt);
 }
 
-// ---- the transparency log (6.9.5): one entry per trusted signature, oldest first --------------------------------------
+// ---- the transparency log (6.9.5): an entry per signature, oldest first -------------------------------------------------
 var origin = "log.jazmin.example/test";
-var entries = docs.SelectMany(d => d.Sigs.Where(s => s.StampedAt is not null).Select(s => (Doc: d, Sig: s)))
+var entries = docs.SelectMany(d => d.Sigs.Concat(d.Stripped).Where(s => s.StampedAt is not null).Select(s => (Doc: d, Sig: s)))
     .OrderBy(e => e.Sig.StampedAt).ToList();
-var leaves = entries.Select(e => SHA256.HashData(e.Doc.Signed)).ToList();
+var leaves = entries.Select(e => Merkle.Entry(e.Doc.Signed, e.Sig.Value)).ToList();
 var rootHash = Merkle.Root(leaves, 0, leaves.Count);
-var (checkpoint, verifierKey) = Merkle.Checkpoint(origin, leaves.Count, rootHash, logKey);
+var (checkpoint, verifierKey) = Merkle.Checkpoint(origin, leaves.Count, rootHash, logCert);
 File.WriteAllText(Path.Combine(outDir, "log", "checkpoint.txt"), checkpoint);
 File.WriteAllText(Path.Combine(outDir, "log", "test-log.vkey"), verifierKey + "\n");
 var leafList = new JsonArray();
 for (var i = 0; i < entries.Count; i++)
 {
     var (doc, sig) = entries[i];
-    sig.LogIndex = i;
-    sig.Receipt = Encoding.UTF8.GetBytes(Merkle.Proof(i, leaves, checkpoint));
-    File.WriteAllBytes(Path.Combine(outDir, "log", $"{Path.GetFileNameWithoutExtension(doc.Spec.File)}.{sig.Role}.proof.txt"), sig.Receipt);
+    sig.Receipt = Merkle.Proof(i, leaves, checkpoint);
+    var stripped = doc.Stripped.Contains(sig);
+    File.WriteAllText(Path.Combine(outDir, "log", $"{Path.GetFileNameWithoutExtension(doc.Spec.File)}.{sig.Role}.proof.txt"), sig.Receipt);
     leafList.Add(new JsonObject
     {
-        ["index"] = i, ["file"] = doc.Spec.File, ["role"] = sig.Role, ["timestamp"] = Util.Iso(sig.StampedAt!.Value),
-        ["leaf"] = Convert.ToBase64String(leaves[i]), ["leafHash"] = Convert.ToBase64String(Merkle.LeafHash(leaves[i])),
+        ["index"] = i, ["file"] = doc.Spec.File, ["role"] = sig.Role, ["inFile"] = !stripped, ["timestamp"] = Util.Iso(sig.StampedAt!.Value),
+        ["entry"] = Convert.ToBase64String(leaves[i]), ["leafHash"] = Convert.ToBase64String(Merkle.LeafHash(leaves[i])),
     });
 }
 Util.WriteJson(Path.Combine(outDir, "log", "leaves.json"), new JsonObject
 {
-    ["comment"] = "Entries of the test transparency log: leaf = SHA-256(PublisherSignatures.signed) (6.9.5), the entry RFC 9162 hashes as SHA-256(0x00 || leaf)",
+    ["comment"] = "Entries of the test transparency log (6.9.5): \"JAZMIN/1/log\" || SHA-256(signed) || SHA-256(value); leaf hash SHA-256(0x00 || entry)",
     ["origin"] = origin, ["treeSize"] = leaves.Count, ["rootHash"] = Convert.ToBase64String(rootHash), ["entries"] = leafList,
 });
 
@@ -189,7 +240,7 @@ var finals = new Dictionary<string, byte[]>();
 foreach (var doc in docs)
 {
     var payload = Proto.PublisherSignatures(doc.Signed, doc.Sigs.Select(s => Proto.PublisherSignature("ES256", s.Value,
-        [s.Signer.Der, s.Issuing.Der], s.Role, s.Timestamp, s.Receipt)).ToList(), doc.FactsStored, doc.Status);
+        [s.Signer.Der, .. s.Chain.Select(c => c.Der)], s.Role, s.Timestamp, s.Receipt)).ToList(), doc.FactsStored, doc.Status, doc.Shared.Select(c => c.Der).ToList());
     var bytes = Jzm.InsertBlock(doc.File, Jzm.Block(payload));
     finals[doc.Spec.File] = bytes;
     File.WriteAllBytes(Path.Combine(outDir, doc.Spec.File), bytes);
@@ -218,11 +269,18 @@ void Damaged(string name, string from, byte[] bytes, string description, string 
 {
     var t = Jzm.ReadTrailer(plain, plain.Length)!;
     Damaged("changed-extra-byte.jzm", "signed-plain.jzm", Jzm.InsertAt(plain, t.HeaderOffset, 0x00),
-        "One byte inserted between the block and the header (trailer offsets moved): the 16 bytes before the header are no longer the block's footer, so no block is found",
+        "One byte inserted between the block and the header (trailer offsets moved): the 16 bytes before the header are no longer the block's footer, so the file shows as not signed (6.9.1)",
         "none", null, new JsonObject { ["reads"] = true, ["rows"] = 5 });
     Damaged("changed-trailing-byte.jzm", "signed-plain.jzm", [.. plain, 0x00],
-        "One byte appended after the trailer: the file has no valid trailer at its end (4.2); a verifier that finds the last valid trailer, as 11.2 does, finds bytes after it",
-        "changed", "after-trailer", new JsonObject { ["reads"] = false });
+        "One byte appended after the trailer: the file's last bytes are not a valid trailer, so it is not a valid file (4.2) and is not verified (6.9.1)",
+        "not-verified", "not-a-valid-file", new JsonObject { ["reads"] = false });
+    var crc = (byte[])plain.Clone();
+    var footer = (int)t.HeaderOffset - 16;
+    var b = footer - (int)BinaryPrimitives.ReadUInt32LittleEndian(crc.AsSpan(footer));
+    crc[b + (footer - b) / 2] ^= 0x01; // a byte in the middle of the payload; the CRC no longer matches
+    Damaged("invalid-block-crc.jzm", "signed-plain.jzm", crc,
+        "One byte of the block's payload changed (the block isn't covered by D, but its CRC no longer matches): a damaged signature block (6.9.1)",
+        "invalid", "block", new JsonObject { ["reads"] = true, ["rows"] = 5 });
 }
 {
     var shared = finals["signed-shared.jzm"];
@@ -237,14 +295,14 @@ void Damaged(string name, string from, byte[] bytes, string description, string 
     JazminFile.Append(path, new JazminAppend
     {
         Insert = [new Dictionary<string, object?> { ["line"] = 6L, ["item"] = "Back pay (August)", ["type"] = "earning", ["amount"] = 500.00m }],
-        Now = Util.At("2026-10-14T08:00:00Z"),
+        Now = At("2026-10-14T08:00:00Z"),
     });
     Damaged("appended.jzm", "signed-plain.jzm", File.ReadAllBytes(path),
-        "signed-plain.jzm with a row appended by the library afterwards (11.2): the new header has no block before it",
+        "signed-plain.jzm with a row appended by the library afterwards (11.2): the new header has no block before it, so the file shows as not signed (6.9.1)",
         "none", null, new JsonObject { ["reads"] = true, ["rows"] = 6 });
 }
 {
-    var spec = new Spec("unsigned.jzm", "A file without a block", sable, null, Util.At("2026-10-01T09:00:00Z"), "none",
+    var spec = new Spec("unsigned.jzm", "A file without a block", sable, Normal(), null, At("2026-10-01T09:00:00Z"), "none",
         Payslip("••••1234", "2026-09", ("Basic salary", "earning", 16200.00m), ("PAYE", "deduction", -3105.20m)), "none", "none");
     Damaged("unsigned.jzm", "", spec.Content.Write(tmp, spec, password, masterKey, ownerKey, accessKey), "A file without a publisher signature", "none", null,
         new JsonObject { ["reads"] = true, ["rows"] = 2 });
@@ -252,13 +310,13 @@ void Damaged(string name, string from, byte[] bytes, string description, string 
 
 // ---- status answers, the revocation list and a confirmation receipt (6.9.5) ----------------------------------------
 var onlineNonce = Util.Seed("online-status-nonce", 16);
-var online = Jws.Sign(Util.StatusAnswer(plainDoc.Digest, sable, plainDoc.Code, "valid", null, Util.At("2026-10-17T11:59:00Z"), onlineNonce), statusCert, issuing);
+var online = Jws.Sign(Util.StatusAnswer(plainDoc.Digest, sable, issuing, plainDoc.Code, "valid", null, At("2026-10-17T11:59:00Z"), onlineNonce), statusCert, issuing);
 File.WriteAllText(Path.Combine(outDir, "status", "signed-plain.online.jws"), online + "\n");
 var revocationList = Jws.Sign(new JsonObject
 {
     ["issued"] = "2026-10-16T00:00:00Z",
     ["next"] = "2026-10-23T00:00:00Z",
-    ["revoked"] = new JsonArray(new JsonObject { ["serial"] = Util.Serial(sablePayroll), ["from"] = Util.Iso(revokedFrom), ["reason"] = "keyCompromise" }),
+    ["revoked"] = new JsonArray(new JsonObject { ["certificate"] = Util.CertName(sablePayroll, issuing), ["from"] = Util.Iso(revokedFrom), ["reason"] = "keyCompromise" }),
 }, statusCert, issuing);
 File.WriteAllText(Path.Combine(outDir, "status", "revocation-list.jws"), revocationList + "\n");
 var party = "First Test Bank Ltd / FTB-000173";
@@ -315,7 +373,6 @@ foreach (var doc in docs)
 foreach (var d in damaged)
 {
     var from = d.From.Length == 0 ? null : specs.Single(s => s.File == d.From);
-    var result = new JsonObject { ["status"] = d.Status, ["name"] = null, ["kind"] = null, ["code"] = null, ["facts"] = null, ["reason"] = d.Reason };
     fixtures.Add(new JsonObject
     {
         ["file"] = d.File,
@@ -323,7 +380,7 @@ foreach (var d in damaged)
         ["derivedFrom"] = d.From.Length == 0 ? null : d.From,
         ["encryption"] = from?.Encryption ?? "none",
         ["keys"] = Util.Keys(from?.Encryption ?? "none", password, masterKey, ownerKey, accessKey),
-        ["result"] = result,
+        ["result"] = new JsonObject { ["status"] = d.Status, ["name"] = null, ["kind"] = null, ["code"] = null, ["facts"] = null, ["reason"] = d.Reason },
         ["library"] = d.Library,
     });
 }
@@ -334,20 +391,26 @@ var expected = new JsonObject
     ["verifyAt"] = Util.Iso(verifyAt),
     ["trustedRoots"] = new JsonArray("pki/test-root.der"),
     ["revocationList"] = "status/revocation-list.jws",
-    ["log"] = new JsonObject { ["origin"] = origin, ["verifierKey"] = verifierKey, ["checkpoint"] = "log/checkpoint.txt", ["treeSize"] = leaves.Count },
+    ["log"] = new JsonObject
+    {
+        ["origin"] = origin, ["certificate"] = "pki/test-log.der", ["verifierKey"] = verifierKey, ["checkpoint"] = "log/checkpoint.txt", ["treeSize"] = leaves.Count,
+    },
     ["oids"] = new JsonObject
     {
-        ["arc"] = Oids.Arc, ["uuid"] = Oids.Uuid, ["id-jazmin-policy"] = Oids.Policy, ["id-jazmin-document-signing"] = Oids.DocumentSigning,
-        ["id-jazmin-status"] = Oids.Status, ["id-jazmin-confirmation"] = Oids.Confirmation, ["id-jazmin-publisher-kind"] = Oids.PublisherKind,
+        ["arc"] = Oids.Arc, ["id-jazmin-policy"] = Oids.Policy, ["id-jazmin-document-signing"] = Oids.DocumentSigning, ["id-jazmin-status"] = Oids.Status,
+        ["id-jazmin-confirmation"] = Oids.Confirmation, ["id-jazmin-publisher-kind"] = Oids.PublisherKind, ["id-jazmin-log"] = Oids.Log,
     },
     ["secrets"] = new JsonObject { ["password"] = password, ["key"] = masterKey.ToString(), ["ownerKey"] = ownerKey.ToString(), ["accessKey"] = accessKey.ToString() },
     ["fixtures"] = fixtures,
     ["statusAnswers"] = new JsonArray(new JsonObject
     {
         ["file"] = "status/signed-plain.online.jws", ["for"] = "signed-plain.jzm", ["nonce"] = Util.B64Url(onlineNonce), ["status"] = "valid",
-        ["serial"] = Util.Serial(sable), ["time"] = "2026-10-17T11:59:00Z",
+        ["certificate"] = Util.CertName(sable, issuing), ["time"] = "2026-10-17T11:59:00Z",
     }),
-    ["revocations"] = new JsonArray(new JsonObject { ["serial"] = Util.Serial(sablePayroll), ["certificate"] = "pki/sable-line-logistics-payroll.der", ["from"] = Util.Iso(revokedFrom) }),
+    ["revocations"] = new JsonArray(new JsonObject
+    {
+        ["certificate"] = Util.CertName(sablePayroll, issuing), ["file"] = "pki/sable-line-logistics-payroll.der", ["from"] = Util.Iso(revokedFrom), ["reason"] = "keyCompromise",
+    }),
     ["confirmationReceipts"] = new JsonArray(new JsonObject
     {
         ["file"] = "status/signed-plain.confirmation.jws", ["for"] = "signed-plain.jzm", ["party"] = party, ["status"] = "valid", ["time"] = "2026-10-16T10:15:00Z",
@@ -365,19 +428,21 @@ var expected = new JsonObject
 };
 Util.WriteJson(Path.Combine(outDir, "expected.json"), expected);
 Directory.Delete(tmp, true);
+var plainBlock = (int)BinaryPrimitives.ReadUInt32LittleEndian(plain.AsSpan((int)Jzm.ReadTrailer(plain, plain.Length)!.HeaderOffset - 16)) + 16;
 Console.WriteLine($"Wrote {fixtures.Count} files, {leaves.Count} log entries, the PKI and expected.json to {outDir}");
+Console.WriteLine($"signed-plain.jzm: {plain.Length} bytes, of which the block (one signature) is {plainBlock}");
 
 // =====================================================================================================================
 
 static class Oids
 {
-    public const string Uuid = "38a60751-917e-4991-bc8d-b130f0d8a1f6";
-    public const string Arc = "2.25.75298837481848457984537899361864557046"; // the UUID above as an integer (X.667)
+    public const string Arc = "2.999.1"; // ITU-T X.660's arc for examples (6.9.4)
     public const string Policy = Arc + ".1";
     public const string DocumentSigning = Arc + ".2";
     public const string Status = Arc + ".3";
     public const string Confirmation = Arc + ".4";
     public const string PublisherKind = Arc + ".5";
+    public const string Log = Arc + ".6";
     public const string TimeStamping = "1.3.6.1.5.5.7.3.8";
     public const string OrganizationIdentifier = "2.5.4.97";
     public const string Sha256 = "2.16.840.1.101.3.4.2.1";
@@ -391,6 +456,7 @@ sealed class Cert(string name, ECDsa key, X509Certificate2 x)
     public ECDsa Key => key;
     public X509Certificate2 X => x;
     public byte[] Der => x.RawData;
+    public byte[] Spki => x.PublicKey.ExportSubjectPublicKeyInfo();
     public byte[] Ski => ((X509SubjectKeyIdentifierExtension)x.Extensions["2.5.29.14"]!).SubjectKeyIdentifierBytes.ToArray();
 }
 
@@ -419,6 +485,7 @@ sealed class Pki(string certDir, string keyDir, bool renew)
         r.CertificateExtensions.Add(new X509KeyUsageExtension(X509KeyUsageFlags.KeyCertSign | X509KeyUsageFlags.CrlSign, true));
     };
 
+    /// <summary>A leaf of the profile: basic constraints and key usage critical, one extended key usage (critical only for time-stamping).</summary>
     public static Action<CertificateRequest> Leaf(string eku, bool ekuCritical, string? kind, string? domain) => r =>
     {
         r.CertificateExtensions.Add(new X509BasicConstraintsExtension(false, false, 0, true));
@@ -447,16 +514,16 @@ sealed class Pki(string certDir, string keyDir, bool renew)
         return new X509Extension("2.5.29.32", w.Encode(), false);
     }
 
-    public Cert Make(string name, X500DistinguishedName subject, bool p384, Cert? issuer, DateTimeOffset from, DateTimeOffset to, Action<CertificateRequest> extensions)
+    /// <summary>A certificate for the key named <paramref name="keyName"/> (default: its own name), signed by the issuer's key or self-signed.</summary>
+    public Cert Make(string name, X500DistinguishedName subject, bool p384, Cert? issuer, DateTimeOffset from, DateTimeOffset to, Action<CertificateRequest> extensions,
+        string? keyName = null)
     {
-        var key = TestKey(name, p384);
-        File.WriteAllText(Path.Combine(keyDir, name + ".key.pem"), KeyWarning + key.ExportPkcs8PrivateKeyPem() + "\n");
+        var key = TestKey(keyName ?? name, p384);
+        if (keyName is null) File.WriteAllText(Path.Combine(keyDir, name + ".key.pem"), KeyWarning + key.ExportPkcs8PrivateKeyPem() + "\n");
         var derPath = Path.Combine(certDir, name + ".der");
         if (!renew && File.Exists(derPath))
         {
             var kept = X509CertificateLoader.LoadCertificate(File.ReadAllBytes(derPath));
-            // PublicKey, not GetECDsaPublicKey: on Windows the latter reads the extensions, and CryptoAPI can't hold the
-            // 128-bit arc of a 2.25 OID such as id-jazmin-publisher-kind's.
             if (kept.PublicKey.ExportSubjectPublicKeyInfo().AsSpan().SequenceEqual(key.ExportSubjectPublicKeyInfo())) return new Cert(name, key, kept);
         }
         var signerKey = issuer?.Key ?? key;
@@ -474,11 +541,13 @@ sealed class Pki(string certDir, string keyDir, bool renew)
     }
 }
 
-sealed class Spec(string file, string description, Cert publisher, Cert? cosigner, DateTimeOffset signedAt, string encryption, Content content, string stapled, string expected)
+sealed class Spec(string file, string description, Cert publisher, Cert[] chain, Cert? cosigner, DateTimeOffset signedAt, string encryption, Content content,
+    string stapled, string expected)
 {
     public string File => file;
     public string Description => description;
     public Cert Publisher => publisher;
+    public Cert[] Chain => chain;           // the certificates after the leaf: issuing, then optionally a cross-certificate
     public Cert? Cosigner => cosigner;
     public DateTimeOffset SignedAt => signedAt;
     public string Encryption => encryption; // none, password, key, access
@@ -489,20 +558,20 @@ sealed class Spec(string file, string description, Cert publisher, Cert? cosigne
     public DateTimeOffset? StatusFrom { get; init; }
     public DateTimeOffset? StatusTime { get; init; }
     public string? Reason { get; init; }
-    public string[] Algorithms { get; init; } = ["ES256"];
+    public string[]? Algorithms { get; init; }
+    public bool StripCosigner { get; init; }
     public bool Untrusted { get; init; }
 }
 
-sealed class Sig(string role, Cert signer, Cert issuing, byte[] value, byte[] timestamp, DateTimeOffset? stampedAt)
+sealed class Sig(string role, Cert signer, Cert[] chain, byte[] value, byte[] timestamp, DateTimeOffset? stampedAt)
 {
     public string Role => role;
     public Cert Signer => signer;
-    public Cert Issuing => issuing;
+    public Cert[] Chain => chain;
     public byte[] Value => value;
     public byte[] Timestamp => timestamp;
     public DateTimeOffset? StampedAt => stampedAt;
-    public byte[] Receipt { get; set; } = [];
-    public int LogIndex { get; set; } = -1;
+    public string Receipt { get; set; } = "";
 }
 
 sealed class Doc(Spec spec, byte[] file, Trailer trailer, byte[] digest, byte[] signed, byte[] factsStored, byte[] factsDigest, string code)
@@ -516,6 +585,8 @@ sealed class Doc(Spec spec, byte[] file, Trailer trailer, byte[] digest, byte[] 
     public byte[] FactsDigest => factsDigest;
     public string Code => code;
     public List<Sig> Sigs { get; } = [];
+    public List<Sig> Stripped { get; } = []; // made and logged, then removed from the block
+    public List<Cert> Shared { get; } = [];  // PublisherSignatures.certificates
     public string Status { get; set; } = "";
 }
 
@@ -764,21 +835,41 @@ static class Jzm
         throw new InvalidOperationException("No slot for this key");
     }
 
-    /// <summary>The key of the facts: as the header's (7.3, 7.6.3), with "publisher/facts" in place of "header" (6.9.3).</summary>
+    /// <summary>The keyring's "data" secret of a file encrypted with a key or password (7.3): from the decrypted header.</summary>
+    public static byte[] KeyringData(byte[] f, Trailer t, byte[] master)
+    {
+        var at = (int)t.HeaderOffset;
+        var envelope = f.AsSpan(at, 16);
+        var payloadLength = (int)BinaryPrimitives.ReadUInt32LittleEndian(envelope[8..]);
+        var key = Util.Hkdf(master, f.AsSpan(24, 32).ToArray(), "JAZMIN/1/header");
+        var plain = Util.Open(key, f.AsSpan(at + 16, payloadLength), [.. f.AsSpan(8, 16), .. envelope[..8], .. "header"u8]);
+        var raw = Util.Decompress(envelope[0], plain);
+        var keyring = Pb.Field(raw, 8) ?? throw new InvalidOperationException("No keyring in the header");
+        return Pb.Field(keyring, 1) ?? throw new InvalidOperationException("No data secret in the keyring");
+    }
+
+    /// <summary>
+    /// The key of the facts (6.9.3): the key a section named "publisher/facts" gets. With a key or password (7.3):
+    /// HKDF(master, keyring.data, "JAZMIN/1/publisher/facts"); access-controlled (7.6.3): HKDF(H, salt, "JAZMIN/1/publisher/facts").
+    /// </summary>
     public static byte[] FactsKey(byte[] f, Trailer t, string encryption, string password, JazminKey masterKey, JazminKey ownerKey)
     {
         var salt = f.AsSpan(24, 32).ToArray();
-        var ikm = encryption switch
+        return encryption switch
         {
-            "key" => masterKey.ToBytes(),
-            "password" => Rfc2898DeriveBytes.Pbkdf2(Encoding.UTF8.GetBytes(password), salt, (int)BinaryPrimitives.ReadUInt32LittleEndian(f.AsSpan(56)), HashAlgorithmName.SHA256, 32),
-            "access" => HeaderSecret(f, t, ownerKey.ToBytes()),
+            "key" => Util.Hkdf(masterKey.ToBytes(), KeyringData(f, t, masterKey.ToBytes()), "JAZMIN/1/publisher/facts"),
+            "password" => Password(),
+            "access" => Util.Hkdf(HeaderSecret(f, t, ownerKey.ToBytes()), salt, "JAZMIN/1/publisher/facts"),
             _ => throw new ArgumentException(encryption),
         };
-        return Util.Hkdf(ikm, salt, "JAZMIN/1/publisher/facts");
+        byte[] Password()
+        {
+            var master = Rfc2898DeriveBytes.Pbkdf2(Encoding.UTF8.GetBytes(password), salt, (int)BinaryPrimitives.ReadUInt32LittleEndian(f.AsSpan(56)), HashAlgorithmName.SHA256, 32);
+            return Util.Hkdf(master, KeyringData(f, t, master), "JAZMIN/1/publisher/facts");
+        }
     }
 
-    /// <summary>The associated data of the facts: file_id || the envelope bytes 0..7 of a codec-0 encrypted section of their length || "publisher/facts".</summary>
+    /// <summary>The associated data of the facts (6.9.3): file_id || 00 01 00 00 || u32(length) || "publisher/facts".</summary>
     public static byte[] FactsAad(ReadOnlySpan<byte> fileId, int rawLength)
     {
         var envelope = new byte[8];
@@ -791,7 +882,44 @@ static class Jzm
         Util.Seal(FactsKey(f, t, encryption, password, masterKey, ownerKey), plain, FactsAad(f.AsSpan(8, 16), plain.Length));
 }
 
-/// <summary>Protocol Buffers encoding of the 6.9.6 messages.</summary>
+/// <summary>Protocol Buffers: encoding the 6.9.6 messages, and reading one field of a message.</summary>
+static class Pb
+{
+    public static byte[]? Field(ReadOnlySpan<byte> b, int wanted)
+    {
+        var pos = 0;
+        byte[]? found = null;
+        while (pos < b.Length)
+        {
+            var key = Varint(b, ref pos);
+            switch (key & 7)
+            {
+                case 0: Varint(b, ref pos); break;
+                case 1: pos += 8; break;
+                case 5: pos += 4; break;
+                case 2:
+                    var length = (int)Varint(b, ref pos);
+                    if ((int)(key >> 3) == wanted) found = b.Slice(pos, length).ToArray();
+                    pos += length;
+                    break;
+                default: throw new InvalidOperationException("wire type");
+            }
+        }
+        return found;
+    }
+
+    private static ulong Varint(ReadOnlySpan<byte> b, ref int pos)
+    {
+        ulong v = 0;
+        for (var shift = 0; ; shift += 7)
+        {
+            var x = b[pos++];
+            v |= (ulong)(x & 0x7F) << shift;
+            if (x < 0x80) return v;
+        }
+    }
+}
+
 static class Proto
 {
     private static void Varint(MemoryStream s, ulong v)
@@ -836,7 +964,7 @@ static class Proto
         return s.ToArray();
     }
 
-    public static byte[] PublisherSignature(string algorithm, byte[] value, byte[][] certificates, string role, byte[] timestamp, byte[] receipt)
+    public static byte[] PublisherSignature(string algorithm, byte[] value, byte[][] certificates, string role, byte[] timestamp, string receipt)
     {
         var s = new MemoryStream();
         Text(s, 1, algorithm);
@@ -844,25 +972,26 @@ static class Proto
         foreach (var c in certificates) Bytes(s, 3, c, true);
         Text(s, 4, role);
         Bytes(s, 5, timestamp);
-        Bytes(s, 6, receipt);
+        Text(s, 6, receipt);
         return s.ToArray();
     }
 
-    public static byte[] PublisherSignatures(byte[] signed, List<byte[]> signatures, byte[] facts, string status)
+    public static byte[] PublisherSignatures(byte[] signed, List<byte[]> signatures, byte[] facts, string status, List<byte[]> certificates)
     {
         var s = new MemoryStream();
         Bytes(s, 1, signed);
         foreach (var g in signatures) Bytes(s, 2, g, true);
         Bytes(s, 3, facts);
         Text(s, 4, status);
+        foreach (var c in certificates) Bytes(s, 5, c, true);
         return s.ToArray();
     }
 }
 
-/// <summary>RFC 3161 time-stamp tokens from the test time-stamping certificate.</summary>
+/// <summary>RFC 3161 time-stamp tokens from the test time-stamping certificate, carrying no certificates (6.9.5).</summary>
 static class Tsa
 {
-    public static byte[] Stamp(byte[] value, DateTimeOffset at, Cert tsa, Cert issuing, int serial)
+    public static byte[] Stamp(byte[] value, DateTimeOffset at, Cert tsa, int serial)
     {
         var info = new Rfc3161TimestampTokenInfo(new Oid(Oids.Policy), new Oid(Oids.Sha256), SHA256.HashData(value), new byte[] { 0x01, (byte)serial }, at,
             accuracyInMicroseconds: 1_000_000);
@@ -870,9 +999,8 @@ static class Tsa
         var signer = new CmsSigner(SubjectIdentifierType.IssuerAndSerialNumber, tsa.X, tsa.Key)
         {
             DigestAlgorithm = new Oid(Oids.Sha256),
-            IncludeOption = X509IncludeOption.EndCertOnly,
+            IncludeOption = X509IncludeOption.None,
         };
-        signer.Certificates.Add(issuing.X);
         var w = new AsnWriter(AsnEncodingRules.DER); // SigningCertificateV2 { certs { ESSCertIDv2 { certHash } } } (RFC 5035)
         using (w.PushSequence())
         using (w.PushSequence())
@@ -884,22 +1012,26 @@ static class Tsa
     }
 }
 
-/// <summary>JSON Web Signatures in compact form, ES256, with the signer's chain in x5c (6.9.5).</summary>
+/// <summary>JSON Web Signatures in compact form, ES256 (6.9.5): x5c holds the signer and its issuing certificate, unless the block carries them.</summary>
 static class Jws
 {
-    public static string Sign(JsonObject payload, Cert signer, Cert issuing)
+    public static string Sign(JsonObject payload, Cert signer, Cert? issuing)
     {
-        var header = new JsonObject { ["alg"] = "ES256", ["x5c"] = new JsonArray(Convert.ToBase64String(signer.Der), Convert.ToBase64String(issuing.Der)) };
+        var header = new JsonObject { ["alg"] = "ES256" };
+        if (issuing is not null) header["x5c"] = new JsonArray(Convert.ToBase64String(signer.Der), Convert.ToBase64String(issuing.Der));
         var input = Util.B64Url(Encoding.UTF8.GetBytes(header.ToJsonString(Util.Compact))) + "." + Util.B64Url(Encoding.UTF8.GetBytes(payload.ToJsonString(Util.Compact)));
         var signature = signer.Key.SignData(Encoding.ASCII.GetBytes(input), HashAlgorithmName.SHA256, DSASignatureFormat.IeeeP1363FixedFieldConcatenation);
         return input + "." + Util.B64Url(signature);
     }
 }
 
-/// <summary>RFC 9162 Merkle tree hashing (section 2.1), C2SP checkpoints and tlog-proof receipts.</summary>
+/// <summary>The log (6.9.5): RFC 9162 Merkle tree hashing (2.1), C2SP checkpoints signed with a log certificate's key, tlog-proof receipts.</summary>
 static class Merkle
 {
-    public static byte[] LeafHash(byte[] leaf) => SHA256.HashData([0x00, .. leaf]);
+    /// <summary>A signature's entry: "JAZMIN/1/log" || SHA-256(signed) || SHA-256(value).</summary>
+    public static byte[] Entry(byte[] signed, byte[] value) => [.. "JAZMIN/1/log"u8, .. SHA256.HashData(signed), .. SHA256.HashData(value)];
+
+    public static byte[] LeafHash(byte[] entry) => SHA256.HashData([0x00, .. entry]);
 
     private static int Split(int n)
     {
@@ -925,13 +1057,13 @@ static class Merkle
             : [.. Path(m - k, leaves, start + k, n - k), Root(leaves, start, k)];
     }
 
-    /// <summary>A C2SP signed note (tlog-checkpoint), signed with ECDSA P-256 (signed-note type 0x02), and the log's verifier key.</summary>
-    public static (string Note, string VerifierKey) Checkpoint(string origin, int size, byte[] root, ECDsa key)
+    /// <summary>A C2SP signed note in the tlog-checkpoint form, signed with type 0x02 (ECDSA P-256), and the log's verifier key.</summary>
+    public static (string Note, string VerifierKey) Checkpoint(string origin, int size, byte[] root, Cert log)
     {
         var body = $"{origin}\n{size}\n{Convert.ToBase64String(root)}\n";
-        var spki = key.ExportSubjectPublicKeyInfo();
+        var spki = log.Spki;
         var keyId = SHA256.HashData(spki)[..4];
-        var signature = key.SignData(Encoding.UTF8.GetBytes(body), HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence);
+        var signature = log.Key.SignData(Encoding.UTF8.GetBytes(body), HashAlgorithmName.SHA256, DSASignatureFormat.Rfc3279DerSequence);
         var note = body + "\n— " + origin + " " + Convert.ToBase64String([.. keyId, .. signature]) + "\n";
         return (note, $"{origin}+{Convert.ToHexString(keyId).ToLowerInvariant()}+{Convert.ToBase64String([0x02, .. spki])}");
     }
@@ -1040,13 +1172,18 @@ static class Util
 
     public static string B64Url(byte[] b) => Convert.ToBase64String(b).TrimEnd('=').Replace('+', '-').Replace('/', '_');
 
-    public static string Serial(Cert c) => c.X.SerialNumber.ToLowerInvariant();
+    /// <summary>A certificate as JWS payloads name it (6.9.5): the base64url SHA-256 of its issuing certificate's SPKI, and its serial in lowercase hex.</summary>
+    public static JsonObject CertName(Cert c, Cert issuing) => new()
+    {
+        ["issuer"] = B64Url(SHA256.HashData(issuing.Spki)), ["serial"] = c.X.SerialNumber.ToLowerInvariant(),
+    };
 
     public static string Credential(Cert c) => c.Name switch
     {
         "sable-line-logistics" => "sable-line-logistics/2026",
         "sable-line-logistics-2025" => "sable-line-logistics/2025",
         "sable-line-logistics-payroll" => "sable-line-logistics/payroll-2026",
+        "sable-line-logistics-root-2" => "sable-line-logistics/2026-root-2",
         "tm-bookkeeping" => "tm-bookkeeping/2026",
         _ => c.Name,
     };
@@ -1085,9 +1222,10 @@ static class Util
         return $"JZ-{text[..5]}-{text[5..]}";
     }
 
-    public static JsonObject StatusAnswer(byte[] digest, Cert publisher, string code, string status, DateTimeOffset? from, DateTimeOffset time, byte[] nonce)
+    /// <summary>A status answer (6.9.5) about the publisher's certificate.</summary>
+    public static JsonObject StatusAnswer(byte[] digest, Cert publisher, Cert issuing, string code, string status, DateTimeOffset? from, DateTimeOffset time, byte[] nonce)
     {
-        var answer = new JsonObject { ["digest"] = B64Url(digest), ["serial"] = Serial(publisher), ["code"] = code, ["status"] = status };
+        var answer = new JsonObject { ["digest"] = B64Url(digest), ["certificate"] = CertName(publisher, issuing), ["code"] = code, ["status"] = status };
         if (from is not null) answer["from"] = Iso(from.Value);
         answer["time"] = Iso(time);
         answer["nonce"] = B64Url(nonce);
@@ -1154,6 +1292,16 @@ static class Util
         using var gcm = new AesGcm(key, 16);
         gcm.Decrypt(payload[..12], payload[12..^16], payload[^16..], plain, aad);
         return plain;
+    }
+
+    /// <summary>A section's payload after decryption, decompressed by its codec (4.3).</summary>
+    public static byte[] Decompress(byte codec, byte[] data)
+    {
+        if (codec == 0) return data;
+        var output = new MemoryStream();
+        using (Stream z = codec == 1 ? new DeflateStream(new MemoryStream(data), CompressionMode.Decompress) : new BrotliStream(new MemoryStream(data), CompressionMode.Decompress))
+            z.CopyTo(output);
+        return output.ToArray();
     }
 
     private static readonly uint[] CrcTable = Enumerable.Range(0, 256).Select(n =>
