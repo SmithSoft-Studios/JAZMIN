@@ -2,8 +2,9 @@
 // customer) and grants one access key every partition and another key one partition. Then, for each key, times open + one
 // filter in the Node reader and in the browser reader (jazmin-browser.js under Node's WebCrypto), each run on a freshly
 // opened reader. With --chrome, also in headless Chrome through the viewer, as a person uses it: unlock to the first
-// page, a filter's first page and its count, the page's peak JavaScript heap (garbage included: V8 collects it late) and
-// the heap it holds after a garbage collection once the count is shown.
+// page, a filter's first page and its count, and memory: the page's peak JavaScript heap (garbage included: V8 collects it
+// late) and the heap it holds after a garbage collection once the count is shown, both above what the page held before the
+// key was entered (Chrome keeps some of each earlier page load for a while, so the page's own figure creeps up).
 // Two layouts of the same rows: grouped by customer (as USER-GUIDE 15.5 advises: one chunk per partition here) and
 // interleaved (each row the next customer's: a chunk holds one partition, so every row is a chunk of its own). Writing
 // is also timed for the same rows, encrypted, with no partitions.
@@ -95,7 +96,7 @@ for (const layout of LAYOUTS) {
       const shown = [];
       for (let run = 0; run < RUNS; run++) shown.push(await page.measure(file, key));
       const field = (name) => shown.map((s) => s[name]);
-      console.log(`  ${label}, Chrome viewer: first page ${median(field('first')).toFixed(0)} ms (${list(field('first'))}) | filter's first page ${median(field('page')).toFixed(0)} ms (${list(field('page'))}) | counted ${median(field('counted')).toFixed(0)} ms (${list(field('counted'))}; "${shown[0].status}") | peak JS heap ${median(field('heapMb')).toFixed(1)} MB (${list(field('heapMb'), 1)}), held after GC ${median(field('heldMb')).toFixed(1)} MB (${list(field('heldMb'), 1)})`);
+      console.log(`  ${label}, Chrome viewer: first page ${median(field('first')).toFixed(0)} ms (${list(field('first'))}) | filter's first page ${median(field('page')).toFixed(0)} ms (${list(field('page'))}) | counted ${median(field('counted')).toFixed(0)} ms (${list(field('counted'))}; "${shown[0].status}") | peak JS heap +${median(field('heapMb')).toFixed(1)} MB (${list(field('heapMb'), 1)}), held after GC +${median(field('heldMb')).toFixed(1)} MB (${list(field('heldMb'), 1)})`);
     }
   }
   fs.rmSync(file, { force: true });
@@ -167,15 +168,16 @@ async function viewer(exe) {
       await evaluate(`fetch('/file.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'file.jzm')).then(() => true)`);
       await evaluate(until(`document.getElementById('jz-unlock').hidden === false`));
       await send('HeapProfiler.collectGarbage');
+      const before = await evaluate('performance.memory.usedJSHeapSize');
       await evaluate('(window.jzPeak = 0, true)');
       const t0 = await evaluate(`(document.getElementById('jz-key').value = ${JSON.stringify(key)}, document.getElementById('jz-unlock').requestSubmit(), performance.now())`);
       const t1 = await evaluate(until(`/ of /.test(${status})`));
       const t2 = await evaluate(`(document.getElementById('jz-filter').value = ${JSON.stringify(JSON.stringify(FILTER))}, document.getElementById('jz-filter-form').requestSubmit(), performance.now())`);
       const t3 = await evaluate(until(`/^Rows/.test(${status})`)); // the page shows ("Searching…" until then)
       const t4 = await evaluate(until(`/matching the filter|failed|stopped/.test(${status})`));
-      const heapMb = (await evaluate('window.jzPeak')) / 1048576;
+      const heapMb = ((await evaluate('window.jzPeak')) - before) / 1048576;
       await send('HeapProfiler.collectGarbage');
-      const heldMb = (await evaluate('performance.memory.usedJSHeapSize')) / 1048576;
+      const heldMb = ((await evaluate('performance.memory.usedJSHeapSize')) - before) / 1048576;
       return { first: t1 - t0, page: t3 - t2, counted: t4 - t2, heapMb, heldMb, status: await evaluate(status) };
     },
     async close() {

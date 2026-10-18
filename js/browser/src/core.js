@@ -136,6 +136,7 @@
   const MERGE_GAP = 16 * 1024; // sections read together when this close (readSections)
   const MERGE_SPAN = 1024 * 1024; // and up to this many bytes at a time
   const MERGE_ITEMS = 256; // sections read and decoded at a time (inBatches)
+  const STATS_LOADED = Promise.resolve();
 
   /**
    * Items in consecutive batches of at most MERGE_ITEMS whose sections (refOf(item)) add up to at most MERGE_SPAN bytes:
@@ -2880,27 +2881,29 @@
     const dirSegments = []; // { partition, suffix, chunks, statistics, loaded: block number -> promise of its loading }
     const groupCount = table.groups.length;
     let hiddenRows = 0;
-    // The partitions' directories are read a few at a time, and used in the order they are listed.
-    const listed = [...segments];
-    const secrets = [];
-    for (const batch of inBatches(listed, () => null)) secrets.push(...await Promise.all(batch.map(([id]) => (access ? file.gate(() => file.partitionSecret(id)) : null))));
-    const toRead = [];
-    listed.forEach(([id, list], p) => {
-      const secret = secrets[p];
-      if (access && !(secret && groups.some((g) => g.visible))) return; // another key's partition: not read
-      list.forEach((ref, s) => toRead.push({ id, s, ref, secret, sectionId: `${index}/dir/${id}${s ? `/${s}` : ''}` }));
-    });
-    // Read a batch at a time, so that only one batch of their bytes is held at once.
-    for (const batch of inBatches(toRead, (t) => t.ref)) {
-      const stored = await file.readSections(batch.map((t) => t.ref));
-      const directories = await Promise.all(batch.map(({ ref, secret, sectionId }, k) => file.gate(async () => (
-        readDirectory(await file.section(ref, sectionId, await file.key(sectionId, secret), { requireDigest, bytes: stored[k] }), groupCount)))));
-      batch.forEach(({ id, s, secret }, k) => {
-        const segmentChunks = directories[k].chunks.map((c) => ({ ...c, partition: id, partitionSecret: secret, stats: [] }));
-        chunks.push(...segmentChunks);
-        dirSegments.push({ partition: id, suffix: s ? `/${s}` : '', chunks: segmentChunks, statistics: directories[k].statistics, loaded: new Map() });
+    // The partitions' directories are read a few at a time, and used in the order they are listed. In a function of its
+    // own, given the list, so that neither is kept with the reader.
+    await (async (listed) => {
+      const secrets = [];
+      for (const batch of inBatches(listed, () => null)) secrets.push(...await Promise.all(batch.map(([id]) => (access ? file.gate(() => file.partitionSecret(id)) : null))));
+      const toRead = [];
+      listed.forEach(([id, list], p) => {
+        const secret = secrets[p];
+        if (access && !(secret && groups.some((g) => g.visible))) return; // another key's partition: not read
+        list.forEach((ref, s) => toRead.push({ id, s, ref, secret, sectionId: `${index}/dir/${id}${s ? `/${s}` : ''}` }));
       });
-    }
+      // Read a batch at a time, so that only one batch of their bytes is held at once.
+      for (const batch of inBatches(toRead, (t) => t.ref)) {
+        const stored = await file.readSections(batch.map((t) => t.ref));
+        const directories = await Promise.all(batch.map(({ ref, secret, sectionId }, k) => file.gate(async () => (
+          readDirectory(await file.section(ref, sectionId, await file.key(sectionId, secret), { requireDigest, bytes: stored[k] }), groupCount)))));
+        batch.forEach(({ id, s, secret }, k) => {
+          const segmentChunks = directories[k].chunks.map((c) => ({ ...c, partition: id, partitionSecret: secret, stats: [] }));
+          chunks.push(...segmentChunks);
+          dirSegments.push({ partition: id, suffix: s ? `/${s}` : '', chunks: segmentChunks, statistics: directories[k].statistics, loaded: new Map() });
+        });
+      }
+    })([...segments]);
     chunks.sort((a, b) => a.ordinal - b.ordinal);
     for (let i = 1; i < chunks.length; i++) if (chunks[i].ordinal === chunks[i - 1].ordinal) throw new JazminFormatError('Chunk ordinals are inconsistent');
 
@@ -3009,7 +3012,9 @@
           if (!segment.loaded.has(b)) {
             const job = { segment, b, block };
             added.push(job);
-            segment.loaded.set(b, new Promise((resolve) => { job.start = resolve; }).then((bytes) => file.gate(() => loadStats(segment, b, block, bytes))));
+            segment.loaded.set(b, new Promise((resolve) => { job.start = resolve; })
+              .then((bytes) => file.gate(() => loadStats(segment, b, block, bytes)))
+              .then(() => segment.loaded.set(b, STATS_LOADED))); // loaded: one shared promise, none kept per block
           }
           loading.push(segment.loaded.get(b));
         }

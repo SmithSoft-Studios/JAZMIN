@@ -148,6 +148,7 @@
   const MERGE_GAP = 16 * 1024; // sections read together when this close (readSections)
   const MERGE_SPAN = 1024 * 1024; // and up to this many bytes at a time
   const MERGE_ITEMS = 256; // sections read and decoded at a time (inBatches)
+  const STATS_LOADED = Promise.resolve();
 
   /**
    * Items in consecutive batches of at most MERGE_ITEMS whose sections (refOf(item)) add up to at most MERGE_SPAN bytes:
@@ -2892,27 +2893,29 @@
     const dirSegments = []; // { partition, suffix, chunks, statistics, loaded: block number -> promise of its loading }
     const groupCount = table.groups.length;
     let hiddenRows = 0;
-    // The partitions' directories are read a few at a time, and used in the order they are listed.
-    const listed = [...segments];
-    const secrets = [];
-    for (const batch of inBatches(listed, () => null)) secrets.push(...await Promise.all(batch.map(([id]) => (access ? file.gate(() => file.partitionSecret(id)) : null))));
-    const toRead = [];
-    listed.forEach(([id, list], p) => {
-      const secret = secrets[p];
-      if (access && !(secret && groups.some((g) => g.visible))) return; // another key's partition: not read
-      list.forEach((ref, s) => toRead.push({ id, s, ref, secret, sectionId: `${index}/dir/${id}${s ? `/${s}` : ''}` }));
-    });
-    // Read a batch at a time, so that only one batch of their bytes is held at once.
-    for (const batch of inBatches(toRead, (t) => t.ref)) {
-      const stored = await file.readSections(batch.map((t) => t.ref));
-      const directories = await Promise.all(batch.map(({ ref, secret, sectionId }, k) => file.gate(async () => (
-        readDirectory(await file.section(ref, sectionId, await file.key(sectionId, secret), { requireDigest, bytes: stored[k] }), groupCount)))));
-      batch.forEach(({ id, s, secret }, k) => {
-        const segmentChunks = directories[k].chunks.map((c) => ({ ...c, partition: id, partitionSecret: secret, stats: [] }));
-        chunks.push(...segmentChunks);
-        dirSegments.push({ partition: id, suffix: s ? `/${s}` : '', chunks: segmentChunks, statistics: directories[k].statistics, loaded: new Map() });
+    // The partitions' directories are read a few at a time, and used in the order they are listed. In a function of its
+    // own, given the list, so that neither is kept with the reader.
+    await (async (listed) => {
+      const secrets = [];
+      for (const batch of inBatches(listed, () => null)) secrets.push(...await Promise.all(batch.map(([id]) => (access ? file.gate(() => file.partitionSecret(id)) : null))));
+      const toRead = [];
+      listed.forEach(([id, list], p) => {
+        const secret = secrets[p];
+        if (access && !(secret && groups.some((g) => g.visible))) return; // another key's partition: not read
+        list.forEach((ref, s) => toRead.push({ id, s, ref, secret, sectionId: `${index}/dir/${id}${s ? `/${s}` : ''}` }));
       });
-    }
+      // Read a batch at a time, so that only one batch of their bytes is held at once.
+      for (const batch of inBatches(toRead, (t) => t.ref)) {
+        const stored = await file.readSections(batch.map((t) => t.ref));
+        const directories = await Promise.all(batch.map(({ ref, secret, sectionId }, k) => file.gate(async () => (
+          readDirectory(await file.section(ref, sectionId, await file.key(sectionId, secret), { requireDigest, bytes: stored[k] }), groupCount)))));
+        batch.forEach(({ id, s, secret }, k) => {
+          const segmentChunks = directories[k].chunks.map((c) => ({ ...c, partition: id, partitionSecret: secret, stats: [] }));
+          chunks.push(...segmentChunks);
+          dirSegments.push({ partition: id, suffix: s ? `/${s}` : '', chunks: segmentChunks, statistics: directories[k].statistics, loaded: new Map() });
+        });
+      }
+    })([...segments]);
     chunks.sort((a, b) => a.ordinal - b.ordinal);
     for (let i = 1; i < chunks.length; i++) if (chunks[i].ordinal === chunks[i - 1].ordinal) throw new JazminFormatError('Chunk ordinals are inconsistent');
 
@@ -3021,7 +3024,9 @@
           if (!segment.loaded.has(b)) {
             const job = { segment, b, block };
             added.push(job);
-            segment.loaded.set(b, new Promise((resolve) => { job.start = resolve; }).then((bytes) => file.gate(() => loadStats(segment, b, block, bytes))));
+            segment.loaded.set(b, new Promise((resolve) => { job.start = resolve; })
+              .then((bytes) => file.gate(() => loadStats(segment, b, block, bytes)))
+              .then(() => segment.loaded.set(b, STATS_LOADED))); // loaded: one shared promise, none kept per block
           }
           loading.push(segment.loaded.get(b));
         }
@@ -4152,5 +4157,5 @@
 
   global.JazminBrowser = { ...API_CORE };
   // For the add-ons: the core's functions, and the hooks through which the core reaches them.
-  Object.defineProperty(global.JazminBrowser, Symbol.for('jazmin.browser.internals'), { value: { PREAMBLE, TRAILER, ENVELOPE, FLAG_ENCRYPTED, FLAG_PASSWORD, FLAG_ACCESS, KNOWN_FLAGS, CODEC_NONE, CODEC_DEFLATE, CODEC_BROTLI, MIN_KDF_ITERATIONS, MAX_KDF_ITERATIONS, TYPE_NAMES, ENCODING, NESTED_COLUMNS, MAX_NESTING_DEPTH, isNested, HAS_NULLS, POW10, SLOT_ID, SLOT_ENTRY, PAGE_ENTRY, ONLINE_SLOT, WHOLE_TABLE, EVERYONE, subtle, utf8, fromUtf8, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminFileLockedError, CRC_TABLE, crc32, hexToBytes, toHex, concat, equal, compareBytes, base64ToBytes, base64UrlToBytes, bytesToBase64Url, view, PARALLEL_SECTIONS, MERGE_GAP, MERGE_SPAN, MERGE_ITEMS, inBatches, limiter, sha256, SHA256_K, sha256Stream, hkdf, hmacSha256, pbkdf2, decrypt, inflateRaw, verifySignature, MASTER_KEY_REFUSED, checksum, parseKey, keyText, parseUnlockToken, slotId, LOCK_KINDS, parseFileUnlockToken, lockNeeds, lockKey, sealAad, groupAad, readBundleMasks, keyServiceAddress, Reader, text, num, bytesOf, parseJson, repeatsName, dateFromMs, msFromFile, readMessage, readPacked, cumulative, readRef, readColumn, readPartition, readIndexRef, readTable, readHeader, readDirectory, readStatistics, FILE_FLAGS, fileActions, pageOf, mergeActions, readIndexDirectory, readPartitionList, readDelta, readPostings, readPostingsSection, directoryShapes, checkFileDirectory, formatDecimal, readDecimal, readPlain, skipPlain, MADE_PER_ROW, decodeColumnar, decodeColumnarAt, skipValue, decodeAt, streamType, decodeStream, partEnd, decodeNested, OPS, STRING_OPS, keyOf, keyHash, inKeys, compare, compileFilter, condition, ORDERED_TYPES, RANGE_OPS, FEW_ROWS, SMALL_LOOKUP_BYTES, PAGES_CACHED, keyCompare, readKey, decodeBound, planOf, planLeaf, answeredExactly, setField, columnCollector, planColumns, filterReads, leafType, nestedMayMatch, leafMayMatch, mayMatch, leafMustMatch, mustMatch, sortBounds, unionAll, intersectSorted, PageKeys, readRowIds, PagedIndex, trigramsOf, trigramAnswers, skipPostings, intersectPostings, GRAM_HIGH, TrigramSegment, COMMON_SHARE, LazyTrigramIndex, CompositeIndex, leafLookup, indexPlan, sourceOf, BLOCK_SIZE, BLOCKS_CACHED, urlSource, openUrl, openScript, scriptBytes, open, openFile, locateTrailer, findPage, findSlot, openTable, tableReader, EXPORT_TYPES, XML_NAME, XML_UNWRITABLE, bytesToBase64, exportText, exportJson, exportNested, csvQuote, xmlEscape, xmlElement, maskedView, exportPieces, exportTo, ENOUGH, exportString, exportBlob, JazminValidationError, normalizeBigInt, MAX_SAFE_BIG, compareDecimalKeys, decimalKeyOf, parseDecimalText, DECIMAL_TEXT, validation, hooks, addOn } });
+  Object.defineProperty(global.JazminBrowser, Symbol.for('jazmin.browser.internals'), { value: { PREAMBLE, TRAILER, ENVELOPE, FLAG_ENCRYPTED, FLAG_PASSWORD, FLAG_ACCESS, KNOWN_FLAGS, CODEC_NONE, CODEC_DEFLATE, CODEC_BROTLI, MIN_KDF_ITERATIONS, MAX_KDF_ITERATIONS, TYPE_NAMES, ENCODING, NESTED_COLUMNS, MAX_NESTING_DEPTH, isNested, HAS_NULLS, POW10, SLOT_ID, SLOT_ENTRY, PAGE_ENTRY, ONLINE_SLOT, WHOLE_TABLE, EVERYONE, subtle, utf8, fromUtf8, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminFileLockedError, CRC_TABLE, crc32, hexToBytes, toHex, concat, equal, compareBytes, base64ToBytes, base64UrlToBytes, bytesToBase64Url, view, PARALLEL_SECTIONS, MERGE_GAP, MERGE_SPAN, MERGE_ITEMS, STATS_LOADED, inBatches, limiter, sha256, SHA256_K, sha256Stream, hkdf, hmacSha256, pbkdf2, decrypt, inflateRaw, verifySignature, MASTER_KEY_REFUSED, checksum, parseKey, keyText, parseUnlockToken, slotId, LOCK_KINDS, parseFileUnlockToken, lockNeeds, lockKey, sealAad, groupAad, readBundleMasks, keyServiceAddress, Reader, text, num, bytesOf, parseJson, repeatsName, dateFromMs, msFromFile, readMessage, readPacked, cumulative, readRef, readColumn, readPartition, readIndexRef, readTable, readHeader, readDirectory, readStatistics, FILE_FLAGS, fileActions, pageOf, mergeActions, readIndexDirectory, readPartitionList, readDelta, readPostings, readPostingsSection, directoryShapes, checkFileDirectory, formatDecimal, readDecimal, readPlain, skipPlain, MADE_PER_ROW, decodeColumnar, decodeColumnarAt, skipValue, decodeAt, streamType, decodeStream, partEnd, decodeNested, OPS, STRING_OPS, keyOf, keyHash, inKeys, compare, compileFilter, condition, ORDERED_TYPES, RANGE_OPS, FEW_ROWS, SMALL_LOOKUP_BYTES, PAGES_CACHED, keyCompare, readKey, decodeBound, planOf, planLeaf, answeredExactly, setField, columnCollector, planColumns, filterReads, leafType, nestedMayMatch, leafMayMatch, mayMatch, leafMustMatch, mustMatch, sortBounds, unionAll, intersectSorted, PageKeys, readRowIds, PagedIndex, trigramsOf, trigramAnswers, skipPostings, intersectPostings, GRAM_HIGH, TrigramSegment, COMMON_SHARE, LazyTrigramIndex, CompositeIndex, leafLookup, indexPlan, sourceOf, BLOCK_SIZE, BLOCKS_CACHED, urlSource, openUrl, openScript, scriptBytes, open, openFile, locateTrailer, findPage, findSlot, openTable, tableReader, EXPORT_TYPES, XML_NAME, XML_UNWRITABLE, bytesToBase64, exportText, exportJson, exportNested, csvQuote, xmlEscape, xmlElement, maskedView, exportPieces, exportTo, ENOUGH, exportString, exportBlob, JazminValidationError, normalizeBigInt, MAX_SAFE_BIG, compareDecimalKeys, decimalKeyOf, parseDecimalText, DECIMAL_TEXT, validation, hooks, addOn } });
 })(globalThis);
