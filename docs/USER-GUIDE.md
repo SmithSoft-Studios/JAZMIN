@@ -1620,6 +1620,52 @@ are another matter in Node (282 MB, for its row objects).
     to 4 threads; `JazminPriority.Memory` uses only the calling thread (16 MB
     for the sum).
 
+### 9.13 A key spanning many partitions
+
+An access key can be granted thousands of partitions: a compliance officer's
+key over every customer, for example. Each partition has its own directory,
+statistics and chunks, each a section of the file with a key of its own.
+
+- **In the browser,** each read of a File or Blob is answered by another
+  process: about half a millisecond in Chrome however small it is. So the
+  browser reader reads the sections it knows it needs together (the
+  partitions' directories when it opens, their statistics for a filter, the
+  chunks a count reads), in reads of up to 1 MiB, and decrypts up to 16 at a
+  time. A lookup or a page of rows reads only what it needs, as before.
+- **Keep each partition's rows together** (section 15.5). A chunk belongs to
+  one partition, so rows written in turn for each customer make a chunk of
+  every row: the file below grows from 2.9 MB to 65 MB, and every read is
+  slow however it is done. `compact({ key, regroup: true })` rewrites such a
+  file with each partition's rows together (section 17.4).
+
+`npm run bench:partitions` (in `js/`) writes 600,000 rows into 2,400
+partitions, one per customer, and grants one key every partition and another
+key one. It times opening and one filter with each key in the Node reader,
+the browser reader and, with `--chrome`, the viewer in Chrome. Measured on
+18 October 2026 (Linux, 4 cores of a 2.8 GHz Xeon, 16 GB, Node 22.22,
+Chrome 141 headless), the median of 3 runs each, three times:
+
+| Key spanning all 2,400 partitions, rows grouped by customer | Before | Now |
+|---|---:|---:|
+| Viewer in Chrome: unlock to the first page | 2.06-2.25 s | 0.29-0.36 s |
+| Viewer in Chrome: a filter's first page | 2.28-2.52 s | 0.30-0.32 s |
+| Viewer in Chrome: the filter's 8,572 rows counted | 3.30-3.77 s | 0.56-0.66 s |
+| Viewer in Chrome: memory held afterwards | 3.5-3.6 MB | 3.6 MB |
+| Browser reader in Node: open and count | 2.92-3.19 s | 1.66-1.83 s |
+| Node reader: open and count | 0.46-0.50 s | 0.44-0.47 s |
+
+- **A key for one partition** opens the file in about 50-70 ms in the viewer
+  and counts in 7-14 ms, as before.
+- **Memory:** what the viewer holds after the count is the same. While it
+  reads, its heap peaks about 10 MB higher (+29-31 MB against +18-20 MB): the
+  same short-lived objects made in a quarter of the time, so V8 collects them
+  later.
+- **Writing** the 600,000 rows takes 1.8-2.3 s into 2,400 partitions and
+  0.9-1.1 s with none. Rows in turn for each customer (600,000 chunks of one
+  row) take 62-67 s to write; the viewer then shows the first page in
+  4.3-4.6 s (was 9.0-10.4 s) and counts in 7.3-8.1 s (was 12.8-14.1 s), and
+  holds 305 MB.
+
 
 **What is protected.** In an encrypted file, the data, column names and
 types, metadata and indexes are all encrypted and authenticated. The
@@ -2129,7 +2175,7 @@ compilation.
 
 - **Keep each partition's rows together** (for example `sortedBy` the
   partition column). A chunk belongs to exactly one partition, so interleaved
-  rows produce many tiny chunks. The partition column and the `sortedBy`
+  rows produce many tiny chunks (section 9.13 measures it). The partition column and the `sortedBy`
   columns must be in the default column group `*`, because every key needs
   them.
 - **Revoking a key protects new versions only.** Every update writes fresh

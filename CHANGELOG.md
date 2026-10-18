@@ -38,6 +38,15 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 - **Test files:** `spec/fixtures/publisher/signed-document.jzm`, a certified payslip with its page, whose package asks
   for a web font (the viewer's tests check it is shown without the network).
 
+### Changed
+- **The browser reader and the viewer with a key spanning thousands of partitions (#258).** A browser answers each read
+  of a File or Blob in another process, about half a millisecond each in Chrome however small, and the reader read
+  each partition's directory, statistics and chunks one at a time. It now reads the sections it knows it needs (the
+  partitions' directories on opening, their statistics, the chunks a count reads) together, in reads of up to 1 MiB,
+  and decrypts up to 16 at a time; lookups and pages of rows read exactly as before. With 2,400 partitions (600,000
+  rows grouped by customer) in Chrome: the first page 2.1-2.2 s -> 0.29-0.36 s, a filter counted 3.3-3.8 s -> 0.56-0.66 s,
+  with the same memory held. No format change. `npm run bench:partitions` measures it (User Guide 9.13).
+
 ## 1.7.1 - 2026-10-17 (file format 1.0)
 Two fixes to the web viewer, and `estimate()` in the browser reader.
 
