@@ -147,6 +147,26 @@
   const PARALLEL_SECTIONS = 16;
   const MERGE_GAP = 16 * 1024; // sections read together when this close (readSections)
   const MERGE_SPAN = 1024 * 1024; // and up to this many bytes at a time
+  const MERGE_ITEMS = 256; // sections read and decoded at a time (inBatches)
+
+  /**
+   * Items in consecutive batches of at most MERGE_ITEMS whose sections (refOf(item)) add up to at most MERGE_SPAN bytes:
+   * what is read and decoded at once.
+   */
+  function inBatches(items, refOf) {
+    const batches = [];
+    let bytes = Infinity;
+    for (const item of items) {
+      const length = refOf(item)?.length ?? 0;
+      if (bytes + length > MERGE_SPAN || batches.at(-1).length >= MERGE_ITEMS) {
+        batches.push([]);
+        bytes = 0;
+      }
+      batches.at(-1).push(item);
+      bytes += length;
+    }
+    return batches;
+  }
 
   /** run(fn): calls fn() when fewer than `limit` calls are still running; a promise of its result. */
   function limiter(limit) {
@@ -2874,21 +2894,25 @@
     let hiddenRows = 0;
     // The partitions' directories are read a few at a time, and used in the order they are listed.
     const listed = [...segments];
-    const secrets = await Promise.all(listed.map(([id]) => (access ? file.gate(() => file.partitionSecret(id)) : null)));
+    const secrets = [];
+    for (const batch of inBatches(listed, () => null)) secrets.push(...await Promise.all(batch.map(([id]) => (access ? file.gate(() => file.partitionSecret(id)) : null))));
     const toRead = [];
     listed.forEach(([id, list], p) => {
       const secret = secrets[p];
       if (access && !(secret && groups.some((g) => g.visible))) return; // another key's partition: not read
       list.forEach((ref, s) => toRead.push({ id, s, ref, secret, sectionId: `${index}/dir/${id}${s ? `/${s}` : ''}` }));
     });
-    const stored = await file.readSections(toRead.map((t) => t.ref));
-    const directories = await Promise.all(toRead.map(({ ref, secret, sectionId }, k) => file.gate(async () => (
-      readDirectory(await file.section(ref, sectionId, await file.key(sectionId, secret), { requireDigest, bytes: stored[k] }), groupCount)))));
-    toRead.forEach(({ id, s, secret }, k) => {
-      const segmentChunks = directories[k].chunks.map((c) => ({ ...c, partition: id, partitionSecret: secret, stats: [] }));
-      chunks.push(...segmentChunks);
-      dirSegments.push({ partition: id, suffix: s ? `/${s}` : '', chunks: segmentChunks, statistics: directories[k].statistics, loaded: new Map() });
-    });
+    // Read a batch at a time, so that only one batch of their bytes is held at once.
+    for (const batch of inBatches(toRead, (t) => t.ref)) {
+      const stored = await file.readSections(batch.map((t) => t.ref));
+      const directories = await Promise.all(batch.map(({ ref, secret, sectionId }, k) => file.gate(async () => (
+        readDirectory(await file.section(ref, sectionId, await file.key(sectionId, secret), { requireDigest, bytes: stored[k] }), groupCount)))));
+      batch.forEach(({ id, s, secret }, k) => {
+        const segmentChunks = directories[k].chunks.map((c) => ({ ...c, partition: id, partitionSecret: secret, stats: [] }));
+        chunks.push(...segmentChunks);
+        dirSegments.push({ partition: id, suffix: s ? `/${s}` : '', chunks: segmentChunks, statistics: directories[k].statistics, loaded: new Map() });
+      });
+    }
     chunks.sort((a, b) => a.ordinal - b.ordinal);
     for (let i = 1; i < chunks.length; i++) if (chunks[i].ordinal === chunks[i - 1].ordinal) throw new JazminFormatError('Chunk ordinals are inconsistent');
 
@@ -3002,9 +3026,12 @@
           loading.push(segment.loaded.get(b));
         }
       }
-      // A read that fails here is tried again by each block alone, which then fails with its own error.
-      const stored = dirSegments.length > 1 ? await file.readSections(added.map((job) => job.block.section)).catch(() => []) : [];
-      added.forEach((job, k) => job.start(stored[k] ?? null));
+      // A batch at a time. A read that fails here is tried again by each block alone, which then fails with its own error.
+      for (const batch of inBatches(added, (job) => job.block.section)) {
+        const stored = dirSegments.length > 1 ? await file.readSections(batch.map((job) => job.block.section)).catch(() => []) : [];
+        batch.forEach((job, k) => job.start(stored[k] ?? null));
+        await Promise.allSettled(batch.map((job) => job.segment.loaded.get(job.b)));
+      }
       await Promise.all(loading);
     }
 
@@ -3593,21 +3620,27 @@
         const { filterCols, filterWanted, types } = filterDecoding(plan, null);
         const probe = {};
         let n = 0;
-        // Every chunk a count reads is read: the next few are read together (readSections) and decoded while this one
-        // is checked, never more than 2 x PARALLEL_SECTIONS chunks at once.
+        // Every chunk a count reads is read: a batch of the next ones (up to MERGE_SPAN bytes or PARALLEL_SECTIONS
+        // chunks) is read together (readSections) and decoded a few at a time, then checked in order.
         const whole = runs.map(({ chunk }) => rowIds === null && mustMatch(plan, statsOf(chunk), chunk.rowCount));
         const groupsRead = groups.map((group) => group.visible && group.cols.length > 0 && group.cols.some((c) => filterWanted[c]));
+        const partsOf = (r) => groupsRead.map((wanted, g) => (wanted ? runs[r].chunk.parts[g] : null));
         const ahead = new Map();
         let started = 0;
-        const readAhead = (i) => {
-          if (ahead.size > PARALLEL_SECTIONS) return;
+        const readAhead = () => {
           const batch = [];
-          for (; started < runs.length && batch.length < PARALLEL_SECTIONS; started++) if (!whole[started]) batch.push(started);
-          const refs = batch.flatMap((r) => groupsRead.map((wanted, g) => (wanted ? runs[r].chunk.parts[g] : null)));
-          const stored = file.readSections(refs).catch(() => []); // a read that fails is tried again by each chunk alone
+          let bytes = 0;
+          for (; started < runs.length && batch.length < PARALLEL_SECTIONS; started++) {
+            if (whole[started]) continue;
+            const length = partsOf(started).reduce((n, ref) => n + (ref?.length ?? 0), 0);
+            if (batch.length && bytes + length > MERGE_SPAN) break;
+            batch.push(started);
+            bytes += length;
+          }
+          const stored = file.readSections(batch.flatMap(partsOf)).catch(() => []); // a read that fails is tried again by each chunk alone
           batch.forEach((r, b) => {
-            const reading = stored.then((bytes) => file.gate(() => chunkColumns(runs[r].chunk, filterWanted, false, types, {
-              raws: new Map(), stored: new Map(groupsRead.map((wanted, g) => [g, bytes[b * groupsRead.length + g] ?? null])), counted: false,
+            const reading = stored.then((all) => file.gate(() => chunkColumns(runs[r].chunk, filterWanted, false, types, {
+              raws: new Map(), stored: new Map(groupsRead.map((wanted, g) => [g, all[b * groupsRead.length + g] ?? null])), counted: false,
             })));
             reading.catch(() => {}); // a read left unused when the count stops or fails
             ahead.set(r, reading);
@@ -3621,7 +3654,7 @@
             n += liveRows(chunk);
             continue;
           }
-          readAhead(i);
+          if (!ahead.has(i)) readAhead();
           const { values } = await ahead.get(i);
           ahead.delete(i);
           n += chunkHits(chunk, values, filterCols, match, probe, rowIds, from, to).length;
@@ -4119,5 +4152,5 @@
 
   global.JazminBrowser = { ...API_CORE };
   // For the add-ons: the core's functions, and the hooks through which the core reaches them.
-  Object.defineProperty(global.JazminBrowser, Symbol.for('jazmin.browser.internals'), { value: { PREAMBLE, TRAILER, ENVELOPE, FLAG_ENCRYPTED, FLAG_PASSWORD, FLAG_ACCESS, KNOWN_FLAGS, CODEC_NONE, CODEC_DEFLATE, CODEC_BROTLI, MIN_KDF_ITERATIONS, MAX_KDF_ITERATIONS, TYPE_NAMES, ENCODING, NESTED_COLUMNS, MAX_NESTING_DEPTH, isNested, HAS_NULLS, POW10, SLOT_ID, SLOT_ENTRY, PAGE_ENTRY, ONLINE_SLOT, WHOLE_TABLE, EVERYONE, subtle, utf8, fromUtf8, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminFileLockedError, CRC_TABLE, crc32, hexToBytes, toHex, concat, equal, compareBytes, base64ToBytes, base64UrlToBytes, bytesToBase64Url, view, PARALLEL_SECTIONS, MERGE_GAP, MERGE_SPAN, limiter, sha256, SHA256_K, sha256Stream, hkdf, hmacSha256, pbkdf2, decrypt, inflateRaw, verifySignature, MASTER_KEY_REFUSED, checksum, parseKey, keyText, parseUnlockToken, slotId, LOCK_KINDS, parseFileUnlockToken, lockNeeds, lockKey, sealAad, groupAad, readBundleMasks, keyServiceAddress, Reader, text, num, bytesOf, parseJson, repeatsName, dateFromMs, msFromFile, readMessage, readPacked, cumulative, readRef, readColumn, readPartition, readIndexRef, readTable, readHeader, readDirectory, readStatistics, FILE_FLAGS, fileActions, pageOf, mergeActions, readIndexDirectory, readPartitionList, readDelta, readPostings, readPostingsSection, directoryShapes, checkFileDirectory, formatDecimal, readDecimal, readPlain, skipPlain, MADE_PER_ROW, decodeColumnar, decodeColumnarAt, skipValue, decodeAt, streamType, decodeStream, partEnd, decodeNested, OPS, STRING_OPS, keyOf, keyHash, inKeys, compare, compileFilter, condition, ORDERED_TYPES, RANGE_OPS, FEW_ROWS, SMALL_LOOKUP_BYTES, PAGES_CACHED, keyCompare, readKey, decodeBound, planOf, planLeaf, answeredExactly, setField, columnCollector, planColumns, filterReads, leafType, nestedMayMatch, leafMayMatch, mayMatch, leafMustMatch, mustMatch, sortBounds, unionAll, intersectSorted, PageKeys, readRowIds, PagedIndex, trigramsOf, trigramAnswers, skipPostings, intersectPostings, GRAM_HIGH, TrigramSegment, COMMON_SHARE, LazyTrigramIndex, CompositeIndex, leafLookup, indexPlan, sourceOf, BLOCK_SIZE, BLOCKS_CACHED, urlSource, openUrl, openScript, scriptBytes, open, openFile, locateTrailer, findPage, findSlot, openTable, tableReader, EXPORT_TYPES, XML_NAME, XML_UNWRITABLE, bytesToBase64, exportText, exportJson, exportNested, csvQuote, xmlEscape, xmlElement, maskedView, exportPieces, exportTo, ENOUGH, exportString, exportBlob, JazminValidationError, normalizeBigInt, MAX_SAFE_BIG, compareDecimalKeys, decimalKeyOf, parseDecimalText, DECIMAL_TEXT, validation, hooks, addOn } });
+  Object.defineProperty(global.JazminBrowser, Symbol.for('jazmin.browser.internals'), { value: { PREAMBLE, TRAILER, ENVELOPE, FLAG_ENCRYPTED, FLAG_PASSWORD, FLAG_ACCESS, KNOWN_FLAGS, CODEC_NONE, CODEC_DEFLATE, CODEC_BROTLI, MIN_KDF_ITERATIONS, MAX_KDF_ITERATIONS, TYPE_NAMES, ENCODING, NESTED_COLUMNS, MAX_NESTING_DEPTH, isNested, HAS_NULLS, POW10, SLOT_ID, SLOT_ENTRY, PAGE_ENTRY, ONLINE_SLOT, WHOLE_TABLE, EVERYONE, subtle, utf8, fromUtf8, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminFileLockedError, CRC_TABLE, crc32, hexToBytes, toHex, concat, equal, compareBytes, base64ToBytes, base64UrlToBytes, bytesToBase64Url, view, PARALLEL_SECTIONS, MERGE_GAP, MERGE_SPAN, MERGE_ITEMS, inBatches, limiter, sha256, SHA256_K, sha256Stream, hkdf, hmacSha256, pbkdf2, decrypt, inflateRaw, verifySignature, MASTER_KEY_REFUSED, checksum, parseKey, keyText, parseUnlockToken, slotId, LOCK_KINDS, parseFileUnlockToken, lockNeeds, lockKey, sealAad, groupAad, readBundleMasks, keyServiceAddress, Reader, text, num, bytesOf, parseJson, repeatsName, dateFromMs, msFromFile, readMessage, readPacked, cumulative, readRef, readColumn, readPartition, readIndexRef, readTable, readHeader, readDirectory, readStatistics, FILE_FLAGS, fileActions, pageOf, mergeActions, readIndexDirectory, readPartitionList, readDelta, readPostings, readPostingsSection, directoryShapes, checkFileDirectory, formatDecimal, readDecimal, readPlain, skipPlain, MADE_PER_ROW, decodeColumnar, decodeColumnarAt, skipValue, decodeAt, streamType, decodeStream, partEnd, decodeNested, OPS, STRING_OPS, keyOf, keyHash, inKeys, compare, compileFilter, condition, ORDERED_TYPES, RANGE_OPS, FEW_ROWS, SMALL_LOOKUP_BYTES, PAGES_CACHED, keyCompare, readKey, decodeBound, planOf, planLeaf, answeredExactly, setField, columnCollector, planColumns, filterReads, leafType, nestedMayMatch, leafMayMatch, mayMatch, leafMustMatch, mustMatch, sortBounds, unionAll, intersectSorted, PageKeys, readRowIds, PagedIndex, trigramsOf, trigramAnswers, skipPostings, intersectPostings, GRAM_HIGH, TrigramSegment, COMMON_SHARE, LazyTrigramIndex, CompositeIndex, leafLookup, indexPlan, sourceOf, BLOCK_SIZE, BLOCKS_CACHED, urlSource, openUrl, openScript, scriptBytes, open, openFile, locateTrailer, findPage, findSlot, openTable, tableReader, EXPORT_TYPES, XML_NAME, XML_UNWRITABLE, bytesToBase64, exportText, exportJson, exportNested, csvQuote, xmlEscape, xmlElement, maskedView, exportPieces, exportTo, ENOUGH, exportString, exportBlob, JazminValidationError, normalizeBigInt, MAX_SAFE_BIG, compareDecimalKeys, decimalKeyOf, parseDecimalText, DECIMAL_TEXT, validation, hooks, addOn } });
 })(globalThis);

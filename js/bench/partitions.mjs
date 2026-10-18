@@ -2,7 +2,8 @@
 // customer) and grants one access key every partition and another key one partition. Then, for each key, times open + one
 // filter in the Node reader and in the browser reader (jazmin-browser.js under Node's WebCrypto), each run on a freshly
 // opened reader. With --chrome, also in headless Chrome through the viewer, as a person uses it: unlock to the first
-// page, a filter's first page and its count, and the page's peak JavaScript heap.
+// page, a filter's first page and its count, the page's peak JavaScript heap (garbage included: V8 collects it late) and
+// the heap it holds after a garbage collection once the count is shown.
 // Two layouts of the same rows: grouped by customer (as USER-GUIDE 15.5 advises: one chunk per partition here) and
 // interleaved (each row the next customer's: a chunk holds one partition, so every row is a chunk of its own). Writing
 // is also timed for the same rows, encrypted, with no partitions.
@@ -94,7 +95,7 @@ for (const layout of LAYOUTS) {
       const shown = [];
       for (let run = 0; run < RUNS; run++) shown.push(await page.measure(file, key));
       const field = (name) => shown.map((s) => s[name]);
-      console.log(`  ${label}, Chrome viewer: first page ${median(field('first')).toFixed(0)} ms (${list(field('first'))}) | filter's first page ${median(field('page')).toFixed(0)} ms (${list(field('page'))}) | counted ${median(field('counted')).toFixed(0)} ms (${list(field('counted'))}; "${shown[0].status}") | peak JS heap ${median(field('heapMb')).toFixed(1)} MB (${list(field('heapMb'), 1)})`);
+      console.log(`  ${label}, Chrome viewer: first page ${median(field('first')).toFixed(0)} ms (${list(field('first'))}) | filter's first page ${median(field('page')).toFixed(0)} ms (${list(field('page'))}) | counted ${median(field('counted')).toFixed(0)} ms (${list(field('counted'))}; "${shown[0].status}") | peak JS heap ${median(field('heapMb')).toFixed(1)} MB (${list(field('heapMb'), 1)}), held after GC ${median(field('heldMb')).toFixed(1)} MB (${list(field('heldMb'), 1)})`);
     }
   }
   fs.rmSync(file, { force: true });
@@ -116,7 +117,7 @@ async function viewer(exe) {
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}`;
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-bench-parts-chrome-'));
-  const flags = ['--headless=new', '--disable-gpu', '--no-first-run', '--enable-precise-memory-info', '--remote-debugging-port=0', `--user-data-dir=${profile}`];
+  const flags = ['--headless=new', '--disable-gpu', '--no-first-run', '--enable-precise-memory-info', '--disable-features=BackForwardCache', '--remote-debugging-port=0', `--user-data-dir=${profile}`];
   if (process.getuid?.() === 0) flags.push('--no-sandbox'); // Chrome refuses to run as root otherwise (containers)
   const proc = spawn(exe, [...flags, 'about:blank'], { stdio: 'ignore' });
   let port;
@@ -172,7 +173,10 @@ async function viewer(exe) {
       const t2 = await evaluate(`(document.getElementById('jz-filter').value = ${JSON.stringify(JSON.stringify(FILTER))}, document.getElementById('jz-filter-form').requestSubmit(), performance.now())`);
       const t3 = await evaluate(until(`/^Rows/.test(${status})`)); // the page shows ("Searching…" until then)
       const t4 = await evaluate(until(`/matching the filter|failed|stopped/.test(${status})`));
-      return { first: t1 - t0, page: t3 - t2, counted: t4 - t2, heapMb: (await evaluate('window.jzPeak')) / 1048576, status: await evaluate(status) };
+      const heapMb = (await evaluate('window.jzPeak')) / 1048576;
+      await send('HeapProfiler.collectGarbage');
+      const heldMb = (await evaluate('performance.memory.usedJSHeapSize')) / 1048576;
+      return { first: t1 - t0, page: t3 - t2, counted: t4 - t2, heapMb, heldMb, status: await evaluate(status) };
     },
     async close() {
       ws.close();
