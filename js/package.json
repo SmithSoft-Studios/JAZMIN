@@ -59,6 +59,7 @@
     "typecheck": "tsc -p examples/typescript",
     "bench": "node bench/benchmark.js",
     "bench:proposals": "node bench/proposals.mjs",
+    "bench:partitions": "node bench/partitions.mjs",
     "bench:filing": "node bench/filing.mjs",
     "bench:storage": "node bench/storage.mjs",
     "bench:layout": "node bench/layout.mjs",

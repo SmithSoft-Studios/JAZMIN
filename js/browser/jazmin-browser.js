@@ -140,6 +140,35 @@
 
   const view = (bytes) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
+  // A section is a read and several WebCrypto calls, each answered on another thread: sections read together overlap
+  // those waits, which a key spanning thousands of partitions otherwise pays one after another (issue #258).
+  const PARALLEL_SECTIONS = 16;
+  const MERGE_GAP = 16 * 1024; // sections read together when this close (readSections)
+  const MERGE_SPAN = 1024 * 1024; // and up to this many bytes at a time
+
+  /** run(fn): calls fn() when fewer than `limit` calls are still running; a promise of its result. */
+  function limiter(limit) {
+    let active = 0;
+    const waiting = [];
+    let first = 0;
+    const next = () => {
+      while (active < limit && first < waiting.length) {
+        active++;
+        const start = waiting[first];
+        waiting[first++] = null;
+        start();
+      }
+      if (first === waiting.length) waiting.length = first = 0;
+    };
+    return (fn) => new Promise((resolve, reject) => {
+      waiting.push(() => Promise.resolve().then(fn).then(resolve, reject).finally(() => {
+        active--;
+        next();
+      }));
+      next();
+    });
+  }
+
   // ---- cryptography (WebCrypto only) ---------------------------------------------------------------
 
   async function sha256(...parts) {
@@ -266,8 +295,12 @@
   }
 
   async function inflateRaw(bytes, rawLength) {
-    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-    const reader = stream.getReader();
+    // Written into the stream as they are: a Blob made of them would be another trip to the browser's blob store.
+    const inflate = new DecompressionStream('deflate-raw');
+    const input = inflate.writable.getWriter();
+    input.write(bytes).catch(() => {}); // a failure is the reader's to report
+    input.close().catch(() => {});
+    const reader = inflate.readable.getReader();
     const out = new Uint8Array(rawLength);
     let at = 0;
     try {
@@ -2520,10 +2553,13 @@
     const iterations = pv.getUint32(56, true);
     const trailer = await locateTrailer(read, size);
 
-    /** Reads, checks (digest, CRC-32), decrypts and decompresses a section. */
-    async function section(ref, sectionId, key, { requireDigest = false } = {}) {
+    /**
+     * Reads, checks (digest, CRC-32), decrypts and decompresses a section. `bytes`: the section as stored, when
+     * readSections() has read it already.
+     */
+    async function section(ref, sectionId, key, { requireDigest = false, bytes = null } = {}) {
       if (!(ref.length >= ENVELOPE)) throw new JazminFormatError(`Section '${sectionId}' is truncated`);
-      const s = await read(ref.offset, ref.length);
+      const s = bytes ?? await read(ref.offset, ref.length);
       if (file.cost) file.cost.bytesRead += ref.length;
       if (ref.digest) {
         if (!equal(await sha256(s), ref.digest)) throw new JazminFormatError(`Section '${sectionId}' does not match the owner's signature`);
@@ -2531,6 +2567,31 @@
         throw new JazminFormatError(`Section '${sectionId}' has no digest`);
       }
       return decode(s, sectionId, key);
+    }
+
+    /**
+     * Many sections as stored, by the position of their ref (null for a ref read on its own later): neighbours less
+     * than MERGE_GAP apart are read together, up to MERGE_SPAN bytes at a time. A browser answers each read of a File
+     * or Blob on another process (about half a millisecond each in Chrome, however small), so a key spanning
+     * thousands of partitions reads their directories in a few reads instead of thousands (issue #258).
+     */
+    async function readSections(refs) {
+      const out = new Array(refs.length).fill(null);
+      const order = refs.map((ref, k) => k).filter((k) => refs[k]?.length >= ENVELOPE).sort((a, b) => refs[a].offset - refs[b].offset);
+      const spans = [];
+      for (const k of order) {
+        const { offset, length } = refs[k];
+        const last = spans.at(-1);
+        if (last && offset >= last.start && offset - last.end <= MERGE_GAP && offset + length - last.start <= MERGE_SPAN) {
+          last.end = Math.max(last.end, offset + length);
+          last.members.push(k);
+        } else spans.push({ start: offset, end: offset + length, members: [k] });
+      }
+      await Promise.all(spans.filter((span) => span.members.length > 1).map(async (span) => {
+        const bytes = await read(span.start, span.end - span.start);
+        for (const k of span.members) out[k] = bytes.subarray(refs[k].offset - span.start, refs[k].offset - span.start + refs[k].length);
+      }));
+      return out;
     }
 
     async function decode(s, sectionId, key) {
@@ -2650,8 +2711,9 @@
     if (!header.tables.length) throw new JazminFormatError('Catalog: the file lists no tables');
 
     const file = {
-      header, fileId, salt, size, keys, access, section, read,
+      header, fileId, salt, size, keys, access, section, read, readSections,
       cost: null, // while explain({ analyze }) runs a query: what it reads
+      gate: limiter(PARALLEL_SECTIONS), // file.gate(fn): fn() once fewer than PARALLEL_SECTIONS sections are being read
       metadata: header.metadata ? parseJson(header.metadata, 'Metadata', true) : {},
       /** Key of a catalog section: keyring group (key files) or HKDF(secret) (access-controlled files). */
       async key(sectionId, secret, group = 'data') {
@@ -2805,23 +2867,26 @@
       }
     }
     const chunks = [];
-    const dirSegments = []; // { partition, suffix, chunks, statistics, loaded: block numbers read }
+    const dirSegments = []; // { partition, suffix, chunks, statistics, loaded: block number -> promise of its loading }
     const groupCount = table.groups.length;
     let hiddenRows = 0;
-    for (const [id, list] of segments) {
-      const secret = access ? await file.partitionSecret(id) : null;
-      const visible = !access || (secret && groups.some((g) => g.visible));
-      for (let s = 0; s < list.length; s++) {
-        const sectionId = `${index}/dir/${id}${s ? `/${s}` : ''}`;
-        if (!visible) {
-          continue; // another key's partition: not read
-        }
-        const directory = readDirectory(await file.section(list[s], sectionId, await file.key(sectionId, secret), { requireDigest }), groupCount);
-        const segmentChunks = directory.chunks.map((c) => ({ ...c, partition: id, partitionSecret: secret, stats: [] }));
-        chunks.push(...segmentChunks);
-        dirSegments.push({ partition: id, suffix: s ? `/${s}` : '', chunks: segmentChunks, statistics: directory.statistics, loaded: new Set() });
-      }
-    }
+    // The partitions' directories are read a few at a time, and used in the order they are listed.
+    const listed = [...segments];
+    const secrets = await Promise.all(listed.map(([id]) => (access ? file.gate(() => file.partitionSecret(id)) : null)));
+    const toRead = [];
+    listed.forEach(([id, list], p) => {
+      const secret = secrets[p];
+      if (access && !(secret && groups.some((g) => g.visible))) return; // another key's partition: not read
+      list.forEach((ref, s) => toRead.push({ id, s, ref, secret, sectionId: `${index}/dir/${id}${s ? `/${s}` : ''}` }));
+    });
+    const stored = await file.readSections(toRead.map((t) => t.ref));
+    const directories = await Promise.all(toRead.map(({ ref, secret, sectionId }, k) => file.gate(async () => (
+      readDirectory(await file.section(ref, sectionId, await file.key(sectionId, secret), { requireDigest, bytes: stored[k] }), groupCount)))));
+    toRead.forEach(({ id, s, secret }, k) => {
+      const segmentChunks = directories[k].chunks.map((c) => ({ ...c, partition: id, partitionSecret: secret, stats: [] }));
+      chunks.push(...segmentChunks);
+      dirSegments.push({ partition: id, suffix: s ? `/${s}` : '', chunks: segmentChunks, statistics: directories[k].statistics, loaded: new Map() });
+    });
     chunks.sort((a, b) => a.ordinal - b.ordinal);
     for (let i = 1; i < chunks.length; i++) if (chunks[i].ordinal === chunks[i - 1].ordinal) throw new JazminFormatError('Chunk ordinals are inconsistent');
 
@@ -2870,7 +2935,7 @@
           : await file.key(sectionId, null);
         let raw = read?.raws.get(g);
         if (!raw) {
-          raw = await file.section(chunk.parts[g], sectionId, key, { requireDigest });
+          raw = await file.section(chunk.parts[g], sectionId, key, { requireDigest, bytes: read?.stored?.get(g) });
           read?.raws.set(g, raw);
         }
         const groupTypes = group.cols.map((c) => types?.[c] ?? streamType(columns[c]));
@@ -2918,34 +2983,51 @@
     groups.forEach((g) => g.cols.forEach((c) => groupOfColumn.set(c, g)));
 
     /** Loads the statistics of these columns for every directory segment that has them. */
+    // Blocks are read a few at a time; a block another query is loading is waited for, not read again.
+    // With many partitions, their blocks are read together (readSections).
     async function ensureStats(cols) {
+      const loading = [];
+      const added = [];
       for (const segment of dirSegments) {
         for (let b = 0; b < segment.statistics.length; b++) {
           const block = segment.statistics[b];
-          if (segment.loaded.has(b) || !block.columns.some((c) => cols.has(c))) continue;
-          segment.loaded.add(b);
-          if (block.columns.some((c) => !(c >= 0 && c < table.columnCount))) throw new JazminFormatError('Statistics block lists unknown columns');
-          const group = groupOfColumn.get(block.columns[0]);
-          if (!group || !group.visible) continue; // a column group this key cannot see
-          const sectionId = `${index}/stats/${segment.partition}/${b}${segment.suffix}`;
-          const key = access
-            ? await hkdf(concat(segment.chunks[0]?.partitionSecret ?? await file.partitionSecret(segment.partition), group.secret), file.salt, `JAZMIN/1/${sectionId}`)
-            : await file.key(sectionId, null);
-          const entries = readStatistics(await file.section(block.section, sectionId, key, { requireDigest }));
-          if (entries.length !== block.columns.length) throw new JazminFormatError('Statistics block does not match its columns');
-          block.columns.forEach((col, k) => {
-            const e = entries[k];
-            const n = segment.chunks.length;
-            if (e.nulls.length !== n || e.min.length !== n || e.max.length !== n) throw new JazminFormatError('Statistics do not match the chunk directory');
-            const type = columns[col]?.type;
-            if (!type) return;
-            segment.chunks.forEach((chunk, i) => {
-              chunk.stats[col] = { nulls: e.nulls[i], min: decodeBound(type, e.min[i]), max: decodeBound(type, e.max[i]) };
-            });
-            if (e.leaves.length) loadLeafStats(segment, col, e.leaves);
-          });
+          if (!block.columns.some((c) => cols.has(c))) continue;
+          if (!segment.loaded.has(b)) {
+            const job = { segment, b, block };
+            added.push(job);
+            segment.loaded.set(b, new Promise((resolve) => { job.start = resolve; }).then((bytes) => file.gate(() => loadStats(segment, b, block, bytes))));
+          }
+          loading.push(segment.loaded.get(b));
         }
       }
+      // A read that fails here is tried again by each block alone, which then fails with its own error.
+      const stored = dirSegments.length > 1 ? await file.readSections(added.map((job) => job.block.section)).catch(() => []) : [];
+      added.forEach((job, k) => job.start(stored[k] ?? null));
+      await Promise.all(loading);
+    }
+
+    /** Reads one statistics block of a directory segment into its chunks' stats (`bytes`: as stored, read already). */
+    async function loadStats(segment, b, block, bytes) {
+      if (block.columns.some((c) => !(c >= 0 && c < table.columnCount))) throw new JazminFormatError('Statistics block lists unknown columns');
+      const group = groupOfColumn.get(block.columns[0]);
+      if (!group || !group.visible) return; // a column group this key cannot see
+      const sectionId = `${index}/stats/${segment.partition}/${b}${segment.suffix}`;
+      const key = access
+        ? await hkdf(concat(segment.chunks[0]?.partitionSecret ?? await file.partitionSecret(segment.partition), group.secret), file.salt, `JAZMIN/1/${sectionId}`)
+        : await file.key(sectionId, null);
+      const entries = readStatistics(await file.section(block.section, sectionId, key, { requireDigest, bytes }));
+      if (entries.length !== block.columns.length) throw new JazminFormatError('Statistics block does not match its columns');
+      block.columns.forEach((col, k) => {
+        const e = entries[k];
+        const n = segment.chunks.length;
+        if (e.nulls.length !== n || e.min.length !== n || e.max.length !== n) throw new JazminFormatError('Statistics do not match the chunk directory');
+        const type = columns[col]?.type;
+        if (!type) return;
+        segment.chunks.forEach((chunk, i) => {
+          chunk.stats[col] = { nulls: e.nulls[i], min: decodeBound(type, e.min[i]), max: decodeBound(type, e.max[i]) };
+        });
+        if (e.leaves.length) loadLeafStats(segment, col, e.leaves);
+      });
     }
 
     /** A nested column's leaf statistics for one segment (spec 6.4): each leaf named once, with an entry per chunk. */
@@ -3509,15 +3591,37 @@
         const { filterCols, filterWanted, types } = filterDecoding(plan, null);
         const probe = {};
         let n = 0;
+        // Every chunk a count reads is read: the next few are read together (readSections) and decoded while this one
+        // is checked, never more than 2 x PARALLEL_SECTIONS chunks at once.
+        const whole = runs.map(({ chunk }) => rowIds === null && mustMatch(plan, statsOf(chunk), chunk.rowCount));
+        const groupsRead = groups.map((group) => group.visible && group.cols.length > 0 && group.cols.some((c) => filterWanted[c]));
+        const ahead = new Map();
+        let started = 0;
+        const readAhead = (i) => {
+          if (ahead.size > PARALLEL_SECTIONS) return;
+          const batch = [];
+          for (; started < runs.length && batch.length < PARALLEL_SECTIONS; started++) if (!whole[started]) batch.push(started);
+          const refs = batch.flatMap((r) => groupsRead.map((wanted, g) => (wanted ? runs[r].chunk.parts[g] : null)));
+          const stored = file.readSections(refs).catch(() => []); // a read that fails is tried again by each chunk alone
+          batch.forEach((r, b) => {
+            const reading = stored.then((bytes) => file.gate(() => chunkColumns(runs[r].chunk, filterWanted, false, types, {
+              raws: new Map(), stored: new Map(groupsRead.map((wanted, g) => [g, bytes[b * groupsRead.length + g] ?? null])), counted: false,
+            })));
+            reading.catch(() => {}); // a read left unused when the count stops or fails
+            ahead.set(r, reading);
+          });
+        };
         for (let i = 0; i < runs.length; i++) {
           if (i) onProgress?.({ done: i, total: runs.length, matches: n });
           signal?.throwIfAborted();
           const { chunk, from, to } = runs[i];
-          if (rowIds === null && mustMatch(plan, statsOf(chunk), chunk.rowCount)) {
+          if (whole[i]) {
             n += liveRows(chunk);
             continue;
           }
-          const { values } = await chunkColumns(chunk, filterWanted, false, types);
+          readAhead(i);
+          const { values } = await ahead.get(i);
+          ahead.delete(i);
           n += chunkHits(chunk, values, filterCols, match, probe, rowIds, from, to).length;
         }
         if (runs.length) onProgress?.({ done: runs.length, total: runs.length, matches: n });
