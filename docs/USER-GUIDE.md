@@ -5223,3 +5223,51 @@ inside the document:
   Edge and Safari (Firefox doesn't say where the page around a frame comes from).
 
 The demo gallery's `signatures.html` shows each result in a test build of the viewer, marked TEST.
+
+### 26.7 What each result looks like
+
+These pictures come from the **test build** of the viewer, so each verified result says **TEST** and that it was
+signed under a test root. A file SmithSoft certifies shows the same bar in the released viewer, in green, without
+"TEST". Learn the bar's place: it is part of the viewer, above the document's tabs. Anything inside the document's
+own page is the document's, and proves nothing.
+
+**Verified publisher:** the name from the certificate SmithSoft issued, the document's kind and code.
+
+![The bar for a verified publisher: the name, payslip and its code](images/publisher/verified-publisher.png)
+
+**Details** adds what SmithSoft verified (registration number, country, domain), when the signature was time-stamped,
+the credential that signed, any co-signers, the facts signed with the document, and how fresh the revocation check is.
+
+![The bar's details: registration, country, domain, document, time-stamp, credential, signed facts and the revocation check](images/publisher/verified-publisher-details.png)
+
+**Verified individual:** a sole trader, with the trading name.
+
+![The bar for a verified individual: Thandi Mokoena, trading as TM Bookkeeping](images/publisher/verified-individual.png)
+
+**A certified document** is shown without the internet, so what it shows can't change, and the viewer says so when
+the document asked for it.
+
+![A certified payslip in the viewer: the bar above the tabs, the note that it is shown without the internet, and the payslip](images/publisher/certified-document.png)
+
+**Withdrawn** (or **Replaced**): the signature still holds, but the publisher took the document back or issued a newer
+version. Don't use it.
+
+![The bar for a withdrawn document: the publisher withdrew it on a date; its signature is still valid](images/publisher/withdrawn.png)
+
+**Signed** by a key SmithSoft doesn't certify: the file hasn't changed since it was signed, but **no name is shown**,
+because anyone can write any name in a certificate of their own. Treat it as unsigned.
+
+![The bar for a file signed by an unknown key: no name](images/publisher/signed-unknown-key.png)
+
+**Not valid:** changed after it was signed, or a signature that doesn't hold, with the reason. The data still opens, so
+the file can be looked at, but it must not be relied on.
+
+![The bar for a file changed after signing: not valid](images/publisher/not-valid-changed.png)
+
+![The bar for a damaged signature block: not valid](images/publisher/not-valid-damaged.png)
+
+**In another site's page**, the viewer names nobody: the page around it could draw anything beside it.
+
+![The viewer inside another site's page: Signed, with no name, and a pointer to the JAZMIN viewer or SmithSoft](images/publisher/embedded.png)
+
+A file without a publisher signature shows no bar at all. If you expected one, that is a failure too.
