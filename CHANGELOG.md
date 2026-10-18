@@ -28,6 +28,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   Withdrawn, Replaced, Signed (by an unknown key, no name) or Not valid with the reason. An encrypted file shows its
   publisher before the password and its facts after. A certified document is **sealed**: shown without the network.
   Embedded in another site's page, the viewer shows no name.
+- **`jazmin verify <file>...`**: a file's publisher signature from the command line (User Guide 25 and 26.1): the
+  status in plain words and, for a certified, withdrawn or replaced file, the publisher, the document's code and kind,
+  the time-stamp, co-signers, the facts and how fresh the revocation check is (no name for a file signed by an unknown
+  key). One line per file and a summary for several; `--json` prints the results; `--key`, `--password` (or
+  `JAZMIN_KEY`, `JAZMIN_PASSWORD`) and `--revocation-list`. Exit code 0 only for `certified`, 1 for any other result,
+  2 for a usage error. It trusts only the built-in roots: no option adds one.
 - **Demo gallery:** `signatures.html`, eight signed files in a test build of the viewer, marked TEST.
 - **Test files:** `spec/fixtures/publisher/signed-document.jzm`, a certified payslip with its page, whose package asks
   for a web font (the viewer's tests check it is shown without the network).

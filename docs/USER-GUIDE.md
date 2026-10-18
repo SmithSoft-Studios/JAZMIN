@@ -5071,6 +5071,7 @@ npx @smithsoft-studios/jazmin --help          # or, installed in a project: npx 
 | `jazmin convert <input> <output>` | JSON, JSON Lines, CSV or XML to `.jzm` (`--sorted-by a,b`), or `.jzm` to JSON, CSV or XML (`--filter`) |
 | `jazmin keygen [--access]` | A new key or, with `--access`, an access key issued from the owner key |
 | `jazmin script <file.jzm> [<file.js>] [--name <name>]` | The file as a script (default: `<file.jzm>.js` beside it), which a page opened from disk opens with `JazminBrowser.openScript()` (section 24.4). Needs no key: the file inside stays encrypted |
+| `jazmin verify <file> [<file> ...] [--key <key> \| --password <text>] [--revocation-list <file>] [--json]` | Who published each file and that it hasn't changed since: its publisher signature (section 26.1). `--json` prints the results as JSON |
 
 Every command takes `--help`. `--table <name>` picks a table in a file with
 several.
@@ -5087,7 +5088,8 @@ jazmin convert statements.jzm march.csv --filter '{"at":{"gte":"2025-03-01","lt"
 ```
 
 **Exit codes:** 0 on success, 1 when the file or key is the problem (the
-message says why), and 2 when the command line is wrong.
+message says why), and 2 when the command line is wrong. `jazmin verify`
+gives 0 only for `certified`; any other result is 1 (section 26.1).
 
 ### 25.1 Layout advice
 
@@ -5151,6 +5153,47 @@ if (result.Status == JazminPublisherStatus.Certified)
 
 The source is a path, a `Buffer` (JavaScript), or a `byte[]` or seekable `Stream` (.NET). The file is never loaded
 whole: the verifier reads its end (the trailer, the signature block, the header) and hashes the rest in 1 MiB chunks.
+
+**From the command line** (section 25), without writing code: `jazmin verify` prints the status in plain words and,
+for a certified, withdrawn or replaced file, the publisher (name, registration, country, domain, kind), the document's
+code and kind, the time-stamp, co-signers, the facts and how fresh the revocation check is. A file signed by an
+unknown key shows no name.
+
+A certified file, here `spec/fixtures/publisher/signed-plain.jzm` verified under the test root on 2026-10-17 (the
+command itself can't trust that root, below):
+
+```text
+$ jazmin verify signed-plain.jzm
+signed-plain.jzm: Certified: signed by Sable Line Logistics (Pty) Ltd (verified publisher), not changed since
+  Publisher:    Sable Line Logistics (Pty) Ltd (company)
+  Registration: NTRZA-2020/123456/07
+  Country:      ZA
+  Domain:       sable.example
+  Document:     JZ-SKWR6-7J7YZ (payslip)
+  Signed:       2026-10-01T09:00:02Z (time-stamp); the signer says 2026-10-01T09:00:00Z
+  Facts:        currency ZAR, gross 18450.00, net 14102.37, period 2026-09, recipient ••••1234
+  Revocation:   checked 2026-10-01T09:00:05Z (16 days ago)
+```
+
+Several files, as the command shows them until 1.8.0, with the test files:
+
+```text
+$ jazmin verify signed-plain.jzm self-signed.jzm changed-byte.jzm
+signed-plain.jzm: Signed by an unknown key: not changed since, but no trusted root certifies the key, so no name is shown. Treat it as unsigned
+self-signed.jzm: Signed by an unknown key: not changed since, but no trusted root certifies the key, so no name is shown. Treat it as unsigned
+changed-byte.jzm: Not valid: it was changed after it was signed
+3 files: 2 signed, 1 changed
+```
+
+- **Keys:** `--key` or `--password` reads the facts of an encrypted file. Typed on the command line they end up in
+  your shell history, so prefer `JAZMIN_KEY` or `JAZMIN_PASSWORD` (or `--key-file`, `--password-file`).
+- **`--revocation-list <file>`:** a revocation list you hold (section 26.4).
+- **`--json`:** the `verifyPublisher` result as JSON; for several files, an array of them, each with its `file`.
+- **Exit codes**, for scripts: 0 for `certified`; 1 for `withdrawn`, `superseded`, `signed`, `changed`, `invalid`,
+  `none`, `not-verified` or a file that couldn't be read (anything a script should not rely on); 2 when the command
+  line is wrong. With several files, the worst of them.
+- **Trust:** the command trusts only the roots built into the release. No option, setting or file adds one
+  (spec 6.9.4).
 
 ### 26.2 Results
 

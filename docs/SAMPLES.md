@@ -89,7 +89,7 @@ viewer.
 
 | Feature (USER-GUIDE) | JS | .NET | Demo |
 |---|---|---|---|
-| Who published a file, and that it hasn't changed (26) | 43 | 43 | `signatures.html` (a test build of the viewer, marked TEST); the signed test files in [`spec/fixtures/publisher`](../spec/fixtures/publisher), each with its expected result |
+| Who published a file, and that it hasn't changed (26) | 43 | 43 | `signatures.html` (a test build of the viewer, marked TEST); the signed test files in [`spec/fixtures/publisher`](../spec/fixtures/publisher), each with its expected result; `jazmin verify <file>` from the command line (25, 26.1) |
 
 ## Elsewhere
 

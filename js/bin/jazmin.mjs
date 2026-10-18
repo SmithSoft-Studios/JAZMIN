@@ -1,11 +1,12 @@
 #!/usr/bin/env node
-// The jazmin command-line tool (GitHub issue #15): inspect, query, explain, advise, convert, keygen and script. Keys are
-// read from the environment or a file and never printed, except by keygen.
+// The jazmin command-line tool (GitHub issue #15): inspect, query, explain, advise, convert, keygen, script and verify
+// (#260). Keys are read from the environment or a file and never printed, except by keygen.
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { JazminError, JazminKey, exportFile, fromCSV, fromXML, importJSONFile, inspect, open, portableScript } from '../src/index.js';
 import { writeShape } from '../src/shape.js';
+import { verifyFiles } from './verify.mjs';
 
 const HELP = {
   main: `jazmin - inspect and query JAZMIN (.jzm) files
@@ -20,6 +21,7 @@ Commands:
   convert <in> <out>  JSON, JSON Lines, CSV or XML to .jzm, or .jzm to JSON, CSV or XML
   keygen            A new key (or, with --access, an access key from the owner key)
   script <file>     The file as a script, which a page opened from disk opens with JazminBrowser.openScript()
+  verify <file>...  Who published a file (its publisher signature), and that it hasn't changed since
 
 Keys: set JAZMIN_KEY (key text), JAZMIN_PASSWORD or JAZMIN_UNLOCK_TOKEN, or pass --key-file, --password-file or
 --unlock-token-file. Keys are never printed, except by keygen.
@@ -60,6 +62,24 @@ Writes the file as a script (default: <file.jzm>.js beside it). Pages opened fro
 but they can load a script, from any folder: JazminBrowser.openScript('<file.js>', { password }) opens it. The file
 inside stays as it is (still encrypted), so no key is needed here. The page holds the whole file in memory: for files
 up to about 20 MB. --name names the file inside (default: its file name).`,
+  verify: `Usage: jazmin verify <file> [<file> ...] [--key <key> | --password <text>] [--revocation-list <file>] [--json]
+
+Checks each file's publisher signature (spec 6.9): who published it, that not one byte changed since, the document's
+code and kind, when it was signed (the time-stamp), co-signers, the signed facts and how fresh the revocation check is.
+For one file it prints the details; for several, one line per file and a summary. --json prints the results as JSON.
+
+A key or password only reads the facts of an encrypted file. A key or password on the command line ends up in your
+shell history: set JAZMIN_KEY or JAZMIN_PASSWORD instead, or pass --key-file or --password-file.
+--revocation-list <file> is a revocation list you hold (a compact JWS), for a fresher check than the file's own.
+
+Only the roots built into this release are trusted; no option or file can add one. Until they are built in (1.8.0),
+signed files show as "signed by an unknown key", which shows no name.
+
+Exit codes:
+  0  certified
+  1  withdrawn, superseded, signed (an unknown key), changed, invalid, none (not signed), not-verified (not a JAZMIN
+     file), or a file that could not be read: anything a script should not rely on. With several files, the worst.
+  2  the command line is wrong`,
 };
 
 const KEY_OPTIONS = { 'key-file': { type: 'string' }, 'password-file': { type: 'string' }, 'unlock-token-file': { type: 'string' } };
@@ -305,6 +325,21 @@ const commands = {
     if (!fs.existsSync(input)) throw new JazminError(`No such file: ${input}`);
     fs.writeFileSync(output, portableScript(input, { name: values.name }));
   },
+
+  verify(args) {
+    const { values, positionals } = parse(args, {
+      ...KEY_OPTIONS, key: { type: 'string' }, password: { type: 'string' }, 'revocation-list': { type: 'string' }, json: { type: 'boolean' },
+    });
+    if (positionals.length === 0) throw new UsageError('Give one or more files');
+    const fromEnvironment = keyOptions(values);
+    const key = values.key ?? fromEnvironment.key;
+    const password = values.password ?? fromEnvironment.password;
+    if (key && password) throw new UsageError('Give a key or a password, not both');
+    const list = values['revocation-list'];
+    if (list !== undefined && !fs.existsSync(list)) throw new JazminError(`No such file: ${list}`);
+    const revocationList = list === undefined ? undefined : fs.readFileSync(list, 'utf8');
+    return verifyFiles(positionals, { key, password, revocationList, json: values.json }, { out, err: (text) => process.stderr.write(`${text}\n`) });
+  },
 };
 
 function main(argv) {
@@ -322,8 +357,7 @@ function main(argv) {
     return 0;
   }
   try {
-    commands[command](args);
-    return 0;
+    return commands[command](args) ?? 0;
   } catch (error) {
     if (error instanceof UsageError || error.code === 'ERR_PARSE_ARGS_UNKNOWN_OPTION' || error.code === 'ERR_PARSE_ARGS_INVALID_OPTION_VALUE') {
       process.stderr.write(`${error.message}\n\n${HELP[command]}\n`);

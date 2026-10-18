@@ -7,6 +7,7 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { JazminAccessKey, JazminKey, open, portableScript, toJSON, toXML, write } from '../src/index.js';
+import { verifyFiles } from '../bin/verify.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const cli = path.join(here, '../bin/jazmin.mjs');
@@ -24,7 +25,7 @@ const withKey = { JAZMIN_KEY: keys.key };
 test('every command has help, and mistakes are usage errors', () => {
   const main = jazmin(['--help']);
   assert.equal(main.status, 0);
-  for (const command of ['inspect', 'query', 'explain', 'advise', 'convert', 'keygen', 'script']) {
+  for (const command of ['inspect', 'query', 'explain', 'advise', 'convert', 'keygen', 'script', 'verify']) {
     assert.match(main.stdout, new RegExp(`^  ${command}`, 'm'));
     const help = jazmin([command, '--help']);
     assert.deepEqual([help.status, help.stdout.startsWith(`Usage: jazmin ${command}`)], [0, true], command);
@@ -137,4 +138,121 @@ test('script writes a .jzm as a script for pages opened from disk, beside it or 
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+// jazmin verify (issue #260): a file's publisher signature (spec 6.9). The command trusts only the built-in roots, and
+// takes no option that adds one (6.9.4), so the test root is given to the command's implementation, verifyFiles.
+const publisherDir = path.join(fixtures, 'publisher');
+const publisher = JSON.parse(fs.readFileSync(path.join(publisherDir, 'expected.json'), 'utf8'));
+const testTrust = { roots: publisher.trustedRoots.map((p) => fs.readFileSync(path.join(publisherDir, p))), arc: '2.999.1', at: new Date(publisher.verifyAt) };
+const revocationText = fs.readFileSync(path.join(publisherDir, publisher.revocationList), 'utf8');
+const SHOWN = new Set(['certified', 'withdrawn', 'superseded']);
+const option = { password: 'password', key: 'key', ownerKey: 'key', accessKey: 'key' };
+
+/** verifyFiles with the test root: { code, stdout, stderr }. */
+function verifyTest(files, options = {}) {
+  let stdout = '';
+  let stderr = '';
+  const code = verifyFiles(files.map((f) => path.join(publisherDir, f)), { revocationList: revocationText, ...options }, {
+    trust: testTrust, out: (text) => { stdout += `${text}\n`; }, err: (text) => { stderr += `${text}\n`; },
+  });
+  return { code, stdout, stderr };
+}
+
+for (const fixture of publisher.fixtures) {
+  test(`verify ${fixture.file}: ${fixture.result.status}, as the library says, with its exit code`, () => {
+    const want = fixture.result;
+    const json = verifyTest([fixture.file], { json: true });
+    assert.equal(json.code, want.status === 'certified' ? 0 : 1);
+    const result = JSON.parse(json.stdout);
+    assert.deepEqual([result.status, result.reason], [want.status, want.reason]);
+    const text = verifyTest([fixture.file]);
+    assert.equal(text.code, json.code);
+    if (SHOWN.has(want.status)) {
+      for (const value of [want.name, want.registration, want.country, want.domain, want.code, want.documentKind, want.timestamp].filter(Boolean)) assert.ok(text.stdout.includes(value), value);
+      for (const cosigner of want.cosigners) assert.ok(text.stdout.includes(cosigner.name), cosigner.name);
+      if (want.facts && !want.factsNeedKey) for (const value of Object.values(want.facts)) assert.ok(text.stdout.includes(value), value);
+    } else {
+      assert.ok(!/Sable|Khumalo|Mokoena/.test(text.stdout), text.stdout); // no name (6.9.8)
+    }
+    for (const [kind, secret] of Object.entries(fixture.keys)) {
+      const keyed = verifyTest([fixture.file], { [option[kind]]: secret });
+      assert.equal(keyed.code, json.code, kind);
+      if (want.facts) for (const value of Object.values(want.facts)) assert.ok(keyed.stdout.includes(value), `${kind}: ${value}`);
+    }
+  });
+}
+
+test('verify: several files print one line each and a summary; the exit code is the worst', () => {
+  const all = verifyTest(['signed-plain.jzm', 'withdrawn.jzm', 'unsigned.jzm']);
+  assert.equal(all.code, 1);
+  const lines = all.stdout.trim().split('\n');
+  assert.equal(lines.length, 4);
+  assert.match(lines[0], /signed-plain\.jzm: Certified/);
+  assert.match(lines[1], /withdrawn\.jzm: Withdrawn/);
+  assert.match(lines[2], /unsigned\.jzm: Not signed/);
+  assert.equal(lines[3], '3 files: 1 certified, 1 withdrawn, 1 none');
+  assert.equal(verifyTest(['signed-plain.jzm', 'signed-sole-trader.jzm']).code, 0);
+  const json = JSON.parse(verifyTest(['signed-plain.jzm', 'changed-byte.jzm'], { json: true }).stdout);
+  assert.deepEqual(json.map((r) => [r.file, r.status]), [['signed-plain.jzm', 'certified'], ['changed-byte.jzm', 'changed']]);
+});
+
+test('verify: an encrypted file without a key, or with a password that does not open it, leaves its facts unread', () => {
+  const none = verifyTest(['signed-password.jzm']);
+  assert.equal(none.code, 0);
+  assert.match(none.stdout, /Facts: +encrypted: give a key or password to read them/);
+  const wrong = verifyTest(['signed-password.jzm'], { password: 'not the password' });
+  assert.equal(wrong.code, 0);
+  assert.match(wrong.stdout, /Facts: +encrypted: the key or password given doesn't open them/);
+  assert.ok(!wrong.stdout.includes(publisher.fixtures[1].result.facts.net));
+});
+
+test('verify: the command trusts only the built-in roots, so a certified test file shows as signed, with no name', () => {
+  const file = path.join(publisherDir, 'signed-plain.jzm');
+  const signed = jazmin(['verify', file, '--revocation-list', path.join(publisherDir, publisher.revocationList)]);
+  assert.equal(signed.status, 1);
+  assert.match(signed.stdout, /Signed by an unknown key/);
+  assert.ok(!/Sable|JZ-/.test(signed.stdout), signed.stdout);
+  assert.deepEqual(JSON.parse(jazmin(['verify', file, '--json']).stdout).status, 'signed');
+  const unsigned = jazmin(['verify', path.join(publisherDir, 'unsigned.jzm')]);
+  assert.deepEqual([unsigned.status, /Not signed/.test(unsigned.stdout)], [1, true]);
+  const both = jazmin(['verify', file, path.join(publisherDir, 'unsigned.jzm')]);
+  assert.equal(both.stdout.trim().split('\n').at(-1), '2 files: 1 signed, 1 none');
+  // Keys from the options or the environment; a wrong password changes nothing that is shown.
+  const password = path.join(publisherDir, 'signed-password.jzm');
+  assert.equal(jazmin(['verify', password, '--password', publisher.secrets.password]).status, 1);
+  assert.equal(jazmin(['verify', password], { JAZMIN_PASSWORD: 'not the password' }).status, 1);
+  assert.equal(jazmin(['verify', path.join(publisherDir, 'signed-cosigned.jzm')], { JAZMIN_KEY: publisher.secrets.key }).status, 1);
+});
+
+test('verify: help has the exit codes; no option adds a root; mistakes and unreadable files are reported', () => {
+  const help = jazmin(['verify', '--help']);
+  assert.equal(help.status, 0);
+  assert.match(help.stdout, /^Usage: jazmin verify/);
+  assert.match(help.stdout, /JAZMIN_KEY/);
+  assert.match(help.stdout, /0 +certified/);
+  assert.match(help.stdout, /2 +the command line is wrong/);
+  assert.match(jazmin(['--help']).stdout, /^ {2}verify/m);
+  const file = path.join(publisherDir, 'signed-plain.jzm');
+  for (const extra of [['--root', 'pki/test-root.der'], ['--trust', 'x'], ['--trusted-root', 'x']]) assert.equal(jazmin(['verify', file, ...extra]).status, 2, extra[0]);
+  assert.equal(jazmin(['verify']).status, 2);
+  const missing = jazmin(['verify', path.join(publisherDir, 'nope.jzm')]);
+  assert.deepEqual([missing.status, /No such file/.test(missing.stderr)], [1, true]);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-cli-verify-'));
+  try {
+    fs.writeFileSync(path.join(dir, 'notes.jzm'), 'not a JAZMIN file, only some text that is long enough to be checked');
+    fs.writeFileSync(path.join(dir, 'short.jzm'), 'short');
+    for (const name of ['notes.jzm', 'short.jzm']) {
+      const other = jazmin(['verify', path.join(dir, name)]);
+      assert.deepEqual([other.status, /Not verified: not a valid JAZMIN file/.test(other.stdout)], [1, true], name);
+    }
+    const mixed = jazmin(['verify', file, path.join(dir, 'nope.jzm')]);
+    assert.equal(mixed.status, 1);
+    assert.equal(mixed.stdout.trim().split('\n').at(-1), '2 files: 1 signed, 1 not read');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+  const mistyped = jazmin(['verify', file, '--key', 'jzk1-mistyped']);
+  assert.equal(mistyped.status, 1);
+  assert.ok(!mistyped.stderr.includes('jzk1-mistyped'));
 });
