@@ -1657,9 +1657,15 @@ Chrome 141 headless), the median of 3 runs each, three times:
 - **A key for one partition** opens the file in about 50-70 ms in the viewer
   and counts in 7-14 ms, as before.
 - **Memory:** what the viewer holds after the count is the same. While it
-  reads, its heap peaks about 10 MB higher (+29-31 MB against +18-20 MB): the
-  same short-lived objects made in a quarter of the time, so V8 collects them
-  later.
+  reads, its heap peaks about 10 MB higher (+29-31 MB against +18-20 MB). In
+  Node (the browser reader under Node 24, a key spanning 2,400 partitions, 600,000
+  rows grouped by customer, three runs, a new process each) open and count took
+  437-456 ms against 820-865 ms, held the same 13 MB after a forced collection,
+  and the process peaked at 134-135 MB against 106-112 MB: a transient of
+  roughly 15-25 MB that does not grow with the number of partitions (about +20 MB
+  at 600, +25 MB at 2,400, +13 MB at 9,600, each about twice as fast) and does not
+  change with how many sections are read together, so it is not a leak and not
+  the read-ahead. With a small young generation it narrows to about 16 MB.
 - **Writing** the 600,000 rows takes 1.8-2.3 s into 2,400 partitions and
   0.9-1.1 s with none. Rows in turn for each customer (600,000 chunks of one
   row) take 62-67 s to write; the viewer then shows the first page in
