@@ -5126,8 +5126,9 @@ against certificates that SmithSoft issues after verifying who the publisher is.
 
 Verifying is free, offline, and needs no key; a key or password only adds the facts of an encrypted file.
 
-> **Before 1.8.0:** the libraries verify signatures now, but trust only SmithSoft's roots, which are built in before
-> 1.8.0 is released. Until then a signed file shows as `signed`, never `certified`. The test files in
+> **Before 1.8.0:** the libraries verify signatures now. A certified result rests on the roots SmithSoft publishes,
+> which are built in before 1.8.0 is released, so it can't be forged with a root of one's own. Until then a signed
+> file shows as `signed`, never `certified`. The test files in
 > `spec/fixtures/publisher` are signed under a test root that no release trusts.
 
 ### 26.1 Verifying
@@ -5201,7 +5202,8 @@ A key is the key's text (`jzk1-…` or `jza1-…`); as when opening, a browser n
 200 MB/s (WebCrypto hashes only whole buffers; Node 24, measured three times on 64 MiB). Bytes already in memory are
 hashed by WebCrypto, about 1,200 MB/s.
 
-The released scripts trust only SmithSoft's roots. `js/scripts/publisher-test-build.mjs` makes a **test build** that
+The released scripts rely on SmithSoft's published roots, built in, so a certified result can't be forged.
+`js/scripts/publisher-test-build.mjs` makes a **test build** that
 trusts the test root of `spec/fixtures/publisher` instead, for tests and demos; its results say `test: true`. Never
 publish one.
 

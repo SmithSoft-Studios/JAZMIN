@@ -24,9 +24,9 @@
     <strong>A test build: nothing here is a real certification</strong>
     <p>These files are signed under the <strong>test root</strong> of <code>spec/fixtures/publisher</code>, whose keys are
       published so anyone can make test files. They open in a <strong>test build</strong> of the viewer
-      (<code>viewer-test/</code>), which trusts that root and says TEST on every result. The released viewer trusts only
-      SmithSoft's roots, which are built in before 1.8.0 is released: there these files show as signed by an unknown key
-      (the last card).</p>
+      (<code>viewer-test/</code>), which trusts that root and says TEST on every result. The released viewer trusts the
+      roots SmithSoft publishes, which are built in before 1.8.0 is released: there these files show as signed by an
+      unknown key (the last card).</p>
   </aside>
 
   <aside class="about" aria-label="What this shows">
@@ -92,8 +92,8 @@
     <section class="panel sample">
       <span class="chip plain">Signed, not verified</span>
       <h2>The same payslip in the released viewer</h2>
-      <p>The released viewer trusts only SmithSoft's roots, not this test root: the certified payslip shows as signed by
-        an unknown key, with no name, and its page is shown as any other (it may load its font).</p>
+      <p>The released viewer trusts the roots SmithSoft publishes, not this test root: the payslip shows as signed by an
+        unknown key, with no name, and its page is shown as any other (it may load its font).</p>
       <button type="button" data-sample="signed-document.jzm" data-viewer="released">Show in the released viewer</button>
     </section>
   </div>

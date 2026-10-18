@@ -16,7 +16,7 @@
 // password are in data/masked-keys.js, for this demo only too.
 // - data/signatures/: signed files from spec/fixtures/publisher (signatures.html), with a TEST BUILD of the viewer and the
 //   reader that trusts their test root (viewer-test/, browser-test/: js/scripts/publisher-test-build.mjs). The released
-//   viewer beside it trusts SmithSoft's roots only.
+//   viewer beside it trusts the published roots built into it.
 // Run: node examples/from-disk/make.mjs [folder] [--rows n]
 //      (default folder: examples/from-disk/site; --rows: transactions in transactions.jzm, 0 for none)
 import fs from 'node:fs';

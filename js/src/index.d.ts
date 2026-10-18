@@ -1243,7 +1243,10 @@ export interface VerifyPublisherOptions {
   statusAnswer?: { answer: string; nonce: string };
 }
 
-/** Verifies a file's publisher signature (spec 6.9). Only SmithSoft's built-in roots are trusted. */
+/**
+ * Verifies a file's publisher signature (spec 6.9): who created the file, that it hasn't changed, and what it says. A
+ * certified result rests on SmithSoft's published roots, built in: none can be added, so it can't be forged.
+ */
 export function verifyPublisher(source: string | Uint8Array, options?: VerifyPublisherOptions): PublisherResult;
 /** open() for async code: the file's header region is read with non-blocking reads. */
 export function openAsync(source: string | Uint8Array, options?: ReadOptions): Promise<JazminReader>;

@@ -1081,7 +1081,7 @@ for (const name of chosen) {
     results.push({ browser: name, label: 'across sites: a page passes the viewer files and hears opened / locked / failed; documents and unframed viewers take none', ok: crossOk, problems: crossOk ? [] : [JSON.stringify({ heard, reached, unframed })] });
 
     // Publisher signatures (spec 6.9), in the viewer's own bar. The test build of the viewer trusts the test root and says
-    // so; the released viewer trusts SmithSoft's roots only, so the same file shows as signed by an unknown key.
+    // so; the released viewer trusts the published roots built into it, so the same file shows as signed by an unknown key.
     const publisherShown = `(() => {
       const bar = document.getElementById('jz-publisher');
       return bar.hidden ? { hidden: true } : { state: bar.dataset.state, badge: document.getElementById('jz-publisher-badge').textContent,

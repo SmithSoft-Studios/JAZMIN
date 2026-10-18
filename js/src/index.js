@@ -38,8 +38,8 @@ export {
 
 /**
  * Verifies a file's publisher signature (spec 6.9): who published it, whether it changed since, and its signed facts.
- * Options: { key } or { password } to read the facts of an encrypted file, { revocationList }, { statusAnswer }. Only
- * SmithSoft's built-in roots are trusted; there is no way to add another.
+ * Options: { key } or { password } to read the facts of an encrypted file, { revocationList }, { statusAnswer }. A
+ * certified result rests on SmithSoft's published roots, built in: none can be added, so it can't be forged.
  */
 export function verifyPublisher(source, options) {
   return verifyWith(source, options);

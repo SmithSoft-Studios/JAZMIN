@@ -1,4 +1,4 @@
-# Certified publishers: signatures only SmithSoft can certify
+# Verified publishers: proof of who created a document, and what it says
 
 Status: **decided** (owner, 2026-10-16 and 2026-10-17), for 1.8.0. The decisions are listed at the end.
 **Specified:** spec 6.9. **Next:** test vectors made with a test root, then the libraries.
@@ -16,9 +16,13 @@ individual: Thandi Mokoena, trading as TM Bookkeeping"**. This works like code s
   **certificate**: a small, signed statement that binds their verified name to a signing key.
 - Documents are signed with that key. The signature covers the document's bytes and carries the certificate.
 - Any viewer checks the signature, the certificate and the chain back to SmithSoft's **root**, a key whose public
-  half is built into the libraries and viewers. No one but SmithSoft can make a file show as certified.
+  half is built into the libraries and viewers. Because a certificate must chain to that published root, a certified
+  result can't be produced by anyone who simply creates a key or a root of their own.
 
-Checking is free, works offline, and is done by the open-source libraries. Certifying and signing are paid services.
+The aim is a further layer of trust and security for every document: anyone can check that it was created by who it
+says it was, that it hasn't changed, and that it contains what it says. Checking is free, works offline, and is done by
+the open-source libraries. Certifying and signing are paid services, because checking who a publisher is, and standing
+behind it, takes real work.
 
 ## Public and private
 
@@ -150,18 +154,20 @@ from 3 days ago)".
 ## Confirmed by SmithSoft
 
 Checking offline proves a certified publisher signed a document. But the format is open, so anyone can write software
-that *says* a document is certified. What a business can rely on is what SmithSoft itself says. So **"Confirmed"
-comes only from SmithSoft**:
+that *says* a document is certified. What a business can rely on is what SmithSoft itself says. So a **confirmation** is SmithSoft's own
+statement, given through channels whose origin can be proven:
 
 - **The portal** at SmithSoft's own address (the browser's address bar proves it): drop the file, type its code, or
   scan its QR code. It shows the publisher, the facts and the document's status from SmithSoft's own records.
 - **SmithSoft's apps**, code-signed by SmithSoft (the operating system proves it).
 - **Confirmation receipts** for relying parties (banks, lenders, landlords, employers): a statement, signed by
   SmithSoft, that *this party* confirmed *this document*, with its facts and status, at *this time*. They keep it as
-  proof for audits and compliance. Its format is public, so anyone can check a receipt; only SmithSoft can make one.
+  proof for audits and compliance. Its format is public, so anyone can check a receipt; it is signed with
+  SmithSoft's confirmation key, so it can't be made elsewhere.
 
-The free libraries and viewers keep verifying offline and say "Verified publisher (checked offline)"; only SmithSoft's
-channels say "Confirmed". "JAZMIN Verified" and the badge are SmithSoft's marks.
+The free libraries and viewers keep verifying offline and say "Verified publisher (checked offline)"; "Confirmed" is
+kept for SmithSoft's own channels, which answer from its records. "JAZMIN Verified" and the badge are SmithSoft's
+marks.
 
 ## Revocation
 
@@ -178,9 +184,11 @@ Merkle tree, as browsers use for HTTPS certificates). Its signed checkpoints are
 certificates issued in its name; anyone can check that the log was never rewritten. It guards against a mistake or a
 rogue insider at SmithSoft, not only outside attackers.
 
-## Trust store: SmithSoft only
+## Trust store: published roots, built in
 
-- Only SmithSoft's roots give the badge. A library or viewer has no way to add another root for it.
+- The badge rests on the roots SmithSoft publishes, built into the official libraries and viewers. Neither users nor
+  files can add a root, so a certified result can't be forged by creating one. Anyone can still sign with their own
+  key; readers show such a file as signed by an unknown key, with no name.
 - The library holds a **list** of trusted roots, so a new root can be introduced, before the old one ends, by a
   statement the old root signs. A file signed under the old root stays valid.
 - Someone who changes the open-source library to trust their own root fools only their own copy. The official
@@ -231,12 +239,13 @@ it was signed, and how fresh the revocation check is.
 4. **Signing through SmithSoft's service (2026-10-16):** publishers sign through SmithSoft's signing service, so a
    publisher's key can't be copied from the publisher.
 5. **Who (2026-10-17):** registered companies **and** sole traders, from launch.
-6. **Trust store (2026-10-17):** SmithSoft's roots only.
+6. **Trust store (2026-10-17):** the roots SmithSoft publishes, built into the official readers; users and files can't
+   add one.
 7. **Timestamps (2026-10-17):** SmithSoft's own RFC 3161 service.
 8. **Signed facts, document code and status (2026-10-17):** in the format, shown by the viewer.
 9. **Sealed certified documents and the display rules (2026-10-17):** no network but pinned files; no names for
    uncertified signatures; no badge in an embedded viewer; every algorithm listed; nothing after the trailer.
 10. **Accountability and paper (2026-10-17):** which credential signed, co-signatures, a signed QR form.
 11. **Reserved for later (2026-10-17):** holder binding and log witnesses.
-12. **"Confirmed" only from SmithSoft (2026-10-17):** the portal, SmithSoft's apps and signed confirmation receipts
+12. **Confirmation through SmithSoft's own channels (2026-10-17):** the portal, SmithSoft's apps and signed confirmation receipts
     for relying parties; "JAZMIN Verified" to be registered as a certification mark (legal advice first).

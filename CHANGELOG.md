@@ -14,8 +14,9 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 - **Publisher signatures (spec 6.9): `verifyPublisher`** (.NET `JazminFile.VerifyPublisher`) checks who published a
   file, that it hasn't changed since, the facts signed with it and its document code, with the stored status, a
   revocation list or an online status answer (User Guide section 26). It reads the file's end and hashes the rest in
-  1 MiB chunks. Only SmithSoft's built-in roots are trusted, and there is no way to add another; they are built in
-  before this release, so until then signed files show as `signed`. Both libraries give the results
+  1 MiB chunks. A certified result rests on the roots SmithSoft publishes, built into the official readers, so it
+  can't be forged with a root of one's own; anyone can still sign with their own key, shown as signed by an unknown
+  key. The roots are built in before this release, so until then signed files show as `signed`. Both libraries give the results
   `spec/fixtures/publisher/expected.json` names for every test file.
 - **Publisher signatures in the browser reader:** `JazminBrowser.verifyPublisher(file, options)` in
   `jazmin-browser-publisher.js` (also in the full `jazmin-browser.js`; npm `…/browser/publisher`), with the libraries'

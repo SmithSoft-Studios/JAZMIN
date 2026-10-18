@@ -1241,7 +1241,8 @@ digest.)
 **Confirmation.** A certified result is the reader's own check. A
 **confirmation** is the certifier's statement, from its own service, that it
 signed this document and of its status, given as a confirmation receipt
-(6.9.5) or on the certifier's portal. Only the certifier can confirm.
+(6.9.5) or on the certifier's portal. A confirmation comes from the certifier
+itself.
 
 **Space.** The block is not a section the catalog lists, so tools that report
 a file's unused bytes SHOULD count it apart. A compaction or rewrite removes

@@ -1,7 +1,7 @@
 // A TEST build of the browser scripts' publisher-signature check (spec 6.9): the same code, trusting the test root of
 // spec/fixtures/publisher instead of SmithSoft's, with every result marked `test: true`. For this repository's tests,
 // the viewer's end-to-end tests and the demo gallery only. Never write it into js/browser: the npm package ships that
-// folder, and released scripts trust SmithSoft's roots only (spec 6.9.4).
+// folder, and released scripts trust only the published roots built into them (spec 6.9.4).
 //
 //   node scripts/publisher-test-build.mjs <folder> [--at 2026-10-17T12:00:00Z]
 //     writes jazmin-browser.js and jazmin-browser-publisher.js, test builds, into <folder>
