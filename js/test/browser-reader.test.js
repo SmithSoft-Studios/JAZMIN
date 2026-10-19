@@ -593,3 +593,43 @@ test('estimate(): the browser reader says what a read will cost exactly as the l
     library.close();
   }
 });
+
+// A File is a snapshot: once the file changes on disk, browsers refuse to read it (Chrome: NotReadableError). The reader
+// says so in words a person can act on, keeping the browser's error as the cause (#259).
+test('browser reader: a file changed on disk since it was opened gives a JazminFileChangedError', async () => {
+  const bytes = fixture('js-plain.jzm');
+  const changed = new DOMException('The requested file could not be read, typically due to permission problems that have occurred after a reference to a file was acquired.', 'NotReadableError');
+  let onDisk = true;
+  const expectChanged = (error) => {
+    assert.ok(error instanceof JazminBrowser.JazminFileChangedError);
+    assert.ok(error instanceof JazminBrowser.JazminError);
+    assert.equal(error.name, 'JazminFileChangedError');
+    assert.equal(error.message, 'The file changed on disk since it was opened: open it again.');
+    assert.equal(error.cause, changed);
+    return true;
+  };
+
+  // A { size, read } source (for example, one that wraps a File) whose read fails as a File's does.
+  const source = { size: bytes.length, read: async (offset, length) => { if (!onDisk) throw changed; return bytes.subarray(offset, offset + length); } };
+  const reader = await JazminBrowser.open(source);
+  onDisk = false;
+  await assert.rejects(browserRows(reader), expectChanged);
+
+  // A File or Blob whose slices can no longer be read.
+  class SnapshotBlob extends Blob {
+    slice(...args) {
+      const part = super.slice(...args);
+      if (!onDisk) part.arrayBuffer = () => Promise.reject(changed);
+      return part;
+    }
+  }
+  onDisk = true;
+  const fromBlob = await JazminBrowser.open(new SnapshotBlob([bytes]));
+  onDisk = false;
+  await assert.rejects(browserRows(fromBlob), expectChanged);
+  await assert.rejects(JazminBrowser.open(new SnapshotBlob([bytes])), expectChanged); // already changed when opened
+
+  // A source's other errors are its own, unchanged.
+  const offline = new Error('network is down');
+  await assert.rejects(JazminBrowser.open({ size: bytes.length, read: async () => { throw offline; } }), (error) => error === offline);
+});

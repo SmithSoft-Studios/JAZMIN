@@ -81,6 +81,18 @@
     }
   }
 
+  /**
+   * A File is a snapshot: once the file changes on disk (rewritten, appended to, replaced), the browser refuses to read
+   * it. Choosing the file again gives a File that reads. `cause`: the browser's own error.
+   */
+  class JazminFileChangedError extends JazminError {
+    constructor(cause) {
+      super('The file changed on disk since it was opened: open it again.');
+      this.name = 'JazminFileChangedError';
+      this.cause = cause;
+    }
+  }
+
   // ---- bytes -------------------------------------------------------------------------------------
 
   const CRC_TABLE = (() => {
@@ -2370,20 +2382,40 @@
 
   // ---- sources: a File / Blob read in slices, or bytes in memory -------------------------------------
 
+  const FILE_CHANGED = new Set(['NotReadableError', 'NotFoundError']);
+
   function sourceOf(input) {
     if (input instanceof Uint8Array) {
       return { size: input.length, read: async (offset, length) => input.subarray(offset, offset + length) };
     }
     if (input instanceof ArrayBuffer) return sourceOf(new Uint8Array(input));
     if (typeof Blob !== 'undefined' && input instanceof Blob) {
-      return { size: input.size, read: async (offset, length) => new Uint8Array(await input.slice(offset, offset + length).arrayBuffer()) };
+      // A File whose disk content can't be read fails with a DOMException (File API: NotReadableError, NotFoundError);
+      // a Blob made in memory always reads. Other errors (out of memory) are passed on as they are.
+      return {
+        size: input.size,
+        read: async (offset, length) => {
+          try {
+            return new Uint8Array(await input.slice(offset, offset + length).arrayBuffer());
+          } catch (error) {
+            throw typeof DOMException !== 'undefined' && error instanceof DOMException ? new JazminFileChangedError(error) : error;
+          }
+        },
+      };
     }
     // Any other source: { size, read(offset, length) -> Uint8Array or a promise of one }.
     if (input && Number.isSafeInteger(input.size) && input.size >= 0 && typeof input.read === 'function') {
       return {
         size: input.size,
         read: async (offset, length) => {
-          const bytes = await input.read(offset, length);
+          let bytes;
+          try {
+            bytes = await input.read(offset, length);
+          } catch (error) {
+            // What browsers throw when a File changed (NotReadableError) or is gone (NotFoundError): a source that
+            // reads a File gets the same error as the File itself.
+            throw FILE_CHANGED.has(error?.name) && !(error instanceof JazminError) ? new JazminFileChangedError(error) : error;
+          }
           if (!(bytes instanceof Uint8Array) || bytes.length !== length) throw new JazminFormatError('The source returned the wrong number of bytes');
           return bytes;
         },
@@ -4151,11 +4183,12 @@
     JazminFormatError,
     JazminKeyError,
     JazminFileLockedError,
+    JazminFileChangedError,
     JazminUnlockRequiredError,
     JazminValidationError,
   };
 
   global.JazminBrowser = { ...API_CORE };
   // For the add-ons: the core's functions, and the hooks through which the core reaches them.
-  Object.defineProperty(global.JazminBrowser, Symbol.for('jazmin.browser.internals'), { value: { PREAMBLE, TRAILER, ENVELOPE, FLAG_ENCRYPTED, FLAG_PASSWORD, FLAG_ACCESS, KNOWN_FLAGS, CODEC_NONE, CODEC_DEFLATE, CODEC_BROTLI, MIN_KDF_ITERATIONS, MAX_KDF_ITERATIONS, TYPE_NAMES, ENCODING, NESTED_COLUMNS, MAX_NESTING_DEPTH, isNested, HAS_NULLS, POW10, SLOT_ID, SLOT_ENTRY, PAGE_ENTRY, ONLINE_SLOT, WHOLE_TABLE, EVERYONE, subtle, utf8, fromUtf8, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminFileLockedError, CRC_TABLE, crc32, hexToBytes, toHex, concat, equal, compareBytes, base64ToBytes, base64UrlToBytes, bytesToBase64Url, view, PARALLEL_SECTIONS, MERGE_GAP, MERGE_SPAN, MERGE_ITEMS, STATS_LOADED, inBatches, limiter, sha256, SHA256_K, sha256Stream, hkdf, hmacSha256, pbkdf2, decrypt, inflateRaw, verifySignature, MASTER_KEY_REFUSED, checksum, parseKey, keyText, parseUnlockToken, slotId, LOCK_KINDS, parseFileUnlockToken, lockNeeds, lockKey, sealAad, groupAad, readBundleMasks, keyServiceAddress, Reader, text, num, bytesOf, parseJson, repeatsName, dateFromMs, msFromFile, readMessage, readPacked, cumulative, readRef, readColumn, readPartition, readIndexRef, readTable, readHeader, readDirectory, readStatistics, FILE_FLAGS, fileActions, pageOf, mergeActions, readIndexDirectory, readPartitionList, readDelta, readPostings, readPostingsSection, directoryShapes, checkFileDirectory, formatDecimal, readDecimal, readPlain, skipPlain, MADE_PER_ROW, decodeColumnar, decodeColumnarAt, skipValue, decodeAt, streamType, decodeStream, partEnd, decodeNested, OPS, STRING_OPS, keyOf, keyHash, inKeys, compare, compileFilter, condition, ORDERED_TYPES, RANGE_OPS, FEW_ROWS, SMALL_LOOKUP_BYTES, PAGES_CACHED, keyCompare, readKey, decodeBound, planOf, planLeaf, answeredExactly, setField, columnCollector, planColumns, filterReads, leafType, nestedMayMatch, leafMayMatch, mayMatch, leafMustMatch, mustMatch, sortBounds, unionAll, intersectSorted, PageKeys, readRowIds, PagedIndex, trigramsOf, trigramAnswers, skipPostings, intersectPostings, GRAM_HIGH, TrigramSegment, COMMON_SHARE, LazyTrigramIndex, CompositeIndex, leafLookup, indexPlan, sourceOf, BLOCK_SIZE, BLOCKS_CACHED, urlSource, openUrl, openScript, scriptBytes, open, openFile, locateTrailer, findPage, findSlot, openTable, tableReader, EXPORT_TYPES, XML_NAME, XML_UNWRITABLE, bytesToBase64, exportText, exportJson, exportNested, csvQuote, xmlEscape, xmlElement, maskedView, exportPieces, exportTo, ENOUGH, exportString, exportBlob, JazminValidationError, normalizeBigInt, MAX_SAFE_BIG, compareDecimalKeys, decimalKeyOf, parseDecimalText, DECIMAL_TEXT, validation, hooks, addOn } });
+  Object.defineProperty(global.JazminBrowser, Symbol.for('jazmin.browser.internals'), { value: { PREAMBLE, TRAILER, ENVELOPE, FLAG_ENCRYPTED, FLAG_PASSWORD, FLAG_ACCESS, KNOWN_FLAGS, CODEC_NONE, CODEC_DEFLATE, CODEC_BROTLI, MIN_KDF_ITERATIONS, MAX_KDF_ITERATIONS, TYPE_NAMES, ENCODING, NESTED_COLUMNS, MAX_NESTING_DEPTH, isNested, HAS_NULLS, POW10, SLOT_ID, SLOT_ENTRY, PAGE_ENTRY, ONLINE_SLOT, WHOLE_TABLE, EVERYONE, subtle, utf8, fromUtf8, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminFileLockedError, JazminFileChangedError, CRC_TABLE, crc32, hexToBytes, toHex, concat, equal, compareBytes, base64ToBytes, base64UrlToBytes, bytesToBase64Url, view, PARALLEL_SECTIONS, MERGE_GAP, MERGE_SPAN, MERGE_ITEMS, STATS_LOADED, inBatches, limiter, sha256, SHA256_K, sha256Stream, hkdf, hmacSha256, pbkdf2, decrypt, inflateRaw, verifySignature, MASTER_KEY_REFUSED, checksum, parseKey, keyText, parseUnlockToken, slotId, LOCK_KINDS, parseFileUnlockToken, lockNeeds, lockKey, sealAad, groupAad, readBundleMasks, keyServiceAddress, Reader, text, num, bytesOf, parseJson, repeatsName, dateFromMs, msFromFile, readMessage, readPacked, cumulative, readRef, readColumn, readPartition, readIndexRef, readTable, readHeader, readDirectory, readStatistics, FILE_FLAGS, fileActions, pageOf, mergeActions, readIndexDirectory, readPartitionList, readDelta, readPostings, readPostingsSection, directoryShapes, checkFileDirectory, formatDecimal, readDecimal, readPlain, skipPlain, MADE_PER_ROW, decodeColumnar, decodeColumnarAt, skipValue, decodeAt, streamType, decodeStream, partEnd, decodeNested, OPS, STRING_OPS, keyOf, keyHash, inKeys, compare, compileFilter, condition, ORDERED_TYPES, RANGE_OPS, FEW_ROWS, SMALL_LOOKUP_BYTES, PAGES_CACHED, keyCompare, readKey, decodeBound, planOf, planLeaf, answeredExactly, setField, columnCollector, planColumns, filterReads, leafType, nestedMayMatch, leafMayMatch, mayMatch, leafMustMatch, mustMatch, sortBounds, unionAll, intersectSorted, PageKeys, readRowIds, PagedIndex, trigramsOf, trigramAnswers, skipPostings, intersectPostings, GRAM_HIGH, TrigramSegment, COMMON_SHARE, LazyTrigramIndex, CompositeIndex, leafLookup, indexPlan, FILE_CHANGED, sourceOf, BLOCK_SIZE, BLOCKS_CACHED, urlSource, openUrl, openScript, scriptBytes, open, openFile, locateTrailer, findPage, findSlot, openTable, tableReader, EXPORT_TYPES, XML_NAME, XML_UNWRITABLE, bytesToBase64, exportText, exportJson, exportNested, csvQuote, xmlEscape, xmlElement, maskedView, exportPieces, exportTo, ENOUGH, exportString, exportBlob, JazminValidationError, normalizeBigInt, MAX_SAFE_BIG, compareDecimalKeys, decimalKeyOf, parseDecimalText, DECIMAL_TEXT, validation, hooks, addOn } });
 })(globalThis);

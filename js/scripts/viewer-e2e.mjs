@@ -494,6 +494,11 @@ async function launchChromium(exe) {
       await send('Page.navigate', { url });
       await sleep(300);
     },
+    async chooseFile(selector, file) {
+      const { root } = await send('DOM.getDocument');
+      const { nodeId } = await send('DOM.querySelector', { nodeId: root.nodeId, selector });
+      await send('DOM.setFileInputFiles', { nodeId, files: [file] });
+    },
     async evaluate(expression) {
       // As the person's own action (userGesture), so a page may open a window (a key service's sign-in).
       const { result, exceptionDetails } = await send('Runtime.evaluate', { expression: `(async () => JSON.stringify(await (${expression})))()`, awaitPromise: true, returnByValue: true, userGesture: true });
@@ -551,6 +556,10 @@ async function launchFirefox(exe) {
     problems,
     async navigate(url) {
       await send('browsingContext.navigate', { context, url, wait: 'complete' });
+    },
+    async chooseFile(selector, file) {
+      const { result } = await send('script.evaluate', { expression: `document.querySelector(${JSON.stringify(selector)})`, target: { context }, awaitPromise: false, resultOwnership: 'root' });
+      await send('input.setFiles', { context, element: { sharedId: result.sharedId }, files: [file] });
     },
     async evaluate(expression) {
       const r = await send('script.evaluate', {
@@ -1180,6 +1189,42 @@ for (const name of chosen) {
     }
     const exportOk = ['csv', 'xml'].every((format) => exported[format].name === `busy-filtered.${format}` && exported[format].text === BUSY_EXPORT[format] && /^Saved busy-filtered\./.test(exported[format].note));
     results.push({ browser: name, label: `export: the filter's ${BUSY_TOTAL.toLocaleString('en-US')} rows saved as CSV and XML, the same text as the library's`, ok: exportOk, problems: exportOk ? [] : [JSON.stringify(Object.fromEntries(Object.entries(exported).map(([f, e]) => [f, { name: e.name, note: e.note, length: e.text.length, expected: BUSY_EXPORT[f].length }])))] });
+
+    // A file changed on disk after it was opened (#259): a File is a snapshot, and the browser refuses to read it once the
+    // file changes. The next page, and a count still running, say so on the status line, with Open again; the file
+    // chosen again reads. Safari's WebDriver can't choose files.
+    if (page.chooseFile) {
+      const changing = path.join(temp, 'changing.jzm');
+      const touch = (() => {
+        let seconds = Date.now() / 1000;
+        return () => { // the same bytes written again, a later time: the file changed on disk
+          fs.writeFileSync(changing, fs.readFileSync(path.join(temp, 'busy.jzm')));
+          seconds += 60;
+          fs.utimesSync(changing, seconds, seconds);
+        };
+      })();
+      touch();
+      const changedShown = `/changed on disk since it was opened: open it again/.test(document.getElementById('jz-status').textContent) && !document.getElementById('jz-reopen').hidden`;
+      await page.navigate(`${base}/js/viewer/index.html`);
+      await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+      await page.chooseFile('#jz-input', changing);
+      await waitFor(page, `/^Rows 1–50 of 1\\D?000\\D?000$/.test(${dataStatus})`, 'changing.jzm');
+      touch();
+      await page.evaluate(`(document.getElementById('jz-next').click(), true)`);
+      const nextPage = await waitFor(page, `${changedShown} && { data: ${dataStatus}, rows: document.querySelectorAll('#jz-rows tbody tr').length, page: JazminViewer.state.page }`, 'the next page refused');
+      await page.chooseFile('#jz-input', changing); // chosen again: reads
+      await waitFor(page, `/^Rows 1–50 of 1\\D?000\\D?000$/.test(${dataStatus}) && document.getElementById('jz-reopen').hidden`, 'changing.jzm chosen again');
+      await page.evaluate(`(document.getElementById('jz-next').click(), true)`);
+      const reopened = await waitFor(page, `/^Rows 51–100 /.test(${dataStatus}) && ${dataStatus}`, 'the next page of the file chosen again');
+      await filterBy('{ "note": { "contains": "row 1" } }');
+      await waitFor(page, `/counting/.test(${dataStatus})`, 'the count under way');
+      touch(); // while the count reads
+      const inFlight = await waitFor(page, `${changedShown} && /counting failed: The file changed on disk/.test(${dataStatus}) && ${dataStatus}`, 'the count refused', 120000);
+      const changedOk = /^Rows 1–50 of 1\D?000\D?000$/.test(nextPage.data) && nextPage.rows === 50 && nextPage.page === 0 && /^Rows 51–100 /.test(reopened) && /^Rows 1–50 · at least/.test(inFlight);
+      results.push({ browser: name, label: 'a file changed on disk since it was opened: the next page and a running count say so, with Open again; chosen again, it reads', ok: changedOk, problems: changedOk ? [] : [JSON.stringify({ nextPage, reopened, inFlight })] });
+    } else {
+      results.push({ browser: name, label: 'a file changed on disk (not run: this driver chooses no files)', ok: true, problems: [] });
+    }
 
     // Export with a shape: a shape linking a file's two tables, checked, previewed, its JSON Schema shown, exported; and
     // checked against the columns each key can see (Bob's key hides balance, Sally's doesn't).

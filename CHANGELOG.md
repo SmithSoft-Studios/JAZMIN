@@ -9,6 +9,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 - **A shared file whose owner key isn't a point on the curve** now fails with the usual JAZMIN error ("the file's
   owner signature is invalid") in every library. It surfaced as the platform's own error: `TypeError` in Node, a
   WebCrypto `DataError` in the browser reader, and `PlatformNotSupportedException` in .NET on Windows.
+- **A file that changed on disk after it was opened in a browser** (#259). A File is a snapshot: once the file
+  changes, browsers refuse to read it. The browser reader now throws `JazminFileChangedError` (a `JazminError`), "The
+  file changed on disk since it was opened: open it again.", with the browser's error (Chrome: `NotReadableError`)
+  as its `cause`. The viewer showed nothing when the next or previous page failed, leaving the old page and its line
+  as they were; it now says so on its status line, with **Open again** (User Guide section 24). A file that doesn't
+  change reads as before.
 
 ### Added
 - **Publisher signatures (spec 6.9): `verifyPublisher`** (.NET `JazminFile.VerifyPublisher`) checks who published a

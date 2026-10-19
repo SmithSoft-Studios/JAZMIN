@@ -16,7 +16,20 @@
     publisher: null, publisherRun: null, publisherFirst: null, sealed: false, // who published the file (spec 6.9)
   };
 
-  const status = (message) => { $('jz-status').textContent = message || ''; };
+  const status = (message) => {
+    $('jz-status').textContent = message || '';
+    $('jz-reopen').hidden = true;
+  };
+
+  /**
+   * Says what went wrong on the status line. A File is a snapshot: when the file changed on disk since it was opened,
+   * nothing more can be read from it, and Open again chooses it afresh (when the viewer chose it: a picker, a drop, the
+   * installed app).
+   */
+  function problem(error, before = '') {
+    status(before + (error.message || String(error)));
+    if (error instanceof JazminBrowser.JazminFileChangedError && state.reopen) $('jz-reopen').hidden = false;
+  }
 
   function show(id) {
     for (const panel of ['jz-start', 'jz-unlock', 'jz-content']) $(panel).hidden = panel !== id;
@@ -27,9 +40,11 @@
   /**
    * Takes a file (picker, drop, file handler, an embedded copy, or the page around the viewer) and opens it, asking for
    * a key when it needs one. `answerTo`: the origin of the page that passed the file, which hears how it opens.
+   * `reopen`: chooses the file again, when it changed on disk since it was opened.
    */
-  async function choose(blob, name, answerTo = null) {
+  async function choose(blob, name, answerTo = null, reopen = null) {
     state.blob = blob;
+    state.reopen = reopen;
     state.name = name || 'file.jzm';
     state.answerTo = answerTo;
     state.readers.clear();
@@ -81,7 +96,7 @@
 
   function fail(error) {
     show(state.reader ? 'jz-content' : 'jz-start');
-    status(`Could not open ${state.name}: ${error.message || error}`);
+    problem(error, `Could not open ${state.name}: `);
     tell('failed', String(error.message || error));
   }
 
@@ -407,6 +422,7 @@
       if (current()) Object.assign(state, { total, elapsed: performance.now() - state.started });
     } catch (error) {
       if (current()) Object.assign(state, { countStopped: true, countError: counting.signal.aborted ? null : error.message || String(error) });
+      if (current() && error instanceof JazminBrowser.JazminFileChangedError) problem(error);
     } finally {
       if (work.count === counting) work.count = null;
       if (current()) showStatus();
@@ -774,7 +790,7 @@
         if (!done) return;
         await loadMasks(state.reader); // the reader was built again with the column (spec 7.6.8)
         await Promise.all([showRows(), showFiles()]);
-      }).catch((e) => status(e.message)));
+      }).catch(problem));
     } else if (maskSettings(m).reveal === 'column') {
       button.textContent = 'Reveal column';
       button.addEventListener('click', () => {
@@ -886,6 +902,7 @@
       await showRows();
     } catch (error) {
       $('jz-data-status').textContent = `Filter: ${error.message}`;
+      if (error instanceof JazminBrowser.JazminFileChangedError) problem(error);
     }
   }
 
@@ -917,7 +934,7 @@
           if (!done) return;
           await showFiles();
           if (frameReader) await showDocument(frameReader); // the document's page gets the files just unlocked
-        }).catch((e) => status(e.message)));
+        }).catch(problem));
         li.append(locked, button);
         return li;
       }
@@ -925,7 +942,7 @@
         const button = document.createElement('button');
         button.type = 'button';
         button.textContent = 'Download';
-        button.addEventListener('click', () => save(f.path.split('/').pop(), state.reader.fileBlob(f.path)).catch((e) => status(e.message)));
+        button.addEventListener('click', () => save(f.path.split('/').pop(), state.reader.fileBlob(f.path)).catch(problem));
         li.append(button);
       }
       return li;
@@ -1084,7 +1101,7 @@
       }
       if (p.path === state.pagePath) button.setAttribute('aria-current', 'page');
       button.addEventListener('click', () => {
-        if (p.path !== state.pagePath) showDocument(state.docReader, p.path).catch((e) => status(e.message));
+        if (p.path !== state.pagePath) showDocument(state.docReader, p.path).catch(problem);
       });
       return button;
     })));
@@ -1167,7 +1184,7 @@
     return !offline;
   }
   addEventListener('online', () => {
-    if (waitingForNetwork) showDocument(waitingForNetwork).catch((e) => status(e.message));
+    if (waitingForNetwork) showDocument(waitingForNetwork).catch(problem);
   });
 
   /** Messages from the sandbox: it starts, shows pages, and asks for data. */
@@ -1182,7 +1199,7 @@
       // The page went to another of the document's pages (jazmin.navigate): show it as that tab, with its own table,
       // buttons and network note. A page that isn't a tab (a page's own sub-page) leaves the tabs as they are.
       if (m.page !== state.pagePath && state.pages.explicit && state.pages.pages.some((p) => p.path === m.page)) {
-        showDocument(state.docReader, m.page).catch((e) => status(e.message));
+        showDocument(state.docReader, m.page).catch(problem);
         return;
       }
       state.lastShown = { page: m.page, title: m.title, text: m.text, actions: m.actions };
@@ -1384,6 +1401,7 @@
     doc.querySelector('#jz-start').hidden = false;
     doc.querySelector('#jz-unlock').hidden = true;
     doc.querySelector('#jz-export').hidden = true;
+    doc.querySelector('#jz-reopen').hidden = true;
     doc.querySelector('#jz-frame').removeAttribute('srcdoc');
     for (const id of ['jz-name', 'jz-status', 'jz-error', 'jz-data-status', 'jz-files-status']) doc.querySelector(`#${id}`).textContent = '';
     doc.querySelector('#jz-rows thead').replaceChildren();
@@ -1402,7 +1420,7 @@
 
   $('jz-input').addEventListener('change', (e) => {
     const file = e.target.files[0];
-    if (file) choose(file, file.name);
+    if (file) choose(file, file.name, null, pickAgain);
     e.target.value = '';
   });
   const drop = $('jz-drop');
@@ -1416,8 +1434,10 @@
     e.preventDefault();
     drop.classList.remove('over');
     const file = e.dataTransfer.files[0];
-    if (file) choose(file, file.name);
+    if (file) choose(file, file.name, null, pickAgain);
   });
+  const pickAgain = () => $('jz-input').click(); // a picked or dropped File can't be read afresh: the person picks it again
+  $('jz-reopen').addEventListener('click', () => state.reopen?.());
   $('jz-unlock').addEventListener('submit', unlock);
   $('jz-filter-form').addEventListener('submit', applyFilter);
   $('jz-busy-stop').addEventListener('click', () => onBusyStop());
@@ -1443,9 +1463,18 @@
   $('jz-shape-xml').addEventListener('click', () => exportShaped('xml'));
   $('jz-shape-close').addEventListener('click', () => $('jz-shape').close());
   $('jz-count-stop').addEventListener('click', () => work.count?.abort());
-  $('jz-prev').addEventListener('click', () => { state.page--; showRows(); });
-  $('jz-next').addEventListener('click', () => { state.page++; showRows(); });
-  $('jz-table').addEventListener('change', () => switchTable().catch((e) => status(e.message)));
+  // A page that can't be read leaves the page shown as it was, and says why.
+  const turnPage = (by) => {
+    state.page += by;
+    showRows().catch((error) => {
+      state.page -= by;
+      showStatus();
+      problem(error);
+    });
+  };
+  $('jz-prev').addEventListener('click', () => turnPage(-1));
+  $('jz-next').addEventListener('click', () => turnPage(1));
+  $('jz-table').addEventListener('change', () => switchTable().catch(problem));
   for (const tab of document.querySelectorAll('[role="tab"]')) tab.addEventListener('click', () => selectTab(tab.dataset.tab));
   $('jz-export').addEventListener('click', async () => {
     try {
@@ -1460,7 +1489,9 @@
   if ('launchQueue' in window) {
     window.launchQueue.setConsumer(async (params) => {
       const [handle] = params.files || [];
-      if (handle) choose(await handle.getFile(), handle.name);
+      // The handle reads the file as it is now: Open again needs no picker.
+      const again = async () => choose(await handle.getFile(), handle.name, null, again);
+      if (handle) await again();
     });
   }
   // Offline use once installed (not for a page opened from disk).

@@ -79,6 +79,18 @@
     }
   }
 
+  /**
+   * A File is a snapshot: once the file changes on disk (rewritten, appended to, replaced), the browser refuses to read
+   * it. Choosing the file again gives a File that reads. `cause`: the browser's own error.
+   */
+  class JazminFileChangedError extends JazminError {
+    constructor(cause) {
+      super('The file changed on disk since it was opened: open it again.');
+      this.name = 'JazminFileChangedError';
+      this.cause = cause;
+    }
+  }
+
   // ---- bytes -------------------------------------------------------------------------------------
 
   const CRC_TABLE = (() => {
@@ -2368,20 +2380,40 @@
 
   // ---- sources: a File / Blob read in slices, or bytes in memory -------------------------------------
 
+  const FILE_CHANGED = new Set(['NotReadableError', 'NotFoundError']);
+
   function sourceOf(input) {
     if (input instanceof Uint8Array) {
       return { size: input.length, read: async (offset, length) => input.subarray(offset, offset + length) };
     }
     if (input instanceof ArrayBuffer) return sourceOf(new Uint8Array(input));
     if (typeof Blob !== 'undefined' && input instanceof Blob) {
-      return { size: input.size, read: async (offset, length) => new Uint8Array(await input.slice(offset, offset + length).arrayBuffer()) };
+      // A File whose disk content can't be read fails with a DOMException (File API: NotReadableError, NotFoundError);
+      // a Blob made in memory always reads. Other errors (out of memory) are passed on as they are.
+      return {
+        size: input.size,
+        read: async (offset, length) => {
+          try {
+            return new Uint8Array(await input.slice(offset, offset + length).arrayBuffer());
+          } catch (error) {
+            throw typeof DOMException !== 'undefined' && error instanceof DOMException ? new JazminFileChangedError(error) : error;
+          }
+        },
+      };
     }
     // Any other source: { size, read(offset, length) -> Uint8Array or a promise of one }.
     if (input && Number.isSafeInteger(input.size) && input.size >= 0 && typeof input.read === 'function') {
       return {
         size: input.size,
         read: async (offset, length) => {
-          const bytes = await input.read(offset, length);
+          let bytes;
+          try {
+            bytes = await input.read(offset, length);
+          } catch (error) {
+            // What browsers throw when a File changed (NotReadableError) or is gone (NotFoundError): a source that
+            // reads a File gets the same error as the File itself.
+            throw FILE_CHANGED.has(error?.name) && !(error instanceof JazminError) ? new JazminFileChangedError(error) : error;
+          }
           if (!(bytes instanceof Uint8Array) || bytes.length !== length) throw new JazminFormatError('The source returned the wrong number of bytes');
           return bytes;
         },
@@ -4149,6 +4181,7 @@
     JazminFormatError,
     JazminKeyError,
     JazminFileLockedError,
+    JazminFileChangedError,
     JazminUnlockRequiredError,
     JazminValidationError,
   };

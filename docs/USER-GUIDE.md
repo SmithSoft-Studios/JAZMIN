@@ -4669,6 +4669,19 @@ saved shape of the table shown exports the rows the filter matches; one of
 another table exports all of its rows. In the shape box, **Start from**
 fills in a saved shape of the table shown, to change before exporting.
 
+**When the file changes on disk.** A file chosen in a browser is a snapshot:
+once the file on disk changes (a change file applied to it, a new copy saved
+over it, even the same bytes written again), the browser refuses to read the
+old one. The viewer then says "The file changed on disk since it was opened:
+open it again." on its status line, with **Open again**: it opens the file
+picker (the installed app, which Chrome and Edge open `.jzm` files with,
+reads the file again without asking). The browser reader throws
+`JazminBrowser.JazminFileChangedError` (a `JazminError`) with the same
+message; its `cause` is the browser's own error (Chrome: `NotReadableError`).
+A `{ size, read }` source gets the same error when its `read` throws a
+browser's `NotReadableError` or `NotFoundError`; its other errors are passed
+on as they are.
+
 ### 24.1 Templates: the document API
 
 A package's entry page runs in a sandbox. It has no network access (except
