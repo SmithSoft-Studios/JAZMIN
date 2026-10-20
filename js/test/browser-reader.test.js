@@ -633,3 +633,19 @@ test('browser reader: a file changed on disk since it was opened gives a JazminF
   const offline = new Error('network is down');
   await assert.rejects(JazminBrowser.open({ size: bytes.length, read: async () => { throw offline; } }), (error) => error === offline);
 });
+
+// Limits per key (spec 7.9.1): each library's spec/fixtures/edit-limits files give the browser reader each key's limit
+// and what it may send, as the library gives them.
+for (const writer of ['js', 'dotnet']) {
+  test(`browser reader: ${writer}-edit-limits.jzm gives each key's limit as the library does`, async (t) => {
+    const file = path.join(dir, 'edit-limits', `${writer}-edit-limits.jzm`);
+    if (!fs.existsSync(file)) return t.skip('fixture not generated yet');
+    const limits = JSON.parse(fs.readFileSync(path.join(dir, 'edit-limits', 'edit-limits.json'), 'utf8'));
+    for (const [name, seen] of Object.entries(limits.seen)) {
+      const inBrowser = await JazminBrowser.open(new Blob([fs.readFileSync(file)]), { key: keys[name] });
+      assert.deepEqual([inBrowser.package.edit, inBrowser.access.edit, inBrowser.edit], [limits.package.edit, seen.limit, seen.edit], name);
+    }
+    const lost = await JazminBrowser.open(new Blob([fs.readFileSync(path.join(dir, 'edit-limits', `${writer}-edit-limits-lost.jzm`))]), { key: keys[limits.lost.key] });
+    assert.deepEqual([lost.access.editLost, lost.edit.columns, lost.edit.add, lost.edit.delete], [true, [], false, false]);
+  });
+}

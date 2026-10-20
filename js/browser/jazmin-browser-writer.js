@@ -1031,8 +1031,11 @@
     name, type, nullable: nullable !== false, ...(item ? { item: changeDefinition(item) } : {}), ...(fields ? { fields: fields.map(changeDefinition) } : {}),
   });
 
-  /** A call's changes as [{ op, key, values }], checked against what the document allows (as the library checks). */
-  function changeList(changes, edit, editable) {
+  /**
+   * A call's changes as [{ op, key, values }], checked against what the document allows (`editable`: its columns the key
+   * sees) and what the key may send (`allowed`: narrowed by its limit, spec 7.9.1), as the library checks.
+   */
+  function changeList(changes, edit, editable, allowed) {
     if (changes === null || typeof changes !== 'object' || Array.isArray(changes)) throw new JazminValidationError('Changes are { update, add, delete }: lists of rows');
     for (const name of Object.keys(changes)) if (!CHANGE_OPS.includes(name)) throw new JazminValidationError(`Changes: unknown '${name}' (update, add, delete)`);
     const out = [];
@@ -1043,6 +1046,8 @@
       if (!Array.isArray(list)) throw new JazminValidationError(`Changes: ${op} must be a list of rows`);
       if (list.length && op === 'add' && !edit.add) throw new JazminValidationError("This document doesn't allow adding rows");
       if (list.length && op === 'delete' && !edit.delete) throw new JazminValidationError("This document doesn't allow deleting rows");
+      if (list.length && op === 'add' && !allowed.add) throw new JazminValidationError("This key can't add rows");
+      if (list.length && op === 'delete' && !allowed.delete) throw new JazminValidationError("This key can't delete rows");
       for (const row of list) {
         if (row === null || typeof row !== 'object' || Array.isArray(row)) throw new JazminValidationError(`Changes: ${op} must be a list of rows (objects)`);
         const key = {};
@@ -1055,6 +1060,7 @@
           if (edit.key.includes(name)) continue;
           if (op === 'delete') throw new JazminValidationError(`Changes: give the rows to delete by their key only ('${name}' isn't a key column)`);
           if (!editable.has(name)) throw new JazminValidationError(`Column '${name}' can't be changed through this document`);
+          if (!allowed.columns.includes(name)) throw new JazminValidationError(`Column '${name}' can't be changed with this key`);
           values[name] = value === undefined ? null : value;
         }
         if (op === 'update' && !Object.keys(values).length) throw new JazminValidationError(`Changes: the update of ${showKey(key, edit.key)} changes nothing`);
@@ -1087,12 +1093,22 @@
     } else {
       seal = {};
     }
+    // A shared file's grant may limit what its key sends back (spec 7.9.1); a limit an older release lost allows nothing.
+    const limit = source.access && !source.access.isOwner ? source.access : null;
+    if (limit?.editLost) throw new JazminValidationError("This key's limits were lost: ask the file's owner to grant it again");
     const tableName = edit.table ?? source.tables[0];
     const reader = source.table === tableName ? source : await source.openTable(tableName);
     const columns = new Map(reader.columns.map((c) => [c.name, c]));
     for (const k of edit.key) if (!columns.has(k)) throw new JazminValidationError(`The key column '${k}' isn't visible with this key`);
-    const editable = edit.columns.filter((n) => columns.has(n));
-    const list = changeList(changes, edit, new Set(editable));
+    const visible = new Set(edit.columns.filter((n) => columns.has(n))); // the document's columns this key sees
+    const allowed = {
+      columns: edit.columns.filter((n) => visible.has(n) && (!limit?.edit?.columns || limit.edit.columns.includes(n))),
+      add: edit.add === true && limit?.edit?.add !== false,
+      delete: edit.delete === true && limit?.edit?.delete !== false,
+    };
+    if (limit?.edit && !allowed.columns.length && !allowed.add && !allowed.delete) throw new JazminValidationError("This key can't send changes to this document");
+    const editable = allowed.columns; // the change file lists what this key may change
+    const list = changeList(changes, edit, visible, allowed);
     const current = new Map();
     for (let i = 0; i < list.length; i += 500) {
       const batch = list.slice(i, i + 500).map((c) => c.key);

@@ -172,6 +172,35 @@ const EDIT_READY = {
   saved: ['change-file', 1, 1, 0],
 };
 
+// A shared document whose grant limits what the key sends back (spec 7.9.1): jazmin.edit is narrowed to the note, a
+// change to another column is refused before a change file is made, and the dialog says what the key may change.
+const limitsKey = templateKey.createAccessKey();
+const limitsFile = path.join(temp, 'edit-limits.jzm');
+write(limitsFile, [{ id: 1, region: 'A', status: 'open', note: null }, { id: 2, region: 'A', status: 'open', note: null }], {
+  key: templateKey,
+  columns: [{ name: 'id', type: 'int', nullable: false }, { name: 'region', type: 'string', nullable: false }, { name: 'status', type: 'string' }, { name: 'note', type: 'string' }],
+  files: [
+    { path: 'index.html', content: '<!doctype html><title>Limits</title><body><p>Limits</p><script src="app.js"></script></body>' },
+    {
+      path: 'app.js',
+      content: `(async () => {
+        const edit = jazmin.edit;
+        let refused = '';
+        try { await jazmin.saveChanges({ update: [{ id: 1, status: 'done' }] }); } catch (e) { refused = e.message; }
+        const saved = await jazmin.saveChanges({ update: [{ id: 1, note: 'checked' }] });
+        jazmin.ready({ edit, refused, saved: [saved.saved, saved.updated, saved.added, saved.deleted] });
+      })();`,
+    },
+  ],
+  package: { entry: 'index.html', title: 'Limits', edit: { key: ['id'], columns: ['status', 'note'], add: true, delete: true } },
+  access: { partitionBy: 'region', grants: [{ key: limitsKey, rows: '*', edit: { columns: ['note'], add: false, delete: false } }] },
+});
+const LIMITS_READY = {
+  edit: { key: ['id'], columns: ['note'], add: false, delete: false },
+  refused: "Column 'status' can't be changed with this key",
+  saved: ['change-file', 1, 0, 0],
+};
+
 // A document that reads every table of its file (jazmin.tables, the table option of query and count).
 write(path.join(temp, 'tables.jzm'), {
   clients: [{ clientId: 'C1', name: 'Ann' }, { clientId: 'C2', name: 'Ben' }],
@@ -955,6 +984,34 @@ for (const name of chosen) {
     const editOk = JSON.stringify(edited) === JSON.stringify(EDIT_READY) && listed === 'Change 1: status → done | Add 9'
       && applied.updated === 1 && applied.added === 1 && JSON.stringify(after) === JSON.stringify({ 1: 'done', 2: 'open', 9: 'new' });
     results.push({ browser: name, label: 'editable document: changes checked, confirmed in the viewer, saved as a change file the library applies', ok: editOk, problems: editOk ? [] : [JSON.stringify({ edited, listed, applied, after })] });
+
+    // Limits per key (spec 7.9.1): the document gets what this key may change, the rest is refused, the dialog says so.
+    keys.limited = limitsKey.export();
+    await page.navigate(`${base}/js/viewer/index.html`);
+    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+    await page.evaluate(`fetch('/e2e/edit-limits.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'edit-limits.jzm')).then(() => true)`);
+    await unlock(page, { file: 'edit-limits.jzm', key: 'limited' });
+    await waitFor(page, `document.getElementById('jz-changes').open`, 'the changes dialog (limits)');
+    const limitsWhere = await page.evaluate(`document.getElementById('jz-changes-where').textContent`);
+    await page.evaluate(NO_DOWNLOADS);
+    await page.evaluate(`(document.getElementById('jz-changes-save').click(), true)`);
+    const limited = await waitFor(page, 'JazminViewer.state.lastReady && JazminViewer.state.lastReady.info', 'the limits page to call jazmin.ready()');
+    const limitsChange = Buffer.from(await page.evaluate(`(async () => {
+      const bytes = new Uint8Array(await (await fetch(window.jzSaved.href)).arrayBuffer());
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 8192) binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+      return btoa(binary);
+    })()`), 'base64');
+    const limitsCopy = path.join(temp, `edit-limits-${name}.jzm`);
+    fs.copyFileSync(limitsFile, limitsCopy);
+    const limitsApplied = applyChanges(limitsCopy, limitsChange, { key: templateKey });
+    const limitsOk = JSON.stringify(limited) === JSON.stringify(LIMITS_READY)
+      && limitsWhere.startsWith("With your key you can change: note. You can't add or delete rows. ")
+      && limitsApplied.updated === 1 && limitsApplied.refused.length === 0;
+    results.push({
+      browser: name, label: "limits per key: the document gets what this key may change, the rest refused, the dialog says so, the library applies it", ok: limitsOk,
+      problems: limitsOk ? [] : [JSON.stringify({ limited, limitsWhere, limitsApplied })],
+    });
 
     // A page's actions: its file's, narrowed by the page (setActions), never widened.
     await page.navigate(`${base}/js/viewer/index.html`);

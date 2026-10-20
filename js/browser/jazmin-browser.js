@@ -783,11 +783,53 @@
     return t;
   }
 
+  // ---- limits per key on what a key may send back (spec 7.9.1), as the library reads them ------------------------
+
+  /** Whether package.edit is well formed enough to use: a key and columns of names. */
+  function editSettings(edit) {
+    return edit !== null && typeof edit === 'object' && Array.isArray(edit.key) && edit.key.length > 0
+      && (edit.columns === undefined || (Array.isArray(edit.columns) && edit.columns.every((c) => typeof c === 'string')));
+  }
+
+  /**
+   * A key's stored limit: { edit, lost }. In a file with limits, none means an older release lost it; a limit with other
+   * members or of another type can't be read; either way the key may send nothing. {} is no limit.
+   */
+  function readEditLimit(value, limitsFile) {
+    if (value === undefined) return { edit: undefined, lost: limitsFile };
+    const bad = { edit: undefined, lost: true };
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return bad;
+    const out = {};
+    for (const [name, v] of Object.entries(value)) {
+      if (name === 'columns') {
+        if (!Array.isArray(v) || v.some((c) => typeof c !== 'string' || !c.length) || new Set(v).size !== v.length) return bad;
+        out.columns = [...v];
+      } else if (name === 'add' || name === 'delete') {
+        if (typeof v !== 'boolean') return bad;
+        out[name] = v;
+      } else return bad;
+    }
+    const ordered = Object.fromEntries(['columns', 'add', 'delete'].filter((k) => k in out).map((k) => [k, out[k]]));
+    return { edit: Object.keys(ordered).length ? ordered : undefined, lost: false };
+  }
+
+  /** The document's settings narrowed by a key's limit and the columns it sees (null: not known here). */
+  function effectiveEdit(edit, limit, visible, lost) {
+    if (lost) return { ...edit, columns: [], add: false, delete: false };
+    return {
+      ...edit,
+      columns: (edit.columns ?? []).filter((c) => (!limit?.columns || limit.columns.includes(c)) && (!visible || visible.has(c))),
+      add: edit.add === true && limit?.add !== false,
+      delete: edit.delete === true && limit?.delete !== false,
+    };
+  }
+
   function readHeader(bytes) {
-    const h = { readerFeatures: [], metadata: '', tables: [], keyring: {}, files: null, access: null, deltas: [], appendCount: 0, created: 0, modified: 0 };
+    const h = { readerFeatures: [], writerFeatures: [], metadata: '', tables: [], keyring: {}, files: null, access: null, deltas: [], appendCount: 0, created: 0, modified: 0 };
     readMessage(bytes, (f, v) => {
       switch (f) {
         case 1: h.readerFeatures.push(text(v)); break;
+        case 2: h.writerFeatures.push(text(v)); break;
         case 3: h.created = num(v); break;
         case 4: h.modified = num(v); break;
         case 5: h.appendCount = num(v); break;
@@ -2727,6 +2769,7 @@
         // The key of what this key's holder sends back to the owner (spec 7.8); files written before it have none.
         submission: typeof bundle.submission === 'string' ? await keyText(b(bundle.submission)) : null,
         masks: readBundleMasks(bundle.masks),
+        editLimit: bundle.edit, // what this key may send back (spec 7.9.1), as written
       };
       if (access.expires !== undefined) {
         const expires = Date.parse(access.expires);
@@ -3559,6 +3602,16 @@
       return bytes;
     }
 
+    // A file whose grants limit what keys send back stores the document's edit settings as editByKey (spec 7.9.1).
+    const storedPackage = header.files?.package ? parseJson(header.files.package, 'Package settings', true) : undefined;
+    const settings = storedPackage?.editByKey === undefined ? storedPackage
+      : (({ editByKey, ...rest }) => (rest.edit === undefined ? { ...rest, edit: editByKey } : rest))(storedPackage);
+    const limitsFile = header.writerFeatures.includes('edit-limits') || storedPackage?.editByKey !== undefined;
+    const ownLimit = access && !access.isOwner ? readEditLimit(access.editLimit, limitsFile) : null;
+    const editTable = settings?.edit ? settings.edit.table ?? header.tables[0]?.name : null;
+    const edit = editSettings(settings?.edit) && (!access || access.isOwner ? settings.edit
+      : effectiveEdit(settings.edit, ownLimit.edit, editTable === table.name ? new Set(visibleColumns.map((c) => c.name)) : null, ownLimit.lost));
+
     return {
       /** Names of the file's tables, in order. */
       tables: header.tables.map((t) => t.name),
@@ -3584,6 +3637,7 @@
       readerFeatures: [...header.readerFeatures],
       access: access ? {
         isOwner: access.isOwner, ...(access.isOwner ? {} : { keyId: access.keyId }), online: access.online, expires: access.expires, partitionBy: table.partitionBy || null,
+        ...(ownLimit?.edit ? { edit: ownLimit.edit } : {}), ...(ownLimit?.lost ? { editLost: true } : {}), // what this key may send back (7.9.1)
       } : null,
       /**
        * The submission key (spec 7.8), as key text: lock the files you send back to the owner with it, for example
@@ -3591,7 +3645,12 @@
        * submission keys existed, until the owner's next rewrite.
        */
       submissionKey: access?.submission ?? null,
-      package: header.files?.package ? parseJson(header.files.package, 'Package settings', true) : undefined,
+      package: settings,
+      /**
+       * What this key may send back through the document now (spec 7.9.1): package.edit narrowed by the key's limit and,
+       * when the document edits this table, by the columns the key sees; null when the document takes no changes.
+       */
+      edit,
       /** Another table of the same file (the file is not read again). */
       openTable: (tableName) => openTable(file, tableName, true),
       /**
@@ -6224,8 +6283,11 @@
     name, type, nullable: nullable !== false, ...(item ? { item: changeDefinition(item) } : {}), ...(fields ? { fields: fields.map(changeDefinition) } : {}),
   });
 
-  /** A call's changes as [{ op, key, values }], checked against what the document allows (as the library checks). */
-  function changeList(changes, edit, editable) {
+  /**
+   * A call's changes as [{ op, key, values }], checked against what the document allows (`editable`: its columns the key
+   * sees) and what the key may send (`allowed`: narrowed by its limit, spec 7.9.1), as the library checks.
+   */
+  function changeList(changes, edit, editable, allowed) {
     if (changes === null || typeof changes !== 'object' || Array.isArray(changes)) throw new JazminValidationError('Changes are { update, add, delete }: lists of rows');
     for (const name of Object.keys(changes)) if (!CHANGE_OPS.includes(name)) throw new JazminValidationError(`Changes: unknown '${name}' (update, add, delete)`);
     const out = [];
@@ -6236,6 +6298,8 @@
       if (!Array.isArray(list)) throw new JazminValidationError(`Changes: ${op} must be a list of rows`);
       if (list.length && op === 'add' && !edit.add) throw new JazminValidationError("This document doesn't allow adding rows");
       if (list.length && op === 'delete' && !edit.delete) throw new JazminValidationError("This document doesn't allow deleting rows");
+      if (list.length && op === 'add' && !allowed.add) throw new JazminValidationError("This key can't add rows");
+      if (list.length && op === 'delete' && !allowed.delete) throw new JazminValidationError("This key can't delete rows");
       for (const row of list) {
         if (row === null || typeof row !== 'object' || Array.isArray(row)) throw new JazminValidationError(`Changes: ${op} must be a list of rows (objects)`);
         const key = {};
@@ -6248,6 +6312,7 @@
           if (edit.key.includes(name)) continue;
           if (op === 'delete') throw new JazminValidationError(`Changes: give the rows to delete by their key only ('${name}' isn't a key column)`);
           if (!editable.has(name)) throw new JazminValidationError(`Column '${name}' can't be changed through this document`);
+          if (!allowed.columns.includes(name)) throw new JazminValidationError(`Column '${name}' can't be changed with this key`);
           values[name] = value === undefined ? null : value;
         }
         if (op === 'update' && !Object.keys(values).length) throw new JazminValidationError(`Changes: the update of ${showKey(key, edit.key)} changes nothing`);
@@ -6280,12 +6345,22 @@
     } else {
       seal = {};
     }
+    // A shared file's grant may limit what its key sends back (spec 7.9.1); a limit an older release lost allows nothing.
+    const limit = source.access && !source.access.isOwner ? source.access : null;
+    if (limit?.editLost) throw new JazminValidationError("This key's limits were lost: ask the file's owner to grant it again");
     const tableName = edit.table ?? source.tables[0];
     const reader = source.table === tableName ? source : await source.openTable(tableName);
     const columns = new Map(reader.columns.map((c) => [c.name, c]));
     for (const k of edit.key) if (!columns.has(k)) throw new JazminValidationError(`The key column '${k}' isn't visible with this key`);
-    const editable = edit.columns.filter((n) => columns.has(n));
-    const list = changeList(changes, edit, new Set(editable));
+    const visible = new Set(edit.columns.filter((n) => columns.has(n))); // the document's columns this key sees
+    const allowed = {
+      columns: edit.columns.filter((n) => visible.has(n) && (!limit?.edit?.columns || limit.edit.columns.includes(n))),
+      add: edit.add === true && limit?.edit?.add !== false,
+      delete: edit.delete === true && limit?.edit?.delete !== false,
+    };
+    if (limit?.edit && !allowed.columns.length && !allowed.add && !allowed.delete) throw new JazminValidationError("This key can't send changes to this document");
+    const editable = allowed.columns; // the change file lists what this key may change
+    const list = changeList(changes, edit, visible, allowed);
     const current = new Map();
     for (let i = 0; i < list.length; i += 500) {
       const batch = list.slice(i, i + 500).map((c) => c.key);

@@ -1146,7 +1146,9 @@
       metadata: reader.metadata, columns: own.columns, access: reader.access, rowCount: own.rowCount, table: own.table, tables,
       rows: own.rowCount <= ROWS_FOR_TEMPLATES ? rows : null,
       // Pages print with the browser's dialog, which also saves them as PDF. Changes are saved as change files.
-      capabilities: ['print', 'pdf', 'edit'], renders: false, edit: settings.edit || null,
+      // What this key may change (spec 7.9.1): the document's settings narrowed by the key's limit, so a page that draws
+      // its buttons from jazmin.edit offers only those.
+      capabilities: ['print', 'pdf', 'edit'], renders: false, edit: (reader.package?.edit && reader.edit) || null,
     };
     const csp = policy(settings).replace(/"/g, '&quot;');
     frame.srcdoc = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"></head>`
@@ -1244,9 +1246,13 @@
     ].filter(Boolean).join(', ') + ` in ${state.name}.`;
     $('jz-changes-list').replaceChildren(...lines.slice(0, 50).map((text) => Object.assign(document.createElement('li'), { textContent: text })),
       ...(lines.length > 50 ? [Object.assign(document.createElement('li'), { textContent: `and ${lines.length - 50} more` })] : []));
-    $('jz-changes-where').textContent = shared
+    // A key whose grant limits what it sends back (spec 7.9.1) is told what that is.
+    const limited = frameReader?.access?.edit ? frameReader.edit : null;
+    const limitNote = limited ? `With your key you can change: ${limited.columns.length ? limited.columns.join(', ') : 'nothing'}.${
+      !limited.add && !limited.delete ? " You can't add or delete rows." : !limited.add ? " You can't add rows." : !limited.delete ? " You can't delete rows." : ''} ` : '';
+    $('jz-changes-where').textContent = limitNote + (shared
       ? "They're saved as a change file for the file's owner: send it to them. Only the owner can open it, and they apply it to the shared file."
-      : "A browser can't change the file itself: they're saved as a change file, which the JAZMIN library (applyChanges) writes into it.";
+      : "A browser can't change the file itself: they're saved as a change file, which the JAZMIN library (applyChanges) writes into it.");
     const dialog = $('jz-changes');
     return new Promise((resolve) => {
       dialog.addEventListener('close', () => resolve(dialog.returnValue === 'save'), { once: true });

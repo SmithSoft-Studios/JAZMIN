@@ -23,7 +23,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   (`edit: null` removes it), and append, update, compaction and a new owner key carry it. **.NET:** `JazminGrant.Edit`
   (`JazminEditLimit`; `JazminEditLimit.None` removes one), `reader.Edit`, `Access.Edit` and `Access.Grants[i].Edit` /
   `EditLost` / `EditUnreadable`, with the same checks and messages; both libraries read and apply each other's files
-  (`spec/fixtures/edit-limits`). The browser reader and the viewer follow.
+  (`spec/fixtures/edit-limits`). **Browser reader and viewer:** `reader.edit`, `reader.access.edit` / `editLost` and
+  `JazminBrowser.writeChanges` keep the key to its limit with the same messages; the web viewer gives a document
+  `jazmin.edit` narrowed to what the key may change (so a page that draws its buttons from it offers only those), and its
+  review dialog says so: "With your key you can change: ackNote. You can't add or delete rows."
   - **Older releases:** while a grant has a limit, the document's settings are stored as `package.editByKey` and the
     file names the writer feature `edit-limits`. Releases 1.0 to 1.7.2 still read the file with every key, but find
     no `edit`: their `applyChanges` refuses ("doesn't take changes") and their viewers offer no editing, so no older

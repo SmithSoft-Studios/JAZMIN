@@ -3385,6 +3385,12 @@ JazminFile.GrantAccess("acks.jzm", owner, new JazminGrant(ipc) { Edit = JazminEd
   send now (the document's settings narrowed by the limit and the columns they
   see), and `reader.access.edit` the limit itself. The owner's
   `reader.access.grants` list each key's `edit`.
+- **In the browser and the web viewer:** the browser reader gives the same
+  `reader.edit` and `reader.access.edit`, and `JazminBrowser.writeChanges`
+  refuses what the key may not send. The viewer gives the document
+  `jazmin.edit` already narrowed to what the key may change, so a page that
+  draws its buttons from it shows only those, and its review dialog says
+  "With your key you can change: ackNote. You can't add or delete rows."
 - **Kept:** appends, updates, compaction and a new owner key carry each
   limit. A grant given again for the key without `edit` keeps it; `edit: null`
   removes it. An append may narrow or widen a limit: unlike rows and columns,

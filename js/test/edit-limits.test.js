@@ -288,8 +288,34 @@ test('the document without edit settings keeps the limits; they apply again when
   asIpc.close();
 });
 
-test('the browser reader, which does not read limits yet, offers no changes for a file with limits', async () => {
-  const { file, ipc } = hospital();
+test('the browser reader gives the same limits and refuses the same changes, and the library applies its change files', async () => {
+  const { file, owner, ipc, doctor } = hospital();
+  const bytes = fs.readFileSync(file);
+  const inBrowser = await JazminBrowser.open(new Blob([bytes]), { key: ipc.export() });
+  const library = openAs(file, ipc);
+  assert.deepEqual([inBrowser.package.edit, inBrowser.access.edit, inBrowser.edit], [library.package.edit, library.access.edit, library.edit]);
+  library.close();
+  await assert.rejects(JazminBrowser.writeChanges(inBrowser, { update: [{ ack: 'A-1', ackAction: 'acknowledged' }] }), /^JazminValidationError: Column 'ackAction' can't be changed with this key$/);
+  await assert.rejects(JazminBrowser.writeChanges(inBrowser, { add: [{ ack: 'A-9', ward: 'W1', ackNote: 'x' }] }), /^JazminValidationError: This key can't add rows$/);
+  await assert.rejects(JazminBrowser.writeChanges(inBrowser, { delete: [{ ack: 'A-1' }] }), /^JazminValidationError: This key can't delete rows$/);
+  const blob = await JazminBrowser.writeChanges(inBrowser, { update: [{ ack: 'A-1', ackNote: 'from the viewer' }] });
+  assert.deepEqual(applyChanges(file, Buffer.from(await blob.arrayBuffer()), { key: owner }), { sender: ipc.id, fileChanged: false, updated: 1, added: 0, deleted: 0, conflicts: [], refused: [] });
+  // The doctor has no limit: the document's settings. (A shared file's owner key isn't used in a browser.)
+  const asDoctor = await JazminBrowser.open(new Blob([bytes]), { key: doctor.export() });
+  assert.deepEqual([asDoctor.access.edit, asDoctor.edit], [undefined, EDIT]);
+});
+
+test('the browser reader: a key whose limit was lost may send nothing', async () => {
+  const file = tmp('lost-browser.jzm');
+  const owner = JazminKey.generate();
+  const ipc = owner.createAccessKey();
+  const writer = new JazminWriter(file, {
+    columns, key: owner, files: [doc], package: { entry: 'index.html', edit: EDIT },
+    access: { partitionBy: 'ward', grants: [{ key: owner.createAccessKey(), rows: '*' }, { key: ipc, rows: '*', editLost: true }] },
+  });
+  writer.writeRows(acks);
+  writer.finish();
   const inBrowser = await JazminBrowser.open(new Blob([fs.readFileSync(file)]), { key: ipc.export() });
-  await assert.rejects(JazminBrowser.writeChanges(inBrowser, { update: [{ ack: 'A-1', ackNote: 'x' }] }), /doesn't allow changes/);
+  assert.deepEqual([inBrowser.access.editLost, inBrowser.edit], [true, { key: ['ack'], columns: [], add: false, delete: false }]);
+  await assert.rejects(JazminBrowser.writeChanges(inBrowser, { update: [{ ack: 'A-1', ackNote: 'x' }] }), /^JazminValidationError: This key's limits were lost: ask the file's owner to grant it again$/);
 });

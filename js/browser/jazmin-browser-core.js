@@ -785,11 +785,53 @@
     return t;
   }
 
+  // ---- limits per key on what a key may send back (spec 7.9.1), as the library reads them ------------------------
+
+  /** Whether package.edit is well formed enough to use: a key and columns of names. */
+  function editSettings(edit) {
+    return edit !== null && typeof edit === 'object' && Array.isArray(edit.key) && edit.key.length > 0
+      && (edit.columns === undefined || (Array.isArray(edit.columns) && edit.columns.every((c) => typeof c === 'string')));
+  }
+
+  /**
+   * A key's stored limit: { edit, lost }. In a file with limits, none means an older release lost it; a limit with other
+   * members or of another type can't be read; either way the key may send nothing. {} is no limit.
+   */
+  function readEditLimit(value, limitsFile) {
+    if (value === undefined) return { edit: undefined, lost: limitsFile };
+    const bad = { edit: undefined, lost: true };
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return bad;
+    const out = {};
+    for (const [name, v] of Object.entries(value)) {
+      if (name === 'columns') {
+        if (!Array.isArray(v) || v.some((c) => typeof c !== 'string' || !c.length) || new Set(v).size !== v.length) return bad;
+        out.columns = [...v];
+      } else if (name === 'add' || name === 'delete') {
+        if (typeof v !== 'boolean') return bad;
+        out[name] = v;
+      } else return bad;
+    }
+    const ordered = Object.fromEntries(['columns', 'add', 'delete'].filter((k) => k in out).map((k) => [k, out[k]]));
+    return { edit: Object.keys(ordered).length ? ordered : undefined, lost: false };
+  }
+
+  /** The document's settings narrowed by a key's limit and the columns it sees (null: not known here). */
+  function effectiveEdit(edit, limit, visible, lost) {
+    if (lost) return { ...edit, columns: [], add: false, delete: false };
+    return {
+      ...edit,
+      columns: (edit.columns ?? []).filter((c) => (!limit?.columns || limit.columns.includes(c)) && (!visible || visible.has(c))),
+      add: edit.add === true && limit?.add !== false,
+      delete: edit.delete === true && limit?.delete !== false,
+    };
+  }
+
   function readHeader(bytes) {
-    const h = { readerFeatures: [], metadata: '', tables: [], keyring: {}, files: null, access: null, deltas: [], appendCount: 0, created: 0, modified: 0 };
+    const h = { readerFeatures: [], writerFeatures: [], metadata: '', tables: [], keyring: {}, files: null, access: null, deltas: [], appendCount: 0, created: 0, modified: 0 };
     readMessage(bytes, (f, v) => {
       switch (f) {
         case 1: h.readerFeatures.push(text(v)); break;
+        case 2: h.writerFeatures.push(text(v)); break;
         case 3: h.created = num(v); break;
         case 4: h.modified = num(v); break;
         case 5: h.appendCount = num(v); break;
@@ -2729,6 +2771,7 @@
         // The key of what this key's holder sends back to the owner (spec 7.8); files written before it have none.
         submission: typeof bundle.submission === 'string' ? await keyText(b(bundle.submission)) : null,
         masks: readBundleMasks(bundle.masks),
+        editLimit: bundle.edit, // what this key may send back (spec 7.9.1), as written
       };
       if (access.expires !== undefined) {
         const expires = Date.parse(access.expires);
@@ -3561,6 +3604,16 @@
       return bytes;
     }
 
+    // A file whose grants limit what keys send back stores the document's edit settings as editByKey (spec 7.9.1).
+    const storedPackage = header.files?.package ? parseJson(header.files.package, 'Package settings', true) : undefined;
+    const settings = storedPackage?.editByKey === undefined ? storedPackage
+      : (({ editByKey, ...rest }) => (rest.edit === undefined ? { ...rest, edit: editByKey } : rest))(storedPackage);
+    const limitsFile = header.writerFeatures.includes('edit-limits') || storedPackage?.editByKey !== undefined;
+    const ownLimit = access && !access.isOwner ? readEditLimit(access.editLimit, limitsFile) : null;
+    const editTable = settings?.edit ? settings.edit.table ?? header.tables[0]?.name : null;
+    const edit = editSettings(settings?.edit) && (!access || access.isOwner ? settings.edit
+      : effectiveEdit(settings.edit, ownLimit.edit, editTable === table.name ? new Set(visibleColumns.map((c) => c.name)) : null, ownLimit.lost));
+
     return {
       /** Names of the file's tables, in order. */
       tables: header.tables.map((t) => t.name),
@@ -3586,6 +3639,7 @@
       readerFeatures: [...header.readerFeatures],
       access: access ? {
         isOwner: access.isOwner, ...(access.isOwner ? {} : { keyId: access.keyId }), online: access.online, expires: access.expires, partitionBy: table.partitionBy || null,
+        ...(ownLimit?.edit ? { edit: ownLimit.edit } : {}), ...(ownLimit?.lost ? { editLost: true } : {}), // what this key may send back (7.9.1)
       } : null,
       /**
        * The submission key (spec 7.8), as key text: lock the files you send back to the owner with it, for example
@@ -3593,7 +3647,12 @@
        * submission keys existed, until the owner's next rewrite.
        */
       submissionKey: access?.submission ?? null,
-      package: header.files?.package ? parseJson(header.files.package, 'Package settings', true) : undefined,
+      package: settings,
+      /**
+       * What this key may send back through the document now (spec 7.9.1): package.edit narrowed by the key's limit and,
+       * when the document edits this table, by the columns the key sees; null when the document takes no changes.
+       */
+      edit,
       /** Another table of the same file (the file is not read again). */
       openTable: (tableName) => openTable(file, tableName, true),
       /**
@@ -4190,5 +4249,5 @@
 
   global.JazminBrowser = { ...API_CORE };
   // For the add-ons: the core's functions, and the hooks through which the core reaches them.
-  Object.defineProperty(global.JazminBrowser, Symbol.for('jazmin.browser.internals'), { value: { PREAMBLE, TRAILER, ENVELOPE, FLAG_ENCRYPTED, FLAG_PASSWORD, FLAG_ACCESS, KNOWN_FLAGS, CODEC_NONE, CODEC_DEFLATE, CODEC_BROTLI, MIN_KDF_ITERATIONS, MAX_KDF_ITERATIONS, TYPE_NAMES, ENCODING, NESTED_COLUMNS, MAX_NESTING_DEPTH, isNested, HAS_NULLS, POW10, SLOT_ID, SLOT_ENTRY, PAGE_ENTRY, ONLINE_SLOT, WHOLE_TABLE, EVERYONE, subtle, utf8, fromUtf8, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminFileLockedError, JazminFileChangedError, CRC_TABLE, crc32, hexToBytes, toHex, concat, equal, compareBytes, base64ToBytes, base64UrlToBytes, bytesToBase64Url, view, PARALLEL_SECTIONS, MERGE_GAP, MERGE_SPAN, MERGE_ITEMS, STATS_LOADED, inBatches, limiter, sha256, SHA256_K, sha256Stream, hkdf, hmacSha256, pbkdf2, decrypt, inflateRaw, verifySignature, MASTER_KEY_REFUSED, checksum, parseKey, keyText, parseUnlockToken, slotId, LOCK_KINDS, parseFileUnlockToken, lockNeeds, lockKey, sealAad, groupAad, readBundleMasks, keyServiceAddress, Reader, text, num, bytesOf, parseJson, repeatsName, dateFromMs, msFromFile, readMessage, readPacked, cumulative, readRef, readColumn, readPartition, readIndexRef, readTable, readHeader, readDirectory, readStatistics, FILE_FLAGS, fileActions, pageOf, mergeActions, readIndexDirectory, readPartitionList, readDelta, readPostings, readPostingsSection, directoryShapes, checkFileDirectory, formatDecimal, readDecimal, readPlain, skipPlain, MADE_PER_ROW, decodeColumnar, decodeColumnarAt, skipValue, decodeAt, streamType, decodeStream, partEnd, decodeNested, OPS, STRING_OPS, keyOf, keyHash, inKeys, compare, compileFilter, condition, ORDERED_TYPES, RANGE_OPS, FEW_ROWS, SMALL_LOOKUP_BYTES, PAGES_CACHED, keyCompare, readKey, decodeBound, planOf, planLeaf, answeredExactly, setField, columnCollector, planColumns, filterReads, leafType, nestedMayMatch, leafMayMatch, mayMatch, leafMustMatch, mustMatch, sortBounds, unionAll, intersectSorted, PageKeys, readRowIds, PagedIndex, trigramsOf, trigramAnswers, skipPostings, intersectPostings, GRAM_HIGH, TrigramSegment, COMMON_SHARE, LazyTrigramIndex, CompositeIndex, leafLookup, indexPlan, FILE_CHANGED, sourceOf, BLOCK_SIZE, BLOCKS_CACHED, urlSource, openUrl, openScript, scriptBytes, open, openFile, locateTrailer, findPage, findSlot, openTable, tableReader, EXPORT_TYPES, XML_NAME, XML_UNWRITABLE, bytesToBase64, exportText, exportJson, exportNested, csvQuote, xmlEscape, xmlElement, maskedView, exportPieces, exportTo, ENOUGH, exportString, exportBlob, JazminValidationError, normalizeBigInt, MAX_SAFE_BIG, compareDecimalKeys, decimalKeyOf, parseDecimalText, DECIMAL_TEXT, validation, hooks, addOn } });
+  Object.defineProperty(global.JazminBrowser, Symbol.for('jazmin.browser.internals'), { value: { PREAMBLE, TRAILER, ENVELOPE, FLAG_ENCRYPTED, FLAG_PASSWORD, FLAG_ACCESS, KNOWN_FLAGS, CODEC_NONE, CODEC_DEFLATE, CODEC_BROTLI, MIN_KDF_ITERATIONS, MAX_KDF_ITERATIONS, TYPE_NAMES, ENCODING, NESTED_COLUMNS, MAX_NESTING_DEPTH, isNested, HAS_NULLS, POW10, SLOT_ID, SLOT_ENTRY, PAGE_ENTRY, ONLINE_SLOT, WHOLE_TABLE, EVERYONE, subtle, utf8, fromUtf8, JazminError, JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminFileLockedError, JazminFileChangedError, CRC_TABLE, crc32, hexToBytes, toHex, concat, equal, compareBytes, base64ToBytes, base64UrlToBytes, bytesToBase64Url, view, PARALLEL_SECTIONS, MERGE_GAP, MERGE_SPAN, MERGE_ITEMS, STATS_LOADED, inBatches, limiter, sha256, SHA256_K, sha256Stream, hkdf, hmacSha256, pbkdf2, decrypt, inflateRaw, verifySignature, MASTER_KEY_REFUSED, checksum, parseKey, keyText, parseUnlockToken, slotId, LOCK_KINDS, parseFileUnlockToken, lockNeeds, lockKey, sealAad, groupAad, readBundleMasks, keyServiceAddress, Reader, text, num, bytesOf, parseJson, repeatsName, dateFromMs, msFromFile, readMessage, readPacked, cumulative, readRef, readColumn, readPartition, readIndexRef, readTable, editSettings, readEditLimit, effectiveEdit, readHeader, readDirectory, readStatistics, FILE_FLAGS, fileActions, pageOf, mergeActions, readIndexDirectory, readPartitionList, readDelta, readPostings, readPostingsSection, directoryShapes, checkFileDirectory, formatDecimal, readDecimal, readPlain, skipPlain, MADE_PER_ROW, decodeColumnar, decodeColumnarAt, skipValue, decodeAt, streamType, decodeStream, partEnd, decodeNested, OPS, STRING_OPS, keyOf, keyHash, inKeys, compare, compileFilter, condition, ORDERED_TYPES, RANGE_OPS, FEW_ROWS, SMALL_LOOKUP_BYTES, PAGES_CACHED, keyCompare, readKey, decodeBound, planOf, planLeaf, answeredExactly, setField, columnCollector, planColumns, filterReads, leafType, nestedMayMatch, leafMayMatch, mayMatch, leafMustMatch, mustMatch, sortBounds, unionAll, intersectSorted, PageKeys, readRowIds, PagedIndex, trigramsOf, trigramAnswers, skipPostings, intersectPostings, GRAM_HIGH, TrigramSegment, COMMON_SHARE, LazyTrigramIndex, CompositeIndex, leafLookup, indexPlan, FILE_CHANGED, sourceOf, BLOCK_SIZE, BLOCKS_CACHED, urlSource, openUrl, openScript, scriptBytes, open, openFile, locateTrailer, findPage, findSlot, openTable, tableReader, EXPORT_TYPES, XML_NAME, XML_UNWRITABLE, bytesToBase64, exportText, exportJson, exportNested, csvQuote, xmlEscape, xmlElement, maskedView, exportPieces, exportTo, ENOUGH, exportString, exportBlob, JazminValidationError, normalizeBigInt, MAX_SAFE_BIG, compareDecimalKeys, decimalKeyOf, parseDecimalText, DECIMAL_TEXT, validation, hooks, addOn } });
 })(globalThis);
