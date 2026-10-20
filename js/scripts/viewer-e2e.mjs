@@ -1192,8 +1192,9 @@ for (const name of chosen) {
 
     // A file changed on disk after it was opened (#259): a File is a snapshot, and the browser refuses to read it once the
     // file changes. The next page, and a count still running, say so on the status line, with Open again; the file
-    // chosen again reads. Safari's WebDriver can't choose files.
-    if (page.chooseFile) {
+    // chosen again reads. Safari's WebDriver can't choose files. Firefox reads a picked file from its path each time and
+    // doesn't refuse one that changed (checked: the next page loads), so there is nothing to report there.
+    if (page.chooseFile && name !== 'firefox') {
       const changing = path.join(temp, 'changing.jzm');
       const touch = (() => {
         let seconds = Date.now() / 1000;
@@ -1215,7 +1216,10 @@ for (const name of chosen) {
       await page.chooseFile('#jz-input', changing); // chosen again: reads
       await waitFor(page, `/^Rows 1–50 of 1\\D?000\\D?000$/.test(${dataStatus}) && document.getElementById('jz-reopen').hidden`, 'changing.jzm chosen again');
       await page.evaluate(`(document.getElementById('jz-next').click(), true)`);
-      const reopened = await waitFor(page, `/^Rows 51–100 /.test(${dataStatus}) && ${dataStatus}`, 'the next page of the file chosen again');
+      const reopened = await waitFor(page, `/^Rows 51–100 /.test(${dataStatus}) && ${dataStatus}`, 'the next page of the file chosen again').catch(async (error) => {
+        console.log('DIAGNOSTIC (changed file, chosen again)', JSON.stringify(await page.evaluate(`({ status: document.getElementById('jz-status').textContent, data: ${dataStatus}, reopenHidden: document.getElementById('jz-reopen').hidden, page: JazminViewer.state.page, nextDisabled: document.getElementById('jz-next').disabled })`)));
+        throw error;
+      });
       await filterBy('{ "note": { "contains": "row 1" } }');
       await waitFor(page, `/counting/.test(${dataStatus})`, 'the count under way');
       touch(); // while the count reads
