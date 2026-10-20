@@ -93,7 +93,7 @@ export function corpus() {
     write(null, rows, {
       ...base, codec: 'none',
       files: [{ path: 'index.html', content: '<p>x</p>' }, { path: 'a/b.bin', content: Buffer.alloc(300, 7) }],
-      package: { entry: 'index.html', title: 'Fuzz' },
+      package: { entry: 'index.html', title: 'Fuzz', edit: { key: ['id'], columns: ['name', 'amount'], add: true, delete: false } },
       shapes: SHAPES, // saved shapes live in the files directory
     }),
     write(null, rows.slice(0, 60).map((r, i) => ({ ...r, ...nestedRow(i) })), { ...base, columns: [...COLUMNS, ...NESTED_COLUMNS], codec: 'none' }),
@@ -221,6 +221,7 @@ export function exercise(buf) {
       void r.sortedBy;
       void r.sort;
       void r.package;
+      void r.edit; // what may be sent back (spec 7.9.1), from the package's settings
       const n = r.rowCount;
       for (const filter of FILTERS) {
         try {

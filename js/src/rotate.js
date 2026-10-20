@@ -52,7 +52,10 @@ export function rotateOwnerKey(path, { key, newKey = JazminKey.generate(), now }
       const next = owner.createAccessKey();
       accessKeys.push({ previous, key: next, label: g.label, mode: g.mode ?? 'offline', expires: expires === undefined ? undefined : new Date(expires) });
       // No share: an online grant gets a new one, which the new owner key's unlock tokens use.
-      return [{ key: next, rows: g.rows, columns: g.columns, files: g.files, label: g.label, expires: g.expires, mode: g.mode }];
+      return [{
+        key: next, rows: g.rows, columns: g.columns, files: g.files, label: g.label, expires: g.expires, mode: g.mode,
+        edit: g.edit, editLost: g.editLost, editCarried: true, // what the key may send back stays as it was (spec 7.9.1)
+      }];
     });
     updateUnlocked(path, { key, now: at, [NEW_OWNER]: { key: owner, grants } }); // the instant the grants were checked against
     return { ownerKey: owner, accessKeys };

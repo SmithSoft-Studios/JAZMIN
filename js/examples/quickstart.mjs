@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, compact, createFileHandler, exportFile, exportString, fromCSV, issueFileUnlockToken, issueUnlockToken,
+  JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, compact, createFileHandler, exportFile, exportString, fromCSV, grantAccess, issueFileUnlockToken, issueUnlockToken,
   listFileUnlockTokens, open, openAsync,
   applyChanges, fileSubmission, from, portableHtml, portableScript, rotateKey, toJSON, toXML, update, verifyPublisher, write, writeAsync,
   writeChanges,
@@ -659,5 +659,34 @@ const signedTestFile = new URL('../../spec/fixtures/publisher/signed-plain.jzm',
 const signed43 = fs.existsSync(signedTestFile) ? verifyPublisher(new Uint8Array(fs.readFileSync(signedTestFile))) : null;
 console.log('43.', verifyPublisher(file).status, ...(signed43 ? [signed43.status, signed43.name] : []));
 // 43. none signed null
+
+// 44. Limits per key (USER-GUIDE 19.5): one shared document, different keys allowed different changes. The doctor may
+// acknowledge a result; infection control may only add a note. The owner's applyChanges refuses anything else, even in a
+// change file made by hand; files with limits take changes only through 1.8 or later (older releases still read them).
+const acks44 = path.join(dir, 'acks.jzm');
+const hospital44 = JazminKey.generate();
+const doctor44 = hospital44.createAccessKey();
+const ipc44 = hospital44.createAccessKey();
+write(acks44, [{ ack: 'A-1', ward: 'W1', ackAction: null, ackNote: null }, { ack: 'A-2', ward: 'W2', ackAction: null, ackNote: null }], {
+  columns: [{ name: 'ack', type: 'string', nullable: false }, { name: 'ward', type: 'string', nullable: false }, { name: 'ackAction', type: 'string' }, { name: 'ackNote', type: 'string' }],
+  key: hospital44, files: [{ path: 'index.html', content: '<h1>Critical results</h1>' }],
+  package: { entry: 'index.html', edit: { key: ['ack'], columns: ['ackAction', 'ackNote'] } },
+  access: { partitionBy: 'ward', grants: [
+    { key: doctor44, rows: '*', label: 'Doctor' },
+    { key: ipc44, rows: '*', label: 'Infection control', edit: { columns: ['ackNote'] } },
+  ] },
+});
+const asIpc44 = open(acks44, { key: ipc44.export(), accessState: false });
+let refused44;
+try {
+  writeChanges(asIpc44, { update: [{ ack: 'A-1', ackAction: 'acknowledged' }] });
+} catch (error) {
+  refused44 = error.message;
+}
+const note44 = writeChanges(asIpc44, { update: [{ ack: 'A-1', ackNote: 'isolation started' }] });
+console.log('44.', asIpc44.edit.columns, '|', refused44, '|', applyChanges(acks44, note44, { key: hospital44 }).updated, 'applied');
+asIpc44.close();
+grantAccess(acks44, hospital44, ipc44, { rows: ['W1'] }); // given again without edit: the limit is kept (edit: null removes it)
+// 44. [ 'ackNote' ] | Column 'ackAction' can't be changed with this key | 1 applied
 
 fs.rmSync(dir, { recursive: true, force: true });

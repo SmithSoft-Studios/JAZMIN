@@ -3340,6 +3340,65 @@ foreach (var c in result.Conflicts) Console.WriteLine($"{c.Kind}: {string.Join("
   **`receivedAt`** is when the change file arrived, checked against the
   sender's expiry as in section 15.6.
 
+#### Different keys, different changes (limits per key, 1.8)
+
+`package.edit` says what the document may change for **every** key that sees
+the rows. When people do different jobs on the same table (one acknowledges,
+another only adds a note; one approves, another only disputes), give a key a
+**limit** with its grant. It can only narrow what `package.edit` allows:
+
+```js
+write('acks.jzm', rows, {
+  columns, key: owner, files, package: { entry: 'index.html', edit: { key: ['ack'], columns: ['ackAction', 'ackNote'], add: true } },
+  access: { partitionBy: 'ward', grants: [
+    { key: doctor, rows: ['W1', 'W2'] },                                                  // no limit: what the document allows
+    { key: ipc, rows: ['W1', 'W2'], edit: { columns: ['ackNote'], add: false, delete: false } }, // notes only
+  ] },
+});
+const asIpc = open('acks.jzm', { key: ipcKeyText });
+asIpc.edit;          // { key: ['ack'], columns: ['ackNote'], add: false, delete: false }: what this key may send now
+writeChanges(asIpc, { update: [{ ack: 'A-1', ackAction: 'acknowledged' }] }); // throws: Column 'ackAction' can't be changed with this key
+grantAccess('acks.jzm', owner, ipc, { rows: ['W1', 'W2', 'W3'] });           // the limit is kept; { edit: null } removes it
+```
+
+- **`columns`** the key may set (some of `package.edit.columns`), **`add:
+  false`** and **`delete: false`**. A member left out narrows nothing. A limit
+  that names a column the document doesn't allow, or one outside the key's
+  column groups, or allows adding or deleting where the document doesn't, is
+  refused when you give it.
+- **The owner's `applyChanges` enforces it,** from the owner's copy of the
+  grant, whatever the change file says: a change outside the key's limit is
+  **refused** (never held as a conflict, and `overwrite` doesn't apply it),
+  with the reason, for example "this sender's grant doesn't allow adding
+  rows". A key holder who makes a change file by hand gains nothing.
+- **The key holder sees their limit:** `reader.edit` is what their key may
+  send now (the document's settings narrowed by the limit and the columns they
+  see), and `reader.access.edit` the limit itself. The owner's
+  `reader.access.grants` list each key's `edit`.
+- **Kept:** appends, updates, compaction and a new owner key carry each
+  limit. A grant given again for the key without `edit` keeps it; `edit: null`
+  removes it. An append may narrow or widen a limit: unlike rows and columns,
+  it isn't protected by secrets, so the file needs no re-locking.
+
+**Older releases.** A file with limits takes changes only through 1.8 or
+later. While any grant has a limit, the file stores the document's settings
+under another name (`editByKey`) and names the writer feature `edit-limits`,
+so that releases 1.0 to 1.7.2 can't apply more than you allow:
+
+| Release | Opens and reads the file | Applies a change file | Rewrites the file |
+|---|---|---|---|
+| 1.0 to 1.3 | yes, every key | (no change files) | yes, but the document then takes no changes |
+| 1.4 to 1.6.2 | yes, every key; the viewer offers no editing | **refuses**: "The file doesn't take changes" | yes, but the document then takes no changes, or the limited keys may send nothing until you grant them again |
+| 1.7.0 to 1.7.2 | yes, every key; the viewer offers no editing | **refuses** | **refuses** (writer feature `edit-limits`), the file unchanged |
+
+Measured with the published npm packages 1.4.0, 1.6.2 and 1.7.2 against a file
+with a limited key and that key's change file outside its limit, made by hand
+(`node js/scripts/compat-previous.mjs --version <release>`). If an older
+release did rewrite a file, the owner's grants list marks the keys whose limit
+was lost (`editLost: true`); they may send nothing until you grant them again
+with `edit`. A file without limits is written exactly as before, and every
+release reads and changes it as today.
+
 ### 19.6 Locked files: a password or 2FA as well as the key
 
 In a shared file (section 15), a stored file can be **locked** (1.7). A key

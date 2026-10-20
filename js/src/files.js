@@ -183,7 +183,11 @@ export function normalizePackage(settings, paths) {
   }
   if (settings.allowWasm !== undefined) out.allowWasm = settings.allowWasm === true;
   if (settings.pdf !== undefined) out.pdf = normalizePdf(settings.pdf, 'package.pdf');
-  if (settings.edit !== undefined) out.edit = normalizeEdit(settings.edit);
+  // A shared file whose grants limit what keys send back stores the settings as editByKey (spec 7.9.1); callers give
+  // them as edit either way, and the writer decides which member it stores.
+  if (settings.edit !== undefined && settings.editByKey !== undefined) throw new JazminValidationError('package: give edit or editByKey, not both');
+  const edit = settings.edit ?? settings.editByKey;
+  if (edit !== undefined) out.edit = normalizeEdit(edit);
   // The owner's key service for the file's online locks (spec 6.8.2).
   if (settings.keyService !== undefined) out.keyService = checkKeyService(settings.keyService, 'package.keyService');
   if (settings.masks !== undefined) out.masks = normalizeMaskSettings(settings.masks);
@@ -314,7 +318,7 @@ const KEY_TYPES = new Set(['string', 'int', 'decimal', 'datetime', 'bool']);
  * What a document may change (docs/design/editable-documents.md): { table, key: [columns], columns: [columns], add,
  * delete }. Its columns are checked against the table by the writer (checkEdit).
  */
-function normalizeEdit(edit) {
+export function normalizeEdit(edit) {
   if (edit === null || typeof edit !== 'object' || Array.isArray(edit)) throw new JazminValidationError('package.edit must be an object: { table, key, columns, add, delete }');
   for (const name of Object.keys(edit)) {
     if (!EDIT_SETTINGS.includes(name)) throw new JazminValidationError(`package.edit: unknown setting '${name}' (${EDIT_SETTINGS.join(', ')})`);
@@ -340,6 +344,72 @@ function normalizeEdit(edit) {
   }
   if (!out.columns.length && !out.add && !out.delete) throw new JazminValidationError('package.edit allows nothing: give columns, add or delete');
   return out;
+}
+
+const LIMIT_SETTINGS = ['columns', 'add', 'delete'];
+
+/**
+ * A grant's limit on what its key may send back (spec 7.9.1): { columns?, add?, delete? }, members in that order, only
+ * those given. `where` names it in errors.
+ */
+export function normalizeEditLimit(limit, where) {
+  if (limit === null || typeof limit !== 'object' || Array.isArray(limit)) throw new JazminValidationError(`${where} must be an object: { columns, add, delete }`);
+  for (const name of Object.keys(limit)) {
+    if (!LIMIT_SETTINGS.includes(name)) throw new JazminValidationError(`${where}: unknown setting '${name}' (${LIMIT_SETTINGS.join(', ')})`);
+  }
+  const out = {};
+  if (limit.columns !== undefined) {
+    const value = limit.columns;
+    if (!Array.isArray(value) || value.some((n) => typeof n !== 'string' || n.length === 0)) throw new JazminValidationError(`${where}.columns must be a list of column names`);
+    if (new Set(value).size !== value.length) throw new JazminValidationError(`${where}.columns names a column twice`);
+    out.columns = [...value];
+  }
+  for (const flag of ['add', 'delete']) {
+    if (limit[flag] === undefined) continue;
+    if (typeof limit[flag] !== 'boolean') throw new JazminValidationError(`${where}.${flag} must be true or false`);
+    out[flag] = limit[flag];
+  }
+  return out;
+}
+
+/**
+ * Whether a limit narrows what the document allows (spec 7.9.1). With no document settings, any limit that says
+ * something counts, so that it is kept until the document allows changes again.
+ */
+export function limitNarrows(limit, edit) {
+  if (!limit) return false;
+  if (!edit) return Object.keys(limit).length > 0;
+  return (limit.columns !== undefined && edit.columns.some((c) => !limit.columns.includes(c)))
+    || (limit.add === false && edit.add === true) || (limit.delete === false && edit.delete === true);
+}
+
+/**
+ * What a key may send back (spec 7.9.1): the document's settings narrowed by the key's limit and by the columns it
+ * sees (`visible`: a Set of column names, or null for every column). `lost`: the key's limit was lost (it may send
+ * nothing). Returns { table?, key, columns, add, delete }.
+ */
+export function effectiveEdit(edit, limit, visible, lost = false) {
+  if (lost) return { ...edit, columns: [], add: false, delete: false };
+  return {
+    ...edit,
+    columns: edit.columns.filter((c) => (!limit?.columns || limit.columns.includes(c)) && (!visible || visible.has(c))),
+    add: edit.add === true && limit?.add !== false,
+    delete: edit.delete === true && limit?.delete !== false,
+  };
+}
+
+/**
+ * Checks a limit given with a grant against the document's settings and the grant's column groups (spec 7.9.1): it may
+ * only narrow. `granted`: the names of the columns of the document's table the grant sees, or null for every column.
+ */
+export function checkEditLimit(limit, edit, granted, where) {
+  if (!edit) return;
+  for (const c of limit.columns ?? []) {
+    if (!edit.columns.includes(c)) throw new JazminValidationError(`${where} can only narrow the document's: '${c}' isn't an editable column`);
+    if (granted && !granted.has(c)) throw new JazminValidationError(`${where}.columns: '${c}' isn't in a column group this key sees`);
+  }
+  if (limit.add === true && edit.add !== true) throw new JazminValidationError(`${where} can only narrow the document's: the document doesn't allow adding rows`);
+  if (limit.delete === true && edit.delete !== true) throw new JazminValidationError(`${where} can only narrow the document's: the document doesn't allow deleting rows`);
 }
 
 /**

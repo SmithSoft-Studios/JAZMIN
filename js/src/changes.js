@@ -4,6 +4,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import { append } from './append.js';
 import { JazminKeyError, JazminValidationError } from './errors.js';
+import { effectiveEdit } from './files.js';
 import { open, write } from './index.js';
 import { JazminKey } from './keys.js';
 
@@ -47,8 +48,11 @@ const definition = ({ name, type, nullable, item, fields }) => ({
   name, type, nullable: nullable !== false, ...(item ? { item: definition(item) } : {}), ...(fields ? { fields: fields.map(definition) } : {}),
 });
 
-/** A call's changes as [{ op, key, values }], checked against what the document allows. */
-function changeList(changes, edit, editable) {
+/**
+ * A call's changes as [{ op, key, values }], checked against what the document allows (`edit`, and `editable`: its columns
+ * the key sees) and what the key may send (`allowed`: narrowed by its limit, spec 7.9.1).
+ */
+function changeList(changes, edit, editable, allowed) {
   if (changes === null || typeof changes !== 'object' || Array.isArray(changes)) throw new JazminValidationError('Changes are { update, add, delete }: lists of rows');
   for (const name of Object.keys(changes)) if (!OPS.includes(name)) throw new JazminValidationError(`Changes: unknown '${name}' (update, add, delete)`);
   const out = [];
@@ -59,6 +63,8 @@ function changeList(changes, edit, editable) {
     if (!Array.isArray(list)) throw new JazminValidationError(`Changes: ${op} must be a list of rows`);
     if (list.length && op === 'add' && !edit.add) throw new JazminValidationError("This document doesn't allow adding rows");
     if (list.length && op === 'delete' && !edit.delete) throw new JazminValidationError("This document doesn't allow deleting rows");
+    if (list.length && op === 'add' && !allowed.add) throw new JazminValidationError("This key can't add rows");
+    if (list.length && op === 'delete' && !allowed.delete) throw new JazminValidationError("This key can't delete rows");
     for (const row of list) {
       if (row === null || typeof row !== 'object' || Array.isArray(row)) throw new JazminValidationError(`Changes: ${op} must be a list of rows (objects)`);
       const key = {};
@@ -71,6 +77,7 @@ function changeList(changes, edit, editable) {
         if (edit.key.includes(name)) continue;
         if (op === 'delete') throw new JazminValidationError(`Changes: give the rows to delete by their key only ('${name}' isn't a key column)`);
         if (!editable.has(name)) throw new JazminValidationError(`Column '${name}' can't be changed through this document`);
+        if (!allowed.columns.includes(name)) throw new JazminValidationError(`Column '${name}' can't be changed with this key`);
         values[name] = value === undefined ? null : value;
       }
       if (op === 'update' && !Object.keys(values).length) throw new JazminValidationError(`Changes: the update of ${show(key, edit.key)} changes nothing`);
@@ -105,12 +112,18 @@ export function writeChanges(source, changes, { key, password } = {}) {
   } else {
     seal = {};
   }
+  // A shared file's grant may limit what its key sends back (spec 7.9.1); a limit an older release lost allows nothing.
+  const limit = source.access && !source.access.isOwner ? source.access : null;
+  if (limit?.editLost) throw new JazminValidationError("This key's limits were lost: ask the file's owner to grant it again");
   const reader = tableReader(source, edit);
   try {
     const columns = new Map(reader.columns.map((c) => [c.name, c]));
     for (const k of edit.key) if (!columns.has(k)) throw new JazminValidationError(`The key column '${k}' isn't visible with this key`);
-    const editable = edit.columns.filter((n) => columns.has(n)); // the ones this key sees
-    const list = changeList(changes, edit, new Set(editable));
+    const visible = new Set(edit.columns.filter((n) => columns.has(n))); // the document's columns this key sees
+    const allowed = effectiveEdit(edit, limit?.edit, visible);
+    if (limit?.edit && !allowed.columns.length && !allowed.add && !allowed.delete) throw new JazminValidationError("This key can't send changes to this document");
+    const editable = allowed.columns; // the change file lists what this key may change
+    const list = changeList(changes, edit, visible, allowed);
     const current = findByKeys(reader, edit.key, list.map((c) => c.key));
     const rows = list.map(({ op, key: k, values }) => {
       const now = current.get(keyText(k, edit.key));
@@ -257,7 +270,9 @@ function planChanges(target, table, changes, grant, edit, overwrite) {
   const partitionBy = table.access?.partitionBy ?? null;
   const own = grant && grant.rows !== '*' ? new Set(grant.rows) : null;
   const covered = grant && grant.columns !== '*' ? new Set(grant.columns.flatMap((g) => table.access.groupColumns[g] ?? [])) : null;
-  const mayWrite = (name) => edit.columns.includes(name) && changeColumns.has(name) && (!covered || covered.has(name));
+  const limit = grant?.edit; // what the sender's grant allows it to send back (spec 7.9.1)
+  const mayWrite = (name) => edit.columns.includes(name) && changeColumns.has(name) && (!covered || covered.has(name))
+    && (!limit?.columns || limit.columns.includes(name));
   const ownsPartition = (row) => !partitionBy || !own || own.has(String(row[partitionBy]));
 
   const rows = [...changes.rows()];
@@ -276,6 +291,10 @@ function planChanges(target, table, changes, grant, edit, overwrite) {
     if (edit.key.some((name) => row[name] === null || row[name] === undefined)) { refuse('no key'); continue; }
     if (op === 'add' && !edit.add) { refuse("the document doesn't allow adding rows"); continue; }
     if (op === 'delete' && !edit.delete) { refuse("the document doesn't allow deleting rows"); continue; }
+    if (grant?.editUnreadable) { refuse("this sender's grant has a limit this library can't read"); continue; }
+    if (grant?.editLost) { refuse("this sender's limits were lost when an older release rewrote the file: grant the key again"); continue; }
+    if (op === 'add' && limit?.add === false) { refuse("this sender's grant doesn't allow adding rows"); continue; }
+    if (op === 'delete' && limit?.delete === false) { refuse("this sender's grant doesn't allow deleting rows"); continue; }
     const set = op === 'delete' ? [] : row[SET];
     if (!Array.isArray(set) || set.some((n) => typeof n !== 'string')) { refuse('no list of the columns it sets'); continue; }
     const notAllowed = set.find((n) => !mayWrite(n));

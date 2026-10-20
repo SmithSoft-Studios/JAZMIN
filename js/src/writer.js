@@ -13,9 +13,11 @@ import {
 } from './catalog.js';
 import { columnBuffer, encodeColumnBuffers, nestedStage } from './columnar.js';
 import { isNested } from './nested.js';
-import { EVERYONE, FILE_BLOCK_SIZE, FILE_SOURCE, checkEdit, checkPages, fileSource, normalizePackage } from './files.js';
 import {
-  DEFAULTS, DEFAULT_COLUMN_GROUP, FILE_ID_SIZE, FILE_LOCKS, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, INDEX_DELTAS, INLINE_PARTITIONS, NESTED_COLUMNS,
+  EVERYONE, FILE_BLOCK_SIZE, FILE_SOURCE, checkEdit, checkEditLimit, checkPages, fileSource, limitNarrows, normalizeEdit, normalizePackage,
+} from './files.js';
+import {
+  DEFAULTS, DEFAULT_COLUMN_GROUP, EDIT_LIMITS, FILE_ID_SIZE, FILE_LOCKS, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, INDEX_DELTAS, INLINE_PARTITIONS, NESTED_COLUMNS,
   KEYRING_GROUPS, MAGIC, MAX_KDF_ITERATIONS, MIN_KDF_ITERATIONS, PREAMBLE_SIZE, SALT_SIZE, TRAILER_SIZE, WHOLE_TABLE,
 } from './constants.js';
 import { JazminValidationError } from './errors.js';
@@ -297,6 +299,7 @@ export class JazminWriter {
   #progress = null; // onProgress and signal, when given: { onProgress, signal, total, written }
   #files = { entries: new Map(), contents: new Map(), nextId: 0 }; // embedded files (spec 6.8): path -> entry, sha256 -> stored content
   #package; // package settings for viewers (validated at finish)
+  #editState = null; // whether grants limit what keys send back (spec 7.9.1), worked out once: { limited, edit }
   #shapes = new Map(); // saved export shapes (spec 6.8): name -> entry
   #fileGroupNames = []; // access mode: names of the file groups written
   #locks = new Map(); // locks of stored files (spec 6.8.1): id -> { id, kind, salt, iterations, key, secret }
@@ -900,8 +903,9 @@ export class JazminWriter {
       readerFeatures: [...readerFeatures],
       // file-locks while the file has a lock: writers that would not keep them must not modify it (spec 6.8.1, 12).
       writerFeatures: [
-        ...(cont ? cont.header.writerFeatures.filter((f) => f !== FILE_LOCKS && f !== MASKED_COLUMNS) : []),
+        ...(cont ? cont.header.writerFeatures.filter((f) => f !== FILE_LOCKS && f !== MASKED_COLUMNS && f !== EDIT_LIMITS) : []),
         ...(this.#locks.size ? [FILE_LOCKS] : []), ...(this.#allMasks().length ? [MASKED_COLUMNS] : []),
+        ...(this.#editLimits().limited ? [EDIT_LIMITS] : []),
       ],
       created: cont ? cont.header.created : this.#options.now,
       modified: cont ? this.#options.now : 0,
@@ -1167,7 +1171,11 @@ export class JazminWriter {
     checkPages(settings, entries, this.#tableDefs.map((t) => t.name), { access: Boolean(this.#access), partial: Boolean(this.#continue) });
     const suffix = segment ? `/${segment}` : '';
     // nextContent: content ids are never reused, so block section ids stay unique across appends.
-    const member = { directories: [], nextContent: this.#files.nextId, package: settings ? JSON.stringify(settings) : '', segment };
+    // With limits per key, the document's settings are stored as editByKey (spec 7.9.1): releases that don't know limits
+    // find no edit, so they apply no change file and offer no editing.
+    const stored = settings?.edit && this.#editLimits().limited
+      ? Object.fromEntries(Object.entries(settings).map(([k, v]) => (k === 'edit' ? ['editByKey', v] : [k, v]))) : settings;
+    const member = { directories: [], nextContent: this.#files.nextId, package: stored ? JSON.stringify(stored) : '', segment };
     const write = (group, sectionId, json, key) => {
       member.directories.push({ group, section: this.#writeSection(Buffer.from(JSON.stringify(json), 'utf8'), sectionId, key) });
     };
@@ -1212,12 +1220,43 @@ export class JazminWriter {
         ...(g.expires === undefined ? {} : { expires: new Date(g.expires).toISOString() }),
         mode: g.mode,
         ...(g.share ? { share: g.share.toString('base64') } : {}),
+        ...this.#grantEdit(g),
       })),
       // Every lock with its key and secret: the owner opens locked files, and rewrites keep the locks (spec 6.8.1).
       ...(this.#locks.size ? { locks: ownerLockList(this.#locks) } : {}),
       // Every masked column, so rewrites and appends keep them and write each key slot again (spec 7.6.8).
       ...(this.#allMasks().length ? { masks: this.#allMasks() } : {}),
     });
+  }
+
+  /**
+   * Whether the grants limit what keys send back (spec 7.9.1): a grant whose limit narrows the document's settings, or
+   * whose limit an older release lost. Limits given with a grant (not carried from before) may only narrow: checked here,
+   * against the document's settings and the columns of its table the grant sees.
+   */
+  #editLimits() {
+    if (this.#editState) return this.#editState;
+    const settings = this.#package !== null && typeof this.#package === 'object' ? this.#package : undefined;
+    const raw = settings?.edit ?? settings?.editByKey;
+    const edit = raw === undefined || raw === null ? undefined : normalizeEdit(raw);
+    const grants = this.#access?.grants ?? [];
+    if (edit) {
+      const def = this.#tableDefs.find((t) => t.name === (edit.table ?? (this.#continue ? undefined : this.#tableDefs[0]?.name)));
+      grants.forEach((g, n) => {
+        if (!g.edit || g.editCarried) return;
+        const granted = !def || g.columns === '*' ? null
+          : new Set(def.columnGroups.filter((group) => g.columns.includes(group.name)).flatMap((group) => group.cols.map((i) => def.columns[i].name)));
+        checkEditLimit(g.edit, edit, granted, `grant ${n}: edit`);
+      });
+    }
+    const limited = grants.some((g) => g.editLost || limitNarrows(g.edit, edit));
+    return (this.#editState = { limited, edit });
+  }
+
+  /** A grant's edit member in a file with limits: its limit, {} for none, nothing when an older release lost it. */
+  #grantEdit(g) {
+    if (!this.#editLimits().limited || g.editLost) return {};
+    return { edit: g.edit ?? {} };
   }
 
   /** Every masked column of the file, as the owner directory keeps them (spec 7.6.8). */
@@ -1284,6 +1323,7 @@ export class JazminWriter {
         ...(g.mode === 'online' ? { online: true } : {}),
       };
       const fileSecrets = Object.keys(files).length ? { files } : {};
+      Object.assign(limits, this.#grantEdit(g)); // what the key may send back, for its sender's software (spec 7.9.1)
       const submission = b64(this.#ownerKey.submissionKey(g.key.id).bytes); // the key of what this holder sends back (spec 7.8)
       slots.push(sealSlot(g.key.secret, this.#salt, this.#fileId, { header, partitions, partitionNames, columns, submission, ...fileSecrets, ...masks, ...limits }, g.share));
     }

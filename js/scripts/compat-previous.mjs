@@ -67,6 +67,30 @@ write(file('pages.jzm'), rows, {
   ],
   package: { pages: [{ path: 'index.html', title: 'Overview' }, { path: 'detail.html', title: 'Detail', actions: { print: false } }], files: ['app.js'] },
 });
+// Limits per key (7.9.1): the reader key may only set note, not add or delete; and its change file outside that limit,
+// made by hand with its submission key (as a sender who bypasses writeChanges would).
+const editColumns = [...columns, { name: 'status', type: 'string' }, { name: 'note', type: 'string' }];
+write(file('edit-limits.jzm'), rows.map((r) => ({ ...r, status: null, note: null })), {
+  columns: editColumns, key: owner, files: [{ path: 'index.html', content: '<p>Claims</p>' }],
+  package: { entry: 'index.html', edit: { key: ['id'], columns: ['status', 'note'], add: true, delete: true } },
+  access: { partitionBy: 'region', grants: [{ key: reader, rows: '*', edit: { columns: ['note'], add: false, delete: false } }] },
+});
+{
+  const sender = open(file('edit-limits.jzm'), { key: keys.reader, accessState: false });
+  const blank = { status: null, note: null, 'jazmin.before.status': null, 'jazmin.before.note': null };
+  write(file('edit-limits-change.jzm'), [
+    { ...blank, 'jazmin.op': 'update', 'jazmin.set': ['status'], id: 1, status: 'paid' },
+    { ...blank, 'jazmin.op': 'delete', 'jazmin.set': null, id: 2 },
+  ], {
+    columns: [
+      { name: 'jazmin.op', type: 'string', nullable: false }, { name: 'jazmin.set', type: 'json' }, { name: 'id', type: 'int', nullable: false },
+      { name: 'status', type: 'string' }, { name: 'jazmin.before.status', type: 'string' }, { name: 'note', type: 'string' }, { name: 'jazmin.before.note', type: 'string' },
+    ],
+    metadata: { 'jazmin.changes': { version: 1, file: sender.fileId, table: sender.table, key: ['id'], columns: ['status', 'note'], sender: sender.access.keyId } },
+    key: sender.submissionKey,
+  });
+  sender.close();
+}
 fs.writeFileSync(file('keys.json'), JSON.stringify(keys, null, 2));
 
 // ---- the previous release ------------------------------------------------------------------------------------------
@@ -128,6 +152,40 @@ check('document pages: the rows, the entry page, and every page and file as a st
 check('masked columns: the owner reads every column', () => {
   const r = as('masks.jzm', keys.owner);
   return same([...r.rows()][0].account, '4821 1000');
+});
+
+// Limits per key (7.9.1): no release that doesn't know them may apply a change file to such a file, or leave it so
+// that one could be applied beyond a limit.
+const knowsWriterFeatures = Number(args.version.split('.')[0]) > 1 || Number(args.version.split('.')[1]) >= 7;
+check('limits per key: the limited key reads every row; the document takes no changes there', () => {
+  const r = as('edit-limits.jzm', keys.reader);
+  return same([r.rowCount, r.package?.edit ?? null], [60, null]);
+});
+if (previous.applyChanges) {
+  check('limits per key: applying the out-of-limit change file is refused, also as a dry run', () => {
+    const copy = file('edit-limits-apply.jzm');
+    fs.copyFileSync(file('edit-limits.jzm'), copy);
+    const before = fs.readFileSync(copy);
+    return refuses(() => previous.applyChanges(copy, fs.readFileSync(file('edit-limits-change.jzm')), { key: keys.owner, dryRun: true }), /doesn't take changes/)
+      ?? refuses(() => previous.applyChanges(copy, fs.readFileSync(file('edit-limits-change.jzm')), { key: keys.owner }), /doesn't take changes/)
+      ?? (fs.readFileSync(copy).equals(before) ? null : 'the file changed');
+  });
+}
+check(knowsWriterFeatures ? 'limits per key: a rewrite is refused (the writer feature), the file unchanged'
+  : 'limits per key: a rewrite there leaves no way to send changes beyond the limit (checked with this release)', () => {
+  const copy = file('edit-limits-rewrite.jzm');
+  fs.copyFileSync(file('edit-limits.jzm'), copy);
+  const before = fs.readFileSync(copy);
+  if (knowsWriterFeatures) {
+    return refuses(() => previous.update(copy, { key: keys.owner, insert: [{ id: 99, region: 'North', name: 'x', account: 'y', status: null, note: null }] }), /edit-limits/)
+      ?? (fs.readFileSync(copy).equals(before) ? null : 'the file changed');
+  }
+  previous.update(copy, { key: keys.owner, insert: [{ id: 99, region: 'North', name: 'x', account: 'y', status: null, note: null }] });
+  const now = open(copy, { key: owner });
+  const grant = now.access.grants[0];
+  const closed = !now.package?.edit || grant.editLost === true;
+  now.close();
+  return closed ? null : `the rewritten file takes changes with the limit gone: ${JSON.stringify(grant)}`;
 });
 
 for (const r of results) console.log(`${r.ok ? 'ok  ' : 'FAIL'} ${args.version} ${r.label}${r.ok ? '' : `\n       ${r.problem}`}`);

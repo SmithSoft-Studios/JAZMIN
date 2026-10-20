@@ -4,6 +4,7 @@ import { parseJsonText } from './binary.js';
 import { DEFAULT_COLUMN_GROUP, PUBLIC_KEY_SIZE, SIGNATURE_SIZE } from './constants.js';
 import { JazminFormatError, JazminKeyError, JazminUnlockRequiredError, JazminValidationError } from './errors.js';
 import { grantExpiry } from './expiry.js';
+import { normalizeEditLimit } from './files.js';
 import {
   HkdfKeys, JazminAccessKey, decrypt, encrypt, fingerprint, hkdf, ownerSigning, parseAnyKey, sha256, sign, slotId, verify,
 } from './keys.js';
@@ -102,6 +103,11 @@ export function normalizeGrants(list, groupNames, now) {
       mode,
       // An online grant's share is held by the owner's key service; it stays the same across versions.
       share: mode === 'online' ? (g.share ? Buffer.from(g.share, 'base64') : crypto.randomBytes(32)) : undefined,
+      // What the key may send back (spec 7.9.1): a limit, none (undefined), or lost (an older release dropped it: the
+      // key may send nothing). A limit kept from before isn't checked against the document again (editCarried).
+      edit: g.edit === undefined || g.edit === null || g.editLost === true ? undefined : normalizeEditLimit(g.edit, `grant ${n}: edit`),
+      editLost: g.editLost === true,
+      editCarried: g.editCarried === true,
     };
   });
   const expiredGrants = grants.filter((g) => g.expires !== undefined && g.expires <= now).length;

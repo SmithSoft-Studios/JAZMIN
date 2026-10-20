@@ -121,6 +121,47 @@ for (const writer of ['js', 'dotnet']) {
   });
 }
 
+// Limits per key (spec 7.9.1, edit-limits/edit-limits.json): each library's file read with each key, and the limited key's change
+// file applied to a copy of it and of the one whose limit was lost.
+const limitsDir = path.join(dir, 'edit-limits');
+const limits = JSON.parse(fs.readFileSync(path.join(limitsDir, 'edit-limits.json'), 'utf8'));
+for (const writer of ['js', 'dotnet']) {
+  test(`interop: ${writer}-edit-limits-*.jzm: each key's limit, and the change file refused beyond it`, (t) => {
+    const file = path.join(limitsDir, `${writer}-edit-limits.jzm`);
+    if (!fs.existsSync(file)) return t.skip(`run the ${writer === 'js' ? 'fixture script' : '.NET tests with JAZMIN_WRITE_FIXTURES=1'} to generate it`);
+    const asOwner = open(file, { key: keys.key });
+    assert.deepEqual(asOwner.writerFeatures, limits.writerFeatures);
+    assert.deepEqual(asOwner.package.edit, limits.package.edit);
+    const byLabel = Object.fromEntries(asOwner.access.grants.map((g) => [g.label, g]));
+    for (const g of limits.grants) assert.deepEqual(byLabel[g.label].edit, g.edit, g.label);
+    asOwner.close();
+    for (const [name, seen] of Object.entries(limits.seen)) {
+      const r = open(file, { key: keys[name], accessState: false });
+      assert.deepEqual([r.access.edit, r.edit], [seen.limit, seen.edit], name);
+      r.close();
+    }
+    const copy = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-edit-limits-')), 'acks.jzm');
+    fs.copyFileSync(file, copy);
+    const change = fs.readFileSync(path.join(limitsDir, `${writer}-edit-limits-changes.jzm`));
+    const { after, ...applied } = limits.applied;
+    const result = applyChanges(copy, change, { key: keys.key });
+    assert.deepEqual({ updated: result.updated, added: result.added, deleted: result.deleted, conflicts: result.conflicts, refused: result.refused }, applied);
+    const r = open(copy, { key: keys.key });
+    const rows = Object.fromEntries([...r.rows()].map((row) => [row.ack, { ackAction: row.ackAction, ackNote: row.ackNote }]));
+    r.close();
+    assert.deepEqual(rows, after);
+
+    const lost = path.join(path.dirname(copy), 'lost.jzm');
+    fs.copyFileSync(path.join(limitsDir, `${writer}-edit-limits-lost.jzm`), lost);
+    const lostOwner = open(lost, { key: keys.key });
+    assert.equal(lostOwner.access.grants.find((g) => g.label === limits.grants.find((x) => x.key === limits.lost.key).label).editLost, true);
+    lostOwner.close();
+    const refusedAll = applyChanges(lost, change, { key: keys.key });
+    assert.deepEqual([refusedAll.updated, refusedAll.added, refusedAll.deleted], [0, 0, 0]);
+    assert.ok(refusedAll.refused.length === limits.change.rows.length && refusedAll.refused.every((x) => x.reason === limits.lost.refused), JSON.stringify(refusedAll.refused));
+  });
+}
+
 // Embedded files written by the browser writer: the same files; browsers write no package settings.
 test('interop: browser-files-key.jzm opened with the owner key shows its files', () => {
   const reader = open(path.join(dir, 'browser-files-key.jzm'), { key: keys.key });

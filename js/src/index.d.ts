@@ -75,6 +75,21 @@ export interface Grant {
   mode?: 'offline' | 'online';
   /** Extra file groups this key may see (embedded files), besides '*' and groups named like its partitions. */
   files?: '*' | string[];
+  /**
+   * What this key may send back through the document (spec 7.9.1, 1.8): narrower than package.edit, never wider. Given
+   * again for a key already granted: left out keeps its limit, null removes it.
+   */
+  edit?: EditLimit | null;
+}
+
+/** A grant's limit on what its key may send back (spec 7.9.1): each member left out narrows nothing. */
+export interface EditLimit {
+  /** The columns this key may set: some of package.edit.columns. */
+  columns?: string[];
+  /** false: this key may not add rows. */
+  add?: boolean;
+  /** false: this key may not delete rows. */
+  delete?: boolean;
 }
 
 /** A file to embed: give `content` (bytes or text) or `file` (a path on disk, read in blocks). */
@@ -456,11 +471,21 @@ export interface AccessInfo {
   /** Access keys: whether opening needs an unlock token, and when access ends. */
   online?: boolean;
   expires?: string;
+  /** Access keys: this key's limit on what it may send back (spec 7.9.1), absent when it has none. */
+  edit?: EditLimit;
+  /** Access keys: an older release lost this key's limit, so it may send nothing until the owner grants it again. */
+  editLost?: true;
   /** Owner only. */
   grants?: {
     keyId: string; rows: '*' | string[]; columns: '*' | string[]; label?: string; mode: 'offline' | 'online'; expires?: string;
     /** Extra file groups this key sees (Grant.files); absent when it has none. A new grant for the key replaces them. */
     files?: '*' | string[];
+    /** The key's limit on what it may send back (spec 7.9.1), absent when it has none. */
+    edit?: EditLimit;
+    /** An older release lost the key's limit (or it can't be read): it may send nothing until granted again with one. */
+    editLost?: true;
+    /** The key's limit is there but this library can't read it: it may send nothing. */
+    editUnreadable?: true;
   }[];
   /** Owner only: the columns of each column group ('*' holds the columns of no named group). */
   groupColumns?: Record<string, string[]>;
@@ -1019,7 +1044,7 @@ export function rotateOwnerKey(path: string, options: { key: KeyInput; newKey?: 
  * expiry, online mode, file groups). update({ grant }) replaces a grant whole.
  */
 export function grantAccess(path: string, ownerKey: KeyInput, accessKey: JazminAccessKey | string,
-  grant?: { rows?: '*' | string[]; columns?: '*' | string[]; label?: string }): UpdateResult;
+  grant?: { rows?: '*' | string[]; columns?: '*' | string[]; label?: string; edit?: EditLimit | null }): UpdateResult;
 /** Owner only: removes a key's access; the new version uses fresh secrets. */
 export function revokeAccess(path: string, ownerKey: KeyInput, accessKey: JazminAccessKey | string): UpdateResult;
 
@@ -1081,6 +1106,11 @@ export class JazminReader implements Iterable<JazminRow> {
   /** Embedded files this key can see. */
   readonly files: FileInfo[];
   readonly package: PackageSettings | undefined;
+  /**
+   * What this key may send back through the document now (spec 7.9.1): package.edit narrowed by the key's limit and the
+   * columns it sees; null when the document takes no changes.
+   */
+  readonly edit: (EditSettings & { columns: string[]; add: boolean; delete: boolean }) | null;
   /** Saved export shapes this key can use (by name); use one with toJSON(reader, { shape: name }). */
   readonly shapes: SavedShape[];
   /** Locks of the stored files this key can see (1.7). */

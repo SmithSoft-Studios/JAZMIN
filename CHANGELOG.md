@@ -14,6 +14,21 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   change reads as before.
 
 ### Added
+- **Limits per key on what a key may send back (spec 7.9.1, #257).** A grant's `edit` (`columns`, `add`, `delete`)
+  narrows the document's `package.edit` for that key: one shared document where a doctor may acknowledge a result and
+  infection control may only add a note. `writeChanges` refuses what the key may not send ("Column 'ackAction' can't
+  be changed with this key"), and the owner's `applyChanges` refuses it too, also from a change file made by hand and
+  with `overwrite`. `reader.edit` is what this key may send now; `reader.access.edit` its own limit; the owner's
+  `reader.access.grants[i].edit`. A limit can only narrow (writers refuse a wider one); a grant given again keeps it
+  (`edit: null` removes it), and append, update, compaction and a new owner key carry it. JavaScript library in this
+  release; .NET and the browser reader and viewer follow.
+  - **Older releases:** while a grant has a limit, the document's settings are stored as `package.editByKey` and the
+    file names the writer feature `edit-limits`. Releases 1.0 to 1.7.2 still read the file with every key, but find
+    no `edit`: their `applyChanges` refuses ("doesn't take changes") and their viewers offer no editing, so no older
+    release applies a change beyond a limit. 1.7.x refuses to modify the file; a rewrite by 1.0 to 1.6.2 leaves a
+    document that takes no changes, or keys that may send nothing until granted again (`editLost`). Checked against
+    the published npm 1.4.0, 1.6.2 and 1.7.2 (`node scripts/compat-previous.mjs`). Files without limits are written
+    exactly as before.
 - **Publisher signatures (spec 6.9): `verifyPublisher`** (.NET `JazminFile.VerifyPublisher`) checks who published a
   file, that it hasn't changed since, the facts signed with it and its document code, with the stored status, a
   revocation list or an online status answer (User Guide section 26). It reads the file's end and hashes the rest in

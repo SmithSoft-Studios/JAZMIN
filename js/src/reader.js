@@ -14,13 +14,13 @@ import {
 } from './catalog.js';
 import { decodeColumnar, decodeColumnarAt } from './columnar.js';
 import {
-  CODEC, DRAFT_MAGIC, ENVELOPE_SIZE, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, KEYRING_GROUPS,
+  CODEC, DRAFT_MAGIC, EDIT_LIMITS, ENVELOPE_SIZE, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, KEYRING_GROUPS,
   INDEX_DELTAS, KNOWN_FLAGS, MAGIC, MAX_KDF_ITERATIONS, MIN_KDF_ITERATIONS, PREAMBLE_SIZE, SUPPORTED_READER_FEATURES,
   SUPPORTED_WRITER_FEATURES, TRAILER_SIZE, WHOLE_TABLE,
 } from './constants.js';
 import { JazminFileLockedError, JazminFormatError, JazminKeyError, JazminValidationError } from './errors.js';
 import { enforceExpiry, toMs } from './expiry.js';
-import { EVERYONE, keyServiceAddress, mergeActions, readActions, readPage } from './files.js';
+import { EVERYONE, effectiveEdit, keyServiceAddress, mergeActions, normalizeEdit, normalizeEditLimit, readActions, readPage } from './files.js';
 import { answeredExactly, evaluate, filterReads, indexPlan, mayMatch, mustMatch, normalizeFilter } from './filter.js';
 import { CompositeIndex, LazyTrigramIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
 import { JazminAccessKey, JazminKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
@@ -456,6 +456,20 @@ function plainSection(section, sectionId) {
  * An owner directory grant's column groups ('*': all): masked groups are listed apart, and a grant of every group says
  * so (spec 7.6.8).
  */
+/**
+ * A grant's (or a key's own) edit member (spec 7.9.1): { edit, lost, unreadable }. In a file with limits a grant without
+ * one may send nothing (an older release lost it), and so may one this library can't read. {} is no limit.
+ */
+function readEditLimit(value, limitsFile) {
+  if (value === undefined) return { edit: undefined, lost: limitsFile, unreadable: false };
+  try {
+    const edit = normalizeEditLimit(value, 'edit');
+    return { edit: Object.keys(edit).length ? edit : undefined, lost: false, unreadable: false };
+  } catch {
+    return { edit: undefined, lost: true, unreadable: true };
+  }
+}
+
 function grantColumns(g) {
   if (g.allColumns === true) return '*';
   return Array.isArray(g.maskedColumns) && Array.isArray(g.columns) ? [...g.columns, ...g.maskedColumns] : g.columns;
@@ -567,6 +581,7 @@ export class JazminReader {
   #readAheads = []; // ranges read ahead (#readAhead) while they are held
   #map; // the owner's chunk map (#chunkMap): undefined until looked up, null when there is none
   #grantKeys = new Map(); // grant key text -> parsed access key (owner)
+  #hasLimits; // whether grants limit what keys send back (spec 7.9.1), once known
   // The last chunk decoded, the columns decoded (null: all) and the definitions they were decoded with.
   #cachedChunk = { ordinal: -1, wanted: null, types: null, chunk: null };
   #sortStatsComplete; // computed on first sorted scan
@@ -805,6 +820,7 @@ export class JazminReader {
       online: bundle.online === true,
       submission: typeof bundle.submission === 'string' ? b(bundle.submission) : null,
       masks: readBundleMasks(bundle.masks),
+      editLimit: bundle.edit, // what this key may send back (spec 7.9.1), as written
       keySecret: secret,
       reopen: new Set(), // readers of the file's other tables, built again when a masked column is unlocked
       directory: null,
@@ -1450,6 +1466,9 @@ export class JazminReader {
       info.keyId = slotId(this.#access.keySecret).toString('hex'); // the access key's id, as the owner's grants list it
       info.online = this.#access.online;
       if (this.#access.expires) info.expires = this.#access.expires;
+      const { edit, lost } = readEditLimit(this.#access.editLimit, this.#limitsFile());
+      if (edit) info.edit = edit; // what this key may send back (spec 7.9.1)
+      if (lost) info.editLost = true;
     }
     if (isOwner) {
       info.grants = this.#ownerDirectory().grants.map((g) => ({
@@ -1457,6 +1476,7 @@ export class JazminReader {
         mode: g.mode ?? 'offline',
         ...(g.expires ? { expires: g.expires } : {}),
         ...(g.files === undefined ? {} : { files: g.files }), // extra file groups: re-granting without them removes them
+        ...this.#grantEditInfo(g.edit),
       }));
       info.groupColumns = Object.fromEntries(this.#groups.map((g) => [g.name, g.cols.map((i) => this.#columns[i].name)]));
     }
@@ -1591,10 +1611,57 @@ export class JazminReader {
     return structuredClone(this.#shapeList);
   }
 
-  /** Package settings for viewers ({ entry, title, allowedOrigins, allowWasm }), or undefined. */
+  /**
+   * Package settings for viewers ({ entry, title, allowedOrigins, allowWasm, edit, ... }), or undefined. A file whose
+   * grants limit what keys send back stores the document's edit settings as editByKey (spec 7.9.1): given here as edit.
+   */
   get package() {
+    const settings = this.#rawPackage();
+    if (!settings || settings.editByKey === undefined) return settings;
+    const { editByKey, ...rest } = settings;
+    return rest.edit === undefined ? { ...rest, edit: editByKey } : rest;
+  }
+
+  #rawPackage() {
     const settings = this.#header.files?.package;
     return settings ? parseJsonText(settings, 'Package settings', true) : undefined;
+  }
+
+  /** Whether the file's grants limit what keys send back (spec 7.9.1): its writer feature, or editByKey. Worked out once. */
+  #limitsFile() {
+    this.#hasLimits ??= this.#header.writerFeatures.includes(EDIT_LIMITS) || this.#rawPackage()?.editByKey !== undefined;
+    return this.#hasLimits;
+  }
+
+  /** A grant's limit as the owner's grants list gives it: edit, editLost, editUnreadable. */
+  #grantEditInfo(stored) {
+    const { edit, lost, unreadable } = readEditLimit(stored, this.#limitsFile());
+    return { ...(edit ? { edit } : {}), ...(lost ? { editLost: true } : {}), ...(unreadable ? { editUnreadable: true } : {}) };
+  }
+
+  /**
+   * What this key may send back through the document now (spec 7.9.1): the document's edit settings narrowed by the
+   * key's limit and the columns it sees, { table?, key, columns, add, delete }; null when the document takes no changes.
+   * A key whose limit was lost may send nothing.
+   */
+  get edit() {
+    const stored = this.package?.edit;
+    if (!stored) return null;
+    let doc;
+    try {
+      doc = normalizeEdit(stored);
+    } catch {
+      return null; // settings this library can't read: the document takes no changes
+    }
+    if (!this.#access || this.#access.isOwner) return doc;
+    const limit = readEditLimit(this.#access.editLimit, this.#limitsFile());
+    const name = doc.table ?? this.tables[0];
+    const table = name === this.table ? this : this.openTable(name);
+    try {
+      return effectiveEdit(doc, limit.edit, new Set(table.columns.map((c) => c.name)), limit.lost);
+    } finally {
+      if (table !== this) table.close();
+    }
   }
 
   /**
@@ -1821,9 +1888,14 @@ export class JazminReader {
     const columnGroups = Object.fromEntries(this.#groups.map((g) => [g.name, g.cols.map((i) => this.#columns[i].name)]));
     // Each grant with its key parsed (accessKey: its id is worked out when first asked for), so callers need not parse
     // every key again.
-    const grants = this.#ownerDirectory().grants.map(({ maskedColumns, allColumns, ...g }) => ({
-      ...g, columns: grantColumns({ ...g, maskedColumns, allColumns }), accessKey: this.#grantKey(g.key),
-    }));
+    const limitsFile = this.#limitsFile();
+    const grants = this.#ownerDirectory().grants.map(({ maskedColumns, allColumns, edit: stored, ...g }) => {
+      const { edit, lost } = readEditLimit(stored, limitsFile);
+      return {
+        ...g, columns: grantColumns({ ...g, maskedColumns, allColumns }), accessKey: this.#grantKey(g.key),
+        ...(edit ? { edit } : {}), ...(lost ? { editLost: true } : {}),
+      };
+    });
     return { partitionBy: this.#table.partitionBy || undefined, columnGroups, grants };
   }
 

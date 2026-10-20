@@ -41,8 +41,14 @@ export const FILE_LOCKS = 'file-locks';
 /** Writer feature 'masked-columns' (spec 7.6.8): a file with masked columns; a writer that did not keep them would leave keys without them. */
 export const MASKED_COLUMNS = 'masked-columns';
 
+/**
+ * Writer feature 'edit-limits' (spec 7.9.1): grants limit what their keys may send back; a writer that did not keep the
+ * limits would let keys send more than the owner allows.
+ */
+export const EDIT_LIMITS = 'edit-limits';
+
 /** Writer features this implementation supports (spec 12): it refuses to modify a file with any other. */
-export const SUPPORTED_WRITER_FEATURES = new Set([FILE_LOCKS, MASKED_COLUMNS]);
+export const SUPPORTED_WRITER_FEATURES = new Set([FILE_LOCKS, MASKED_COLUMNS, EDIT_LIMITS]);
 
 export const DEFAULTS = Object.freeze({
   chunkRows: 4096,

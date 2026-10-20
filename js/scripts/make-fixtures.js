@@ -7,7 +7,7 @@ import { JazminKey, append, open, toJSON, write, writeChanges } from '../src/ind
 import { CHUNK_MAP, PAGING } from '../src/writer.js';
 import {
   APPEND_DELETE, APPEND_SPLIT, COUNTRY_COLUMNS, DOCUMENT_FILES, DOCUMENT_PACKAGE, EDIT_CHANGES, EDIT_COLUMNS, EDIT_ROWS, EDIT_SETTINGS, FIXTURE_PACKAGE, PARTITIONS_SPLIT, accessFixture, countryRows, filesAccessFixture, fixtureFiles,
-  NESTED_COLUMNS, NESTED_FILTERS, NESTED_GROWN_SPLIT, fromCanonical, nestedColumnsBefore, nestedFixtureRows, nestedRowBefore, partitionsFixture, shapesAccessFixture, tablesFixture,
+  NESTED_COLUMNS, NESTED_FILTERS, editLimitsChangeColumns, editLimitsChangeRows, editLimitsOptions, NESTED_GROWN_SPLIT, fromCanonical, nestedColumnsBefore, nestedFixtureRows, nestedRowBefore, partitionsFixture, shapesAccessFixture, tablesFixture,
 } from '../test/fixture-helpers.js';
 
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../spec/fixtures');
@@ -87,6 +87,22 @@ write(path.join(dir, 'js-edit-key.jzm'), EDIT_ROWS, {
   const source = open(path.join(dir, 'js-edit-key.jzm'), { key: keys.key });
   fs.writeFileSync(path.join(dir, 'js-edit-changes.jzm'), writeChanges(source, EDIT_CHANGES, { key: keys.key }));
   source.close();
+}
+
+// Limits per key (spec 7.9.1, spec/fixtures/edit-limits/edit-limits.json), in a folder of their own (opened with
+// their own keys, not as the other fixtures are): the file, the same with one limit lost, and the limited
+// key's change file outside its limit, made by hand with its submission key (as a sender bypassing writeChanges would).
+{
+  const limitsDir = path.join(dir, 'edit-limits');
+  const limits = JSON.parse(fs.readFileSync(path.join(limitsDir, 'edit-limits.json'), 'utf8'));
+  write(path.join(limitsDir, 'js-edit-limits.jzm'), limits.rows, editLimitsOptions(limits, keys));
+  write(path.join(limitsDir, 'js-edit-limits-lost.jzm'), limits.rows, editLimitsOptions(limits, keys, { lost: true }));
+  const sender = open(path.join(limitsDir, 'js-edit-limits.jzm'), { key: keys[limits.change.sender], accessState: false });
+  write(path.join(limitsDir, 'js-edit-limits-changes.jzm'), editLimitsChangeRows(limits), {
+    columns: editLimitsChangeColumns(limits), key: sender.submissionKey,
+    metadata: { 'jazmin.changes': { version: 1, file: sender.fileId, table: sender.table, key: ['ack'], columns: limits.change.columns, sender: sender.access.keyId } },
+  });
+  sender.close();
 }
 
 // Written by the browser writer (js/browser/jazmin-browser.js), as a page would: without indexes, which browsers don't

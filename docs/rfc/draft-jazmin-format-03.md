@@ -664,7 +664,8 @@ text) and `segment` when an append wrote the directories.
 - `package` holds the entry path (which MUST be a stored path), a title, the
   https origins the page may contact, whether WebAssembly is allowed, `pdf`,
   the page settings for the document's PDFs (below), and `edit`, what the
-  document may change (7.9), `keyService`, the https address of the
+  document may change (7.9; in a shared file whose grants limit what keys
+  send back, stored as `editByKey` instead, 7.9.1), `keyService`, the https address of the
   owner's key service for the file's online locks (6.8.2), `masks`, how
   viewers show masked columns' revealed values (7.6.8), `online`,
   whether the document needs the network, `pages`, the document's pages,
@@ -1431,7 +1432,7 @@ key the slot belongs to:
 - **Access bundle:** `{ "header": b64(H), "partitions": { id: b64(P(id)) },
   "partitionNames": { id: name }, "columns": { g: b64(C(g)) } }` (ids in
   base64url), plus `expires` / `online` (7.7), `files` (6.8),
-  `submission` (7.8) and `masks` (7.6.8). Readers MUST ignore bundle fields
+  `submission` (7.8), `masks` (7.6.8) and `edit` (7.9.1). Readers MUST ignore bundle fields
   they don't know.
 
 A grant of all rows (`rows: "*"`) covers every partition present in that
@@ -1491,8 +1492,8 @@ covers the whole file.
 - The owner directory (`owner`, UTF-8 JSON) holds `{ "partitions": [names],
   "fileGroups": [names], "grants": [ { "key": "jza1-...", "rows": "*" |
   [partition names], "columns": "*" | [names], "files": ..., "label": "...", "expires":
-  ..., "mode": ..., "share": ... } ], "locks": [ { "id", "kind", "salt", "iterations",
-  "key", "secret" } ], "masks": [ ... ] }` (`locks`: 6.8.1; `masks`: 7.6.8).
+  ..., "mode": ..., "share": ..., "edit": ... } ], "locks": [ { "id", "kind", "salt", "iterations",
+  "key", "secret" } ], "masks": [ ... ] }` (`locks`: 6.8.1; `masks`: 7.6.8; `edit`: 7.9.1).
   Only the owner reads it.
 
 #### 7.6.6. Reading
@@ -1710,6 +1711,10 @@ The package (6.8) says what it may change in `edit`:
   true, that every column that can't be empty is a key column, an editable
   column or the partition column.
 
+In a shared file whose grants limit what keys may send back (7.9.1), the same
+object is stored as `editByKey`, and `edit` is absent. Everything this section
+says of `edit` then holds for `editByKey`.
+
 Changes reach the file as a **change file**: an ordinary file with one table,
 `changes`, and the metadata member `jazmin.changes`:
 `{ "version": 1, "file", "table", "key", "columns", "sender", "based" }`
@@ -1740,14 +1745,68 @@ Applying a change file:
   names, which may differ from another table's in the same file. An added row
   without the partition column goes into the grant's partition when the grant
   has exactly one, and is refused otherwise.
-- MUST refuse changes `edit` doesn't allow (an operation, a column), and
-  added rows that would leave a column that can't be empty empty.
+- MUST refuse changes `edit` doesn't allow (an operation, a column), or that
+  the sender's limit doesn't allow (7.9.1), and added rows that would leave a
+  column that can't be empty empty.
 - SHOULD hold, not apply, a change to a row that changed since the sender's
   copy (a `jazmin.before.` value differs from the row's), an added key that
   exists, or a change to a row that is gone; and report each, with the values
   before, wanted and now. Software MAY apply held changes when the owner asks.
 - The file id is informative: a rewrite gives a file a new id, so it is not
   checked.
+
+#### 7.9.1. Limits per Key
+
+A grant of a shared file MAY narrow what its key may send back. Its limit,
+`edit`, is a JSON object with the optional members `columns` (an array of
+distinct, non-empty names of columns of the table the document edits), `add`
+and `delete` (`true` or `false`). An absent member narrows nothing: `columns`
+means every column the document allows; `add` and `delete`, as the document
+has them. A limit MUST NOT have other members.
+
+```json
+{ "key": "jza1-...", "rows": ["W1", "W2"], "edit": { "columns": ["ackNote"], "add": false, "delete": false } }
+```
+
+- **Where:** the limit is in the grant in the owner directory (7.6.5) and, as
+  the same JSON value, in the key's access bundle (7.6.4). Software that
+  applies change files MUST use the owner directory's; the bundle's tells the
+  key holder.
+- **The intersection:** a sender may set a column only if the document's
+  settings, its limit and its grant's column groups all allow it; may add
+  rows only if the document and its limit allow it; and may delete rows
+  likewise. All three are taken at the time of applying. A limit can only
+  narrow: when a grant is given, writers MUST refuse a limit that names a
+  column the document doesn't allow or that is outside the grant's column
+  groups, or that allows adding or deleting where the document doesn't. A
+  limit kept from before that names more than the document now allows is
+  valid; the intersection applies.
+- **editByKey:** when at least one grant has a limit that narrows something,
+  writers MUST store the document's settings as `package.editByKey` and
+  leave out `package.edit`, MUST write a limit on every grant in both places
+  (`{}` for a key without one), and MUST name the writer feature
+  `edit-limits` (12). When no grant's limit narrows anything, writers MUST
+  store the settings as `package.edit` and leave out `editByKey`, the limits
+  and the feature. Writers MUST keep the limits when the document has no
+  settings, and use `editByKey` again when it has them. (Readers that don't
+  know `editByKey` find no `edit`, and so treat the document as one that
+  takes no changes.)
+- **Fail closed:** in a file with `editByKey` or the writer feature
+  `edit-limits`, a grant without a limit, or with a limit that isn't well
+  formed, allows nothing: software that applies change files MUST refuse each
+  of its key's changes, and SHOULD say that the key needs to be granted
+  again. Readers SHOULD report such grants to the owner, and writers MUST
+  keep them so until a grant with a limit is given for the key.
+- **Carrying:** appends, rewrites and key rotations MUST keep each grant's
+  limit. A grant given again for the same key without a limit keeps the one
+  it had; software MAY offer a way to remove it. An append MAY narrow or
+  widen a limit (unlike the rest of a grant, 11.2): it writes the owner
+  directory and the key slots again.
+- **Senders:** software that makes change files SHOULD refuse changes the
+  key's limit doesn't allow, and viewers SHOULD give the document only what
+  the key may do.
+- **Refusals:** a change outside the limit is refused, never held; an
+  overwrite does not apply it.
 
 ## 8. Indexes
 
@@ -2147,6 +2206,8 @@ rewrite** (7.6.7), and so does narrowing a grant: fewer partitions, column
 groups or file groups, a new or earlier expiry, or offline to online. A key
 keeps the secrets it already received, so after such an append it could
 still read the new data. Writers MUST refuse to narrow a grant in an append.
+A grant's limit on what its key sends back (7.9.1) is not a narrowing in this
+sense.
 Appends MUST drop expired grants from the key slots.
 
 **Durability and recovery.** Writers MUST flush the new sections to stable
@@ -2181,8 +2242,9 @@ fresh secrets. The result has `append_count` 0 and the APPENDED flag clear.
   Reader features are also writer features.
 - Feature names are lowercase ASCII letters, digits and `-`. Format 1.0
   defined none. Defined since: the reader features `index-deltas` (8.1) and
-  `nested-columns` (5.4), and the writer features `file-locks` (6.8.1)
-  and `masked-columns` (7.6.8). A file that uses none has empty lists.
+  `nested-columns` (5.4), and the writer features `file-locks` (6.8.1),
+  `masked-columns` (7.6.8) and `edit-limits` (7.9.1). A file that uses none
+  has empty lists.
 - The magic `JZM1` changes only if the container itself changes
   incompatibly.
 
@@ -2449,6 +2511,17 @@ indexes, embedded files) written by both reference implementations.
   file of several tables whose edited table was not first (or had another
   partition column or groups), a sender's allowed changes could be refused.
   Change files and files need no change.
+- **Since format 1.0, limits per key (7.9.1):** a grant's `edit`, in the owner
+  directory and the access bundle; the document's settings stored as
+  `package.editByKey` in a file with limits; the writer feature
+  `edit-limits`. Readers of releases 1.0 to 1.7.2 read such files (they
+  ignore the bundle member) and find no `edit`, so they treat the document as
+  one that takes no changes: their `applyChanges` refuses, and their viewers
+  offer no editing. Releases 1.7.0 to 1.7.2 refuse to modify such files (the
+  writer feature). Releases 1.0 to 1.6.2 rewrite them without the limits and
+  the settings, or, when appending, without the limits, which later releases
+  then treat as keys that may send nothing. Files without limits are
+  unchanged.
 
 ## Appendix C. Design Notes (informative)
 

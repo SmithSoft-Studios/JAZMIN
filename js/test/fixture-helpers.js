@@ -287,3 +287,33 @@ export const NESTED_FILTERS = [
   [{ not: { staff: { any: { since: { gte: '2024-03-01T00:00:00.000Z' } } } } }, (r) => !r.staff?.some((s) => s && s.since >= '2024-03-01T00:00:00.000Z')],
   [{ staff: { any: { pay: 100.5 } } }, (r) => r.staff?.some((s) => s?.pay === 100.5)],
 ];
+
+/**
+ * Limits per key (spec 7.9.1), from spec/fixtures/edit-limits.json: the write options of the access file (`lost`: the
+ * limited key's limit lost, as an older release's append leaves it).
+ */
+export function editLimitsOptions(limits, keys, { lost = false } = {}) {
+  return {
+    columns: limits.columns, key: keys.key, files: limits.files, package: limits.package,
+    access: {
+      partitionBy: limits.partitionBy,
+      grants: limits.grants.map(({ key, edit, ...g }) => ({
+        ...g, key: keys[key], ...(lost && key === limits.lost.key ? { editLost: true } : edit ? { edit } : {}),
+      })),
+    },
+  };
+}
+
+/** The rows of edit-limits.json's change file, every column filled in (null where the row doesn't set it). */
+export function editLimitsChangeRows(limits) {
+  const blank = Object.fromEntries(limits.change.columns.flatMap((n) => [[n, null], [`jazmin.before.${n}`, null]]));
+  return limits.change.rows.map((row) => ({ ...blank, ...row }));
+}
+
+/** The change file's columns. */
+export function editLimitsChangeColumns(limits) {
+  return [
+    { name: 'jazmin.op', type: 'string', nullable: false }, { name: 'jazmin.set', type: 'json' }, { name: 'ack', type: 'string', nullable: false },
+    ...limits.change.columns.flatMap((n) => [{ name: n, type: 'string' }, { name: `jazmin.before.${n}`, type: 'string' }]),
+  ];
+}

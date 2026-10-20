@@ -1,0 +1,55 @@
+{
+  "description": "Limits per key (spec 7.9.1): a shared file whose grants limit what keys send back. Keys from keys.json (made up). Each library writes <writer>-edit-limits.jzm, <writer>-edit-limits-changes.jzm (sally's change file outside her limit, made by hand with her submission key) and <writer>-edit-limits-lost.jzm (the same file with sally's limit lost, as an older release's append leaves it); both read and apply each other's.",
+  "columns": [
+    { "name": "ack", "type": "string", "nullable": false },
+    { "name": "ward", "type": "string", "nullable": false },
+    { "name": "result", "type": "string" },
+    { "name": "ackAction", "type": "string" },
+    { "name": "ackNote", "type": "string" }
+  ],
+  "rows": [
+    { "ack": "A-1", "ward": "W1", "result": "K+ 6.9", "ackAction": null, "ackNote": null },
+    { "ack": "A-2", "ward": "W1", "result": "Hb 6.1", "ackAction": null, "ackNote": null },
+    { "ack": "A-3", "ward": "W2", "result": "Na 118", "ackAction": null, "ackNote": null }
+  ],
+  "partitionBy": "ward",
+  "package": {
+    "entry": "index.html",
+    "edit": { "key": ["ack"], "columns": ["ward", "ackAction", "ackNote"], "add": true, "delete": true }
+  },
+  "files": [{ "path": "index.html", "content": "<h1>Critical results</h1>" }],
+  "grants": [
+    { "key": "bob", "rows": "*", "label": "Doctor" },
+    { "key": "sally", "rows": "*", "label": "Infection control", "edit": { "columns": ["ackNote"], "add": false, "delete": false } },
+    { "key": "carol", "rows": ["W1"], "label": "Read only", "edit": { "columns": [], "add": false, "delete": false } }
+  ],
+  "seen": {
+    "bob": { "edit": { "key": ["ack"], "columns": ["ward", "ackAction", "ackNote"], "add": true, "delete": true } },
+    "sally": { "limit": { "columns": ["ackNote"], "add": false, "delete": false }, "edit": { "key": ["ack"], "columns": ["ackNote"], "add": false, "delete": false } },
+    "carol": { "limit": { "columns": [], "add": false, "delete": false }, "edit": { "key": ["ack"], "columns": [], "add": false, "delete": false } }
+  },
+  "writerFeatures": ["edit-limits"],
+  "change": {
+    "sender": "sally",
+    "columns": ["ward", "ackAction", "ackNote"],
+    "rows": [
+      { "jazmin.op": "update", "jazmin.set": ["ackAction"], "ack": "A-1", "ackAction": "acknowledged" },
+      { "jazmin.op": "add", "jazmin.set": ["ward", "ackNote"], "ack": "A-9", "ward": "W1", "ackNote": "added" },
+      { "jazmin.op": "delete", "jazmin.set": null, "ack": "A-2" },
+      { "jazmin.op": "update", "jazmin.set": ["ackNote"], "ack": "A-3", "ackNote": "isolation started", "jazmin.before.ackNote": null }
+    ]
+  },
+  "applied": {
+    "updated": 1, "added": 0, "deleted": 0, "conflicts": [],
+    "refused": [
+      { "op": "update", "key": { "ack": "A-1" }, "reason": "column 'ackAction' can't be changed by this sender" },
+      { "op": "add", "key": { "ack": "A-9" }, "reason": "this sender's grant doesn't allow adding rows" },
+      { "op": "delete", "key": { "ack": "A-2" }, "reason": "this sender's grant doesn't allow deleting rows" }
+    ],
+    "after": { "A-1": { "ackAction": null, "ackNote": null }, "A-2": { "ackAction": null, "ackNote": null }, "A-3": { "ackAction": null, "ackNote": "isolation started" } }
+  },
+  "lost": {
+    "key": "sally",
+    "refused": "this sender's limits were lost when an older release rewrote the file: grant the key again"
+  }
+}

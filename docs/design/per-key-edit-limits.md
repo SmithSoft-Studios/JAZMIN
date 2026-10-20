@@ -420,8 +420,10 @@ About **7 to 10 days** in all. Steps 2 and 3 can go in either order; step 4 need
 
 ## Appendix A. Proposed spec text (draft, not normative)
 
-> **DRAFT for #257: not part of the specification until the owner approves the design.** On approval this text goes
-> into `docs/rfc/draft-jazmin-format-03.md` at the places named.
+> **Moved into the specification** (`docs/rfc/draft-jazmin-format-03.md`, 7.9.1 and the places named below) with
+> the JavaScript library. Kept here as it was approved; the specification is normative. One clarification made there:
+> a grant without a limit fails closed in a file with `editByKey` **or** the writer feature `edit-limits` (an older
+> release's append can leave the feature without `editByKey`), and writers keep such a grant so until a limit is given.
 
 **6.8, package settings**: where the package's members are listed, after `edit`, add: "or, in a shared file whose
 grants limit what keys send back, `editByKey` instead (7.9.1)".

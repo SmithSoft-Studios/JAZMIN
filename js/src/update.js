@@ -697,7 +697,7 @@ export function accessFor(owner, grant, revoke) {
   const named = Object.fromEntries(Object.entries(owner.columnGroups).filter(([name]) => name !== '*'));
   if (!grant.length && !revoke.length) {
     // The file's grants as they are: no key ids needed (each is a hash, and a file can grant thousands of keys).
-    return { partitionBy: owner.partitionBy, columnGroups: named, grants: owner.grants.map((g) => (g.accessKey ? { ...g, key: g.accessKey } : g)) };
+    return { partitionBy: owner.partitionBy, columnGroups: named, grants: owner.grants.map((g) => ({ ...g, ...(g.accessKey ? { key: g.accessKey } : {}), editCarried: true })) };
   }
   const revoked = new Set(revoke.map((k) => {
     const parsed = parseAnyKey(k);
@@ -707,14 +707,19 @@ export function accessFor(owner, grant, revoke) {
   const grants = new Map();
   for (const g of owner.grants) {
     const id = (g.accessKey ?? JazminAccessKey.parse(g.key)).id;
-    if (!revoked.has(id)) grants.set(id, g.accessKey ? { ...g, key: g.accessKey } : g); // the writer then needs not parse it again
+    // The writer then needs not parse the key again; the grant's limit is the file's, not checked again (spec 7.9.1).
+    if (!revoked.has(id)) grants.set(id, { ...g, ...(g.accessKey ? { key: g.accessKey } : {}), editCarried: true });
   }
   for (const g of grant) {
     const id = parseAnyKey(g.key).id;
     const before = grants.get(id);
     // update({ grant }) replaces the previous grant; grantAccess() keeps what it isn't given (an expiry, online mode and
     // its share, file groups), so that re-granting a key never widens it by accident.
-    grants.set(id, g[KEEP_REST] && before && !isPast(before.expires) ? { ...before, ...g, key: g.key } : g[KEEP_REST] ? { rows: '*', columns: '*', ...g } : g);
+    let next = g[KEEP_REST] && before && !isPast(before.expires) ? { ...before, ...g, key: g.key } : g[KEEP_REST] ? { rows: '*', columns: '*', ...g } : g;
+    // A grant given again keeps the key's limit on what it sends back unless it gives one; edit: null removes it (7.9.1).
+    if (before && !('edit' in g)) next = { ...next, edit: before.edit, editLost: before.editLost, editCarried: true };
+    else if ('edit' in g) next = { ...next, editLost: false, editCarried: false };
+    grants.set(id, next);
   }
   return { partitionBy: owner.partitionBy, columnGroups: named, grants: [...grants.values()] };
 }
@@ -754,10 +759,11 @@ const isPast = (expires) => expires !== undefined && expires !== null && new Dat
 /**
  * Owner only: lets `accessKey` see the given partitions / column groups (rewrites the file). A key not yet granted gets
  * every partition and column group unless given; a key already granted keeps what isn't given (rows, columns, label,
- * expiry, online mode, file groups). To replace a grant whole, use update({ grant }).
+ * expiry, online mode, file groups, its limit on what it sends back). To replace a grant whole, use update({ grant }).
+ * `edit`: a limit on what the key may send back through the document (spec 7.9.1); null removes it.
  */
-export function grantAccess(path, ownerKey, accessKey, { rows, columns, label } = {}) {
-  const given = Object.fromEntries(Object.entries({ rows, columns, label }).filter(([, v]) => v !== undefined));
+export function grantAccess(path, ownerKey, accessKey, { rows, columns, label, edit } = {}) {
+  const given = Object.fromEntries(Object.entries({ rows, columns, label, edit }).filter(([, v]) => v !== undefined));
   return update(path, { key: ownerKey, grant: [{ key: accessKey, ...given, [KEEP_REST]: true }] });
 }
 
