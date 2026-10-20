@@ -709,7 +709,13 @@ export function accessFor(owner, grant, revoke) {
     const id = (g.accessKey ?? JazminAccessKey.parse(g.key)).id;
     if (!revoked.has(id)) grants.set(id, g.accessKey ? { ...g, key: g.accessKey } : g); // the writer then needs not parse it again
   }
-  for (const g of grant) grants.set(parseAnyKey(g.key).id, g); // re-granting replaces the previous grant
+  for (const g of grant) {
+    const id = parseAnyKey(g.key).id;
+    const before = grants.get(id);
+    // update({ grant }) replaces the previous grant; grantAccess() keeps what it isn't given (an expiry, online mode and
+    // its share, file groups), so that re-granting a key never widens it by accident.
+    grants.set(id, g[KEEP_REST] && before && !isPast(before.expires) ? { ...before, ...g, key: g.key } : g[KEEP_REST] ? { rows: '*', columns: '*', ...g } : g);
+  }
   return { partitionBy: owner.partitionBy, columnGroups: named, grants: [...grants.values()] };
 }
 
@@ -742,9 +748,17 @@ export function checkAppendGrants(existing, grants, now) {
   }
 }
 
-/** Owner only: lets `accessKey` see the given partitions / column groups (rewrites the file). */
-export function grantAccess(path, ownerKey, accessKey, { rows = '*', columns = '*', label } = {}) {
-  return update(path, { key: ownerKey, grant: [{ key: accessKey, rows, columns, label }] });
+const KEEP_REST = Symbol('grantAccess: keep what is not given');
+const isPast = (expires) => expires !== undefined && expires !== null && new Date(expires).getTime() <= Date.now();
+
+/**
+ * Owner only: lets `accessKey` see the given partitions / column groups (rewrites the file). A key not yet granted gets
+ * every partition and column group unless given; a key already granted keeps what isn't given (rows, columns, label,
+ * expiry, online mode, file groups). To replace a grant whole, use update({ grant }).
+ */
+export function grantAccess(path, ownerKey, accessKey, { rows, columns, label } = {}) {
+  const given = Object.fromEntries(Object.entries({ rows, columns, label }).filter(([, v]) => v !== undefined));
+  return update(path, { key: ownerKey, grant: [{ key: accessKey, ...given, [KEEP_REST]: true }] });
 }
 
 /** Owner only: removes a key's access. The new file version uses fresh secrets throughout. */

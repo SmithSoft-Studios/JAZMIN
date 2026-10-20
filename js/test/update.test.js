@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import {
-  JazminKey, JazminKeyError, JazminValidationError, grantAccess, open, revokeAccess, update, write,
+  JazminKey, JazminKeyError, JazminValidationError, grantAccess, issueUnlockToken, open, revokeAccess, update, write,
 } from '../src/index.js';
 
 const tmp = (name) => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-update-')), name);
@@ -105,6 +105,44 @@ test('access-controlled: only the owner can update; grant and revoke re-issue ac
   const r = open(file, { key: owner });
   assert.deepEqual(r.access.grants.map((g) => g.label), ['Carol']);
   r.close();
+});
+
+test('grantAccess for a key already granted keeps what it is not given: expiry, online mode and its share, file groups, label', () => {
+  const owner = JazminKey.generate();
+  const ann = owner.createAccessKey();
+  const file = tmp('regrant.jzm');
+  const expires = '2099-01-01T00:00:00.000Z';
+  write(file, [{ id: 1, section: 'A' }, { id: 2, section: 'B' }], {
+    columns, key: owner, sortedBy: ['section'],
+    files: [{ path: 'a.txt', content: 'only A', groups: ['extra'] }],
+    access: { partitionBy: 'section', grants: [{ key: ann, rows: ['A'], label: 'Ann', expires, mode: 'online', files: ['extra'] }] },
+  });
+  const token = issueUnlockToken(file, owner, ann.id);
+  const grantOf = () => {
+    const r = open(file, { key: owner });
+    try {
+      const { rows, columns: groups, label, mode, expires: until, files } = r.access.grants[0];
+      return { rows, columns: groups, label, mode, expires: until && new Date(until).toISOString(), files };
+    } finally {
+      r.close();
+    }
+  };
+  const before = grantOf();
+
+  grantAccess(file, owner, ann, { rows: ['A', 'B'] }); // more rows: nothing else given
+  assert.deepEqual(grantOf(), { ...before, rows: ['A', 'B'] });
+  assert.deepEqual(ids(file, { key: ann, unlockToken: token }), [1, 2]); // still online, with the same share: the token still opens it
+
+  grantAccess(file, owner, ann, { label: 'Ann (audit)' }); // a new label: rows kept, not widened to '*'
+  assert.deepEqual(grantOf(), { ...before, rows: ['A', 'B'], label: 'Ann (audit)' });
+
+  // A key not yet granted gets the defaults, as before: every partition and column group, offline, no expiry.
+  const bob = owner.createAccessKey();
+  grantAccess(file, owner, bob);
+  const r = open(file, { key: owner });
+  const added = r.access.grants.find((g) => g.keyId === bob.id);
+  r.close();
+  assert.deepEqual([added.rows, added.columns, added.mode, added.expires ?? null], ['*', '*', 'offline', null]);
 });
 
 test('grant/revoke on a file without access control is an error', () => {

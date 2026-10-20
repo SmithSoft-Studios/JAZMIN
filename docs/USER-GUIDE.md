@@ -2036,6 +2036,8 @@ view.access;           // { isOwner: false, visiblePartitions: ['ACC000123'], vi
 // { '*': ['section', 'name', ...], pii: ['salary', 'idNumber'] }
 // Each grant: { keyId, rows, columns, label, mode, expires, files } - files: the key's extra file groups (next
 // release; .NET JazminGrantInfo.Files), so a tool can change a grant without losing them: a new grant replaces it whole.
+// grantAccess() for a key already granted changes only what it is given: Carol keeps her expiry, online mode and file
+// groups below. A key not granted before gets every partition and column group unless given.
 
 grantAccess('statements.jzm', owner, carol, { rows: '*', columns: ['*', 'pii'], label: 'Auditor' });
 revokeAccess('statements.jzm', owner, bob);  // Bob cannot open the new version
