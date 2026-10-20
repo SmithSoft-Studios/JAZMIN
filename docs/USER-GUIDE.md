@@ -3361,6 +3361,16 @@ writeChanges(asIpc, { update: [{ ack: 'A-1', ackAction: 'acknowledged' }] }); //
 grantAccess('acks.jzm', owner, ipc, { rows: ['W1', 'W2', 'W3'] });           // the limit is kept; { edit: null } removes it
 ```
 
+```csharp
+// .NET: the same.
+new JazminGrant(ipc) { Rows = ["W1", "W2"], Edit = new JazminEditLimit { Columns = ["ackNote"], Add = false, Delete = false } };
+using var asIpc = JazminReader.Open("acks.jzm", new JazminReadOptions { AccessKey = ipc });
+var allowed = asIpc.Edit;      // Columns ["ackNote"], Add false, Delete false
+asIpc.Access!.Edit;            // the limit itself; the owner's Access.Grants[i].Edit, EditLost
+JazminFile.GrantAccess("acks.jzm", owner, new JazminGrant(ipc) { Rows = ["W1", "W2", "W3"] }); // Edit not given: kept
+JazminFile.GrantAccess("acks.jzm", owner, new JazminGrant(ipc) { Edit = JazminEditLimit.None }); // removed
+```
+
 - **`columns`** the key may set (some of `package.edit.columns`), **`add:
   false`** and **`delete: false`**. A member left out narrows nothing. A limit
   that names a column the document doesn't allow, or one outside the key's
@@ -3391,9 +3401,11 @@ so that releases 1.0 to 1.7.2 can't apply more than you allow:
 | 1.4 to 1.6.2 | yes, every key; the viewer offers no editing | **refuses**: "The file doesn't take changes" | yes, but the document then takes no changes, or the limited keys may send nothing until you grant them again |
 | 1.7.0 to 1.7.2 | yes, every key; the viewer offers no editing | **refuses** | **refuses** (writer feature `edit-limits`), the file unchanged |
 
-Measured with the published npm packages 1.4.0, 1.6.2 and 1.7.2 against a file
-with a limited key and that key's change file outside its limit, made by hand
-(`node js/scripts/compat-previous.mjs --version <release>`). If an older
+Measured with the published npm packages 1.4.0, 1.6.2 and 1.7.2, and the NuGet
+packages 1.4.0, 1.6.2 and 1.7.2, against a file with a limited key and that
+key's change file outside its limit, made by hand (`node
+js/scripts/compat-previous.mjs --version <release> --out <folder>`, then
+`dotnet run -c Release dotnet/scripts/compat-previous.cs -- <folder>`). If an older
 release did rewrite a file, the owner's grants list marks the keys whose limit
 was lost (`editLost: true`); they may send nothing until you grant them again
 with `edit`. A file without limits is written exactly as before, and every

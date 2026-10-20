@@ -499,7 +499,7 @@ internal static class EmbeddedFiles
         AllowedOrigins = o["allowedOrigins"] is JsonArray a ? a.Select(TextOf).OfType<string>().ToList() : null,
         AllowWasm = o["allowWasm"] is JsonValue wasm && wasm.TryGetValue<bool>(out var allow) ? allow : null,
         Pdf = o["pdf"] is JsonObject pdf ? PdfFrom(pdf, strict: false) : null,
-        Edit = Changes.EditFrom(o["edit"]),
+        Edit = Changes.EditFrom(o["edit"] ?? o["editByKey"]), // a file with limits per key stores it as editByKey (spec 7.9.1)
         KeyService = KeyServiceAddress(o["keyService"]),
         Masks = Jazmin.Masks.PackageFrom(o["masks"]),
         Online = (o["online"] as JsonValue)?.TryGetValue<string>(out var online) == true

@@ -36,7 +36,7 @@ internal static class FormatConstants
     public static readonly IReadOnlySet<string> SupportedReaderFeatures = new HashSet<string> { IndexDeltas, NestedColumns };
 
     /// <summary>Writer features this implementation supports (spec 12): it refuses to modify a file with any other.</summary>
-    public static readonly IReadOnlySet<string> SupportedWriterFeatures = new HashSet<string> { Locks.Feature, Masks.Feature };
+    public static readonly IReadOnlySet<string> SupportedWriterFeatures = new HashSet<string> { Locks.Feature, Masks.Feature, Changes.EditLimitsFeature };
 
     public const string DefaultColumnGroup = "*";
     public const string WholeTable = "*"; // partition of a table without partitionBy

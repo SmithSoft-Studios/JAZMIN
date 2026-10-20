@@ -24,7 +24,16 @@ internal sealed partial class AccessConfig
     /// <summary>A grant with its expiry resolved to an absolute time and, for online grants, its share.</summary>
     public sealed record NormalizedGrant(
         JazminAccessKey Key, IReadOnlyList<string>? Rows, IReadOnlyList<string>? Columns, string? Label,
-        DateTimeOffset? Expires, JazminGrantMode Mode, byte[]? Share, IReadOnlyList<string>? Files = null);
+        DateTimeOffset? Expires, JazminGrantMode Mode, byte[]? Share, IReadOnlyList<string>? Files = null)
+    {
+        /// <summary>What the key may send back (spec 7.9.1): a limit, none (null), or lost (it may send nothing).</summary>
+        public JazminEditLimit? Edit { get; init; }
+
+        public bool EditLost { get; init; }
+
+        /// <summary>A limit kept from before: not checked against the document again.</summary>
+        public bool EditCarried { get; init; }
+    }
 
     /// <summary>One table's partition column and column groups (spec 7.6.2).</summary>
     public static AccessConfig NormalizeTable(string? partitionBy, Dictionary<string, string[]> columnGroups, IReadOnlyList<JazminColumn> columns)
@@ -71,8 +80,11 @@ internal sealed partial class AccessConfig
     {
         var config = new AccessConfig();
         var seen = new HashSet<string>();
+        var n = -1;
         foreach (var grant in grants)
         {
+            n++;
+            var limit = grant.EditLost || grant.Edit is null || grant.Edit.IsNone ? null : Changes.CheckLimitShape(grant.Edit, $"grant {n}: edit");
             if (grant.Columns is not null)
                 foreach (var c in grant.Columns)
                     if (!groupNames.Contains(c)) throw new JazminValidationException($"Grant: unknown column group '{c}'");
@@ -86,7 +98,10 @@ internal sealed partial class AccessConfig
             }
             // An online grant's share is held by the owner's key service; it stays the same across versions.
             var share = grant.Mode == JazminGrantMode.Online ? grant.Share ?? RandomNumberGenerator.GetBytes(32) : null;
-            config.Grants.Add(new NormalizedGrant(grant.Key, grant.Rows, grant.Columns, grant.Label, expires, grant.Mode, share, grant.Files));
+            config.Grants.Add(new NormalizedGrant(grant.Key, grant.Rows, grant.Columns, grant.Label, expires, grant.Mode, share, grant.Files)
+            {
+                Edit = limit, EditLost = grant.EditLost, EditCarried = grant.EditCarried,
+            });
         }
         return config;
     }

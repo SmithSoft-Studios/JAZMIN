@@ -240,6 +240,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     private int _nextContent;
     private JsonObject? _packageJson;
     private bool _packageSet;
+    private (bool Limited, JazminEditSettings? Edit)? _editState; // whether grants limit what keys send back (spec 7.9.1), once known
     private List<string> _fileGroupNames = new();
     private readonly Dictionary<string, SavedShape> _shapes = new(StringComparer.Ordinal); // saved export shapes (spec 6.8) by name
     private readonly List<WrittenChunk> _chunks = new();
@@ -580,7 +581,49 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             }
         }
         // nextContent: content ids are never reused, so block section ids stay unique across appends.
-        return new FilesInfo { Directories = directories, NextContent = _nextContent, Package = package?.ToJsonString() ?? "", Segment = segment };
+        return new FilesInfo { Directories = directories, NextContent = _nextContent, Package = StoredPackage(package)?.ToJsonString() ?? "", Segment = segment };
+    }
+
+    /// <summary>
+    /// The package as stored: with limits per key, the document's settings as editByKey (spec 7.9.1), so releases that
+    /// don't know limits find no edit and apply no change file; otherwise as edit.
+    /// </summary>
+    private JsonObject? StoredPackage(JsonObject? package)
+    {
+        if (package?["edit"] is null && package?["editByKey"] is null) return package;
+        var name = EditLimits().Limited ? "editByKey" : "edit";
+        var stored = new JsonObject();
+        foreach (var (key, value) in package)
+            stored[key is "edit" or "editByKey" ? name : key] = value?.DeepClone();
+        return stored;
+    }
+
+    /// <summary>
+    /// Whether the grants limit what keys send back (spec 7.9.1): a grant whose limit narrows the document's settings, or
+    /// whose limit an older release lost. Limits given with a grant (not carried from before) may only narrow: checked
+    /// here, against the document's settings and the columns of its table the grant sees.
+    /// </summary>
+    private (bool Limited, JazminEditSettings? Edit) EditLimits()
+    {
+        if (_editState is { } known) return known;
+        var edit = _packageSet ? _options.Package?.Edit : Changes.EditFrom(_packageJson?["edit"] ?? _packageJson?["editByKey"]);
+        var grants = _access?.Grants ?? [];
+        if (edit is not null)
+        {
+            var name = edit.Table ?? (_continue is null ? _tables[0].Name : null);
+            var table = _tables.FirstOrDefault(t => t.Name == name);
+            for (var n = 0; n < grants.Count; n++)
+            {
+                var g = grants[n];
+                if (g.Edit is null || g.EditCarried) continue;
+                var granted = table is null || g.Columns is null ? null
+                    : table.ColumnGroups.Where(group => g.Columns.Contains(group.Name)).SelectMany(group => group.Cols.Select(i => table.Columns[i].Name)).ToHashSet(StringComparer.Ordinal);
+                Changes.CheckEditLimit(g.Edit, edit, granted, $"grant {n}: edit");
+            }
+        }
+        var limited = grants.Any(g => g.EditLost || Changes.LimitNarrows(g.Edit, edit));
+        _editState = (limited, edit);
+        return (limited, edit);
     }
 
     /// <summary>Continues an existing file at its end (used by <see cref="JazminFile.Append"/>).</summary>
@@ -1119,8 +1162,10 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             ReaderFeatures = readerFeatures,
             // file-locks while the file has a lock: writers that would not keep them must not modify it (spec 6.8.1, 12).
             // masked-columns while a column is masked: writers that don't know masks would grant them unmasked (spec 7.6.8).
-            WriterFeatures = (cont?.Header.WriterFeatures ?? []).Where(f => f != Jazmin.Locks.Feature && f != Masks.Feature)
-                .Concat(_locks.Count > 0 ? [Jazmin.Locks.Feature] : []).Concat(AllMasks().Count > 0 ? [Masks.Feature] : []).ToList(),
+            // edit-limits while a grant limits what its key sends back: writers that drop limits must not modify it (7.9.1).
+            WriterFeatures = (cont?.Header.WriterFeatures ?? []).Where(f => f != Jazmin.Locks.Feature && f != Masks.Feature && f != Changes.EditLimitsFeature)
+                .Concat(_locks.Count > 0 ? [Jazmin.Locks.Feature] : []).Concat(AllMasks().Count > 0 ? [Masks.Feature] : [])
+                .Concat(EditLimits().Limited ? [Changes.EditLimitsFeature] : []).ToList(),
             Created = cont?.Header.Created ?? Now.ToUnixTimeMilliseconds(),
             Modified = cont is null ? 0 : Now.ToUnixTimeMilliseconds(),
             AppendCount = segment,
@@ -1432,6 +1477,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             if (g.Expires is { } expires) grant["expires"] = Iso(expires);
             grant["mode"] = g.Mode == JazminGrantMode.Online ? "online" : "offline";
             if (g.Share is not null) grant["share"] = Convert.ToBase64String(g.Share);
+            if (GrantEdit(g) is { } limit) grant["edit"] = limit; // what the key may send back (spec 7.9.1)
             return (JsonNode?)grant;
         }).ToArray());
         // Every lock with its key and secret: the owner opens locked files, and rewrites keep the locks (spec 6.8.1).
@@ -1505,10 +1551,14 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             if (maskGroups.Count > 0) bundle["masks"] = new JsonObject { ["locks"] = maskLocks, ["groups"] = maskGroups };
             if (grant.Expires is { } expires) bundle["expires"] = Iso(expires);
             if (grant.Mode == JazminGrantMode.Online) bundle["online"] = true;
+            if (GrantEdit(grant) is { } limit) bundle["edit"] = limit; // what the key may send back, for its sender's software (7.9.1)
             slots.Add(AccessCrypto.SealSlot(grant.Key.Secret, _salt, _fileId, bundle, grant.Share));
         }
         return slots;
     }
+
+    /// <summary>A grant's edit member in a file with limits: its limit, {} for none, nothing when an older release lost it.</summary>
+    private JsonObject? GrantEdit(AccessConfig.NormalizedGrant g) => !EditLimits().Limited || g.EditLost ? null : Changes.EditLimitJson(g.Edit);
 
     /// <summary>File groups a grant's key sees: everyone's, its partitions', and the named ones it was granted.</summary>
     private bool SeesFileGroup(AccessConfig.NormalizedGrant grant, string name, string id) =>

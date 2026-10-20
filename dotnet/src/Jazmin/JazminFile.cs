@@ -379,7 +379,11 @@ public static class JazminFile
                 var accessKey = owner.CreateAccessKey();
                 issued.Add(new JazminReissuedKey(g.Key.Id, accessKey, g.Label, g.Mode, expires));
                 // No share: an online grant gets a new one, which the new owner key's unlock tokens use.
-                next.Add(new JazminGrant(accessKey) { Rows = g.Rows, Columns = g.Columns, Files = g.Files, Label = g.Label, Expires = expires, Mode = g.Mode });
+                next.Add(new JazminGrant(accessKey)
+                {
+                    Rows = g.Rows, Columns = g.Columns, Files = g.Files, Label = g.Label, Expires = expires, Mode = g.Mode,
+                    Edit = g.Edit, EditLost = g.EditLost, EditCarried = true, // what the key may send back stays as it was (7.9.1)
+                });
             }
             return next;
         }
@@ -1747,6 +1751,7 @@ public static class JazminFile
         {
             var key = JazminAccessKey.FromOwnerDirectory((string)node!["key"]!);
             if (byId && revoked.Contains(key.Id)) continue;
+            var limit = Changes.EditLimitFrom(node["edit"], reader.LimitsFile);
             grants[byId ? key.Id : (n++).ToString(CultureInfo.InvariantCulture)] = new JazminGrant(key)
             {
                 Rows = JazminReader.ListOrAll(node["rows"]),
@@ -1761,9 +1766,18 @@ public static class JazminFile
                     JsonValue all => [(string)all!],
                     _ => null,
                 },
+                // The grant's limit on what its key sends back is the file's, not checked again (spec 7.9.1).
+                Edit = limit.Edit, EditLost = limit.Lost, EditCarried = true,
             };
         }
-        foreach (var grant in update.Grant) grants[grant.Key.Id] = grant; // re-granting replaces the previous grant
+        foreach (var grant in update.Grant)
+        {
+            // Re-granting replaces the previous grant, but keeps the key's limit on what it sends back unless one is
+            // given; JazminEditLimit.None removes it (spec 7.9.1).
+            grants[grant.Key.Id] = grant.Edit is null && grants.TryGetValue(grant.Key.Id, out var before)
+                ? grant.WithEdit(before.Edit, before.EditLost, carried: true)
+                : grant.WithEdit(grant.Edit is { IsNone: true } ? null : grant.Edit, lost: false, carried: false);
+        }
         return new JazminAccessOptions
         {
             PartitionBy = partitionBy,

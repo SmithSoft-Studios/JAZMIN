@@ -82,4 +82,42 @@ Check("masked columns: the owner reads every column", () =>
     using var r = Open("masks.jzm", keys["owner"]!.GetValue<string>());
     return Same((string?)r.Rows().First()["account"], "4821 1000");
 });
+// Limits per key (spec 7.9.1): no release that doesn't know them may apply a change file to such a file.
+Check("limits per key: the limited key reads every row; the document takes no changes there", () =>
+{
+    using var r = Open("edit-limits.jzm", keys["reader"]!.GetValue<string>());
+    return Same((r.RowCount, r.Package?.Edit is null), (60L, true));
+});
+Check("limits per key: applying the out-of-limit change file is refused, also as a dry run", () =>
+{
+    var copy = Path.Combine(Path.GetTempPath(), $"jazmin-compat-{Guid.NewGuid():N}.jzm");
+    File.Copy(Path.Combine(folder, "edit-limits.jzm"), copy);
+    var before = File.ReadAllBytes(copy);
+    var change = File.ReadAllBytes(Path.Combine(folder, "edit-limits-change.jzm"));
+    var owner = JazminKey.Parse(keys["owner"]!.GetValue<string>());
+    foreach (var dryRun in new[] { true, false })
+    {
+        try
+        {
+            JazminFile.ApplyChanges(copy, change, new JazminApplyChangesOptions { Key = owner, DryRun = dryRun });
+            return $"applied (dry run: {dryRun})";
+        }
+        catch (JazminException error) when (error.Message.Contains("doesn't take changes", StringComparison.Ordinal)) { }
+    }
+    return File.ReadAllBytes(copy).AsSpan().SequenceEqual(before) ? null : "the file changed";
+});
+if (Version.Parse(version) >= new Version(1, 7))
+    Check("limits per key: a rewrite is refused (the writer feature edit-limits), the file unchanged", () =>
+    {
+        var copy = Path.Combine(Path.GetTempPath(), $"jazmin-compat-{Guid.NewGuid():N}.jzm");
+        File.Copy(Path.Combine(folder, "edit-limits.jzm"), copy);
+        var before = File.ReadAllBytes(copy);
+        try
+        {
+            JazminFile.Compact(copy, JazminKey.Parse(keys["owner"]!.GetValue<string>()));
+            return "rewritten";
+        }
+        catch (JazminException error) when (error.Message.Contains("edit-limits", StringComparison.Ordinal)) { }
+        return File.ReadAllBytes(copy).AsSpan().SequenceEqual(before) ? null : "the file changed";
+    });
 return failed == 0 ? 0 : 1;

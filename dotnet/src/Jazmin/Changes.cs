@@ -129,6 +129,102 @@ internal static class Changes
         };
     }
 
+    // ---- limits per key (spec 7.9.1) ---------------------------------------------------------------------------
+
+    /// <summary>The writer feature of a file whose grants limit what keys send back.</summary>
+    public const string EditLimitsFeature = "edit-limits";
+
+    /// <summary>A limit's columns checked (distinct, non-empty names): the limit, or a refusal naming <paramref name="where"/>.</summary>
+    public static JazminEditLimit CheckLimitShape(JazminEditLimit limit, string where)
+    {
+        if (limit.Columns is { } columns)
+        {
+            if (columns.Any(string.IsNullOrEmpty)) throw new JazminValidationException($"{where}.columns must be a list of column names");
+            if (columns.Distinct(StringComparer.Ordinal).Count() != columns.Count) throw new JazminValidationException($"{where}.columns names a column twice");
+        }
+        return limit;
+    }
+
+    /// <summary>A limit as the file stores it: its members in the order columns, add, delete, only those given.</summary>
+    public static JsonObject EditLimitJson(JazminEditLimit? limit)
+    {
+        var json = new JsonObject();
+        if (limit?.Columns is { } columns) json["columns"] = new JsonArray(columns.Select(c => (JsonNode?)c).ToArray());
+        if (limit?.Add is { } add) json["add"] = add;
+        if (limit?.Delete is { } delete) json["delete"] = delete;
+        return json;
+    }
+
+    /// <summary>
+    /// A grant's (or a key's own) stored limit: the limit (null for none, also for {}), whether it was lost (none, in a
+    /// file with limits) and whether it can't be read (another member, or a member of another type: it allows nothing).
+    /// </summary>
+    public static (JazminEditLimit? Edit, bool Lost, bool Unreadable) EditLimitFrom(JsonNode? node, bool limitsFile)
+    {
+        if (node is null) return (null, limitsFile, false);
+        if (node is not JsonObject o) return (null, true, true);
+        IReadOnlyList<string>? columns = null;
+        bool? add = null, delete = null;
+        foreach (var (name, value) in o)
+        {
+            switch (name)
+            {
+                case "columns" when value is JsonArray list && list.All(c => c is JsonValue v && v.TryGetValue<string>(out var s) && s.Length > 0):
+                    columns = list.Select(c => (string)c!).ToList();
+                    if (columns.Distinct(StringComparer.Ordinal).Count() != columns.Count) return (null, true, true);
+                    break;
+                case "add" when value is JsonValue v && v.TryGetValue<bool>(out var a): add = a; break;
+                case "delete" when value is JsonValue v && v.TryGetValue<bool>(out var d): delete = d; break;
+                default: return (null, true, true);
+            }
+        }
+        var limit = new JazminEditLimit { Columns = columns, Add = add, Delete = delete };
+        return (limit.IsEmpty ? null : limit, false, false);
+    }
+
+    /// <summary>
+    /// Whether a limit narrows what the document allows. With no document settings, any limit that says something
+    /// counts, so that it is kept until the document allows changes again.
+    /// </summary>
+    public static bool LimitNarrows(JazminEditLimit? limit, JazminEditSettings? edit)
+    {
+        if (limit is null || limit.IsEmpty) return false;
+        if (edit is null) return true;
+        return (limit.Columns is { } columns && edit.Columns.Any(c => !columns.Contains(c, StringComparer.Ordinal)))
+            || (limit.Add == false && edit.Add) || (limit.Delete == false && edit.Delete);
+    }
+
+    /// <summary>
+    /// What a key may send back: the document's settings narrowed by its limit and the columns it sees (null: every
+    /// column). A key whose limit was lost may send nothing.
+    /// </summary>
+    public static JazminEditSettings Effective(JazminEditSettings edit, JazminEditLimit? limit, IReadOnlySet<string>? visible, bool lost = false)
+    {
+        if (lost) return edit with { Columns = [], Add = false, Delete = false };
+        return edit with
+        {
+            Columns = edit.Columns.Where(c => (limit?.Columns is null || limit.Columns.Contains(c, StringComparer.Ordinal)) && (visible is null || visible.Contains(c))).ToList(),
+            Add = edit.Add && limit?.Add != false,
+            Delete = edit.Delete && limit?.Delete != false,
+        };
+    }
+
+    /// <summary>
+    /// Checks a limit given with a grant against the document's settings and the columns of its table the grant sees
+    /// (<paramref name="granted"/>, null for every column): it may only narrow.
+    /// </summary>
+    public static void CheckEditLimit(JazminEditLimit limit, JazminEditSettings? edit, IReadOnlySet<string>? granted, string where)
+    {
+        if (edit is null) return;
+        foreach (var c in limit.Columns ?? [])
+        {
+            if (!edit.Columns.Contains(c, StringComparer.Ordinal)) throw new JazminValidationException($"{where} can only narrow the document's: '{c}' isn't an editable column");
+            if (granted is not null && !granted.Contains(c)) throw new JazminValidationException($"{where}.columns: '{c}' isn't in a column group this key sees");
+        }
+        if (limit.Add == true && !edit.Add) throw new JazminValidationException($"{where} can only narrow the document's: the document doesn't allow adding rows");
+        if (limit.Delete == true && !edit.Delete) throw new JazminValidationException($"{where} can only narrow the document's: the document doesn't allow deleting rows");
+    }
+
     /// <summary>Checks package.edit against the tables written (a table this writer doesn't know was checked before).</summary>
     public static void CheckEdit(JsonNode edit, IReadOnlyList<(string Name, IReadOnlyList<JazminColumn> Columns, string? PartitionBy)> tables, bool partial)
     {
@@ -236,7 +332,11 @@ internal static class Changes
 
     private sealed record Change(string Op, IReadOnlyDictionary<string, object?> Key, Dictionary<string, object?> Values);
 
-    private static List<Change> ChangeList(JazminChanges changes, JazminEditSettings edit, HashSet<string> editable)
+    /// <summary>
+    /// A call's changes, checked against what the document allows (<paramref name="edit"/>, and <paramref name="editable"/>:
+    /// its columns the key sees) and what the key may send (<paramref name="allowed"/>: narrowed by its limit, spec 7.9.1).
+    /// </summary>
+    private static List<Change> ChangeList(JazminChanges changes, JazminEditSettings edit, HashSet<string> editable, JazminEditSettings allowed)
     {
         var output = new List<Change>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -245,6 +345,8 @@ internal static class Changes
             var list = op switch { "add" => changes.Add, "update" => changes.Update, _ => changes.Delete };
             if (list.Count > 0 && op == "add" && !edit.Add) throw new JazminValidationException("This document doesn't allow adding rows");
             if (list.Count > 0 && op == "delete" && !edit.Delete) throw new JazminValidationException("This document doesn't allow deleting rows");
+            if (list.Count > 0 && op == "add" && !allowed.Add) throw new JazminValidationException("This key can't add rows");
+            if (list.Count > 0 && op == "delete" && !allowed.Delete) throw new JazminValidationException("This key can't delete rows");
             foreach (var row in list)
             {
                 foreach (var k in edit.Key)
@@ -256,6 +358,7 @@ internal static class Changes
                     if (edit.Key.Contains(name, StringComparer.Ordinal)) continue;
                     if (op == "delete") throw new JazminValidationException($"Changes: give the rows to delete by their key only ('{name}' isn't a key column)");
                     if (!editable.Contains(name)) throw new JazminValidationException($"Column '{name}' can't be changed through this document");
+                    if (!allowed.Columns.Contains(name, StringComparer.Ordinal)) throw new JazminValidationException($"Column '{name}' can't be changed with this key");
                     values[name] = value;
                 }
                 if (op == "update" && values.Count == 0) throw new JazminValidationException($"Changes: the update of {Show(key, edit.Key)} changes nothing");
@@ -282,14 +385,21 @@ internal static class Changes
             if (key is null && password is null) throw new JazminValidationException("Give the key or password the file opens with, to seal its changes with");
             (sealKey, sealPassword) = (key, key is null ? password : null);
         }
+        // A shared file's grant may limit what its key sends back (spec 7.9.1); a limit an older release lost allows nothing.
+        var mine = source.Access is { IsOwner: false } info ? info : null;
+        if (mine is { EditLost: true }) throw new JazminValidationException("This key's limits were lost: ask the file's owner to grant it again");
         var reader = TableReader(source, edit);
         try
         {
             var columns = reader.Columns.ToDictionary(c => c.Name, StringComparer.Ordinal);
             foreach (var k in edit.Key)
                 if (!columns.ContainsKey(k)) throw new JazminValidationException($"The key column '{k}' isn't visible with this key");
-            var editable = edit.Columns.Where(columns.ContainsKey).ToList();
-            var list = ChangeList(changes, edit, editable.ToHashSet(StringComparer.Ordinal));
+            var visible = edit.Columns.Where(columns.ContainsKey).ToHashSet(StringComparer.Ordinal); // the document's columns this key sees
+            var allowed = Effective(edit, mine?.Edit, visible);
+            if (mine?.Edit is not null && allowed.Columns.Count == 0 && !allowed.Add && !allowed.Delete)
+                throw new JazminValidationException("This key can't send changes to this document");
+            var editable = allowed.Columns.ToList(); // the change file lists what this key may change
+            var list = ChangeList(changes, edit, visible, allowed);
             var current = FindByKeys(reader, edit.Key, list.Select(c => c.Key));
             var rows = new List<Dictionary<string, object?>>();
             foreach (var (op, k, values) in list)
@@ -449,7 +559,9 @@ internal static class Changes
         var partitionBy = table.Access?.PartitionBy;
         var own = grant?.Rows is { } rows ? rows.ToHashSet(StringComparer.Ordinal) : null;
         var covered = grant?.Columns is { } groups ? groups.SelectMany(g => table.Access!.GroupColumns!.TryGetValue(g, out var cs) ? cs : []).ToHashSet(StringComparer.Ordinal) : null;
-        bool MayWrite(string name) => edit.Columns.Contains(name, StringComparer.Ordinal) && changeColumns.ContainsKey(name) && (covered is null || covered.Contains(name));
+        var limit = grant?.Edit; // what the sender's grant allows it to send back (spec 7.9.1)
+        bool MayWrite(string name) => edit.Columns.Contains(name, StringComparer.Ordinal) && changeColumns.ContainsKey(name) && (covered is null || covered.Contains(name))
+            && (limit?.Columns is null || limit.Columns.Contains(name, StringComparer.Ordinal));
         bool OwnsPartition(IReadOnlyDictionary<string, object?> row) => partitionBy is null || own is null || own.Contains(Canonical(row[partitionBy]));
 
         var list = changes.Rows().Select(r => (IReadOnlyDictionary<string, object?>)r).ToList();
@@ -470,6 +582,10 @@ internal static class Changes
             if (edit.Key.Any(k => row[k] is null)) { Refuse("no key"); continue; }
             if (op == "add" && !edit.Add) { Refuse("the document doesn't allow adding rows"); continue; }
             if (op == "delete" && !edit.Delete) { Refuse("the document doesn't allow deleting rows"); continue; }
+            if (grant is { EditUnreadable: true }) { Refuse("this sender's grant has a limit this library can't read"); continue; }
+            if (grant is { EditLost: true }) { Refuse("this sender's limits were lost when an older release rewrote the file: grant the key again"); continue; }
+            if (op == "add" && limit?.Add == false) { Refuse("this sender's grant doesn't allow adding rows"); continue; }
+            if (op == "delete" && limit?.Delete == false) { Refuse("this sender's grant doesn't allow deleting rows"); continue; }
             List<string>? set = op == "delete" ? [] : row[Set] is JsonArray a && a.All(x => x is JsonValue v && v.TryGetValue<string>(out _)) ? a.Select(x => (string)x!).ToList() : null;
             if (set is null) { Refuse("no list of the columns it sets"); continue; }
             var notAllowed = set.FirstOrDefault(n => !MayWrite(n));

@@ -30,6 +30,46 @@ public sealed class JazminGrant(JazminAccessKey key)
 
     /// <summary>Internal: an online grant's server-held share, carried across rewrites so tokens stay valid.</summary>
     internal byte[]? Share { get; init; }
+
+    /// <summary>
+    /// What this key may send back through the document (spec 7.9.1, 1.8): narrower than package.edit, never wider.
+    /// Given again for a key already granted: null keeps its limit, <see cref="JazminEditLimit.None"/> removes it.
+    /// </summary>
+    public JazminEditLimit? Edit { get; init; }
+
+    /// <summary>Internal: an older release lost this key's limit, so it may send nothing until granted again with one.</summary>
+    internal bool EditLost { get; init; }
+
+    /// <summary>Internal: the limit is the file's, kept from before, so it isn't checked against the document again.</summary>
+    internal bool EditCarried { get; init; }
+
+    /// <summary>The same grant with another limit (and whether it was lost, or kept from before).</summary>
+    internal JazminGrant WithEdit(JazminEditLimit? edit, bool lost, bool carried) => new(Key)
+    {
+        Rows = Rows, Columns = Columns, Label = Label, Expires = Expires, ExpiresIn = ExpiresIn, Mode = Mode, Files = Files, Share = Share,
+        Edit = edit, EditLost = lost, EditCarried = carried,
+    };
+}
+
+/// <summary>A grant's limit on what its key may send back (spec 7.9.1): each member left null narrows nothing.</summary>
+public sealed class JazminEditLimit
+{
+    /// <summary>The columns this key may set: some of package.edit's columns.</summary>
+    public IReadOnlyList<string>? Columns { get; init; }
+
+    /// <summary>false: this key may not add rows.</summary>
+    public bool? Add { get; init; }
+
+    /// <summary>false: this key may not delete rows.</summary>
+    public bool? Delete { get; init; }
+
+    /// <summary>Given with a grant for a key already granted: removes its limit.</summary>
+    public static JazminEditLimit None { get; } = new() { IsNone = true };
+
+    internal bool IsNone { get; private init; }
+
+    /// <summary>Whether it says nothing (no member given).</summary>
+    internal bool IsEmpty => Columns is null && Add is null && Delete is null;
 }
 
 public enum JazminGrantMode
@@ -97,6 +137,15 @@ public sealed record JazminGrantInfo(string KeyId, IReadOnlyList<string>? Rows, 
     /// grant for the key replaces them.
     /// </summary>
     public IReadOnlyList<string>? Files { get; init; } = [];
+
+    /// <summary>The key's limit on what it may send back (spec 7.9.1); null when it has none.</summary>
+    public JazminEditLimit? Edit { get; init; }
+
+    /// <summary>An older release lost the key's limit (or it can't be read): it may send nothing until granted again with one.</summary>
+    public bool EditLost { get; init; }
+
+    /// <summary>The key's limit is there but this library can't read it: it may send nothing.</summary>
+    public bool EditUnreadable { get; init; }
 }
 
 /// <summary>Access-control details of an open file.</summary>
@@ -116,6 +165,12 @@ public sealed record JazminAccessInfo(
 
     /// <summary>Access keys: when access ends (null: never).</summary>
     public DateTimeOffset? Expires { get; init; }
+
+    /// <summary>Access keys: this key's limit on what it may send back (spec 7.9.1); null when it has none.</summary>
+    public JazminEditLimit? Edit { get; init; }
+
+    /// <summary>Access keys: an older release lost this key's limit, so it may send nothing until the owner grants it again.</summary>
+    public bool EditLost { get; init; }
 
     /// <summary>Owner only: the columns of each column group ("*" holds the columns of no named group).</summary>
     public IReadOnlyDictionary<string, IReadOnlyList<string>>? GroupColumns { get; init; }

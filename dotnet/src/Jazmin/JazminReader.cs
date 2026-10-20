@@ -192,6 +192,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         public DateTimeOffset? Expires { get; init; }
         public bool Online { get; init; }
         public byte[]? Submission { get; init; } // this access key's submission key (spec 7.8), when the file has one
+        public JsonNode? EditLimit { get; init; } // what this key may send back (spec 7.9.1), as written
         public JsonObject? Directory { get; set; }
         public string? DirectoryText { get; set; }
 
@@ -758,6 +759,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             Online = (bool?)bundle["online"] ?? false,
             FileSecrets = Secrets(bundle["files"]),
             Submission = bundle["submission"] is { } submission ? Convert.FromBase64String((string)submission!) : null,
+            EditLimit = bundle["edit"]?.DeepClone(),
         };
         ReadBundleMasks(bundle["masks"], state);
         return (state, AccessCrypto.HeaderKey(headerSecret, salt));
@@ -1358,6 +1360,36 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <summary>Settings for viewers that render the embedded files, or null.</summary>
     public JazminPackage? Package => EmbeddedFiles.PackageFrom(PackageJson);
 
+    /// <summary>Whether the file's grants limit what keys send back (spec 7.9.1): its writer feature, or editByKey.</summary>
+    internal bool LimitsFile => _hasLimits ??= _header.WriterFeatures.Contains(Changes.EditLimitsFeature) || PackageJson?["editByKey"] is not null;
+
+    private bool? _hasLimits;
+
+    /// <summary>
+    /// What this key may send back through the document now (spec 7.9.1): the document's edit settings narrowed by the
+    /// key's limit and the columns it sees; null when the document takes no changes. A key whose limit was lost may
+    /// send nothing.
+    /// </summary>
+    public JazminEditSettings? Edit
+    {
+        get
+        {
+            if (Package?.Edit is not { } edit) return null;
+            if (_access is null || _access.IsOwner) return edit;
+            var (limit, lost, _) = Changes.EditLimitFrom(_access.EditLimit, LimitsFile);
+            var name = edit.Table ?? Tables[0];
+            var table = name == TableName ? this : OpenTable(name);
+            try
+            {
+                return Changes.Effective(edit, limit, table.Columns.Select(c => c.Name).ToHashSet(StringComparer.Ordinal), lost);
+            }
+            finally
+            {
+                if (!ReferenceEquals(table, this)) table.Dispose();
+            }
+        }
+    }
+
     /// <summary>
     /// Saved export shapes this key can use, by name (groups for the owner and in files that aren't shared). Shapes that
     /// use a column this key can't see are left out. Run one with <see cref="Formats.JazminShape.FromFile"/>.
@@ -1857,22 +1889,34 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             var partitionBy = _table.PartitionBy.Length > 0 ? _table.PartitionBy : null;
             var columnGroups = _groups.Select(g => g.Name).ToList();
             if (!_access.IsOwner)
+            {
+                var (edit, lost, _) = Changes.EditLimitFrom(_access.EditLimit, LimitsFile);
                 return new JazminAccessInfo(false, partitionBy, columnGroups, _access.PartitionNames.Values.ToList(), _groups.Where(g => g.Visible).Select(g => g.Name).ToList(), null)
                 {
                     KeyId = Convert.ToHexString(OwnerSigning.SlotId(_access.KeySecret)).ToLowerInvariant(),
                     Online = _access.Online,
                     Expires = _access.Expires,
+                    Edit = edit,
+                    EditLost = lost,
                 };
+            }
+            var limitsFile = LimitsFile;
             var directory = OwnerDirectory();
             return new JazminAccessInfo(true, partitionBy, columnGroups,
                 directory["partitions"]!.AsArray().Select(n => (string)n!).ToList(),
                 columnGroups,
-                directory["grants"]!.AsArray().Select(g => new JazminGrantInfo(
-                    JazminAccessKey.FromOwnerDirectory((string)g!["key"]!).Id, ListOrAll(g["rows"]), GrantColumns(g), (string?)g["label"])
+                directory["grants"]!.AsArray().Select(g =>
                 {
-                    Mode = (string?)g["mode"] == "online" ? JazminGrantMode.Online : JazminGrantMode.Offline,
-                    Expires = g["expires"] is { } e ? DateTimeOffset.Parse((string)e!, CultureInfo.InvariantCulture) : null,
-                    Files = g["files"] is null ? [] : ListOrAll(g["files"]),
+                    var (edit, lost, unreadable) = Changes.EditLimitFrom(g!["edit"], limitsFile);
+                    return new JazminGrantInfo(JazminAccessKey.FromOwnerDirectory((string)g["key"]!).Id, ListOrAll(g["rows"]), GrantColumns(g), (string?)g["label"])
+                    {
+                        Mode = (string?)g["mode"] == "online" ? JazminGrantMode.Online : JazminGrantMode.Offline,
+                        Expires = g["expires"] is { } e ? DateTimeOffset.Parse((string)e!, CultureInfo.InvariantCulture) : null,
+                        Files = g["files"] is null ? [] : ListOrAll(g["files"]),
+                        Edit = edit,
+                        EditLost = lost,
+                        EditUnreadable = unreadable,
+                    };
                 }).ToList())
             {
                 GroupColumns = _groups.ToDictionary(g => g.Name, g => (IReadOnlyList<string>)g.Cols.Select(i => _allColumns[i].Name).ToList()),

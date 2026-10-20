@@ -932,6 +932,55 @@ var signed43 = signedTestFile is null ? null : JazminFile.VerifyPublisher(signed
 Console.WriteLine($"43. {JazminFile.VerifyPublisher(path).Status}{(signed43 is null ? "" : $" {signed43.Status} {signed43.Name ?? "null"}")}");
 // 43. None Signed null
 
+// 44. Limits per key (USER-GUIDE 19.5): one shared document, different keys allowed different changes. The doctor may
+// acknowledge a result; infection control may only add a note. The owner's ApplyChanges refuses anything else, even in
+// a change file made by hand; files with limits take changes only through 1.8 or later (older releases still read them).
+var acks44 = Path.Combine(dir, "acks.jzm");
+var hospital44 = JazminKey.Generate();
+var doctor44 = hospital44.CreateAccessKey();
+var ipc44 = hospital44.CreateAccessKey();
+using (var writer = JazminWriter.Create(acks44,
+    [new("ack", JazminType.String) { Nullable = false }, new("ward", JazminType.String) { Nullable = false }, new("ackAction", JazminType.String), new("ackNote", JazminType.String)],
+    new JazminWriteOptions
+    {
+        Key = hospital44,
+        Files = [new JazminFileInput("index.html", System.Text.Encoding.UTF8.GetBytes("<h1>Critical results</h1>"))],
+        Package = new JazminPackage { Entry = "index.html", Edit = new JazminEditSettings { Key = ["ack"], Columns = ["ackAction", "ackNote"] } },
+        Access = new JazminAccessOptions
+        {
+            PartitionBy = "ward",
+            Grants =
+            [
+                new JazminGrant(doctor44) { Label = "Doctor" },
+                new JazminGrant(ipc44) { Label = "Infection control", Edit = new JazminEditLimit { Columns = ["ackNote"] } },
+            ],
+        },
+    }))
+{
+    writer.WriteRow(new Dictionary<string, object?> { ["ack"] = "A-1", ["ward"] = "W1", ["ackAction"] = null, ["ackNote"] = null });
+    writer.WriteRow(new Dictionary<string, object?> { ["ack"] = "A-2", ["ward"] = "W2", ["ackAction"] = null, ["ackNote"] = null });
+}
+string refused44;
+byte[] note44;
+string allowed44;
+using (var asIpc = JazminReader.Open(acks44, new JazminReadOptions { AccessKey = ipc44, AccessState = null }))
+{
+    allowed44 = string.Join(",", asIpc.Edit!.Columns);
+    try
+    {
+        JazminFile.WriteChanges(asIpc, new JazminChanges { Update = [new Dictionary<string, object?> { ["ack"] = "A-1", ["ackAction"] = "acknowledged" }] });
+        refused44 = "not refused";
+    }
+    catch (JazminValidationException error)
+    {
+        refused44 = error.Message;
+    }
+    note44 = JazminFile.WriteChanges(asIpc, new JazminChanges { Update = [new Dictionary<string, object?> { ["ack"] = "A-1", ["ackNote"] = "isolation started" }] });
+}
+Console.WriteLine($"44. {allowed44} | {refused44} | {JazminFile.ApplyChanges(acks44, note44, new JazminApplyChangesOptions { Key = hospital44 }).Updated} applied");
+JazminFile.GrantAccess(acks44, hospital44, new JazminGrant(ipc44) { Rows = ["W1"], Label = "Infection control" }); // Edit not given: the limit is kept
+// 44. ackNote | Column 'ackAction' can't be changed with this key | 1 applied
+
 Directory.Delete(dir, true);
 
 /// <summary>

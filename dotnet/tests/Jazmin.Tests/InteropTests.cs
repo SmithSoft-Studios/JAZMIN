@@ -311,6 +311,134 @@ public class InteropTests
         AssertChangesApply(source, Path.Combine(OutDir, "dotnet-edit-changes.jzm"));
     }
 
+    // ---- limits per key (spec 7.9.1): spec/fixtures/edit-limits/edit-limits.json -----------------------------------
+
+    private static readonly string LimitsDir = Path.Combine(Dir, "edit-limits");
+    private static readonly JsonObject Limits = JsonNode.Parse(File.ReadAllText(Path.Combine(LimitsDir, "edit-limits.json")))!.AsObject();
+
+    private static JazminEditLimit? LimitFrom(JsonNode? node) => Changes.EditLimitFrom(node, limitsFile: false).Edit;
+
+    private static string Show(JazminEditLimit? limit) => limit is null ? "null" : Changes.EditLimitJson(limit).ToJsonString();
+
+    private static string Show(JazminEditSettings? edit) => edit is null ? "null"
+        : $"{edit.Table}|{string.Join(",", edit.Key)}|{string.Join(",", edit.Columns)}|{edit.Add}|{edit.Delete}";
+
+    private static JazminEditSettings EditSettingsFrom(JsonNode? node) => Changes.EditFrom(node)!;
+
+    /// <summary>Reads each key's limit, applies the limited key's change file, and the lost file's refusals.</summary>
+    private static void AssertLimits(string file, string changeFile, string lostFile)
+    {
+        var owner = JazminKey.Parse((string)Keys["key"]!);
+        using (var asOwner = JazminReader.Open(file, new JazminReadOptions { Key = owner }))
+        {
+            Assert.Equal(Limits["writerFeatures"]!.AsArray().Select(f => (string)f!).ToList(), asOwner.WriterFeatures);
+            Assert.Equal(Show(EditSettingsFrom(Limits["package"]!["edit"])), Show(asOwner.Package!.Edit));
+            var byLabel = asOwner.Access!.Grants!.ToDictionary(g => g.Label!);
+            foreach (var g in Limits["grants"]!.AsArray())
+                Assert.Equal(Show(LimitFrom(g!["edit"])), Show(byLabel[(string)g["label"]!].Edit));
+        }
+        foreach (var (name, seen) in Limits["seen"]!.AsObject())
+        {
+            using var r = JazminReader.Open(file, new JazminReadOptions { AccessKey = JazminAccessKey.Parse((string)Keys[name]!), AccessState = null });
+            Assert.Equal(Show(LimitFrom(seen!["limit"])), Show(r.Access!.Edit));
+            Assert.Equal(Show(EditSettingsFrom(seen["edit"])), Show(r.Edit));
+        }
+        var copy = Path.Combine(Directory.CreateTempSubdirectory("jazmin-edit-limits-").FullName, "acks.jzm");
+        File.Copy(file, copy);
+        var change = File.ReadAllBytes(changeFile);
+        var applied = Limits["applied"]!;
+        var result = JazminFile.ApplyChanges(copy, change, new JazminApplyChangesOptions { Key = owner });
+        Assert.Equal(((long)applied["updated"]!, (long)applied["added"]!, (long)applied["deleted"]!, 0), (result.Updated, result.Added, result.Deleted, result.Conflicts.Count));
+        Assert.Equal(applied["refused"]!.AsArray().Select(x => $"{x!["op"]} {x["key"]!["ack"]}: {x["reason"]}").ToList(),
+            result.Refused.Select(x => $"{x.Op} {x.Key["ack"]}: {x.Reason}").ToList());
+        using (var after = JazminReader.Open(copy, new JazminReadOptions { Key = owner }))
+        {
+            var rows = after.Rows().ToDictionary(row => (string)row["ack"]!);
+            foreach (var (ack, expected) in applied["after"]!.AsObject())
+                Assert.Equal(((string?)expected!["ackAction"], (string?)expected["ackNote"]), ((string?)rows[ack]["ackAction"], (string?)rows[ack]["ackNote"]));
+        }
+        var lost = Path.Combine(Path.GetDirectoryName(copy)!, "lost.jzm");
+        File.Copy(lostFile, lost);
+        var lostKey = (string)Limits["lost"]!["key"]!;
+        var lostLabel = (string)Limits["grants"]!.AsArray().First(g => (string)g!["key"]! == lostKey)!["label"]!;
+        using (var lostOwner = JazminReader.Open(lost, new JazminReadOptions { Key = owner }))
+            Assert.True(lostOwner.Access!.Grants!.Single(g => g.Label == lostLabel).EditLost);
+        var refusedAll = JazminFile.ApplyChanges(lost, change, new JazminApplyChangesOptions { Key = owner });
+        Assert.Equal((0L, 0L, 0L), (refusedAll.Updated, refusedAll.Added, refusedAll.Deleted));
+        Assert.Equal(Limits["change"]!["rows"]!.AsArray().Count, refusedAll.Refused.Count);
+        Assert.All(refusedAll.Refused, x => Assert.Equal((string)Limits["lost"]!["refused"]!, x.Reason));
+    }
+
+    [Fact]
+    public void ReadsLimitsPerKeyWrittenByJavaScript() => AssertLimits(
+        Path.Combine(LimitsDir, "js-edit-limits.jzm"), Path.Combine(LimitsDir, "js-edit-limits-changes.jzm"), Path.Combine(LimitsDir, "js-edit-limits-lost.jzm"));
+
+    [Fact]
+    public void WritesLimitsPerKeyForJavaScript()
+    {
+        var outDir = Path.Combine(OutDir, "edit-limits");
+        Directory.CreateDirectory(outDir);
+        var owner = JazminKey.Parse((string)Keys["key"]!);
+        var columns = Limits["columns"]!.AsArray().Select(c => new JazminColumn((string)c!["name"]!, TypeNames.Parse((string)c["type"]!)) { Nullable = (bool?)c["nullable"] ?? true }).ToArray();
+        var rows = Limits["rows"]!.AsArray().Select(r => r!.AsObject().ToDictionary(kv => kv.Key, kv => (object?)(string?)kv.Value)).ToList();
+        void Write(string name, bool lost)
+        {
+            using var writer = JazminWriter.Create(Path.Combine(outDir, name), columns, new JazminWriteOptions
+            {
+                Key = owner,
+                Files = Limits["files"]!.AsArray().Select(f => new JazminFileInput((string)f!["path"]!, System.Text.Encoding.UTF8.GetBytes((string)f["content"]!))).ToList(),
+                Package = new JazminPackage { Entry = (string)Limits["package"]!["entry"]!, Edit = EditSettingsFrom(Limits["package"]!["edit"]) },
+                Access = new JazminAccessOptions
+                {
+                    PartitionBy = (string)Limits["partitionBy"]!,
+                    Grants = Limits["grants"]!.AsArray().Select(g =>
+                    {
+                        var key = (string)g!["key"]!;
+                        var isLost = lost && key == (string)Limits["lost"]!["key"]!;
+                        return new JazminGrant(JazminAccessKey.Parse((string)Keys[key]!))
+                        {
+                            Rows = JazminReader.ListOrAll(g["rows"]), Label = (string?)g["label"],
+                            Edit = isLost ? null : LimitFrom(g["edit"]), EditLost = isLost,
+                        };
+                    }).ToList(),
+                },
+            });
+            foreach (var row in rows) writer.WriteRow(row);
+        }
+        Write("dotnet-edit-limits.jzm", lost: false);
+        Write("dotnet-edit-limits-lost.jzm", lost: true);
+        // The limited key's change file outside its limit, made by hand with its submission key.
+        using (var sender = JazminReader.Open(Path.Combine(outDir, "dotnet-edit-limits.jzm"), new JazminReadOptions
+        {
+            AccessKey = JazminAccessKey.Parse((string)Keys[(string)Limits["change"]!["sender"]!]!), AccessState = null,
+        }))
+        {
+            var names = Limits["change"]!["columns"]!.AsArray().Select(n => (string)n!).ToList();
+            var changeColumns = new List<JazminColumn> { new("jazmin.op", JazminType.String) { Nullable = false }, new("jazmin.set", JazminType.Json), new("ack", JazminType.String) { Nullable = false } };
+            foreach (var n in names) changeColumns.AddRange([new JazminColumn(n, JazminType.String), new JazminColumn($"jazmin.before.{n}", JazminType.String)]);
+            using var writer = JazminWriter.Create(Path.Combine(outDir, "dotnet-edit-limits-changes.jzm"), changeColumns, new JazminWriteOptions
+            {
+                Key = sender.SubmissionKey,
+                Metadata = new JsonObject
+                {
+                    ["jazmin.changes"] = new JsonObject
+                    {
+                        ["version"] = 1, ["file"] = sender.FileId, ["table"] = sender.TableName, ["key"] = new JsonArray("ack"),
+                        ["columns"] = new JsonArray(names.Select(n => (JsonNode?)n).ToArray()), ["sender"] = sender.Access!.KeyId,
+                    },
+                },
+            });
+            foreach (var row in Limits["change"]!["rows"]!.AsArray())
+            {
+                var full = names.SelectMany(n => new[] { n, $"jazmin.before.{n}" }).ToDictionary(n => n, _ => (object?)null);
+                foreach (var (name, value) in row!.AsObject())
+                    full[name] = name == "jazmin.set" ? value?.DeepClone() : (object?)(string?)value;
+                writer.WriteRow(full);
+            }
+        }
+        AssertLimits(Path.Combine(outDir, "dotnet-edit-limits.jzm"), Path.Combine(outDir, "dotnet-edit-limits-changes.jzm"), Path.Combine(outDir, "dotnet-edit-limits-lost.jzm"));
+    }
+
     [Fact]
     public void WritesADocumentsFileActionsForJavaScript()
     {
