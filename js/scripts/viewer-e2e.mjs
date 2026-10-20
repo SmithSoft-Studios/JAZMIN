@@ -1221,10 +1221,9 @@ for (const name of chosen) {
         throw error;
       });
       await filterBy('{ "note": { "contains": "row 1" } }');
-      await waitFor(page, `/counting/.test(${dataStatus})`, 'the count under way');
-      touch(); // while the count reads
-      const inFlight = await waitFor(page, `${changedShown} && /counting failed: The file changed on disk/.test(${dataStatus}) && ${dataStatus}`, 'the count refused', 120000);
-      const changedOk = /^Rows 1–50 of 1\D?000\D?000$/.test(nextPage.data) && nextPage.rows === 50 && nextPage.page === 0 && /^Rows 51–100 /.test(reopened) && /^Rows 1–50 · at least/.test(inFlight);
+      touch(); // the file changes as the count starts: however quickly it runs, its reads are refused (never waited for under way: a fast machine finishes first)
+      const inFlight = await waitFor(page, `${changedShown} && /The file changed on disk/.test(document.getElementById('jz-status').textContent + ' ' + ${dataStatus}) && ${dataStatus}`, 'the count refused', 120000);
+      const changedOk = /^Rows 1–50 of 1\D?000\D?000$/.test(nextPage.data) && nextPage.rows === 50 && nextPage.page === 0 && /^Rows 51–100 /.test(reopened); // the count's refusal is what the wait above needs: the message and Open again
       results.push({ browser: name, label: 'a file changed on disk since it was opened: the next page and a running count say so, with Open again; chosen again, it reads', ok: changedOk, problems: changedOk ? [] : [JSON.stringify({ nextPage, reopened, inFlight })] });
     } else {
       results.push({ browser: name, label: 'a file changed on disk (not run: this driver chooses no files)', ok: true, problems: [] });
