@@ -55,6 +55,13 @@ A security fix to `grantAccess()` in the JavaScript library, and a clearer error
 
 - **Compatibility:** the same file format, no breaking change. One change of behaviour, in `grantAccess()`: see below.
 
+### Security
+- **`grantAccess()` in the JavaScript library, every release from 1.0.0 to 1.7.1:** re-granting a key that already
+  had a grant silently removed its expiry and its online (2FA) mode, so the key could open the file for longer, or
+  without the key service, than the owner set. Only the file's owner can trigger it. The .NET library and the file
+  format are not affected. Upgrade to 1.7.2; if you re-granted keys with an earlier release, check each grant's
+  `expires` and `mode` in `reader.access.grants` (below). Severity: medium (CWE-281).
+
 ### Fixed
 - **`grantAccess()` no longer widens a key it grants again** (JavaScript). Re-granting a key, for example to give it
   more rows, dropped what the call didn't give: a key that expired never expired, an online key (a key service, 2FA)
