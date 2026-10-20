@@ -1,6 +1,6 @@
 # Per-key limits on what a key may send back (#257)
 
-Status: **design, waiting for the owner's approval in issue #257.** Nothing here is built. It changes what is written
+Status: **design approved by the owner on 2026-10-20 (issue #257: all four decisions as recommended).** Not yet built. It changes what is written
 in a file (a new grant member, a new `package` member and a new writer feature), so it is explained in plain words
 first. The spec text is in [Appendix A](#appendix-a-proposed-spec-text-draft-not-normative) of this note, not in
 `docs/rfc/draft-jazmin-format-03.md`, so that merging this note changes nothing normative. It moves into the spec only
