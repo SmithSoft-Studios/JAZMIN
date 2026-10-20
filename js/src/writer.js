@@ -464,6 +464,7 @@ export class JazminWriter {
       }
       this.#package = packageSettings !== undefined ? packageSettings : cont?.files?.package;
       for (const f of files ?? []) this.addFile(f);
+      if (this.#access) this.#editLimits(); // a limit that would widen is refused now, before any row is written (7.9.1)
     } catch (error) {
       // Refused with the output open (a stored file given twice, say): no writer is returned to abort it, so it is
       // aborted here. A new file is removed and closed; an appended one is cut back, its flags restored.

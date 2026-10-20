@@ -438,6 +438,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             }
             if (_options.Package is not null) _packageSet = true;
             foreach (var file in _options.Files ?? []) AddFile(file);
+            if (_access is not null) EditLimits(); // a limit that would widen is refused now, before any row is written (7.9.1)
         }
         catch when (path is not null)
         {

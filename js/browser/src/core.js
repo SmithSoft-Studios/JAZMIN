@@ -3599,8 +3599,8 @@
     const limitsFile = header.writerFeatures.includes('edit-limits') || storedPackage?.editByKey !== undefined;
     const ownLimit = access && !access.isOwner ? readEditLimit(access.editLimit, limitsFile) : null;
     const editTable = settings?.edit ? settings.edit.table ?? header.tables[0]?.name : null;
-    const edit = editSettings(settings?.edit) && (!access || access.isOwner ? settings.edit
-      : effectiveEdit(settings.edit, ownLimit.edit, editTable === table.name ? new Set(visibleColumns.map((c) => c.name)) : null, ownLimit.lost));
+    const edit = !editSettings(settings?.edit) ? null : !access || access.isOwner ? settings.edit
+      : effectiveEdit(settings.edit, ownLimit.edit, editTable === table.name ? new Set(visibleColumns.map((c) => c.name)) : null, ownLimit.lost);
 
     return {
       /** Names of the file's tables, in order. */

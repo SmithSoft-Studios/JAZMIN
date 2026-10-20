@@ -305,6 +305,15 @@ test('the browser reader gives the same limits and refuses the same changes, and
   assert.deepEqual([asDoctor.access.edit, asDoctor.edit], [undefined, EDIT]);
 });
 
+test('the browser reader: edit is null when the document takes no changes, as in the library', async () => {
+  const { file, owner, ipc } = hospital();
+  update(file, { key: owner, package: { entry: 'index.html' } });
+  const inBrowser = await JazminBrowser.open(new Blob([fs.readFileSync(file)]), { key: ipc.export() });
+  const library = openAs(file, ipc);
+  assert.deepEqual([inBrowser.edit, library.edit], [null, null]);
+  library.close();
+});
+
 test('the browser reader: a key whose limit was lost may send nothing', async () => {
   const file = tmp('lost-browser.jzm');
   const owner = JazminKey.generate();
