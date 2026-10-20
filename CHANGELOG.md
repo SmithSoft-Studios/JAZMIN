@@ -3,6 +3,24 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## 1.7.2 - 2026-10-20 (file format 1.0)
+A security fix to `grantAccess()` in the JavaScript library, and a clearer error for a damaged owner key.
+
+- **Compatibility:** the same file format, no breaking change. One change of behaviour, in `grantAccess()`: see below.
+
+### Fixed
+- **`grantAccess()` no longer widens a key it grants again** (JavaScript). Re-granting a key, for example to give it
+  more rows, dropped what the call didn't give: a key that expired never expired, an online key (a key service, 2FA)
+  became offline, and its label and file groups went. It now changes only what it is given and keeps the rest,
+  including an online key's share, so tokens the key service issued still open it. A key not granted before gets every
+  partition and column group unless given, as before. `update({ grant })` still replaces a grant whole. **If you
+  re-granted keys with 1.7.1 or earlier,** check their expiry and mode in the owner's grants list
+  (`reader.access.grants`) and set them again with `update({ grant })`. .NET's `GrantAccess` takes the whole
+  `JazminGrant` and was not affected.
+- **A shared file whose owner key isn't a point on the curve** now fails with the usual JAZMIN error ("the file's
+  owner signature is invalid") in every library. It surfaced as the platform's own error: `TypeError` in Node, a
+  WebCrypto `DataError` in the browser reader, and `PlatformNotSupportedException` in .NET on Windows.
+
 ## 1.7.1 - 2026-10-17 (file format 1.0)
 Two fixes to the web viewer, and `estimate()` in the browser reader.
 
