@@ -1013,7 +1013,11 @@ export function rotateOwnerKey(path: string, options: { key: KeyInput; newKey?: 
   ownerKey: JazminKey;
   accessKeys: { previous: string; key: JazminAccessKey; label?: string; mode: 'offline' | 'online'; expires?: Date }[];
 };
-/** Owner only: lets accessKey see the given partitions / column groups (rewrites the file). */
+/**
+ * Owner only: lets accessKey see the given partitions / column groups (rewrites the file). A key not yet granted gets
+ * every partition and column group unless given; a key already granted keeps what isn't given (rows, columns, label,
+ * expiry, online mode, file groups). update({ grant }) replaces a grant whole.
+ */
 export function grantAccess(path: string, ownerKey: KeyInput, accessKey: JazminAccessKey | string,
   grant?: { rows?: '*' | string[]; columns?: '*' | string[]; label?: string }): UpdateResult;
 /** Owner only: removes a key's access; the new version uses fresh secrets. */

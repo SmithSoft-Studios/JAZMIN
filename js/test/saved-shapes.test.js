@@ -126,7 +126,7 @@ test('shared files: a shape is refused when a key that would see it cannot see a
   refused(() => update(file, { key: owner, grant: [bobFinance] }), /doesn't fit access key [0-9a-f]+ \(Bob\), which sees it \(file group 'finance'\)/);
   refused(() => append(file, { key: owner, grant: [bobFinance] }), /\(Bob\), which sees it \(file group 'finance'\)/);
   // More rows: Bob's key would see the shapes of partition NA.
-  refused(() => grantAccess(file, owner, bob, { rows: ['NA', 'ZA'], columns: ['*'] }), /^Saved shape 'North balances' doesn't fit access key [0-9a-f]+, which sees it \(file group 'NA'\)/);
+  refused(() => grantAccess(file, owner, bob, { rows: ['NA', 'ZA'], columns: ['*'] }), /^Saved shape 'North balances' doesn't fit access key [0-9a-f]+ \(Bob\), which sees it \(file group 'NA'\)/); // Bob's label is kept
   assert.ok(fs.readFileSync(file).equals(before));
   // Seeing the columns too is fine.
   update(file, { key: owner, grant: [{ ...bobFinance, columns: '*' }] });
