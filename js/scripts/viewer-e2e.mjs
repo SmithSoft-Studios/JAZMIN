@@ -1162,12 +1162,21 @@ for (const name of chosen) {
     await waitFor(page, `/of 1\\D?000\\D?000$/.test(document.getElementById('jz-data-status').textContent)`, 'busy.jzm');
     const dataStatus = `document.getElementById('jz-data-status').textContent`;
     const filterBy = (filter) => page.evaluate(`(document.getElementById('jz-filter').value = ${JSON.stringify(filter)}, document.getElementById('jz-filter-form').requestSubmit(), true)`);
+    // The count can finish between two polls on a fast machine: an observer records the first moment the status says
+    // "counting" (and, for the Stop test, clicks Stop at that moment), so the check doesn't depend on timing.
+    const watchCount = (stopAtOnce) => page.evaluate(`(window.countSeen = null, new MutationObserver((records, observer) => {
+      if (!/counting/.test(document.getElementById('jz-data-status').textContent)) return;
+      window.countSeen = { rows: document.querySelectorAll('#jz-rows tbody tr').length, stop: !document.getElementById('jz-count-stop').hidden };
+      if (${stopAtOnce}) document.getElementById('jz-count-stop').click();
+      observer.disconnect();
+    }).observe(document.getElementById('jz-data-status'), { childList: true, characterData: true, subtree: true }), true)`);
+    await watchCount(false);
     await filterBy('{ "amount": { "gt": 990 } }');
-    const whileCounting = await waitFor(page, `/counting/.test(${dataStatus}) && { rows: document.querySelectorAll('#jz-rows tbody tr').length, stop: !document.getElementById('jz-count-stop').hidden }`, 'the count under way');
+    const whileCounting = await waitFor(page, 'window.countSeen', 'the count under way');
     const counted = await waitFor(page, `/matching the filter/.test(${dataStatus}) && document.getElementById('jz-count-stop').hidden && ${dataStatus}`, 'the total', 120000);
+    await watchCount(true);
     await filterBy('{ "note": { "contains": "row 1" } }');
-    await waitFor(page, `/counting/.test(${dataStatus})`, 'the second count');
-    await page.evaluate(`(document.getElementById('jz-count-stop').click(), true)`);
+    await waitFor(page, 'window.countSeen', 'the second count');
     const stoppedCount = await waitFor(page, `/stopped/.test(${dataStatus}) && ${dataStatus}`, 'the stopped count');
     const overlaysBefore = await page.evaluate('JazminViewer.state.busyShown || 0');
     await filterBy('{ "note": { "contains": "zzz" } }');
@@ -1213,8 +1222,10 @@ for (const name of chosen) {
       touch();
       await page.evaluate(`(document.getElementById('jz-next').click(), true)`);
       const nextPage = await waitFor(page, `${changedShown} && { data: ${dataStatus}, rows: document.querySelectorAll('#jz-rows tbody tr').length, page: JazminViewer.state.page }`, 'the next page refused');
+      await page.evaluate(`(window.readerBefore = JazminViewer.state.reader, true)`);
       await page.chooseFile('#jz-input', changing); // chosen again: reads
-      await waitFor(page, `/^Rows 1–50 of 1\\D?000\\D?000$/.test(${dataStatus}) && document.getElementById('jz-reopen').hidden`, 'changing.jzm chosen again');
+      // The old status and the hidden button are already true while the file is being opened again: wait for the new reader.
+      await waitFor(page, `JazminViewer.state.reader && JazminViewer.state.reader !== window.readerBefore && /^Rows 1–50 of 1\\D?000\\D?000$/.test(${dataStatus}) && document.getElementById('jz-reopen').hidden`, 'changing.jzm chosen again');
       await page.evaluate(`(document.getElementById('jz-next').click(), true)`);
       const reopened = await waitFor(page, `/^Rows 51–100 /.test(${dataStatus}) && ${dataStatus}`, 'the next page of the file chosen again').catch(async (error) => {
         console.log('DIAGNOSTIC (changed file, chosen again)', JSON.stringify(await page.evaluate(`({ status: document.getElementById('jz-status').textContent, data: ${dataStatus}, reopenHidden: document.getElementById('jz-reopen').hidden, page: JazminViewer.state.page, nextDisabled: document.getElementById('jz-next').disabled })`)));
