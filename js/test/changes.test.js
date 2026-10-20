@@ -302,3 +302,30 @@ test("the browser reader makes the same change files (a viewer's), and the libra
   assert.equal(applyChanges(own, sealed, { key }).deleted, 1);
   assert.equal(rowsOf(own, { key })['C-3'], undefined);
 });
+
+test('a shared file of many keys: the sender is found among them without a keyId, and an unknown change file is refused', () => {
+  const dir = tmp();
+  const owner = JazminKey.generate();
+  const keys = Array.from({ length: 60 }, () => owner.createAccessKey());
+  const file = path.join(dir, 'many.jzm');
+  write(file, claims, {
+    columns, key: owner, files: [doc], package: { entry: 'index.html', edit: EDIT },
+    access: { partitionBy: 'region', grants: keys.map((key) => ({ key, rows: ['A', 'B'] })) },
+  });
+  for (const sender of [keys[0], keys[37], keys[59]]) {
+    const r = open(file, { key: sender.export(), accessState: false });
+    const change = writeChanges(r, { update: [{ claim: 'C-3', note: `from ${sender.id}` }] });
+    r.close();
+    const result = applyChanges(file, change, { key: owner, dryRun: true });
+    assert.deepEqual([result.sender, result.updated, result.refused], [sender.id, 1, []]);
+  }
+  const stranger = write(null, [{ a: 1 }], { key: JazminKey.generate() });
+  assert.throws(() => applyChanges(file, stranger, { key: owner }), /doesn't open with the submission key of any key granted/);
+  assert.throws(() => applyChanges(file, Buffer.from('not a jazmin file at all, long enough to be read as one'), { key: owner }), /JAZMIN/);
+});
+
+test('submission keys made many at a time are the same keys as one at a time', () => {
+  const owner = JazminKey.generate();
+  const ids = Array.from({ length: 20 }, () => owner.createAccessKey().id);
+  assert.deepEqual(owner.submissionKeyBytes(ids).map((b) => Buffer.from(b).toString('hex')), ids.map((id) => owner.submissionKey(id).bytes.toString('hex')));
+});

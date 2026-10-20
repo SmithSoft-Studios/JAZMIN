@@ -285,4 +285,37 @@ public class ChangesTests
         var rows = requests.Rows().ToDictionary(r => (string)r["request_id"]!);
         Assert.Equal(("urgent", "C1", "dispute", "checked"), ((string)rows["R-1"]["note"]!, (string)rows["R-9"]["customer"]!, (string)rows["R-9"]["kind"]!, (string)rows["R-2"]["staff_note"]!));
     }
+
+    [Fact]
+    public void ManyKeys_TheSenderIsFoundWithoutAKeyId_AndAnUnknownChangeFileIsRefused()
+    {
+        var path = Path.Combine(Temp(), "many.jzm");
+        var owner = JazminKey.Generate();
+        var keys = Enumerable.Range(0, 60).Select(_ => owner.CreateAccessKey()).ToList();
+        WriteFile(path, new JazminWriteOptions
+        {
+            Key = owner, Files = [Doc], Package = new JazminPackage { Entry = "index.html", Edit = Edit },
+            Access = new JazminAccessOptions { PartitionBy = "region", Grants = keys.Select(k => new JazminGrant(k) { Rows = ["A", "B"] }).ToList() },
+        });
+        foreach (var sender in new[] { keys[0], keys[37], keys[59] })
+        {
+            byte[] change;
+            using (var r = JazminReader.Open(path, new JazminReadOptions { AccessKey = sender, AccessState = null }))
+                change = JazminFile.WriteChanges(r, new JazminChanges { Update = [new Dictionary<string, object?> { ["claim"] = "C-3", ["note"] = $"from {sender.Id}" }] });
+            var result = JazminFile.ApplyChanges(path, change, new JazminApplyChangesOptions { Key = owner, DryRun = true });
+            Assert.Equal((sender.Id, 1L, 0), (result.Sender, result.Updated, result.Refused.Count));
+        }
+        var stream = new MemoryStream();
+        using (var writer = new JazminWriter(stream, [new JazminColumn("a", JazminType.Int)], new JazminWriteOptions { Key = JazminKey.Generate() }, leaveOpen: true)) writer.WriteRow(new Dictionary<string, object?> { ["a"] = 1 });
+        Assert.Contains("doesn't open with the submission key of any key granted",
+            Assert.Throws<JazminValidationException>(() => JazminFile.ApplyChanges(path, stream.ToArray(), new JazminApplyChangesOptions { Key = owner })).Message);
+    }
+
+    [Fact]
+    public void SubmissionKeys_MadeManyAtATime_AreTheSameKeys()
+    {
+        var owner = JazminKey.Generate();
+        var ids = Enumerable.Range(0, 20).Select(_ => owner.CreateAccessKey().Id).ToList();
+        Assert.Equal(ids.Select(id => Convert.ToHexString(owner.SubmissionKey(id).ToBytes())), owner.SubmissionKeyBytes(ids).Select(Convert.ToHexString));
+    }
 }

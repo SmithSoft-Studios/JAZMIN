@@ -2,7 +2,7 @@ import zlib from 'node:zlib';
 import { crc32 } from './binary.js';
 import { CODEC, ENVELOPE_SIZE, SECTION_ENCRYPTED } from './constants.js';
 import { JazminFormatError, JazminKeyError, JazminValidationError } from './errors.js';
-import { decrypt, encrypt } from './keys.js';
+import { decrypt, encrypt, opens } from './keys.js';
 
 const MAX_SECTION = 0xffffffff;
 const MAX_PREALLOCATE = 64 * 1024 * 1024; // a damaged length cannot reserve more than this up front
@@ -101,6 +101,22 @@ export function reencryptSection(section, { key, fileId, sectionId }, next) {
 /** Reads the payload length declared by an envelope. */
 export function sectionPayloadLength(envelope) {
   return envelope.readUInt32LE(8);
+}
+
+/**
+ * Internal (findKey): a check of whether a key opens a section, with its envelope, CRC and AAD worked out once. Returns
+ * (key) => boolean, or null when the section isn't encrypted.
+ */
+export function sectionKeyCheck(section, { fileId, sectionId }) {
+  if (section.length < ENVELOPE_SIZE) throw new JazminFormatError(`Section '${sectionId}' is truncated`);
+  const envelope = section.subarray(0, ENVELOPE_SIZE);
+  const payloadLength = envelope.readUInt32LE(8);
+  const body = section.subarray(ENVELOPE_SIZE, ENVELOPE_SIZE + payloadLength);
+  if (body.length !== payloadLength) throw new JazminFormatError(`Section '${sectionId}' is truncated`);
+  if (crc32(body) !== envelope.readUInt32LE(12)) throw new JazminFormatError(`Section '${sectionId}' failed its CRC-32 check`);
+  if ((envelope[1] & SECTION_ENCRYPTED) === 0) return null;
+  const data = aad(fileId, envelope, sectionId);
+  return (key) => opens(key, body, data);
 }
 
 /** Verifies, decrypts and decompresses a section (envelope + payload). */

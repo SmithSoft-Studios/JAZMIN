@@ -23,7 +23,7 @@ import { enforceExpiry, toMs } from './expiry.js';
 import { EVERYONE, effectiveEdit, keyServiceAddress, mergeActions, normalizeEdit, normalizeEditLimit, readActions, readPage } from './files.js';
 import { answeredExactly, evaluate, filterReads, indexPlan, mayMatch, mustMatch, normalizeFilter } from './filter.js';
 import { CompositeIndex, LazyTrigramIndex, PagedSortedIndex, TrigramIndex, decodePostingsSection } from './indexes.js';
-import { JazminAccessKey, JazminKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
+import { HkdfKeys, JazminAccessKey, JazminKey, KeySchedule, deriveFromPassword, hkdf, parseAnyKey, parseUnlockToken, slotId } from './keys.js';
 import {
   LOCK_KINDS, checkLockIterations, lockKey, lockNeeds, openContentKey, openGroupSecret, parseFileUnlockToken, readOwnerLocks,
 } from './locks.js';
@@ -31,7 +31,7 @@ import { checkPriority, readThreads } from './priority.js';
 import { directoryShapes, shapeFits } from './saved-shapes.js';
 import { setField } from './schema.js';
 import { SectionPool } from './section-pool.js';
-import { decodeSection, sectionPayloadLength } from './section.js';
+import { decodeSection, sectionKeyCheck, sectionPayloadLength } from './section.js';
 import { decodeBound } from './stats.js';
 import { compareKeys } from './types.js';
 
@@ -271,6 +271,16 @@ function chunksDone(watch, matches) {
 
 /** Internal: openTable() passes this as the source, with the reader it shares the open file with. */
 const SHARED = Symbol('jazmin.shared');
+const FIND_KEY = Symbol('jazmin.findKey');
+
+/**
+ * Internal (applyChanges): the index of the first of `keys` (key bytes) that opens the key-encrypted file `source`, or
+ * -1. The file is read once; each key then costs only deriving its header key and checking the header's tag, instead of
+ * a whole open. Open the file with the key found as usual: that checks everything else.
+ */
+export function findKey(source, keys) {
+  return new JazminReader(source, { [FIND_KEY]: keys })[FIND_KEY];
+}
 /** Internal: the priority a reader was opened with ('memory', 'balanced' or 'speed'), for exports that batch. */
 export const READ_PRIORITY = Symbol('jazmin.readPriority');
 
@@ -616,9 +626,18 @@ export class JazminReader {
    * `now` (Date / ms, default the system clock) and `accessState` ({ dir } | custom store | false)
    * for expiring keys - see enforceExpiry; `table`: the name of the table to read (default: the first).
    */
-  constructor(source, { key, password, unlockToken, now, accessState, table, priority = 'balanced', [SHARED]: from } = {}) {
+  constructor(source, { key, password, unlockToken, now, accessState, table, priority = 'balanced', [SHARED]: from, [FIND_KEY]: candidates } = {}) {
     if (source === SHARED) {
       this.#share(from, table);
+      return;
+    }
+    if (candidates) {
+      this.#source = openSource(source);
+      try {
+        this[FIND_KEY] = this.#findKey(candidates);
+      } finally {
+        this.#source.close();
+      }
       return;
     }
     checkPriority(priority);
@@ -755,6 +774,26 @@ export class JazminReader {
    * appended to, an interrupted append leaves extra bytes at the end; the previous version is then found by
    * scanning back for a valid trailer (spec 4.2).
    */
+  /** See findKey: the preamble, trailer and header section read once, then each key tried on the header alone. */
+  #findKey(keys) {
+    const { size } = this.#source;
+    if (size < PREAMBLE_SIZE + TRAILER_SIZE) throw new JazminFormatError('File is too small to be JAZMIN');
+    const preamble = this.#source.read(0, PREAMBLE_SIZE);
+    if (!preamble.subarray(0, 4).equals(MAGIC)) throw new JazminFormatError('Not a JAZMIN file (bad magic)');
+    const flags = preamble.readUInt16LE(4);
+    if (flags & ~KNOWN_FLAGS) throw new JazminFormatError(`Unsupported file features (flags 0x${flags.toString(16)})`);
+    if (!(flags & FLAG_ENCRYPTED) || flags & (FLAG_ACCESS | FLAG_PASSWORD)) return -1; // not a file a key alone opens
+    const fileId = Buffer.from(preamble.subarray(8, 24));
+    const salt = Buffer.from(preamble.subarray(24, 56));
+    const trailer = this.#locateTrailer(size, flags);
+    const headerSection = Buffer.from(this.#source.read(trailer.header.offset, trailer.header.length));
+    const opensHeader = sectionKeyCheck(headerSection, { fileId, sectionId: 'header' });
+    if (!opensHeader) return -1; // an encrypted file's header is encrypted: refused when opened
+    // Each key's header key, the HKDF extract step and expand by HMAC (HkdfKeys gives the same keys as hkdf()).
+    for (let i = 0; i < keys.length; i++) if (opensHeader(new HkdfKeys(keys[i], salt).key('JAZMIN/1/header'))) return i;
+    return -1;
+  }
+
   #locateTrailer(size, flags) {
     const parse = (t) => ({
       header: { offset: Number(t.readBigUInt64LE(0)), length: t.readUInt32LE(8) },

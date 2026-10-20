@@ -480,17 +480,22 @@ internal static class Changes
         var grants = target.Access.Grants ?? [];
         var candidates = options.KeyId is null ? grants : grants.Where(g => g.KeyId == options.KeyId).ToList();
         if (options.KeyId is not null && candidates.Count == 0) throw new JazminValidationException($"Key {options.KeyId} has no grant in this file: unknown or revoked");
-        foreach (var grant in candidates)
+        // Each grant's submission key is tried on the change file's header alone, then the file opens with the one that fits:
+        // with thousands of grants that is much faster than opening the file with each key in turn.
+        JazminReader? found = null;
+        if (candidates.Count > 0)
         {
-            JazminReader reader;
             try
             {
-                reader = JazminReader.Open(change, new JazminReadOptions { Key = owner.SubmissionKey(grant.KeyId) });
+                found = JazminReader.Open(change, new JazminReadOptions { CandidateKeys = owner.SubmissionKeyBytes(candidates.Select(g => g.KeyId).ToList()) });
             }
             catch (JazminKeyException)
             {
-                continue;
             }
+        }
+        foreach (var grant in found is null ? [] : new[] { candidates[found.KeyIndex] })
+        {
+            var reader = found!;
             if (grant.Expires is { } expires)
             {
                 var received = options.ReceivedAt ?? DateTimeOffset.UtcNow;

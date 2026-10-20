@@ -12,6 +12,12 @@ namespace Jazmin;
 
 public sealed class JazminReadOptions
 {
+    /// <summary>
+    /// Internal (a change file's sender): keys to try, in order, on a file encrypted with a key; the file opens with the
+    /// first whose header key opens its header (<see cref="JazminReader.KeyIndex"/>), each tried on the header alone.
+    /// </summary>
+    internal IReadOnlyList<byte[]>? CandidateKeys { get; init; }
+
     /// <summary>Master key (also the owner key of an access-controlled file).</summary>
     public JazminKey? Key { get; set; }
 
@@ -647,6 +653,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <summary>Columns visible to this reader (all columns unless an access key limits them).</summary>
     public IReadOnlyList<JazminColumn> Columns => _visibleColumns;
 
+    /// <summary>Internal: which of <see cref="JazminReadOptions.CandidateKeys"/> opened the file (-1 when none were given).</summary>
+    internal int KeyIndex { get; private set; } = -1;
+
     // ---- opening (spec 4, 6, 7.6.6) --------------------------------------------------------------
 
     private byte[] Read(long position, int length)
@@ -699,6 +708,18 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         }
 
         if (options.AccessKey is not null) throw new JazminKeyException("This file is not access-controlled - use its master key");
+        if (options.CandidateKeys is { } candidates)
+        {
+            // Each key tried on the header alone: deriving its header key and checking the tag, not a whole open.
+            if ((flags & FormatConstants.FlagEncrypted) == 0 || (flags & FormatConstants.FlagPassword) != 0)
+                throw new JazminKeyException("The file isn't encrypted with a key");
+            var opens = SectionCodec.KeyCheck(headerSection, fileId, FormatConstants.HeaderSectionId)
+                ?? throw new JazminFormatException("The header is not encrypted but the file is");
+            for (var i = 0; i < candidates.Count && KeyIndex < 0; i++)
+                if (opens(Crypto.Hkdf(candidates[i], salt, "JAZMIN/1/header"))) KeyIndex = i;
+            if (KeyIndex < 0) throw new JazminKeyException("Decryption failed - wrong key/password or the data was tampered with");
+            options = new JazminReadOptions { Key = new JazminKey(candidates[KeyIndex]) };
+        }
         KeySchedule? keys = null;
         if ((flags & FormatConstants.FlagEncrypted) != 0)
         {

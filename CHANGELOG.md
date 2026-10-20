@@ -62,6 +62,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   for a web font (the viewer's tests check it is shown without the network).
 
 ### Changed
+- **Applying a change file to a shared file of many keys is faster** when the sender isn't named (`keyId`): each key's
+  submission key is now tried on the change file's header alone, the file read once, instead of opening the file with
+  each key in turn. With 5,001 keys and the sender last: finding the sender took about 290 ms in JavaScript and about
+  190 ms in .NET, now about 90 ms and 120 ms; a dry run of 10,000 changes about 580 to 485 ms (JS) and a median of 542
+  to 488 ms (.NET). The same sender is found, and the same change files are refused.
+- **The owner's list of grants is built once per reader** (`reader.access.grants`, `reader.Access.Grants`): applying
+  and updating read it several times. With 5,000 grants a second read went from 13-35 ms to 0 ms in .NET and from 1.5-3.5
+  ms to 0.2 ms in JavaScript (which still hands out new objects each time).
 - **The browser reader and the viewer with a key spanning thousands of partitions (#258).** A browser answers each read
   of a File or Blob in another process, about half a millisecond each in Chrome however small, and the reader read
   each partition's directory, statistics and chunks one at a time. It now reads the sections it knows it needs (the

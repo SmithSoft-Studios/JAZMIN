@@ -72,6 +72,20 @@ public sealed class JazminKey
     /// <summary>The submission key of <paramref name="accessKey"/> (see <see cref="SubmissionKey(string)"/>).</summary>
     public JazminKey SubmissionKey(JazminAccessKey accessKey) => SubmissionKey(accessKey.Id);
 
+    /// <summary>
+    /// Internal: the submission keys of many access keys by id (as <see cref="SubmissionKey(string)"/>), the HKDF extract
+    /// step done once: each key then costs one expand. The bytes of each, in order.
+    /// </summary>
+    internal byte[][] SubmissionKeyBytes(IReadOnlyList<string> ids)
+    {
+        var prk = System.Security.Cryptography.HKDF.Extract(System.Security.Cryptography.HashAlgorithmName.SHA256, _bytes, []);
+        var keys = new byte[ids.Count][];
+        for (var i = 0; i < keys.Length; i++)
+            keys[i] = System.Security.Cryptography.HKDF.Expand(System.Security.Cryptography.HashAlgorithmName.SHA256, prk, 32,
+                System.Text.Encoding.UTF8.GetBytes($"JAZMIN/1/submission/{ids[i]}"));
+        return keys;
+    }
+
     /// <summary>The key's secret text ("jzk1-..."), to store in a secret manager or pass to Parse. Keep it out of logs.</summary>
     public string Export()
     {

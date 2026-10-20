@@ -6,6 +6,7 @@ import { append } from './append.js';
 import { JazminKeyError, JazminValidationError } from './errors.js';
 import { effectiveEdit } from './files.js';
 import { open, write } from './index.js';
+import { findKey } from './reader.js';
 import { JazminKey } from './keys.js';
 
 const VERSION = 1;
@@ -174,14 +175,12 @@ function openChangeFile(target, change, { key, password, keyId, receivedAt }) {
   const grants = target.access.grants;
   const candidates = keyId ? grants.filter((g) => g.keyId === keyId) : grants;
   if (keyId && !candidates.length) throw new JazminValidationError(`Key ${keyId} has no grant in this file: unknown or revoked`);
-  for (const grant of candidates) {
-    let reader;
-    try {
-      reader = open(change, { key: owner.submissionKey(grant.keyId) });
-    } catch (error) {
-      if (error instanceof JazminKeyError) continue;
-      throw error;
-    }
+  // Each grant's submission key is tried on the change file's header alone (findKey), then the file is opened with the
+  // one that fits: with thousands of grants that is several times faster than opening the file with each key in turn.
+  const keys = owner.submissionKeyBytes(candidates.map((grant) => grant.keyId));
+  const found = findKey(change, keys);
+  for (const grant of found < 0 ? [] : [candidates[found]]) {
+    const reader = open(change, { key: new JazminKey(keys[found]) });
     // A grant that expires: the change file must have been written, and have arrived, before it expired.
     if (grant.expires) {
       const expires = Date.parse(grant.expires);

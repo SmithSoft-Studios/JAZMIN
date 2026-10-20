@@ -81,6 +81,15 @@ export class JazminKey {
   }
 
   /**
+   * Internal: the submission keys of many access keys by id (as submissionKey), the HKDF extract step done once:
+   * each key then costs one HMAC. The bytes of each, in order.
+   */
+  submissionKeyBytes(ids) {
+    const keys = new HkdfKeys(this.#bytes, Buffer.alloc(0));
+    return ids.map((id) => keys.key(`JAZMIN/1/submission/${id}`));
+  }
+
+  /**
    * Creates a new access key issued by this (owner) key. Grant it rows/columns of a file
    * with the writer's `access.grants` or grantAccess(); on its own it opens nothing.
    */
@@ -294,6 +303,21 @@ export function encrypt(key, plaintext, aad) {
   cipher.setAAD(aad);
   const body = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   return Buffer.concat([nonce, body, cipher.getAuthTag()]);
+}
+
+/** Whether `key` opens an AES-256-GCM payload (as decrypt), without decrypting it into a result or throwing. */
+export function opens(key, payload, aad) {
+  if (payload.length < NONCE_SIZE + TAG_SIZE) return false;
+  try {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', key, payload.subarray(0, NONCE_SIZE));
+    decipher.setAAD(aad);
+    decipher.setAuthTag(payload.subarray(payload.length - TAG_SIZE));
+    decipher.update(payload.subarray(NONCE_SIZE, payload.length - TAG_SIZE));
+    decipher.final();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export function decrypt(key, payload, aad) {
