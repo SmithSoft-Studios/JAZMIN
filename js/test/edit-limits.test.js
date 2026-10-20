@@ -328,3 +328,15 @@ test('the browser reader: a key whose limit was lost may send nothing', async ()
   assert.deepEqual([inBrowser.access.editLost, inBrowser.edit], [true, { key: ['ack'], columns: [], add: false, delete: false }]);
   await assert.rejects(JazminBrowser.writeChanges(inBrowser, { update: [{ ack: 'A-1', ackNote: 'x' }] }), /^JazminValidationError: This key's limits were lost: ask the file's owner to grant it again$/);
 });
+
+test("the owner's grants list is built once per reader and handed out as new objects", () => {
+  const { file, owner } = hospital();
+  const r = open(file, { key: owner });
+  const first = r.access.grants;
+  first[0].label = 'changed by the caller';
+  first.pop();
+  const again = r.access.grants;
+  r.close();
+  assert.deepEqual([again.length, again[0].label], [2, 'Doctor']);
+  assert.notEqual(first[1], again[1]);
+});

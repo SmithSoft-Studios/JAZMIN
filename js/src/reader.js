@@ -460,14 +460,23 @@ function plainSection(section, sectionId) {
  * A grant's (or a key's own) edit member (spec 7.9.1): { edit, lost, unreadable }. In a file with limits a grant without
  * one may send nothing (an older release lost it), and so may one this library can't read. {} is no limit.
  */
+const NO_LIMIT = Object.freeze({ edit: undefined, lost: false, unreadable: false });
+
 function readEditLimit(value, limitsFile) {
-  if (value === undefined) return { edit: undefined, lost: limitsFile, unreadable: false };
+  if (value === undefined) return limitsFile ? { edit: undefined, lost: true, unreadable: false } : NO_LIMIT;
+  // {}: no limit, the most common value in a file with limits, read without the full check.
+  if (value !== null && typeof value === 'object' && !Array.isArray(value) && isEmptyObject(value)) return NO_LIMIT;
   try {
     const edit = normalizeEditLimit(value, 'edit');
     return { edit: Object.keys(edit).length ? edit : undefined, lost: false, unreadable: false };
   } catch {
     return { edit: undefined, lost: true, unreadable: true };
   }
+}
+
+function isEmptyObject(value) {
+  for (const _ in value) return false;
+  return true;
 }
 
 function grantColumns(g) {
@@ -582,6 +591,7 @@ export class JazminReader {
   #map; // the owner's chunk map (#chunkMap): undefined until looked up, null when there is none
   #grantKeys = new Map(); // grant key text -> parsed access key (owner)
   #hasLimits; // whether grants limit what keys send back (spec 7.9.1), once known
+  #grantInfos; // the owner's grants list, once built
   // The last chunk decoded, the columns decoded (null: all) and the definitions they were decoded with.
   #cachedChunk = { ordinal: -1, wanted: null, types: null, chunk: null };
   #sortStatsComplete; // computed on first sorted scan
@@ -1471,13 +1481,15 @@ export class JazminReader {
       if (lost) info.editLost = true;
     }
     if (isOwner) {
-      info.grants = this.#ownerDirectory().grants.map((g) => ({
+      // Built once per reader (the owner directory doesn't change while it is open), and handed out as new objects.
+      this.#grantInfos ??= this.#ownerDirectory().grants.map((g) => ({
         keyId: this.#grantKey(g.key).id, rows: g.rows, columns: grantColumns(g), ...(g.label === undefined ? {} : { label: g.label }),
         mode: g.mode ?? 'offline',
         ...(g.expires ? { expires: g.expires } : {}),
         ...(g.files === undefined ? {} : { files: g.files }), // extra file groups: re-granting without them removes them
         ...this.#grantEditInfo(g.edit),
       }));
+      info.grants = this.#grantInfos.map((g) => ({ ...g }));
       info.groupColumns = Object.fromEntries(this.#groups.map((g) => [g.name, g.cols.map((i) => this.#columns[i].name)]));
     }
     return info;

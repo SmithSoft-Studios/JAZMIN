@@ -1900,9 +1900,12 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                     EditLost = lost,
                 };
             }
+            // The owner's view never changes while the file is open: built once (each grant's key is parsed for its id, which
+            // costs most of it), so readers such as ApplyChanges that look at it several times don't pay again.
+            if (_ownerAccess is not null) return _ownerAccess;
             var limitsFile = LimitsFile;
             var directory = OwnerDirectory();
-            return new JazminAccessInfo(true, partitionBy, columnGroups,
+            return _ownerAccess = new JazminAccessInfo(true, partitionBy, columnGroups,
                 directory["partitions"]!.AsArray().Select(n => (string)n!).ToList(),
                 columnGroups,
                 directory["grants"]!.AsArray().Select(g =>
@@ -1923,6 +1926,8 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             };
         }
     }
+
+    private JazminAccessInfo? _ownerAccess; // the owner's Access, once built
 
     /// <summary>Owner only: grants including access keys, used by <see cref="JazminFile.Update"/> to re-issue them.</summary>
     internal JsonArray? OwnerGrants => _access is { IsOwner: true } ? OwnerDirectory()["grants"]!.AsArray() : null;

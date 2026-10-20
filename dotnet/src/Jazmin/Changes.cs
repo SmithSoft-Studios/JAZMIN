@@ -163,15 +163,24 @@ internal static class Changes
     {
         if (node is null) return (null, limitsFile, false);
         if (node is not JsonObject o) return (null, true, true);
+        if (o.Count == 0) return (null, false, false); // {}: no limit, the most common value in a file with limits
         IReadOnlyList<string>? columns = null;
         bool? add = null, delete = null;
         foreach (var (name, value) in o)
         {
             switch (name)
             {
-                case "columns" when value is JsonArray list && list.All(c => c is JsonValue v && v.TryGetValue<string>(out var s) && s.Length > 0):
-                    columns = list.Select(c => (string)c!).ToList();
-                    if (columns.Distinct(StringComparer.Ordinal).Count() != columns.Count) return (null, true, true);
+                case "columns" when value is JsonArray list:
+                    // A plain loop: a file with limits has one per grant, so no LINQ allocations each (spec 7.9.1).
+                    var names = new string[list.Count];
+                    for (var i = 0; i < names.Length; i++)
+                    {
+                        if (list[i] is not JsonValue v || !v.TryGetValue<string>(out var name1) || name1.Length == 0) return (null, true, true);
+                        for (var j = 0; j < i; j++)
+                            if (string.Equals(names[j], name1, StringComparison.Ordinal)) return (null, true, true); // named twice
+                        names[i] = name1;
+                    }
+                    columns = names;
                     break;
                 case "add" when value is JsonValue v && v.TryGetValue<bool>(out var a): add = a; break;
                 case "delete" when value is JsonValue v && v.TryGetValue<bool>(out var d): delete = d; break;
