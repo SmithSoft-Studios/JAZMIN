@@ -28,8 +28,11 @@ faster, in the libraries and the viewer. Publisher signatures and `jazmin verify
   - **Both libraries refuse change files and submissions that use Brotli** (`applyChanges` / `ApplyChanges`,
     `fileSubmission` / `FileSubmission`), on every release, before anything is decompressed. People the owner doesn't
     control write these, and JAZMIN never writes them with Brotli (browsers can't), so nothing legitimate changes.
-  - **Not affected:** the browser reader and the viewer, which don't decode Brotli. The .NET runtime bundles the Brotli
-    library too, and no .NET advisory had been published on 22 October 2026: keep .NET updated.
+  - **Not affected:** the browser reader and the viewer, which don't decode Brotli.
+  - **.NET:** the .NET runtime bundles the Brotli library too. No .NET advisory had been published by 23 October 2026,
+    and the last .NET servicing update (13 October) came before the disclosure: apply the next one when it is out.
+    Until then, avoid Brotli files from sources you don't trust (JAZMIN writes deflate unless asked otherwise); change
+    files and submissions that use Brotli are already refused.
   - The other nine issues in the same Node.js release (TLS, DNS, keep-alive, `randomUUID`/`randomInt`, single
     executables, the Permission Model, ZipFile) don't touch the library: it makes no network connections and uses
     `randomBytes`. Applications using it should still update Node.js.
