@@ -17,6 +17,7 @@ import { JazminWriter, PROGRESS_TOTAL } from './writer.js';
 
 export { JazminReader } from './reader.js';
 export { JazminWriter } from './writer.js';
+export { JazminReaderCache } from './reader-cache.js';
 export { JazminAccessKey, JazminKey } from './keys.js';
 export { grantAccess, revokeAccess, update } from './update.js';
 export { append, compact } from './append.js';
@@ -65,6 +66,7 @@ export async function openAsync(source, options) {
   try {
     const { size } = await new Promise((resolve, reject) => fs.fstat(fd, (error, s) => (error ? reject(error) : resolve(s))));
     src = fileSource(fd, size);
+    src.path = source; // the reader's changed() and refresh() open the path again
     const tail = Math.min(size, OPEN_TAIL);
     await Promise.all([src.load(0, Math.min(size, PREAMBLE_SIZE)), src.load(size - tail, tail)]);
   } catch (error) {
