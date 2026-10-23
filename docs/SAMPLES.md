@@ -69,6 +69,7 @@ viewer.
 | The owner's list of grants (15.1) | 28 | 29 | |
 | Records sent back from the field (15.6) | 27 | 28 | `send-back.html`; [`js/examples/filing-service`](../js/examples/filing-service) |
 | Different keys, different changes: limits per key (19.5) | 44 | 44 | |
+| Rows of many partitions in turn, grouped as they are written: `regroup` (15.5) | 47 | 47 | |
 | Writing a file in the browser (24.3) | | | `send-back.html` |
 | Masked columns (15.7) | 32 | 33 | `masked.html` |
 | Masking and unmasking later (15.7) | 40 | 41 | |

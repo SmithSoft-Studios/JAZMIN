@@ -1036,6 +1036,24 @@ await using (var groupWriter = JazminFile.OpenWriter(orders46, maxDelay: TimeSpa
 Console.WriteLine($"46. {committed46.AppendCount} {committed46.Updated} {committed46.Inserted} {committed46.Deleted} | {string.Join(",", results46.Select(r => r.AppendCount))} {results46[0].Inserted}");
 // 46. 1 1 1 1 | 2,2,2 3
 
+// 47. Rows of many partitions in turn (USER-GUIDE 15.5): a chunk holds one partition, so rows written as they come make
+// a chunk of nearly every row. Regroup = true stores each partition's rows together, each in the order given; the
+// file's row order then differs from the order given (here clinic 0's visits come first).
+var owner47 = JazminKey.Generate();
+string Clinics47(bool regroup)
+{
+    var file = Path.Combine(dir, $"clinics-{regroup}.jzm");
+    using (var writer = JazminWriter.Create(file, [new JazminColumn("clinic", JazminType.String), new JazminColumn("visit", JazminType.Int)],
+        new JazminWriteOptions { Key = owner47, Access = new JazminAccessOptions { PartitionBy = "clinic" }, Regroup = regroup }))
+    {
+        for (var i = 0L; i < 1000; i++) writer.WriteValues($"clinic {i % 4}", i);
+    }
+    using var reader = JazminReader.Open(file, new JazminReadOptions { Key = owner47 });
+    return $"{reader.ChunkCount} chunks, first visits {string.Join(", ", reader.Rows().Take(3).Select(r => r["visit"]))}";
+}
+Console.WriteLine($"47. as given: {Clinics47(false)}; regrouped: {Clinics47(true)}");
+// 47. as given: 1000 chunks, first visits 0, 1, 2; regrouped: 4 chunks, first visits 0, 4, 8
+
 Directory.Delete(dir, true);
 
 /// <summary>

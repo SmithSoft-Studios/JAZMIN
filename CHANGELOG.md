@@ -156,6 +156,19 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   key). One line per file and a summary for several; `--json` prints the results; `--key`, `--password` (or
   `JAZMIN_KEY`, `JAZMIN_PASSWORD`) and `--revocation-list`. Exit code 0 only for `certified`, 1 for any other result,
   2 for a usage error. It trusts only the built-in roots: no option adds one.
+- **`write()` with `regroup: true`** (.NET `JazminWriteOptions.Regroup`, #275): an access-controlled file whose rows
+  arrive with partitions mixed is written with each partition's rows together, as `compact({ regroup: true })` does
+  for an existing file. A chunk holds one partition, so 50,000 rows of 8 cities in random order made 43,835 one-row
+  chunks: 11.9 MB written in 12-21 s with 422-467 MB peak memory in Node (3.2-3.4 s, 149-167 MB in .NET). With
+  `regroup`: 0.46 MB in 16 chunks, 0.34-0.71 s and 96-136 MB (.NET 0.35-0.50 s, 69-81 MB), three runs each, from an
+  array or a generator (User Guide 15.5). Rows are stored grouped by partition, each partition's rows in the order
+  given, so row order and row numbers differ from the input. The writer holds back at most 65,536 rows or about 16 MB
+  (as `chunkBytes` counts them), writing a partition once it fills a chunk and the largest ones at the limit; a row
+  held keeps its own copy of its values. A `sortedBy` that doesn't start with the partition column is refused, as
+  compaction refuses it. Off by default: files written without it are written as before. `writeAsync` and
+  `JazminWriter` take it too; the browser writer doesn't write shared files, so it has nothing to regroup. The JS
+  `reader.advise()` names it beside compaction for spread-out partitions. No format change: both libraries read
+  either's files (`spec/fixtures/*-regrouped-access.jzm`).
 - **Demo gallery:** `signatures.html`, eight signed files in a test build of the viewer, marked TEST.
 - **Test files:** `spec/fixtures/publisher/signed-document.jzm`, a certified payslip with its page, whose package asks
   for a web font (the viewer's tests check it is shown without the network).
