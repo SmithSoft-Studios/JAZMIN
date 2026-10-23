@@ -3,6 +3,14 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## Unreleased
+
+### Spec
+- **Publisher signatures' object identifiers** (6.9.4): IANA assigned SmithSoft Private Enterprise Number 67330 on
+  23 October 2026, so the `id-jazmin-*` identifiers are under `1.3.6.1.4.1.67330.1` (`.1` policy, `.2` document
+  signing, `.3` status, `.4` confirmation, `.5` publisher kind, `.6` log). The libraries use the arc from 1.8.1, with
+  SmithSoft's roots; until then they trust no roots, as in 1.8.0. Test vectors keep `2.999.1`.
+
 ## 1.8.0 - 2026-10-23 (file format 1.0)
 Check a whole file, also the parts no query reads; write many changes as one append; keep readers open across
 requests and pick up new versions; write shared files whose rows arrive mixed; and open files with many appends much

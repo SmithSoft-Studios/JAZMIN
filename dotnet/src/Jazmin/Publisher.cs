@@ -138,7 +138,7 @@ internal sealed record JazminPublisherTrust(IReadOnlyList<byte[]> Roots, string?
 {
     /// <summary>
     /// The trust built into this library, at the current time. SmithSoft's roots (6.9.4): none yet; added in 1.8.1, after
-    /// SmithSoft's root ceremony. The arc is not assigned yet.
+    /// SmithSoft's root ceremony. The arc, 1.3.6.1.4.1.67330.1 (6.9.4), is set with them.
     /// </summary>
     public static JazminPublisherTrust BuiltIn() => new([], null, DateTimeOffset.UtcNow);
 }

@@ -119,7 +119,8 @@ library that refuses anything outside it (no general X.509 parsing, so no large 
   House in the UK, a national register elsewhere), optionally the global **LEI**, and a verified domain.
 - **Sole traders:** the person's verified name, country, "sole trader", and a trading name if they have one.
 - Names in UTF-8. Our own identifiers (the certificate policy, the "JAZMIN document signing" usage, our fields) sit
-  under SmithSoft's IANA Private Enterprise Number, so they never clash with anyone's.
+  under SmithSoft's IANA Private Enterprise Number, 67330 (assigned 23 October 2026), so they never clash with
+  anyone's: the arc `1.3.6.1.4.1.67330.1` (spec 6.9.4).
 
 ## Verifying a file (free, offline)
 
