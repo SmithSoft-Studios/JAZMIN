@@ -251,6 +251,9 @@ No long-lived npm or NuGet key is stored anywhere.
    the last full release.
 5. Each publish job skips a version that is already on its registry, so a
    release that failed halfway can simply be re-run.
+6. A patch for an older minor line (1.7.3 after 1.8.0, tagged on `release/1.7`) is published as npm's
+   `latest` too, so `npm install` would get it. Approve its npm job before the newer release's, or afterwards run
+   `npm dist-tag add @smithsoft-studios/jazmin@<newest version> latest`. NuGet always offers the highest version.
 
 To check the packages yourself, run `bash .github/scripts/check-packages.sh`
 from the repository root (in Git Bash on Windows). CI runs it on every pull
