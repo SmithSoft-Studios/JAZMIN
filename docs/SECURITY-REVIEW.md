@@ -115,9 +115,14 @@ section it reads against the signed catalog.
    swapping a key-slot page).
 5. **Revoked or expired key holder:** read a newer version, or keep opening
    after expiry, beyond the documented limits.
-6. **Hostile file author:** make a reader crash, hang or exhaust memory.
-   Fuzzing (S-5) covers damaged plain files; hostile *encrypted* files are
-   worth a look too.
+6. **Hostile file author:** make a reader crash, hang or exhaust memory, or
+   reach a flaw in the runtime's decompressor (for example CVE-2026-111497 in
+   the Node.js Brotli decoder, October 2026). Fuzzing (S-5) covers damaged
+   plain files; hostile *encrypted* files are worth a look too. Readers check a
+   section's checksum and authentication tag before decompressing it; change
+   files and submissions, which people the owner doesn't control write, are
+   refused if they use Brotli; and the JavaScript library won't decompress
+   Brotli on a Node.js release without the fix (TASKS S-9).
 7. **Key service attacker** (sample): get an unlock token without the second
    factor, after expiry, or by replaying a code.
 
@@ -133,6 +138,9 @@ section it reads against the signed catalog.
     `format-version.test.js` (hidden column names, signed key-slot pages).
   - .NET: `AccessTests`, `ExpiryTests`, `CoreTests`, `FormatVersionTests`.
   - Key service: `Jazmin.KeyService.Tests`.
+  - Whole-file check and decompression: `verify.test.js` / `VerifyTests`
+    (every section, preamble and trailer values, crafted section lengths),
+    `brotli-guard.test.js` / `BrotliGuardTests`.
 - **Fuzzing (S-5):** both readers, damaged files and decoder inputs; see
   [CONTRIBUTING](CONTRIBUTING.md#fuzzing-the-readers).
 
