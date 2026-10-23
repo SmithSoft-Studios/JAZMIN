@@ -362,3 +362,33 @@ test('a cached reader whose refresh fails (key revoked) is dropped and closed; o
   closed(reader);
   cache.close();
 });
+
+test('a lock opened through one lease is not open for the next: the cache closes a reader with a lock open', () => {
+  const owner = JazminKey.generate();
+  const staff = owner.createAccessKey();
+  const file = tmp('cache-unlock.jzm');
+  write(file, [{ id: 1, dept: 'A', account: '4821 0393 7712 4821' }], {
+    columns: [{ name: 'id', type: 'int' }, { name: 'dept', type: 'string' }, { name: 'account', type: 'string', mask: { lock: 'pay', show: { keepFormat: true, last: 4 } } }],
+    key: owner, access: { partitionBy: 'dept', grants: [{ key: staff, rows: '*' }] },
+    locks: { pay: { password: 'pw', iterations: 1000 } },
+  });
+  const cache = new JazminReaderCache({ max: 10 });
+  const options = { key: staff.export(), accessState: false };
+  const first = cache.open(file, options);
+  const unlocked = first.reader;
+  assert.equal([...unlocked.rows()][0].account, undefined);
+  unlocked.unlock('pay', { password: 'pw' });
+  assert.equal([...unlocked.rows()][0].account, '4821 0393 7712 4821');
+  first.release();
+  closed(unlocked); // closed when released: no later request may use the lock it opened
+  assert.equal(cache.size, 0);
+  const second = cache.open(file, options); // another request, the same key, no password
+  assert.notEqual(second.reader, unlocked);
+  assert.equal([...second.reader.rows()][0].account, undefined, 'the lock is closed for this request');
+  assert.equal(second.reader.locks[0].unlocked, false);
+  second.release();
+  const third = cache.open(file, options);
+  assert.equal(third.reader, second.reader, 'a reader with no lock open stays cached');
+  third.release();
+  cache.close();
+});

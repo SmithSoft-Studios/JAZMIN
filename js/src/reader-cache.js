@@ -4,7 +4,7 @@ import path from 'node:path';
 import { JazminValidationError } from './errors.js';
 import { toMs } from './expiry.js';
 import { parseAnyKey } from './keys.js';
-import { ACCESS_EXPIRES, IDLE, JazminReader } from './reader.js';
+import { ACCESS_EXPIRES, IDLE, JazminReader, LOCKS_OPENED } from './reader.js';
 
 /**
  * Open readers, kept for the next request, least recently used closed first. open() leases a reader: a reader can't
@@ -18,11 +18,13 @@ import { ACCESS_EXPIRES, IDLE, JazminReader } from './reader.js';
  *   for this cache: no key or password is a map key.
  * - Each open() checks whether the cached reader's key has expired; if so the reader is dropped and the file opened
  *   again, which fails as open() would.
+ * - A reader whose lease opened a lock (unlock()) is closed when the lease is released, not kept: a lock stays open as
+ *   long as its reader, and the next request may not know the password or unlock token.
  */
 export class JazminReaderCache {
   #max;
   #secret = crypto.randomBytes(32);
-  #entries = new Map(); // id -> { reader, leases, retired }, least recently used first
+  #entries = new Map(); // id -> { id, reader, leases, retired }, least recently used first
   #closed = false;
 
   constructor({ max = 100 } = {}) {
@@ -62,7 +64,7 @@ export class JazminReaderCache {
     }
     if (!entry) {
       const reader = new JazminReader(where, options);
-      entry = { reader, leases: 0, retired: false };
+      entry = { id, reader, leases: 0, retired: false };
       this.#entries.set(id, entry);
       this.#evict();
       return this.#lease(entry, reader);
@@ -124,6 +126,10 @@ export class JazminReaderCache {
       released = true;
       if (!entry) reader.close();
       else if (--entry.leases === 0) {
+        if (!entry.retired && entry.reader[LOCKS_OPENED]) {
+          this.#entries.delete(entry.id); // a lock this request opened is not left open for the next one
+          entry.retired = true;
+        }
         if (entry.retired) entry.reader.close();
         else entry.reader[IDLE](); // waiting for the next request: only what the next query needs again is kept
       }

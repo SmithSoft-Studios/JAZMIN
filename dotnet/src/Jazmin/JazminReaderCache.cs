@@ -16,6 +16,8 @@ namespace Jazmin;
 /// under a secret made for this cache: no key or password is a dictionary key.</item>
 /// <item>Each open checks whether the cached reader's key has expired; if so the reader is dropped and the file opened
 /// again, which fails as <see cref="JazminReader.Open(string, JazminReadOptions?)"/> would.</item>
+/// <item>A reader whose lease opened a lock (<see cref="JazminReader.Unlock"/>) is disposed when the lease is released,
+/// not kept: a lock stays open as long as its reader, and the next request may not know the password or unlock token.</item>
 /// </list>
 /// </summary>
 public sealed class JazminReaderCache : IDisposable
@@ -183,6 +185,7 @@ public sealed class JazminReaderCache : IDisposable
         {
             if (--entry.Leases > 0) return;
             if (entry.Retired) entry.Reader.Dispose();
+            else if (entry.Reader.LocksOpened) Remove(_entries[entry.Id]); // a lock this request opened is not left open for the next one: disposed
             else entry.Reader.Idle(); // waiting for the next request: only what the next query needs again is kept
         }
     }
