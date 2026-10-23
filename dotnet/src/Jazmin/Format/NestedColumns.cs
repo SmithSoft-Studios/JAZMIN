@@ -300,12 +300,14 @@ internal sealed class NestedStage
     internal readonly List<int> Lengths = [];
     internal int ValueAt;
     internal int LengthAt;
+    internal long Bytes; // the approximate bytes its leaf values add to a chunk (chunks are capped by size)
 
     public void Clear()
     {
         Values.Clear();
         Lengths.Clear();
         ValueAt = LengthAt = 0;
+        Bytes = 0;
     }
 
     /// <summary>A stage of its own with these values, binary ones copied (Regroup holds a row back with it).</summary>
@@ -314,6 +316,7 @@ internal sealed class NestedStage
         var copy = new NestedStage();
         foreach (var value in Values) copy.Values.Add(value is byte[] data ? data.Clone() : value);
         copy.Lengths.AddRange(Lengths);
+        copy.Bytes = Bytes;
         return copy;
     }
 }
@@ -336,7 +339,6 @@ internal sealed class NestedColumn : ColumnBuffer
     private readonly Dictionary<string, int>? _fieldIndex;
     private readonly ByteWriter _scratch = new(1024); // the parent's scratch holds this column's body while it is encoded
     private readonly ConcurrentDictionary<Type, Func<object, object?>[]> _getters = new();
-    private long _bytes;
 
     public NestedColumn(JazminColumn column, JazminSerializerSettings? settings, string path)
     {
@@ -356,14 +358,6 @@ internal sealed class NestedColumn : ColumnBuffer
             _fields = [.. _fieldColumns.Select((f, i) => Nested.Buffer(f, settings, _fieldPaths[i]))];
             _fieldIndex = _fieldColumns.Select((f, i) => (f.Name, i)).ToDictionary(x => x.Name, x => x.i, StringComparer.Ordinal);
         }
-    }
-
-    /// <summary>The approximate bytes added since the last call (chunks are capped by size).</summary>
-    public long TakeBytes()
-    {
-        var bytes = _bytes;
-        _bytes = 0;
-        return bytes;
     }
 
     /// <summary>
@@ -389,7 +383,16 @@ internal sealed class NestedColumn : ColumnBuffer
             stage.Values.Add(Present);
             nested.Stage(value, stage);
         }
-        else stage.Values.Add(value);
+        else
+        {
+            stage.Values.Add(value);
+            stage.Bytes += value switch
+            {
+                string s => s.Length + 1,
+                byte[] b => b.Length + 2,
+                _ => 5,
+            };
+        }
     }
 
     private void StageList(object value, NestedStage stage)
@@ -431,24 +434,6 @@ internal sealed class NestedColumn : ColumnBuffer
         }
     }
 
-    /// <summary>The approximate bytes a staged value adds (as <see cref="TakeBytes"/> counts them once it is added).</summary>
-    public static long StagedBytes(NestedStage stage)
-    {
-        long bytes = 0;
-        foreach (var value in stage.Values)
-        {
-            bytes += value switch
-            {
-                null => 0,
-                string s => s.Length + 1,
-                byte[] b => b.Length + 2,
-                _ when ReferenceEquals(value, Present) => 0, // a nested list or object: its own values follow
-                _ => 5,
-            };
-        }
-        return bytes;
-    }
-
     /// <summary>Adds a staged value (a <see cref="NestedStage"/>), or stages and then adds any other value.</summary>
     protected override void AddValue(object value)
     {
@@ -479,20 +464,8 @@ internal sealed class NestedColumn : ColumnBuffer
     private void CommitChild(ColumnBuffer buffer, NestedStage stage)
     {
         var value = stage.Values[stage.ValueAt++];
-        if (buffer is NestedColumn nested && value is not null)
-        {
-            nested.Add(stage); // Present: its own part follows in the stage
-            _bytes += nested.TakeBytes();
-            return;
-        }
-        buffer.Add(value);
-        _bytes += value switch
-        {
-            null => 0,
-            string s => s.Length + 1,
-            byte[] b => b.Length + 2,
-            _ => 5,
-        };
+        if (buffer is NestedColumn nested && value is not null) nested.Add(stage); // Present: its own part follows in the stage
+        else buffer.Add(value);
     }
 
     /// <summary>

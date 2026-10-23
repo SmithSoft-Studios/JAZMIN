@@ -269,15 +269,13 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     private string? _chunkPartition;
     private int _chunkRows;
     private long _rowCount; // rows written to the current table's chunks (held rows not yet)
-    private Dictionary<string, HeldRows>? _held; // Regroup, in a partitioned table: the rows held back, by partition
+    private OrderedDictionary<string, HeldRows>? _held; // Regroup, in a partitioned table: the rows held back, by partition, the first held first
     private long _heldRows;
     private long _heldBytes;
-    private long _heldOrder; // numbers held partitions in the order they were first held
 
     /// <summary>A partition's rows held back by <see cref="JazminWriteOptions.Regroup"/>, normalized.</summary>
-    private sealed class HeldRows(long order)
+    private sealed class HeldRows
     {
-        public long Order { get; } = order;
         public List<object?[]> Rows { get; } = new();
         public long Bytes { get; set; }
     }
@@ -790,7 +788,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         _chunks.Clear();
         _chunkPartition = null;
         // Regroup holds rows per partition, unless they arrive sorted by the partition column (then already grouped).
-        _held = _options.Regroup && table.PartitionCol >= 0 && table.SortCols is null ? new Dictionary<string, HeldRows>(StringComparer.Ordinal) : null;
+        _held = _options.Regroup && table.PartitionCol >= 0 && table.SortCols is null ? new OrderedDictionary<string, HeldRows>(StringComparer.Ordinal) : null;
         CloseIndexBuilders();
         _indexBuilders.Clear();
         for (var i = 0; i < _columns.Length; i++)
@@ -1032,7 +1030,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         {
             if (normalized[i] is not null && _stagers?[i].Stage is { } stage)
             {
-                bytes += NestedColumn.StagedBytes(stage);
+                bytes += stage.Bytes;
                 normalized[i] = stage.Copy();
             }
             else
@@ -1042,7 +1040,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             }
         }
         var partition = AccessCrypto.PartitionName(normalized[_current.PartitionCol]);
-        if (!_held!.TryGetValue(partition, out var held)) _held[partition] = held = new HeldRows(_heldOrder++);
+        if (!_held!.TryGetValue(partition, out var held)) _held.Add(partition, held = new HeldRows());
         held.Rows.Add(normalized);
         held.Bytes += bytes;
         _heldRows++;
@@ -1054,7 +1052,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         else if (_heldRows >= _options.RegroupRows || _heldBytes >= _options.RegroupBytes)
         {
             // The partitions holding the most rows first; ties: the first held first.
-            foreach (var (p, h) in _held.OrderByDescending(e => e.Value.Rows.Count).ThenBy(e => e.Value.Order).ToList())
+            foreach (var (p, h) in _held.OrderByDescending(e => e.Value.Rows.Count).ToList()) // a stable sort
             {
                 if (_heldRows <= _options.RegroupRows / 2 && _heldBytes <= _options.RegroupBytes / 2) break;
                 WriteHeld(p, h);
@@ -1074,7 +1072,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     private void WriteAllHeld()
     {
         if (_held is null) return;
-        foreach (var (p, h) in _held.OrderBy(e => e.Value.Order).ToList()) WriteHeld(p, h);
+        foreach (var (p, h) in _held.ToList()) WriteHeld(p, h);
     }
 
     /// <summary>Adds a row's checked values to the chunk (a chunk is written when full).</summary>
@@ -1099,7 +1097,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                 var value = normalized[cols[j]];
                 if (ReferenceEquals(value, DateMarker)) ((LongColumn)buffers[j]).AddLong(_dateMs[cols[j]]);
                 else buffers[j].Add(value);
-                part.Bytes += buffers[j] is NestedColumn nested ? (int)nested.TakeBytes() : EstimateSize(value);
+                part.Bytes += value is NestedStage staged ? (int)staged.Bytes : EstimateSize(value);
             }
             bytes += part.Bytes;
         }
