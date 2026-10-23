@@ -116,7 +116,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     an append, a file `update()`, `compact()` or a key rotation replaced (a new file id), a copy of the file with
     another version put in its place (a backup restore, a sync tool; even of the same size), or a file that is gone. It
     opens the file and compares the file id, the size, the last 44 bytes and the header section's 16-byte envelope (its
-    checksum); bytes left by an interrupted append are not a change. On Windows a path missing while a file is replaced is tried again for about 100 ms.
+    checksum); bytes left by an interrupted append are not a change. A file that grew is searched back for its trailer
+    only through the bytes added since the last check, so a check while an append is being written, or after one was
+    interrupted, stays cheap (64 MB left by an unfinished append, 5 runs: Node 91-104 -> 0.8-1.3 ms per
+    `JazminReaderCache.open()`, .NET 37-47 -> 0.3-0.6 ms). On Windows a path missing while a file is replaced is tried
+    again for about 100 ms.
   - **`refresh()`** (.NET `Refresh()`) returns a new reader of the new version, opened from the same path with the same
     options, or the same reader when nothing changed. The old reader keeps working until it is closed; a refresh that
     fails (key revoked or expired, file damaged) throws what `open()` would and leaves it untouched. A password file
