@@ -70,6 +70,27 @@ public sealed class OpenRetryTests : IDisposable
     }
 
     [Fact]
+    public async Task Inspect_WaitsBrieflyToo()
+    {
+        if (!OperatingSystem.IsWindows()) return; // the path is briefly missing only on Windows
+        var path = Sample();
+        using var opening = new ManualResetEventSlim();
+        var back = MoveAwayAndBack(path, opening);
+        Assert.False(File.Exists(path));
+        opening.Set();
+        JazminFileInfo info;
+        try
+        {
+            info = JazminFile.Inspect(path);
+        }
+        finally
+        {
+            await back;
+        }
+        Assert.Equal("1.0", info.Version);
+    }
+
+    [Fact]
     public async Task OpenAsync_WaitsBrieflyForAFileWhosePathIsMissingWhileItIsReplaced()
     {
         if (!OperatingSystem.IsWindows()) return; // the path is briefly missing only on Windows

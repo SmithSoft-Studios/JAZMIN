@@ -7,6 +7,7 @@ import { JazminReader, OWNER_GRANTS, OWNER_LOCKS } from './reader.js';
 import { DRAFT_MAGIC, FLAG_ACCESS, FLAG_APPENDED, FLAG_ENCRYPTED, FLAG_PASSWORD, MAGIC, PREAMBLE_SIZE } from './constants.js';
 import { JazminFormatError } from './errors.js';
 import fs from 'node:fs';
+import { openFileSync } from './open-retry.js';
 
 function ownerGrants(path, ownerKey, need = 'Unlock tokens exist only for access-controlled files, and need the owner key') {
   const reader = new JazminReader(path, { key: ownerKey });
@@ -103,7 +104,7 @@ export function issueFileUnlockToken(path, ownerKey, lockId) {
  * access key's id, is what a client sends to a key service - and which features it uses.
  */
 export function inspect(path) {
-  const fd = fs.openSync(path, 'r');
+  const fd = openFileSync(path, 'r'); // waits briefly on Windows while the file is replaced
   try {
     const preamble = Buffer.alloc(PREAMBLE_SIZE);
     const complete = fs.readSync(fd, preamble, 0, PREAMBLE_SIZE, 0) === PREAMBLE_SIZE;
