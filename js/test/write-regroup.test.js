@@ -203,6 +203,28 @@ test('write regroup: writeAsync with an async source, and the row numbers in err
   assert.throws(() => write(tmp('null.jzm'), missing, { columns, key: owner, access, regroup: true }), /Row 6: column 'id' is not nullable/);
 });
 
+test('write regroup: writeAsync stores the same chunks and rows as write (rows held are written before the open chunk)', async () => {
+  // A limit writes a partition's rows into a chunk that stays open: the rows of it held afterwards join that chunk.
+  async function* source(list) {
+    for (const row of list) yield row;
+  }
+  const options = { columns, key: owner, access, chunkRows: 1000, regroup: true, [REGROUP_LIMITS]: { rows: 100 } };
+  const durbanOnly = cityRows(150).map((r) => ({ ...r, city: 'Durban' }));
+  for (const [name, rows] of [['one partition', durbanOnly], ['many', [...durbanOnly, ...cityRows(300).map((r) => ({ ...r, id: r.id + 150 }))]]]) {
+    const sync = tmp('sync.jzm');
+    write(sync, rows, options);
+    const expected = readAll(sync, owner);
+    if (rows === durbanOnly) assert.equal(expected.chunks, 1);
+    for (const given of [rows, source(rows)]) {
+      const file = tmp('async.jzm');
+      await writeAsync(file, given, options);
+      const { rows: read, chunks } = readAll(file, owner);
+      assert.equal(chunks, expected.chunks, name);
+      assert.deepEqual(read, expected.rows, name);
+    }
+  }
+});
+
 test('write regroup: tables with partitionBy are regrouped, the others written as given', () => {
   const rows = cityRows(300);
   const totals = CITIES.map((city) => ({ city, people: rows.filter((r) => r.city === city).length }));

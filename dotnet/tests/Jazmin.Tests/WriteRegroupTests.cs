@@ -222,6 +222,30 @@ public sealed class WriteRegroupTests : IDisposable
     }
 
     [Fact]
+    public async Task FinishAsync_stores_the_same_chunks_and_rows_as_Finish()
+    {
+        // A limit writes a partition's rows into a chunk that stays open: the rows of it held afterwards join that chunk.
+        var durbanOnly = CityRows(150).Select(r => r with { City = "Durban" }).ToList();
+        var many = durbanOnly.Concat(CityRows(300).Select(r => r with { Id = r.Id + 150 })).ToList();
+        JazminWriteOptions Limited() => new() { Key = Owner, Access = Access(), ChunkRows = 1000, Regroup = true, RegroupRows = 100 };
+        foreach (var rows in new[] { durbanOnly, many })
+        {
+            var sync = Write($"sync-{rows.Count}.jzm", rows, Limited());
+            var path = Path.Combine(_dir, $"async-{rows.Count}.jzm");
+            await using (var writer = JazminWriter.Create(path, Columns, Limited()))
+            {
+                foreach (var row in rows) writer.WriteRow(row.Values);
+                await writer.FinishAsync();
+            }
+            using var expected = JazminReader.Open(sync, new JazminReadOptions { Key = Owner });
+            using var reader = JazminReader.Open(path, new JazminReadOptions { Key = Owner });
+            if (rows == durbanOnly) Assert.Equal(1, expected.ChunkCount);
+            Assert.Equal(expected.ChunkCount, reader.ChunkCount);
+            Assert.Equal(Ids(expected.Rows()), Ids(reader.Rows()));
+        }
+    }
+
+    [Fact]
     public async Task WriteRowsAsync_with_an_async_source_and_the_row_numbers_in_errors_are_the_input_order()
     {
         var rows = CityRows(800);
