@@ -89,8 +89,18 @@ jobs:
             exit 0
           fi
           npm install --global npm@latest > /dev/null # trusted publishing needs npm 11.5.1 or later
-          # A pre-release (1.0.0-rc.1) goes to the "next" tag, so "npm install @smithsoft-studios/jazmin" keeps the last release.
-          case "$version" in *-*) dist_tag=next ;; *) dist_tag=latest ;; esac
+          # Only the newest release becomes npm's "latest", so "npm install @smithsoft-studios/jazmin" gets it: a pre-release
+          # (1.0.0-rc.1) goes to "next", and a patch for an older minor line (1.7.3 after 1.8.0) to "release-1.7".
+          latest=$(npm view @smithsoft-studios/jazmin dist-tags.latest 2>/dev/null || true)
+          case "$version" in
+            *-*) dist_tag=next ;;
+            *) if [ -n "$latest" ] && [ "$(printf '%s\n' "$version" "$latest" | sort -V | tail -n 1)" != "$version" ]; then
+                 dist_tag="release-${version%.*}"
+               else
+                 dist_tag=latest
+               fi ;;
+          esac
+          echo "::notice::Publishing $version with npm's \"$dist_tag\" tag (\"latest\" is ${latest:-not set yet})"
           # "./" marks a local file: npm 12 reads "dist/x.tgz" as a GitHub repository name and refuses it.
           npm publish ./dist/smithsoft-studios-jazmin-*.tgz --access public --tag "$dist_tag" $PROVENANCE
 
