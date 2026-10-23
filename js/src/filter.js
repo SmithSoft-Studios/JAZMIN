@@ -169,11 +169,22 @@ export function compileFilter(filter, columns) {
   return (obj) => evaluate(plan, columns.map((c) => (obj[c.name] === undefined ? null : obj[c.name])));
 }
 
-/** Evaluates a normalized filter against a row (array of values in column order). */
+/**
+ * Evaluates a normalized filter against a row (array of values in column order). And / or are plain loops: `every` and
+ * `some` would make a closure for every row checked.
+ */
 export function evaluate(node, row) {
   switch (node.kind) {
-    case 'and': return node.items.every((n) => evaluate(n, row));
-    case 'or': return node.items.some((n) => evaluate(n, row));
+    case 'and': {
+      const items = node.items;
+      for (let i = 0; i < items.length; i++) if (!evaluate(items[i], row)) return false;
+      return true;
+    }
+    case 'or': {
+      const items = node.items;
+      for (let i = 0; i < items.length; i++) if (evaluate(items[i], row)) return true;
+      return false;
+    }
     case 'not': return !evaluate(node.item, row);
     case 'nested': return evaluateNested(node, row[node.col]);
     default: return evaluateLeaf(node, row);

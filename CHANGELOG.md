@@ -232,6 +232,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   (1,022-1,104) ms. A shared write (partitioned, one grant) peaks at 101.3 -> 77.5 MB; compacting the file after 300
   appends at 113.7 -> 87.4 MB, and an update at 113.7 -> 90.7 MB, each allocating about 42 MB less, at the same speed.
   The files' data and index sections are byte for byte the same as before.
+- **Filters allocate less as they check rows (JavaScript and the browser reader).** `and` and `or` are checked with
+  plain loops instead of `every` and `some`, which made a function for every row checked. On a 200,000-row file, each
+  call opening the file, median of 6 interleaved runs (range in brackets), memory allocated per call: a count with an
+  indexed and an unindexed condition 9.13 [9.11-9.15] -> 4.93 [4.91-4.93] MB; a count of an `or` of conditions on every
+  row 64.1 [64.0-64.5] -> 12.8 [12.7-12.8] MB, 69.1 [65.0-78.1] -> 59.0 [55.7-69.4] ms; a find over every row 41.4 [41.2-41.5] -> 34.1
+  [34.0-34.3] MB; a lookup by index 0.80 [0.79-0.84] -> 0.68 [0.68-0.73] MB. The other times, and peak memory, stay
+  within the runs' spread. The browser reader (run in Node) counts the `or` filter with 108.9 [104.8-109.1] -> 32.7
+  [32.6-33.6] MB. The same rows are returned; no format change.
 - **Applying a change file to a shared file of many keys is faster** when the sender isn't named (`keyId`): each key's
   submission key is now tried on the change file's header alone, the file read once, instead of opening the file with
   each key in turn. With 5,001 keys and the sender last: finding the sender took about 290 ms in JavaScript and about
