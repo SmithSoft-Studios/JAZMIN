@@ -161,10 +161,12 @@ public sealed record JazminStorage(
 /// <summary>
 /// What <see cref="JazminReader.Verify"/> checked: how (<paramref name="CheckedBy"/>: "signature" in a shared file,
 /// "encryption" in a file with a key or password, "checksum" in a plain file), the sections and their bytes, and the
-/// bytes the current version doesn't use (replaced by appends), counted, not checked. The preamble (64 bytes), the
-/// trailer (44), <paramref name="Bytes"/> and <paramref name="UnusedBytes"/> make up the file.
+/// bytes the current version doesn't use (replaced by appends), counted, not checked. <paramref name="PublisherBytes"/>:
+/// the publisher signature block before the header (spec 6.9), checked whole but not who signed it
+/// (<see cref="JazminFile.VerifyPublisher(string, JazminPublisherOptions?)"/> does that), or 0. The preamble (64 bytes),
+/// the trailer (44), <paramref name="Bytes"/>, <paramref name="UnusedBytes"/> and <paramref name="PublisherBytes"/> make up the file.
 /// </summary>
-public sealed record JazminVerification(string CheckedBy, int Sections, long Bytes, long UnusedBytes);
+public sealed record JazminVerification(string CheckedBy, int Sections, long Bytes, long UnusedBytes, long PublisherBytes);
 
 public sealed record JazminPlan(string Strategy, long CandidateRows, int Chunks, int ChunksSkipped)
 {
@@ -639,8 +641,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <summary>
     /// Checks every section of the file's current version, not only those queries read (issue #275): in a shared file
     /// each section's SHA-256 against the owner's signature, in a file with a key or password each section's CRC-32 and
-    /// authentication tag (any change is caught), in a plain file each CRC-32 and its decoding (accidental damage only).
-    /// One section at a time, nothing kept. Throws a <see cref="JazminFormatException"/> naming the first section that fails.
+    /// authentication tag (a change to any section is caught), in a plain file each CRC-32 and its decoding (accidental damage only).
+    /// One section at a time. Also the preamble and trailer values no checksum covers, and a publisher signature block (whole,
+    /// not who signed it). Throws a <see cref="JazminFormatException"/> naming the first section that fails.
     /// Bytes the current version doesn't use (replaced by appends) are counted, not checked: compacting removes them.
     /// Needs the whole file: an owner key, or the key or password of a file that isn't shared.
     /// </summary>
@@ -668,17 +671,30 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         }
         var encrypted = (_flags & FormatConstants.FlagEncrypted) != 0;
         var preamble = Read(0, FormatConstants.PreambleSize);
-        // Fields the spec fixes (4.1) but nothing else depends on: reserved bytes, no salt in a plain file, no iterations without a password.
+        // Fields no checksum or tag covers (appends change the flags in place), checked for the values the format allows
+        // (4.1, 4.2, 7.6, 11.2): reserved bytes; no salt in a plain file; PASSWORD only on a file encrypted with a password,
+        // with an iteration count readers accept, and iterations only then; APPENDED on a file that was appended to (a file
+        // that wasn't may have it: an append cut short leaves it); the trailer's key-slot and signature fields only in a
+        // shared file.
+        var iterations = BinaryPrimitives.ReadUInt32LittleEndian(preamble.AsSpan(56));
+        var trailer = Read(_validEnd - FormatConstants.TrailerSize, FormatConstants.TrailerSize);
         var valid = BinaryPrimitives.ReadUInt16LittleEndian(preamble.AsSpan(6)) == 0 && BinaryPrimitives.ReadUInt32LittleEndian(preamble.AsSpan(60)) == 0
             && (encrypted || !preamble.AsSpan(24, FormatConstants.SaltSize).ContainsAnyExcept((byte)0))
-            && ((_flags & FormatConstants.FlagPassword) != 0 || BinaryPrimitives.ReadUInt32LittleEndian(preamble.AsSpan(56)) == 0);
-        if (!valid) throw new JazminFormatException("The preamble has values the format does not allow - the file was modified");
+            && ((_flags & FormatConstants.FlagPassword) != 0
+                ? encrypted && _access is null && iterations >= FormatConstants.MinKdfIterations && iterations <= FormatConstants.MaxKdfIterations
+                : iterations == 0)
+            && (_header.AppendCount == 0 || (_flags & FormatConstants.FlagAppended) != 0)
+            && (_access is not null || !trailer.AsSpan(12, 24).ContainsAnyExcept((byte)0));
+        if (!valid) throw new JazminFormatException("The preamble or trailer has values the format does not allow - the file was modified");
 
+        var end = _validEnd - FormatConstants.TrailerSize; // sections lie between the preamble and the trailer
         // offset -> the section there: each section once, however often it is referenced. Embedded-file blocks keep their digest as text.
         var sections = new Dictionary<long, (SectionRef At, string SectionId, byte[]? Key, string? DigestText)>();
         void Add(SectionRef? at, string sectionId, byte[]? key = null, string? digestText = null)
         {
-            if (at is not null && at.Length != 0) sections.TryAdd(at.Offset, (at, sectionId, key, digestText));
+            if (at is null || at.Length == 0 || sections.ContainsKey(at.Offset)) return;
+            if (!(at.Offset >= FormatConstants.PreambleSize && at.Offset + at.Length <= end)) throw new JazminFormatException($"Section '{sectionId}' lies outside the file");
+            sections.Add(at.Offset, (at, sectionId, key, digestText));
         }
         byte[]? KeyOf(string group, string sectionId) => _keys?.SectionKey(group, sectionId);
         long bytes = 0;
@@ -688,7 +704,10 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             var (slotsOffset, slotsLength, _) = _access.KeySlots;
             var signatureAt = _access.Signature!;
             var slotsSection = Read(slotsOffset, slotsLength);
-            var signature = SectionCodec.Decode(PlainSection(Read(signatureAt.Offset, signatureAt.Length), "signature"), null, _fileId, "signature");
+            var signatureSection = Read(signatureAt.Offset, signatureAt.Length);
+            // Its envelope's reserved bytes are in neither its CRC nor the signed message.
+            if (signatureSection.Length >= 4 && (signatureSection[2] != 0 || signatureSection[3] != 0)) throw new JazminFormatException("Section 'signature' has an invalid envelope");
+            var signature = SectionCodec.Decode(PlainSection(signatureSection, "signature"), null, _fileId, "signature");
             AccessCrypto.VerifySignedBy(signature, _fileId, slotsSection, Read(_headerRef.Offset, _headerRef.Length), _access.SignedBy!);
             bytes += slotsLength + signatureAt.Length + _headerRef.Length;
             var pages = AccessCrypto.KeySlotPages(SectionCodec.DecodeSegment(PlainSection(slotsSection, "keyslots"), null, _fileId, "keyslots"));
@@ -742,7 +761,6 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         {
             var (at, sectionId, key, digestText) = sections[offset];
             if (at.Length < FormatConstants.EnvelopeSize) throw new JazminFormatException($"Section '{sectionId}' is truncated");
-            if (at.Offset < 0 || at.Offset + at.Length > _stream.Length) throw new JazminFormatException("Unexpected end of file");
             if (scratch.Length < at.Length) scratch = GC.AllocateUninitializedArray<byte>(at.Length);
             lock (_io)
             {
@@ -774,8 +792,33 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             }
             bytes += at.Length;
         }
+        var publisherBytes = PublisherBlockBytes();
+        var unusedBytes = end - FormatConstants.PreambleSize - bytes - publisherBytes;
+        // Only appends leave bytes behind: in a file never appended to, every byte is a section, the trailer or the block.
+        if (unusedBytes != 0 && _header.AppendCount == 0)
+            throw new JazminFormatException($"{unusedBytes} bytes are not part of the file, which was never appended to - the file was modified");
         return new JazminVerification(_access is not null ? "signature" : encrypted ? "encryption" : "checksum",
-            sections.Count + (_access is not null ? 3 : 0), bytes, _stream.Length - FormatConstants.PreambleSize - FormatConstants.TrailerSize - bytes);
+            sections.Count + (_access is not null ? 3 : 0), bytes, unusedBytes, publisherBytes);
+    }
+
+    /// <summary>
+    /// The length of the publisher signature block just before the header (spec 6.9.1), or 0 without one. Verify checks
+    /// that it is whole (its footer and CRC); who signed it, and what it covers, is VerifyPublisher's to check.
+    /// </summary>
+    private long PublisherBlockBytes()
+    {
+        const int FooterSize = 16;
+        var end = _headerRef.Offset;
+        if (end < FormatConstants.PreambleSize + FooterSize) return 0;
+        var footer = Read(end - FooterSize, FooterSize);
+        if (!footer.AsSpan(12).SequenceEqual("JZPS"u8)) return 0;
+        var length = BinaryPrimitives.ReadUInt32LittleEndian(footer);
+        var start = end - FooterSize - length;
+        if (start < FormatConstants.PreambleSize || BinaryPrimitives.ReadUInt16LittleEndian(footer.AsSpan(8)) != 1
+            || BinaryPrimitives.ReadUInt16LittleEndian(footer.AsSpan(10)) != 0
+            || Crc32.Compute(Read(start, (int)length)) != BinaryPrimitives.ReadUInt32LittleEndian(footer.AsSpan(4)))
+            throw new JazminFormatException("The publisher signature block before the header is damaged - the file was modified");
+        return FooterSize + length;
     }
 
     /// <summary>Whether the file's sorted indexes may hold keys as differences (reader feature 'index-deltas'); update keeps them.</summary>

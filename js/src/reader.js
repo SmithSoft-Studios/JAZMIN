@@ -250,6 +250,9 @@ const ownerLookupBudget = (partitions) => SMALL_LOOKUP_BYTES * Math.max(1, parti
 // ranges: from READ_AHEAD_SECTIONS sections, those at most READ_AHEAD_GAP apart share a read of at most READ_AHEAD_MAX
 // bytes. A read is a system call; the gaps are other small catalog sections.
 const READ_AHEAD_SECTIONS = 16;
+// A publisher signature block's footer (spec 6.9.1): length, CRC-32, version, reserved, magic 'JZPS'.
+const PUBLISHER_FOOTER_SIZE = 16;
+const PUBLISHER_MAGIC = 0x53505a4a; // 'JZPS', read little-endian
 const READ_AHEAD_GAP = 4 * 1024;
 const READ_AHEAD_MAX = 8 * 1024 * 1024;
 const nextTurn = () => new Promise((resolve) => setImmediate(resolve)); // lets timers and I/O callbacks run
@@ -2954,8 +2957,9 @@ export class JazminReader {
   /**
    * Checks every section of the file's current version, not only those queries read (issue #275): in a shared file
    * each section's SHA-256 against the owner's signature, in a file with a key or password each section's CRC-32 and
-   * authentication tag (any change is caught), in a plain file each CRC-32 (accidental damage only). One section at a
-   * time, nothing decoded or kept. Throws a JazminFormatError naming the first section that fails. Bytes the current
+   * authentication tag (a change to any section is caught), in a plain file each CRC-32 (accidental damage only). One section at a
+   * time. Also the preamble and trailer values no checksum covers, and a publisher signature block (whole, not who signed it).
+   * Throws a JazminFormatError naming the first section that fails. Bytes the current
    * version doesn't use (replaced by appends) are counted, not checked: compact() removes them. Needs the whole file:
    * an owner key, or the key or password of a file that isn't shared.
    */
@@ -2979,15 +2983,27 @@ export class JazminReader {
         + 'the version before it. compact() keeps that version and removes the rest');
     }
     const preamble = this.#source.read(0, PREAMBLE_SIZE);
-    // Fields the spec fixes (4.1) but nothing else depends on: reserved bytes, no salt in a plain file, no iterations without a password.
+    // Fields no checksum or tag covers (appends change the flags in place), checked for the values the format allows
+    // (4.1, 4.2, 7.6, 11.2): reserved bytes; no salt in a plain file; PASSWORD only on a file encrypted with a password,
+    // with an iteration count readers accept, and iterations only then; APPENDED on a file that was appended to (a file
+    // that wasn't may have it: an append cut short leaves it); the trailer's key-slot and signature fields only in a
+    // shared file.
+    const iterations = preamble.readUInt32LE(56);
+    const password = (this.#flags & FLAG_PASSWORD) !== 0;
+    const trailer = this.#source.read(this.#validEnd - TRAILER_SIZE, TRAILER_SIZE);
     const fixed = preamble.readUInt16LE(6) === 0 && preamble.readUInt32LE(60) === 0
       && (this.encrypted || preamble.subarray(24, 56).every((b) => b === 0))
-      && ((this.#flags & FLAG_PASSWORD) !== 0 || preamble.readUInt32LE(56) === 0);
-    if (!fixed) throw new JazminFormatError('The preamble has values the format does not allow - the file was modified');
+      && (password ? this.encrypted && !this.#access && iterations >= MIN_KDF_ITERATIONS && iterations <= MAX_KDF_ITERATIONS : iterations === 0)
+      && (!this.#header.appendCount || (this.#flags & FLAG_APPENDED) !== 0)
+      && (this.#access || trailer.subarray(12, 36).every((b) => b === 0));
+    if (!fixed) throw new JazminFormatError('The preamble or trailer has values the format does not allow - the file was modified');
 
+    const end = this.#validEnd - TRAILER_SIZE; // sections lie between the preamble and the trailer
     const sections = new Map(); // offset -> { ref, sectionId, key }: each section once, however often it is referenced
     const add = (ref, sectionId, key) => {
-      if (ref?.length && !sections.has(ref.offset)) sections.set(ref.offset, { ref, sectionId, key });
+      if (!ref?.length || sections.has(ref.offset)) return;
+      if (!(ref.offset >= PREAMBLE_SIZE && ref.offset + ref.length <= end)) throw new JazminFormatError(`Section '${sectionId}' lies outside the file`);
+      sections.set(ref.offset, { ref, sectionId, key });
     };
     const keyOf = (group, sectionId) => this.#keys?.sectionKey(group, sectionId);
     let bytes = 0;
@@ -2996,6 +3012,8 @@ export class JazminReader {
       const { keySlots, signature } = this.#access;
       const slotsSection = this.#source.read(keySlots.offset, keySlots.length);
       const signatureSection = this.#source.read(signature.offset, signature.length);
+      // Its envelope's reserved bytes are in neither its CRC nor the signed message.
+      if (signatureSection[2] !== 0 || signatureSection[3] !== 0) throw new JazminFormatError("Section 'signature' has an invalid envelope");
       const signatureRaw = decodeSection(plainSection(signatureSection, 'signature'), { key: undefined, fileId: this.#fileId, sectionId: 'signature' });
       const headerSection = this.#source.read(this.#headerRef.offset, this.#headerRef.length);
       verifySignedBy(signatureRaw, this.#fileId, slotsSection, headerSection, this.#access.signedBy);
@@ -3057,12 +3075,37 @@ export class JazminReader {
       }
       bytes += ref.length;
     }
+    const publisherBytes = this.#publisherBlockBytes();
+    const unusedBytes = end - PREAMBLE_SIZE - bytes - publisherBytes;
+    // Only appends leave bytes behind: in a file never appended to, every byte is a section, the trailer or the block.
+    if (unusedBytes !== 0 && !this.#header.appendCount) {
+      throw new JazminFormatError(`${unusedBytes} bytes are not part of the file, which was never appended to - the file was modified`);
+    }
     return {
       checkedBy: this.#access ? 'signature' : this.encrypted ? 'encryption' : 'checksum',
       sections: sections.size + (this.#access ? 3 : 0),
       bytes,
-      unusedBytes: this.#source.size - PREAMBLE_SIZE - TRAILER_SIZE - bytes,
+      unusedBytes,
+      publisherBytes,
     };
+  }
+
+  /**
+   * The length of the publisher signature block just before the header (spec 6.9.1), or 0 without one. verify() checks
+   * that it is whole (its footer and CRC); who signed it, and what it covers, is verifyPublisher()'s to check.
+   */
+  #publisherBlockBytes() {
+    const end = this.#headerRef.offset;
+    if (end < PREAMBLE_SIZE + PUBLISHER_FOOTER_SIZE) return 0;
+    const footer = this.#source.read(end - PUBLISHER_FOOTER_SIZE, PUBLISHER_FOOTER_SIZE);
+    if (footer.readUInt32LE(12) !== PUBLISHER_MAGIC) return 0;
+    const length = footer.readUInt32LE(0);
+    const start = end - PUBLISHER_FOOTER_SIZE - length;
+    if (start < PREAMBLE_SIZE || footer.readUInt16LE(8) !== 1 || footer.readUInt16LE(10) !== 0
+      || crc32(this.#source.read(start, length)) !== footer.readUInt32LE(4)) {
+      throw new JazminFormatError('The publisher signature block before the header is damaged - the file was modified');
+    }
+    return PUBLISHER_FOOTER_SIZE + length;
   }
 
   /**

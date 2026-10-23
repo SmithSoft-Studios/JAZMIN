@@ -86,8 +86,9 @@ Exit codes:
 Checks every section of the file's current version, not only those a query reads: in a shared file each section
 against the owner's signature (needs the owner key), in an encrypted file each section's authentication tag, in a
 plain file each section's checksum (accidental damage only). Reads one section at a time; decodes nothing it needn't.
-Bytes earlier versions left behind (after appends) are counted, not checked: compact() removes them.
---json prints { checkedBy, sections, bytes, unusedBytes }.
+Bytes earlier versions left behind (after appends) are counted, not checked: compact() removes them. A publisher
+signature is checked to be whole, not who signed it: jazmin verify does that.
+--json prints { checkedBy, sections, bytes, unusedBytes, publisherBytes }.
 
 Exit codes:
   0  unchanged
@@ -380,7 +381,11 @@ const commands = {
     }
     const by = { signature: "the owner's signature", encryption: 'its encryption', checksum: 'its checksums (accidental damage only: a plain file can be changed on purpose without this noticing; encrypt or sign it for that)' };
     out(`Unchanged: every section checked (${result.sections} sections, ${result.bytes.toLocaleString('en-US')} bytes) by ${by[result.checkedBy]}.`);
-    if (result.unusedBytes) out(`${result.unusedBytes.toLocaleString('en-US')} bytes earlier versions left behind are not used or checked; compact() removes them.`);
+    if (result.publisherBytes) out(`The publisher signature (${result.publisherBytes.toLocaleString('en-US')} bytes) is whole; jazmin verify checks who signed it.`);
+    if (result.unusedBytes) {
+      const signature = result.publisherBytes ? ', and the publisher signature with them' : '';
+      out(`${result.unusedBytes.toLocaleString('en-US')} bytes earlier versions left behind are not used or checked; compact() removes them${signature}.`);
+    }
     return 0;
   },
 };

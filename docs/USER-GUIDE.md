@@ -2895,6 +2895,7 @@ v.checkedBy;    // 'signature', 'encryption' or 'checksum' (below)
 v.sections;     // sections checked
 v.bytes;        // bytes checked
 v.unusedBytes;  // bytes earlier versions left behind: not used, not checked
+v.publisherBytes; // a publisher signature (section 26), checked to be whole; or 0
 ```
 
 ```csharp
@@ -2908,15 +2909,30 @@ How each kind of file is checked:
 
 | File | Checked by | What it catches |
 |---|---|---|
-| Shared (access control) | Each section's SHA-256 against the owner's signature. Needs the owner key | Any change |
-| Encrypted with a key or password | Each section's authentication tag | Any change |
+| Shared (access control) | Each section's SHA-256 against the owner's signature. Needs the owner key | Any change to a section |
+| Encrypted with a key or password | Each section's authentication tag | Any change to a section |
 | Plain | Each section's CRC-32 | Accidental damage only: anyone can change a plain file and its checksums |
 
+- **The preamble and trailer** hold a few values no checksum or key covers
+  (appends change the flags in place). `verify()` checks they are values the
+  format allows: for example, no password flag on a file encrypted with a key
+  and given no iteration count, and the appended flag on a file that was
+  appended to. A key file given the password flag *and* a valid iteration
+  count can't be told from a password file opened with its derived key, so
+  that change isn't caught; nor is the appended flag set on a file never
+  appended to (an append cut short leaves it set). Neither changes what the
+  file holds.
 - **Unused bytes** (17.5) aren't part of the current version, so they aren't
-  checked. `compact()` removes them.
+  checked. `compact()` removes them. Only appends leave them: in a file never
+  appended to, any byte that isn't a section, the trailer or a publisher
+  signature is a change.
+- **A publisher signature** (section 26) is checked to be whole (its footer and
+  checksum), and counted in `publisherBytes`. Who signed it, and whether it
+  still covers the file, is `verifyPublisher()`'s check (`jazmin verify`).
+  `compact()` and `update()` write the file again without it.
 - **An append that didn't finish** (or a changed end of file) makes a reader
   open the version before it. `verify()` fails then.
-- **Speed and memory:** one section at a time, nothing kept. Measured on a
+- **Speed and memory:** one section at a time. Measured on a
   200,000-row encrypted file of 17 MB with sorted and trigram indexes (Node 24,
   five runs, each in its own process): 66–118 ms, against 243–433 ms to read
   every row. Peak memory was about 22 MB above what opening the file takes;

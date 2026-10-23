@@ -759,15 +759,17 @@ export interface ColumnArrays {
 export interface VerifyResult {
   /**
    * How each section was checked: 'signature' (a shared file: each section against the owner's signature),
-   * 'encryption' (each section's authentication tag: any change is caught) or 'checksum' (a plain file: CRC-32,
-   * accidental damage only).
+   * 'encryption' (each section's authentication tag: a change to any section is caught) or 'checksum' (a plain file:
+   * CRC-32, accidental damage only).
    */
   checkedBy: 'signature' | 'encryption' | 'checksum';
   sections: number;
-  /** Bytes checked (the 64-byte preamble and 44-byte trailer are checked on opening and not counted). */
+  /** Bytes checked (the 64-byte preamble and 44-byte trailer are checked for allowed values and not counted). */
   bytes: number;
-  /** Bytes earlier versions left behind (after appends): not used, not checked; compact() removes them. */
+  /** Bytes earlier versions left behind (after appends): not used, not checked; compact() removes them. 0 in a file never appended to. */
   unusedBytes: number;
+  /** The publisher signature block before the header (User Guide 26), checked to be whole, not who signed it; or 0. */
+  publisherBytes: number;
 }
 
 /** How a file's bytes are used (reader.storage()): what compact() would give back. */

@@ -485,6 +485,8 @@ internal static class Fuzzing
                 foreach (var row in r.Rows(new JazminQueryOptions { Select = r.Columns.Take(2).Select(c => c.Name).ToList() })) Touch(row);
             }, strict);
             if (corpusColumns) Attempt(() => r.Rows<TypedRow>().Count(), strict);
+            Attempt(() => r.Verify(), strict); // every section, also those no query reads
+            Attempt(() => r.Storage(), strict);
             return null;
         }
         catch (JazminException) when (!strict)

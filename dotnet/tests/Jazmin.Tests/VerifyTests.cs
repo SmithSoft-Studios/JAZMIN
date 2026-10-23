@@ -53,7 +53,7 @@ public sealed class VerifyTests
             var name = Path.GetFileName(file);
             Assert.True(result.CheckedBy == (facts.AccessControlled ? "signature" : facts.Encrypted ? "encryption" : "checksum"), $"{name}: {result}");
             Assert.True(result.Sections > 0, name);
-            Assert.True(64 + result.Bytes + result.UnusedBytes + 44 == new FileInfo(file).Length, $"{name}: {result}");
+            Assert.True(64 + result.Bytes + result.UnusedBytes + result.PublisherBytes + 44 == new FileInfo(file).Length, $"{name}: {result}");
             if (!facts.Appended) Assert.True(result.UnusedBytes == 0, $"{name}: written in full, so every byte is checked");
         }
     }
@@ -153,7 +153,7 @@ public sealed class VerifyTests
         var options = new JazminReadOptions { Key = key };
         var result = VerifyOf(file, options);
         Assert.True(result.UnusedBytes > 0);
-        Assert.Equal(new FileInfo(file).Length, 64 + result.Bytes + result.UnusedBytes + 44);
+        Assert.Equal(new FileInfo(file).Length, 64 + result.Bytes + result.UnusedBytes + result.PublisherBytes + 44);
         var good = File.ReadAllBytes(file);
         // The last append's header ends the file, just before its trailer: a change there is caught.
         var inHeader = (byte[])good.Clone();
@@ -197,6 +197,115 @@ public sealed class VerifyTests
         var bad = (byte[])good.Clone();
         bad[good.Length / 2] ^= 1; // the locked 300 KB contract is most of the file
         Assert.ThrowsAny<JazminException>(() => VerifyOf(bad, new JazminReadOptions { Key = owner }));
+    }
+
+    /// <summary>The file with its trailer's CRC made right again after a change to trailer bytes 0-35, as someone changing a file would.</summary>
+    private static byte[] WithTrailerCrc(byte[] bytes)
+    {
+        var t = bytes.Length - 44;
+        BinaryPrimitives.WriteUInt32LittleEndian(bytes.AsSpan(t + 36), Crc32.Compute(bytes.AsSpan(t, 36)));
+        return bytes;
+    }
+
+    private static byte[] WithFlags(byte[] file, Func<ushort, ushort> change)
+    {
+        var bad = (byte[])file.Clone();
+        BinaryPrimitives.WriteUInt16LittleEndian(bad.AsSpan(4), change(BinaryPrimitives.ReadUInt16LittleEndian(bad.AsSpan(4))));
+        return bad;
+    }
+
+    [Fact]
+    public void Preamble_flags_and_trailer_fields_no_checksum_covers_must_hold_values_the_format_allows()
+    {
+        var key = JazminKey.Generate();
+        var owner = JazminKey.Generate();
+        var keyFile = Write(300, new JazminWriteOptions { Key = key, ChunkRows = 100 });
+        var plainFile = Write(300, new JazminWriteOptions { ChunkRows = 100 });
+        var sharedFile = Write(300, new JazminWriteOptions { Key = owner, ChunkRows = 100, Access = new JazminAccessOptions { PartitionBy = "city" } });
+
+        // PASSWORD (spec 4.1, 7.6) only on an encrypted file that isn't shared, with an iteration count readers accept. (A key
+        // file given the flag and a valid count can't be told from a password file opened with its derived key: not covered.)
+        foreach (var (file, options, counts) in new (byte[], JazminReadOptions, uint[])[]
+        {
+            (keyFile, new JazminReadOptions { Key = key }, [0]),
+            (plainFile, new JazminReadOptions(), [0, 1000]),
+            (sharedFile, new JazminReadOptions { Key = owner }, [0, 1000]),
+        })
+        {
+            foreach (var iterations in counts)
+            {
+                var bad = WithFlags(file, f => (ushort)(f | FormatConstants.FlagPassword));
+                BinaryPrimitives.WriteUInt32LittleEndian(bad.AsSpan(56), iterations);
+                Assert.Throws<JazminFormatException>(() => VerifyOf(bad, options));
+            }
+        }
+        // Trailer bytes 12-35 locate the key-slot list and signature of a shared file; in other files they are 0.
+        foreach (var at in new[] { 12, 20, 24, 32 })
+        {
+            var bad = (byte[])keyFile.Clone();
+            bad[bad.Length - 44 + at] = 1;
+            Assert.Throws<JazminFormatException>(() => VerifyOf(WithTrailerCrc(bad), new JazminReadOptions { Key = key }));
+        }
+        // The reserved bytes of the shared file's signature section (its envelope bytes 2-3, in no checksum or signature).
+        var signatureAt = (int)BinaryPrimitives.ReadUInt64LittleEndian(sharedFile.AsSpan(sharedFile.Length - 44 + 24));
+        var badEnvelope = (byte[])sharedFile.Clone();
+        badEnvelope[signatureAt + 2] = 1;
+        Assert.Throws<JazminFormatException>(() => VerifyOf(badEnvelope, new JazminReadOptions { Key = owner }));
+
+        // An appended file has the APPENDED flag (11.2). A file never appended to may have it: an append cut short leaves it.
+        var path = Path.Combine(Directory.CreateTempSubdirectory("jazmin-verify-").FullName, "appended.jzm");
+        File.WriteAllBytes(path, keyFile);
+        JazminFile.Append(path, new JazminAppend { Key = key, Insert = Rows(5).Select(r => new Dictionary<string, object?>(r) { ["id"] = (long)r["id"]! + 5000 }).ToList() });
+        var cleared = WithFlags(File.ReadAllBytes(path), f => (ushort)(f & ~FormatConstants.FlagAppended));
+        Assert.Throws<JazminFormatException>(() => VerifyOf(cleared, new JazminReadOptions { Key = key }));
+        Assert.Equal(0, VerifyOf(WithFlags(keyFile, f => (ushort)(f | FormatConstants.FlagAppended)), new JazminReadOptions { Key = key }).UnusedBytes);
+    }
+
+    [Fact]
+    public void A_section_length_beyond_the_end_of_the_file_is_refused()
+    {
+        // A plain file whose chunk directory (no tag) gives the last chunk's part a length of 2,000,000,000, every CRC right.
+        var bad = File.ReadAllBytes(Path.Combine(Fixtures, "damaged", "verify-section-length.jzm"));
+        using var reader = JazminReader.Open(bad);
+        Assert.Equal(2, reader.Find(JazminFilter.Lt("id", 3L)).Count()); // the file opens and answers queries
+        Assert.Contains("outside the file", Assert.Throws<JazminFormatException>(() => reader.Verify()).Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Signed_files_count_the_publisher_block_apart_and_bytes_added_around_it_or_a_damaged_block_are_a_change()
+    {
+        var dir = Path.Combine(Fixtures, "publisher");
+        var expected = JsonNode.Parse(File.ReadAllText(Path.Combine(dir, "expected.json")))!["fixtures"]!.AsArray();
+        string[] changed = ["changed-gap.jzm", "changed-extra-byte.jzm", "invalid-block-crc.jzm", "invalid-block-reserved.jzm"];
+        string[] skipped = ["changed-byte.jzm", "changed-trailing-byte.jzm"]; // a section, or the trailer: covered above
+        foreach (var fixture in expected)
+        {
+            var name = (string)fixture!["file"]!;
+            if (skipped.Contains(name)) continue;
+            var file = Path.Combine(dir, name);
+            var k = fixture["keys"]?.AsObject();
+            var options = k?["password"] is { } password ? new JazminReadOptions { Password = (string)password! }
+                : k?["key"] is { } key ? new JazminReadOptions { Key = JazminKey.Parse((string)key!) }
+                : k?["ownerKey"] is { } ownerKey ? new JazminReadOptions { Key = JazminKey.Parse((string)ownerKey!) }
+                : new JazminReadOptions();
+            if (changed.Contains(name))
+            {
+                Assert.Throws<JazminFormatException>(() => VerifyOf(file, options));
+                continue;
+            }
+            var result = VerifyOf(file, options);
+            Assert.True(64 + result.Bytes + result.UnusedBytes + result.PublisherBytes + 44 == new FileInfo(file).Length, $"{name}: {result}");
+            if (name == "appended.jzm")
+            {
+                Assert.Equal(0, result.PublisherBytes); // the block is before the header the append replaced: an earlier version
+                Assert.True(result.UnusedBytes > 0);
+            }
+            else
+            {
+                Assert.True(result.UnusedBytes == 0, $"{name}: {result}");
+                Assert.True(result.PublisherBytes > 0 == (name != "unsigned.jzm"), $"{name}: {result}");
+            }
+        }
     }
 
     [Fact]

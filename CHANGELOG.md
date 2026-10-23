@@ -67,13 +67,20 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   `reader.Verify()`) checks every section of the current version, one at a time, and throws a format error naming the
   first that changed:
   - **Shared files:** each section's SHA-256 against the owner's signature (needs the owner key).
-  - **Files with a key or password:** each section's authentication tag. Any change is caught.
+  - **Files with a key or password:** each section's authentication tag. A change to any section is caught.
   - **Plain files:** each section's checksum, which catches accidental damage only.
 
-  Also the preamble's fixed values, and a damaged end of file that makes readers fall back to the version before the
-  last append. It returns `{ checkedBy, sections, bytes, unusedBytes }` (.NET `JazminVerification`); bytes earlier
-  versions left behind are counted, not checked. A section that can't be decrypted with the key the file opened with
-  is reported as changed (a format error), not as a key error. Measured (five runs each, each in its own process):
+  Also the preamble and trailer values no checksum covers (reserved bytes; the password flag only on a password file,
+  with an iteration count readers accept; the appended flag on an appended file; the trailer's key-slot and signature
+  fields only in a shared file), a section reference outside the file (refused before anything is read for it), and a
+  damaged end of file that makes readers fall back to the version before the last append. It returns `{ checkedBy,
+  sections, bytes, unusedBytes, publisherBytes }` (.NET `JazminVerification`): bytes earlier versions left behind are
+  counted, not checked, and in a file never appended to any such byte is a change; a publisher signature block is
+  checked to be whole and counted apart (`jazmin verify` checks who signed it). Not caught, by design: a key file given
+  the password flag and a valid iteration count (it reads as a password file opened with its derived key), and the
+  appended flag set on a file never appended to (an append cut short leaves it). A section that can't be decrypted
+  with the key the file opened with is reported as changed (a format error), not as a key error. Measured (five runs
+  each, each in its own process):
   - **Node 24:** a 17 MB encrypted file of 200,000 rows with sorted and trigram indexes, 66–118 ms against 243–433 ms
     to read every row, peak memory about 22 MB above opening it.
   - **.NET 10:** a 2.7 MB encrypted file of 200,000 rows with the same indexes, 16–27 ms (78–97 ms for a process's first
