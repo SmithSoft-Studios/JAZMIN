@@ -73,7 +73,11 @@ of rows.
 
 ## 2. Installation
 
-**JavaScript / TypeScript** (Node.js 22 or later, no runtime dependencies):
+**JavaScript / TypeScript** (Node.js 22.23.4, 24.22.1 or 26.12.1 or later, no runtime dependencies). Earlier releases
+of those lines, and all of 20.x, 23.x and 25.x, have a flaw in their Brotli decoder (CVE-2026-111497): on them the
+library refuses to read Brotli-compressed sections, and says to update. Set `JAZMIN_ALLOW_BROTLI=1` only if your build
+has the fix backported. Change files and submissions that use Brotli are refused on every release (JAZMIN never writes
+them with it).
 
 ```bash
 npm install @smithsoft-studios/jazmin

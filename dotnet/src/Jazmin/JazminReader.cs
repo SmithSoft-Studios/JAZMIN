@@ -18,6 +18,13 @@ public sealed class JazminReadOptions
     /// </summary>
     internal IReadOnlyList<byte[]>? CandidateKeys { get; init; }
 
+    /// <summary>
+    /// Internal (ApplyChanges, FileSubmission): refuse Brotli sections. Change files and submissions are written by people
+    /// the owner doesn't control, and JAZMIN never writes them with Brotli, so a Brotli section there can only be meant
+    /// for the decoder (CVE-2026-111497): it is refused before anything is decompressed.
+    /// </summary>
+    internal bool RefuseBrotli { get; init; }
+
     /// <summary>Master key (also the owner key of an access-controlled file).</summary>
     public JazminKey? Key { get; set; }
 
@@ -273,6 +280,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     private readonly Stream _stream;
     private readonly bool _leaveOpen;
+    private readonly bool _refuseBrotli; // JazminReadOptions.RefuseBrotli
     private readonly StringPool _strings = new();
     private readonly int _readAhead;
     private readonly int _columnsInFlight; // decoded columns a scan keeps in flight at most (memory budget)
@@ -351,6 +359,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         _stream = stream;
         _leaveOpen = leaveOpen;
         options ??= new JazminReadOptions();
+        _refuseBrotli = from?._refuseBrotli ?? options.RefuseBrotli;
         _readAhead = Math.Max(1, options.MaxDegreeOfParallelism);
         _priority = options.Priority;
         _columnsInFlight = _priority == JazminPriority.Speed ? 1024 : 128;
@@ -704,6 +713,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         if ((flags & FormatConstants.FlagAccess) != 0)
         {
             var (access, headerKey) = OpenAccess(options, fileId, salt, headerSection, trailer);
+            RefuseBrotli(headerSection, FormatConstants.HeaderSectionId);
             return (Catalog.DecodeHeader(SectionCodec.Decode(headerSection, headerKey, fileId, FormatConstants.HeaderSectionId)), fileId, salt, null, access);
         }
 
@@ -735,7 +745,16 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         {
             throw new JazminKeyException("A key was supplied but the file is not encrypted");
         }
+        RefuseBrotli(headerSection, FormatConstants.HeaderSectionId);
         return (Catalog.DecodeHeader(SectionCodec.Decode(headerSection, keys?.HeaderKey, fileId, FormatConstants.HeaderSectionId)), fileId, salt, keys, null);
+    }
+
+    /// <summary><see cref="JazminReadOptions.RefuseBrotli"/>: a Brotli section is refused before it is decompressed.</summary>
+    private void RefuseBrotli(ReadOnlySpan<byte> section, string sectionId)
+    {
+        if (_refuseBrotli && section.Length > 0 && section[0] == (byte)JazminCodec.Brotli)
+            throw new JazminFormatException($"Section '{sectionId}' is compressed with Brotli, which change files and submissions never use: "
+                + "the file was not written by JAZMIN as it should be, and is refused (CVE-2026-111497)");
     }
 
     /// <summary>Verifies the owner signature, unseals this key's slot (found by binary search) and returns the header key.</summary>
@@ -1232,6 +1251,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         }
         else if (!SHA256.HashData(section).AsSpan().SequenceEqual(at.Digest))
             throw new JazminFormatException($"Section '{sectionId}' does not match the owner's signature");
+        RefuseBrotli(section, sectionId);
         return SectionCodec.Decode(section, key, _fileId, sectionId);
     }
 
@@ -1251,6 +1271,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             }
             else if (!SHA256.HashData(section.AsSpan(0, length)).AsSpan().SequenceEqual(at.Digest))
                 throw new JazminFormatException($"Section '{sectionId}' does not match the owner's signature");
+            RefuseBrotli(section.AsSpan(0, length), sectionId);
             return SectionCodec.DecodePooled(section, length, key, _fileId, sectionId);
         }
         finally
@@ -2012,6 +2033,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             var sectionId = FormatConstants.ChunkSectionId(_tableIndex, ordinal, group);
             try
             {
+                RefuseBrotli(section.AsSpan(0, length), sectionId);
                 var (raw, rawLength) = SectionCodec.DecodePooled(section, length, keys?.SectionKey(FormatConstants.KeyringData, sectionId), fileId, sectionId);
                 try
                 {

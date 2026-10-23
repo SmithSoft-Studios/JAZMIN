@@ -6,7 +6,7 @@ import { append } from './append.js';
 import { JazminKeyError, JazminValidationError } from './errors.js';
 import { effectiveEdit } from './files.js';
 import { open, write } from './index.js';
-import { findKey } from './reader.js';
+import { NO_BROTLI, findKey } from './reader.js';
 import { JazminKey } from './keys.js';
 
 const VERSION = 1;
@@ -165,7 +165,7 @@ export function writeChanges(source, changes, { key, password } = {}) {
 function openChangeFile(target, change, { key, password, keyId, receivedAt }) {
   if (!target.access) {
     try {
-      return { reader: open(change, { ...(key ? { key } : {}), ...(password ? { password } : {}) }), grant: null };
+      return { reader: open(change, { ...(key ? { key } : {}), ...(password ? { password } : {}), [NO_BROTLI]: true }), grant: null };
     } catch (error) {
       if (error instanceof JazminKeyError) throw new JazminValidationError("The change file doesn't open with this file's key: it was made for another file");
       throw error;
@@ -180,7 +180,7 @@ function openChangeFile(target, change, { key, password, keyId, receivedAt }) {
   const keys = owner.submissionKeyBytes(candidates.map((grant) => grant.keyId));
   const found = findKey(change, keys);
   for (const grant of found < 0 ? [] : [candidates[found]]) {
-    const reader = open(change, { key: new JazminKey(keys[found]) });
+    const reader = open(change, { key: new JazminKey(keys[found]), [NO_BROTLI]: true });
     // A grant that expires: the change file must have been written, and have arrived, before it expired.
     if (grant.expires) {
       const expires = Date.parse(grant.expires);

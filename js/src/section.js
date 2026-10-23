@@ -1,7 +1,7 @@
 import zlib from 'node:zlib';
 import { crc32 } from './binary.js';
 import { CODEC, ENVELOPE_SIZE, SECTION_ENCRYPTED } from './constants.js';
-import { JazminFormatError, JazminKeyError, JazminValidationError } from './errors.js';
+import { JazminError, JazminFormatError, JazminKeyError, JazminValidationError } from './errors.js';
 import { decrypt, encrypt, opens } from './keys.js';
 
 const MAX_SECTION = 0xffffffff;
@@ -28,6 +28,29 @@ function compress(codecId, raw, level, outputSize) {
   }
 }
 
+// Node.js releases with the fix for CVE-2026-111497, an out-of-bounds write in the Brotli decoder (October 2026), by
+// release line. Lines not listed are end of life and were never fixed (20.x and older, 23.x, 25.x); later lines have it.
+const BROTLI_FIXED = new Map([[22, [22, 23, 4]], [24, [24, 22, 1]], [26, [26, 12, 1]]]);
+const LAST_FIXED_LINE = 26;
+let brotliChecked = false;
+
+/**
+ * Throws a JazminValidationError on a Node.js release whose Brotli decoder has CVE-2026-111497: a file from someone else
+ * can hold Brotli sections built to reach that flaw. JAZMIN_ALLOW_BROTLI=1 says the fix was backported into the build
+ * (some Linux distributions keep the version number). Internal: exported for tests.
+ */
+export function checkBrotliDecoder(version = process.versions.node, env = process.env) {
+  if (env.JAZMIN_ALLOW_BROTLI === '1') return;
+  const [major, minor, patch] = version.split('.').map(Number);
+  const fixed = BROTLI_FIXED.get(major);
+  const safe = major > LAST_FIXED_LINE || (fixed !== undefined && (minor > fixed[1] || (minor === fixed[1] && patch >= fixed[2])));
+  if (!safe) {
+    throw new JazminValidationError(`This file has Brotli sections, and the Brotli decoder of Node.js ${version} has a security flaw `
+      + '(CVE-2026-111497) that a file made to exploit it can reach. Update Node.js to 22.23.4, 24.22.1 or 26.12.1 or later. '
+      + 'If your build has the fix backported, set JAZMIN_ALLOW_BROTLI=1');
+  }
+}
+
 function decompress(codecId, body, rawLength) {
   // One output buffer of the known size: no 16 KB pieces joined into a second copy (less garbage, faster). Output
   // beyond the declared length stops decompression, so a damaged length or payload cannot exhaust memory.
@@ -35,7 +58,12 @@ function decompress(codecId, body, rawLength) {
   switch (codecId) {
     case CODEC.none: return body;
     case CODEC.deflate: return zlib.inflateRawSync(body, options);
-    case CODEC.brotli: return zlib.brotliDecompressSync(body, options);
+    case CODEC.brotli:
+      if (!brotliChecked) {
+        checkBrotliDecoder();
+        brotliChecked = true;
+      }
+      return zlib.brotliDecompressSync(body, options);
     default: throw new JazminFormatError(`Unsupported codec id ${codecId}`);
   }
 }
@@ -143,7 +171,7 @@ export function decodeSection(section, { key, fileId, sectionId }) {
   try {
     raw = decompress(codecId, body, rawLength);
   } catch (error) {
-    if (error instanceof JazminFormatError) throw error;
+    if (error instanceof JazminError) throw error;
     throw new JazminFormatError(`Section '${sectionId}' could not be decompressed`);
   }
   if (raw.length !== rawLength) throw new JazminFormatError(`Section '${sectionId}' has the wrong decompressed length`);
