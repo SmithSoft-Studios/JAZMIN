@@ -504,4 +504,117 @@ public sealed class TransactionTests : IDisposable
             Assert.Equal(2, appendCount);
         }
     }
+
+    [Fact]
+    public async Task Writer_WaitsMaxDelayForMoreCallsBeforeWriting()
+    {
+        var path = Base("delay.jzm");
+        await using var w = JazminFile.OpenWriter(path, maxDelay: TimeSpan.FromMilliseconds(200));
+        var a = w.InsertAsync([Row(10, "x")]);
+        await Task.Delay(5);
+        var b = w.InsertAsync([Row(11, "y")]);
+        Assert.Equal(1, (await a).AppendCount);
+        Assert.Equal(1, (await b).AppendCount); // the second call joined the first one's append
+    }
+
+    [Fact]
+    public async Task Writer_ABatchThatFailsForAReasonNotAboutItsCalls_LeavesTheFileByteForByte()
+    {
+        var path = Base("locked.jzm");
+        var before = File.ReadAllBytes(path);
+        File.WriteAllText(path + ".lock", ""); // another writer holds the file
+        var w = JazminFile.OpenWriter(path);
+        var calls = new[] { w.InsertAsync([Row(10, "x")]), w.InsertAsync([Row(11, "y")]) };
+        foreach (var call in calls) await Assert.ThrowsAnyAsync<Exception>(() => call);
+        await w.DisposeAsync();
+        Assert.Equal(before, File.ReadAllBytes(path));
+        File.Delete(path + ".lock");
+    }
+
+    [Fact]
+    public async Task TransactionsAndTheWriter_MatchOneAppendPerCall_WithAutoCompact_SeveralTables_AndCompositeDecimalKeys()
+    {
+        static Dictionary<string, object?> Priced(string code, string price, string v) => new() { ["code"] = code, ["price"] = price, ["v"] = v };
+        var setups = new (string Name, Func<JazminAppend> Options, Func<string, string> Write, Call[] Calls, string? Table)[]
+        {
+            ("autoCompact", () => new JazminAppend { KeyColumns = ["id"], AutoCompact = new JazminAutoCompact(Appends: 1), Now = Now }, name => Base(name),
+                [Insert(Row(10, "x")), Upsert(Row(2, "B"), Row(11, "y")), Delete(JazminFilter.Eq("id", 1L))], null),
+            ("tables", () => new JazminAppend { KeyColumns = ["id"], Table = "orders", Now = Now }, name =>
+            {
+                var path = Path.Combine(_dir, name);
+                using (var writer = JazminWriter.Create(path, new JazminWriteOptions { Now = Now, Tables = [new JazminTable("notes", [new("n", JazminType.Int)]), new JazminTable("orders", Columns)] }))
+                {
+                    writer.WriteRow(new Dictionary<string, object?> { ["n"] = 1L });
+                    writer.StartTable("orders");
+                    writer.WriteRow(Row(1, "a"));
+                    writer.WriteRow(Row(2, "b"));
+                }
+                return path;
+            }, [Upsert(Row(2, "B"), Row(3, "c")), Delete(JazminFilter.Eq("id", 1L)), Insert(Row(4, "d"))], "orders"),
+        };
+        foreach (var (name, options, write, calls, table) in setups)
+        {
+            var expected = write($"{name}-seq.jzm");
+            var (inserted, updated, deleted) = (0L, 0L, 0L);
+            foreach (var c in calls)
+            {
+                var append = options();
+                if (c.Kind == "insert") append.Insert = c.Rows!;
+                else if (c.Kind == "upsert") append.Upsert = c.Rows!;
+                else append.Delete = c.Filter;
+                var r = JazminFile.Append(expected, append);
+                (inserted, updated, deleted) = (inserted + r.Inserted, updated + r.Updated, deleted + r.Deleted);
+            }
+            var viaTx = write($"{name}-tx.jzm");
+            JazminAppendResult committed;
+            using (var tx = JazminFile.BeginAppend(viaTx, options()))
+            {
+                Run(tx, calls);
+                committed = tx.Commit();
+            }
+            Assert.Equal(RowsOf(expected, table), RowsOf(viaTx, table));
+            Assert.Equal((inserted, updated, deleted), (committed.Inserted, committed.Updated, committed.Deleted));
+            if (table is not null) Assert.Equal(RowsOf(expected, "notes"), RowsOf(viaTx, "notes"));
+            var viaWriter = write($"{name}-writer.jzm");
+            await using (var w = JazminFile.OpenWriter(viaWriter, options()))
+                await Task.WhenAll(calls.Select(c => Send(w, c)));
+            Assert.Equal(RowsOf(expected, table), RowsOf(viaWriter, table));
+        }
+
+        // Composite keys with a decimal: '1.5' and '1.50' are one key, and in one call the last row for a key wins.
+        JazminColumn[] priced = [new("code", JazminType.String), new("price", JazminType.Decimal), new("v", JazminType.String)];
+        string Prices(string name)
+        {
+            var path = Path.Combine(_dir, name);
+            using (var writer = JazminWriter.Create(path, priced, new JazminWriteOptions { Now = Now }))
+                foreach (var row in new[] { Priced("A", "1.50", "a"), Priced("A", "2.00", "b"), Priced("B", "1.5", "c") }) writer.WriteRow(row);
+            return path;
+        }
+        JazminAppend Keyed() => new() { KeyColumns = ["code", "price"], Now = Now };
+        var seq = Prices("priced-seq.jzm");
+        var first = Keyed();
+        first.Upsert = [Priced("A", "1.5", "A1"), Priced("A", "1.500", "A2")];
+        JazminFile.Append(seq, first);
+        var second = Keyed();
+        second.Delete = JazminFilter.Eq("v", "b");
+        JazminFile.Append(seq, second);
+        var third = Keyed();
+        third.Upsert = [Priced("B", "1.50", "C")];
+        JazminFile.Append(seq, third);
+        var pricedTx = Prices("priced-tx.jzm");
+        using (var tx = JazminFile.BeginAppend(pricedTx, Keyed()))
+        {
+            tx.Upsert([Priced("A", "1.5", "A1"), Priced("A", "1.500", "A2")]);
+            tx.Delete(JazminFilter.Eq("v", "b"));
+            tx.Upsert([Priced("B", "1.50", "C")]);
+            tx.Commit();
+        }
+        Assert.Equal(RowsOf(seq, null), RowsOf(pricedTx, null));
+    }
+
+    private static List<string> RowsOf(string path, string? table)
+    {
+        using var r = JazminReader.Open(path, new JazminReadOptions { Table = table });
+        return r.Rows().Select(x => string.Join(",", x.Values.Select(v => Convert.ToString(v, System.Globalization.CultureInfo.InvariantCulture)))).ToList();
+    }
 }
