@@ -126,7 +126,9 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
     is checked with `changed()` and replaced when its file changed; a reader in use is never closed or replaced under
     its user (another request gets a reader of its own); the least recently used is closed first; an expired key is
     refused as `open()` refuses it. Entries are matched by path and an HMAC of key, password, unlock token, table and
-    priority under a random secret of the cache. `clear()` and `close()` (.NET `Clear()`, `Dispose()`).
+    priority under a random secret of the cache. A reader whose lease opened a lock (`unlock()`) is closed when the
+    lease is released, so the next request never sees what that lock opened. `clear()` and `close()` (.NET `Clear()`,
+    `Dispose()`).
   - **Measured** (1,000 tenant files of 500 rows, each with its own key, one row looked up per request; 5 runs each,
     medians): **Node 24** 1.01 ms per request opening the file, 0.46 ms with the cache, which holds about 73 KB per
     reader (RSS 87 -> 196 MB); **.NET 10** 1.07 ms, 0.83 ms with the cache, about 55 KB per reader (working set 50 ->

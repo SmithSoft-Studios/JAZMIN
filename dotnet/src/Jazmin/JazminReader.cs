@@ -996,6 +996,12 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <summary>Internal (<see cref="JazminReaderCache"/>): when this reader's access key expires, or null.</summary>
     internal DateTimeOffset? AccessExpires => _access?.Expires;
 
+    /// <summary>
+    /// Internal (<see cref="JazminReaderCache"/>): whether <see cref="Unlock"/> opened a lock of this reader (or of a
+    /// reader sharing its file): such a reader is not given to another request.
+    /// </summary>
+    internal bool LocksOpened => _access is { Unlocked.Count: > 0 };
+
     /// <summary>Internal (<see cref="JazminReaderCache"/>): no query is running; the last decoded chunk is let go.</summary>
     internal void Idle()
     {

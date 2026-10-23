@@ -4274,6 +4274,11 @@ List<JazminRow> Invoices(Tenant tenant, string customer)
 - **Expiry:** each `open()` checks whether the cached reader's key has
   expired. If it has, the reader is dropped and the file opened again, which
   fails as `open()` would.
+- **Locks are per request:** a lock stays open as long as its reader
+  (sections 15.7 and 19.6). So a reader whose lease called `unlock()` (.NET
+  `Unlock()`) is closed when the lease is released, not kept: the next
+  request with the same key gets a reader with every lock closed, and must
+  unlock it itself.
 - **`clear()`** closes every cached reader (leased ones when their leases are
   released); **`close()`** (.NET `Dispose()`) does the same and refuses
   `open()` from then on.

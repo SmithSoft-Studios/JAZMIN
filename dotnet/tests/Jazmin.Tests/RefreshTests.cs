@@ -398,4 +398,41 @@ public sealed class RefreshTests : IDisposable
         });
         Assert.True(cache.Count <= 4);
     }
+
+    [Fact]
+    public void Cache_ALockOpenedThroughOneLease_IsNotOpenForTheNext_TheReaderIsClosed()
+    {
+        var owner = JazminKey.Generate();
+        var staff = owner.CreateAccessKey();
+        var path = Path.Combine(_dir, "cache-unlock.jzm");
+        using (var w = JazminWriter.Create(path, [new("id", JazminType.Int), new("dept", JazminType.String),
+            new("account", JazminType.String) { Mask = new JazminMask("pay") { Show = JazminMaskShow.KeepFormat(4) } }], new JazminWriteOptions
+        {
+            Key = owner, Access = new JazminAccessOptions { PartitionBy = "dept", Grants = [new JazminGrant(staff)] },
+            Locks = new Dictionary<string, JazminLockOptions?> { ["pay"] = new() { Password = "pw", Iterations = 1000 } },
+        }))
+            w.WriteRow(new Dictionary<string, object?> { ["id"] = 1L, ["dept"] = "A", ["account"] = "4821 0393 7712 4821" });
+        using var cache = new JazminReaderCache(10);
+        var options = new JazminReadOptions { AccessKey = staff, CheckClockRollback = false };
+        JazminReader unlocked;
+        using (var first = cache.Open(path, options))
+        {
+            unlocked = first.Reader;
+            Assert.False(unlocked.Rows().Single().ContainsKey("account"));
+            unlocked.Unlock("pay", password: "pw");
+            Assert.Equal("4821 0393 7712 4821", unlocked.Rows().Single()["account"]);
+        }
+        Closed(unlocked); // disposed when released: no later request may use the lock it opened
+        Assert.Equal(0, cache.Count);
+        JazminReader second;
+        using (var lease = cache.Open(path, options)) // another request, the same key, no password
+        {
+            second = lease.Reader;
+            Assert.NotSame(unlocked, second);
+            Assert.False(second.Rows().Single().ContainsKey("account"), "the lock is closed for this request");
+            Assert.False(second.Locks.Single().Unlocked);
+        }
+        using (var third = cache.Open(path, options))
+            Assert.Same(second, third.Reader); // a reader with no lock open stays cached
+    }
 }

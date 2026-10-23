@@ -284,6 +284,8 @@ export const DERIVED_KEY = Symbol('jazmin.derivedKey');
 export const ACCESS_EXPIRES = Symbol('jazmin.accessExpires');
 /** Internal (JazminReaderCache): lets go of the last decoded chunk and the read buffers while the reader waits, idle. */
 export const IDLE = Symbol('jazmin.idle');
+/** Internal (JazminReaderCache): whether unlock() has opened a lock of this reader (or of a reader sharing its file). */
+export const LOCKS_OPENED = Symbol('jazmin.locksOpened');
 
 const pause = new Int32Array(new SharedArrayBuffer(4));
 
@@ -938,6 +940,11 @@ export class JazminReader {
   /** Internal (JazminReaderCache): when this reader's access key expires (ms), or undefined. */
   get [ACCESS_EXPIRES]() {
     return this.#access?.expires ? Date.parse(this.#access.expires) : undefined;
+  }
+
+  /** Internal (JazminReaderCache): whether unlock() opened a lock: such a reader is not given to another request. */
+  get [LOCKS_OPENED]() {
+    return (this.#access?.unlocked?.size ?? 0) > 0;
   }
 
   /** Internal (JazminReaderCache): no query is running; the last decoded chunk and the read buffers are let go. */
