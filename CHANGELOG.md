@@ -209,6 +209,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   and decrypts up to 16 at a time; lookups and pages of rows read exactly as before. With 2,400 partitions (600,000
   rows grouped by customer) in Chrome: the first page 2.1-2.2 s -> 0.29-0.36 s, a filter counted 3.3-3.8 s -> 0.56-0.66 s,
   with the same memory held. No format change. `npm run bench:partitions` measures it (User Guide 9.13).
+- **The JS writer keeps less memory per chunk of a shared file:** each chunk part's digest, kept until the file is
+  finished, is now copied into Node's shared pool of small buffers instead of keeping a buffer of its own. Writing
+  50,000 rows of 8 cities in random order (43,835 chunks of two parts), the heap held before `finish()` went from 59.4
+  to 51.5 MB (about 95 bytes a digest) and the peak memory from 360-361 to 299-346 MB (five runs each, interleaved).
+  The files are byte for byte the same.
 
 ## 1.7.2 - 2026-10-20 (file format 1.0)
 A security fix to `grantAccess()` in the JavaScript library, and a clearer error for a damaged owner key.
