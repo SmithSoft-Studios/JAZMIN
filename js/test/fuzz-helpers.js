@@ -258,6 +258,13 @@ export function exercise(buf) {
         }
       }
       [...r.rows({ select: r.columns.slice(0, 2).map((c) => c.name) })];
+      for (const whole of [() => r.verify(), () => r.storage()]) { // every section, also those no query reads
+        try {
+          whole();
+        } catch (error) {
+          if (!(error instanceof JazminError)) throw error;
+        }
+      }
     } finally {
       r.close();
     }

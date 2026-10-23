@@ -206,6 +206,18 @@ test('check: every section of a file, with exit code 0 when unchanged and 1 when
   assert.equal(jazmin(['check', paged]).status, 2); // encrypted, and no key
 });
 
+test('check: a signed file\'s publisher signature is whole, and is not called unused; bytes added beside it are a change', () => {
+  const signed = jazmin(['check', path.join(fixtures, 'publisher', 'signed-plain.jzm')]);
+  assert.equal(signed.status, 0, signed.stderr);
+  assert.match(signed.stdout, /publisher signature \([\d,]+ bytes\) is whole; jazmin verify checks who signed it/);
+  assert.doesNotMatch(signed.stdout, /compact|earlier versions/);
+  const json = JSON.parse(jazmin(['check', path.join(fixtures, 'publisher', 'signed-plain.jzm'), '--json']).stdout);
+  assert.deepEqual([json.unusedBytes, json.publisherBytes > 0], [0, true]);
+  const gap = jazmin(['check', path.join(fixtures, 'publisher', 'changed-extra-byte.jzm')]);
+  assert.equal(gap.status, 1);
+  assert.match(gap.stderr, /^Changed or damaged: /);
+});
+
 test('verify: several files print one line each and a summary; the exit code is the worst', () => {
   const all = verifyTest(['signed-plain.jzm', 'withdrawn.jzm', 'unsigned.jzm']);
   assert.equal(all.code, 1);
