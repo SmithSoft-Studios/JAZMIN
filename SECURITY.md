@@ -19,7 +19,7 @@ it, and credit you in the release notes unless you prefer not to be named.
 | Version | Supported |
 |---|---|
 | 1.8.x | Yes |
-| 1.7.x | No: upgrade to 1.8 (the same file format; Node.js 22.23.4, 24.22.1 or 26.12.1 or later) |
+| 1.7.x | Security fixes until 31 January 2027, then upgrade to 1.8 (the same file format; Node.js 22.23.4, 24.22.1 or 26.12.1 or later) |
 | 1.6.x | No: upgrade to 1.8 (the same file format) |
 | 1.5.x | No: upgrade to 1.8 (the same file format) |
 | 1.4.x | No: upgrade to 1.8 (the same file format) |
