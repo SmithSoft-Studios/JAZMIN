@@ -6,7 +6,7 @@ import { normalizeColumns } from './schema.js';
 import { withLock } from './lock.js';
 import { APPEND_STATE, JazminReader, OWNER_GRANTS, ROWS_WITH_IDS, checkWriterFeatures } from './reader.js';
 import { normalizeOrder, orderComparer, orderKeyMaker } from './sort-keys.js';
-import { normalizeValue, toKey } from './types.js';
+import { keyId, normalizeValue, toKey } from './types.js';
 import { accessFor, checkAppendGrants, columnsWithIndexes, updateUnlocked } from './update.js';
 import { CONTINUE, JazminWriter } from './writer.js';
 
@@ -66,7 +66,8 @@ function appendUnlocked(path, options) {
       const v = normalizeValue(c.type, row[name], name);
       return v === null ? null : toKey(c.type, v);
     });
-    const keyOf = (row) => JSON.stringify(tuple(row, keyColumns).map(keyText));
+    // Decimal keys are objects: equal values share their text (keyId), as update() compares them.
+    const keyOf = (row) => JSON.stringify(tuple(row, keyColumns).map((k) => keyText(keyId(k))));
 
     // Rows to remove: matches of the delete filter, and existing rows replaced by an upsert.
     const removed = new Set();

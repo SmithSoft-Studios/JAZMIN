@@ -320,6 +320,18 @@ test('upsert in a shared file: the last row for a key wins when its rows are in 
   assert.deepEqual(rowsOf(file, { key: carol }).map((r) => [r.id, r.amount]), [[2, 3], [3, 31]]);
 });
 
+test('upsert by a decimal key: equal values match whatever their scale, as in update()', () => {
+  for (const [name, keyColumns] of [['single', ['id']], ['composite', ['id', 'kind']]]) {
+    const file = tmp(`decimal-${name}.jzm`);
+    write(file, [{ id: '1.5', kind: 'a', v: 'a' }, { id: '2', kind: 'a', v: 'x' }], {
+      columns: [{ name: 'id', type: 'decimal', index: 'sorted' }, { name: 'kind', type: 'string' }, { name: 'v', type: 'string' }],
+    });
+    const result = append(file, { upsert: [{ id: '1.50', kind: 'a', v: 'b' }, { id: '3', kind: 'a', v: 'c' }, { id: '3.0', kind: 'a', v: 'd' }], keyColumns });
+    assert.deepEqual(rowsOf(file).map((r) => `${r.id}${r.v}`), ['2x', '1.50b', '3.0d'], name);
+    assert.deepEqual([result.rowCount, result.inserted, result.updated, result.deleted], [3, 1, 1, 0], name);
+  }
+});
+
 test('a full update or compaction while readers have the file open replaces it, on Windows too (W-1)', () => {
   const file = tmp('rename.jzm');
   write(file, Array.from({ length: 20 }, (_, i) => row(i)), { columns });
