@@ -903,7 +903,7 @@ export interface UpdateOptions extends RewriteProgressOptions {
   /** The main table's masks changed (see TableChanges.masks). */
   masks?: Record<string, MaskOptions | null>;
   insert?: Record<string, unknown>[];
-  /** Replace rows whose keyColumns match; insert the rest. */
+  /** Replace rows whose keyColumns match; insert the rest. The last row for a key wins. */
   upsert?: Record<string, unknown>[];
   keyColumns?: string[];
   delete?: Filter;

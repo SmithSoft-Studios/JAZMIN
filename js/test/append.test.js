@@ -243,6 +243,83 @@ test('upsert needs keyColumns', () => {
   assert.throws(() => append(file, { upsert: [row(1)] }), JazminValidationError);
 });
 
+const rowsOf = (file, options) => {
+  const r = open(file, options);
+  try {
+    return [...r.rows()];
+  } finally {
+    r.close();
+  }
+};
+
+test('upsert: in one call the last row for a key wins, as if the rows were upserted one after another (#275)', () => {
+  const file = tmp('last.jzm');
+  const plain = [{ name: 'id', type: 'int' }, { name: 'v', type: 'string' }];
+  write(file, [{ id: 1, v: 'a' }, { id: 2, v: 'x' }], { columns: plain });
+  const result = append(file, { upsert: [{ id: 1, v: 'b' }, { id: 1, v: 'c' }, { id: 3, v: 'p' }, { id: 3, v: 'q' }], keyColumns: ['id'] });
+  assert.deepEqual(rowsOf(file), [{ id: 2, v: 'x' }, { id: 1, v: 'c' }, { id: 3, v: 'q' }]);
+  assert.deepEqual(result, { rowCount: 3, inserted: 1, updated: 1, deleted: 0, appendCount: 1, deletedRowCount: 1, expiredGrantsRemoved: 0, compacted: false });
+
+  // Appended one after another, a key given again moves to the end: the rows kept are in the order of their last rows.
+  append(file, { upsert: [{ id: 4, v: 'd' }, { id: 5, v: 'e' }, { id: 4, v: 'f' }], keyColumns: ['id'] });
+  assert.deepEqual(rowsOf(file).slice(3), [{ id: 5, v: 'e' }, { id: 4, v: 'f' }]);
+
+  // Keys with empty parts compare as upsert already compares them: an empty part matches an empty part.
+  const composite = tmp('composite.jzm');
+  write(composite, [{ a: 1, b: null, v: 'old' }, { a: 2, b: 'x', v: 'kept' }], {
+    columns: [{ name: 'a', type: 'int' }, { name: 'b', type: 'string' }, { name: 'v', type: 'string' }],
+  });
+  const both = append(composite, {
+    upsert: [
+      { a: 1, b: null, v: '1' }, { a: 1, b: 'x', v: '2' }, { a: 1, b: null, v: '3' },
+      { a: null, b: null, v: '4' }, { a: 2, b: 'y', v: '5' }, { a: null, b: null, v: '6' },
+    ],
+    keyColumns: ['a', 'b'],
+  });
+  assert.deepEqual(rowsOf(composite).map((r) => r.v), ['kept', '2', '3', '5', '6']);
+  assert.deepEqual([both.rowCount, both.inserted, both.updated, both.deleted], [5, 3, 1, 0]);
+
+  const single = tmp('single-null.jzm');
+  write(single, [{ id: 1, v: 'a' }], { columns: plain });
+  const nulls = append(single, { upsert: [{ id: null, v: 'n1' }, { id: 1, v: 'b' }, { id: null, v: 'n2' }], keyColumns: ['id'] });
+  assert.deepEqual(rowsOf(single), [{ id: 1, v: 'b' }, { id: null, v: 'n2' }]);
+  assert.deepEqual([nulls.rowCount, nulls.inserted, nulls.updated], [2, 1, 1]);
+});
+
+test('upsert in a sorted file: only the last row for a key must sort after the existing rows', () => {
+  const file = tmp('sorted-last.jzm');
+  const timed = [{ name: 'id', type: 'int' }, { name: 't', type: 'int' }];
+  write(file, [{ id: 1, t: 1 }, { id: 2, t: 3 }], { columns: timed, sortedBy: ['t'] });
+  // The first row for id 9 would sort before the existing rows, but the last one replaces it.
+  const result = append(file, { upsert: [{ id: 9, t: 0 }, { id: 8, t: 4 }, { id: 9, t: 5 }, { id: 8, t: 6 }], keyColumns: ['id'] });
+  assert.deepEqual(rowsOf(file), [{ id: 1, t: 1 }, { id: 2, t: 3 }, { id: 9, t: 5 }, { id: 8, t: 6 }]);
+  assert.deepEqual([result.rowCount, result.inserted, result.updated], [4, 2, 0]);
+  // And the other way round: the last row decides, so the append is refused and the file left as it was.
+  const before = fs.readFileSync(file);
+  assert.throws(() => append(file, { upsert: [{ id: 7, t: 9 }, { id: 7, t: 2 }], keyColumns: ['id'] }), /must sort after the existing rows/);
+  assert.deepEqual(fs.readFileSync(file), before);
+});
+
+test('upsert in a shared file: the last row for a key wins when its rows are in different partitions', () => {
+  const owner = JazminKey.generate();
+  const bob = owner.createAccessKey();
+  const carol = owner.createAccessKey();
+  const file = tmp('shared-last.jzm');
+  write(file, [row(1, 'A'), row(2, 'B')], {
+    columns, key: owner,
+    access: { partitionBy: 'section', grants: [{ key: bob, rows: ['A'] }, { key: carol, rows: ['B'] }] },
+  });
+  const result = append(file, {
+    key: owner,
+    upsert: [{ id: 1, section: 'B', amount: 10 }, { id: 3, section: 'A', amount: 30 }, { id: 1, section: 'A', amount: 11 }, { id: 3, section: 'B', amount: 31 }],
+    keyColumns: ['id'],
+  });
+  assert.deepEqual([result.rowCount, result.inserted, result.updated, result.deleted], [3, 1, 1, 0]);
+  assert.deepEqual(rowsOf(file, { key: owner }).map((r) => [r.id, r.section, r.amount]), [[2, 'B', 3], [1, 'A', 11], [3, 'B', 31]]);
+  assert.deepEqual(rowsOf(file, { key: bob }).map((r) => [r.id, r.amount]), [[1, 11]]);
+  assert.deepEqual(rowsOf(file, { key: carol }).map((r) => [r.id, r.amount]), [[2, 3], [3, 31]]);
+});
+
 test('a full update or compaction while readers have the file open replaces it, on Windows too (W-1)', () => {
   const file = tmp('rename.jzm');
   write(file, Array.from({ length: 20 }, (_, i) => row(i)), { columns });
