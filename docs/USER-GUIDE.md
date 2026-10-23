@@ -2220,8 +2220,10 @@ compilation.
     it (8 partitions hold at most 8 chunks of rows). With hundreds of
     partitions or very wide rows, chunks are then smaller than `chunkRows`,
     but still far from one per row: 600,000 streamed rows in 2,400
-    partitions made 15,467 chunks in JS and 16,049 in .NET, where nearly
-    every row would be a chunk. In Node the rows held are kept as bytes
+    partitions made about 15,500 to 16,000 chunks (the JS and .NET
+    benchmarks write different random text; given the same rows, both
+    libraries store the same chunks), where nearly every row would be a
+    chunk. In Node the rows held are kept as bytes
     outside the JavaScript heap; in .NET as values. A row held keeps its own
     copy of its values, so a buffer or list reused for the next row is fine.
   - **Text can take twice the bytes counted.** `chunkBytes` counts a
