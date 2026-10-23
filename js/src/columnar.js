@@ -401,6 +401,40 @@ export function nestedStage() {
 }
 
 /**
+ * write({ regroup }): a staged value written into a V8 serializer as values without identity (binary as raw bytes), so
+ * the serializer keeps no object, and a value the caller reuses for the next row is not written as a reference to it.
+ */
+export function holdStage(stage, out) {
+  out.writeUint32(stage.values.length);
+  for (const v of stage.values) {
+    if (v === PRESENT) out.writeUint32(1);
+    else if (v instanceof Uint8Array) {
+      out.writeUint32(2);
+      out.writeUint32(v.length);
+      out.writeRawBytes(v);
+    } else {
+      out.writeUint32(0);
+      out.writeValue(v);
+    }
+  }
+  out.writeUint32(stage.lengths.length);
+  for (const n of stage.lengths) out.writeUint32(n);
+  out.writeDouble(stage.bytes);
+}
+
+/** A stage of its own, read back from what holdStage wrote. */
+export function heldStage(input) {
+  const values = new Array(input.readUint32());
+  for (let i = 0; i < values.length; i++) {
+    const tag = input.readUint32();
+    values[i] = tag === 1 ? PRESENT : tag === 2 ? Buffer.from(input.readRawBytes(input.readUint32())) : input.readValue();
+  }
+  const lengths = new Array(input.readUint32());
+  for (let i = 0; i < lengths.length; i++) lengths[i] = input.readUint32();
+  return { values, lengths, vi: 0, li: 0, bytes: input.readDouble() };
+}
+
+/**
  * A list or object column (or field, or a list's items) being written (spec 5.4). A value is first checked and
  * converted into a stage (`stage`), then added from it (`add`): a value that fails leaves every buffer as it was, so
  * its row is refused whole, as a row with any other bad value is.

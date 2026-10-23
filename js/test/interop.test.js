@@ -10,7 +10,7 @@ import { JazminAccessKey, applyChanges, issueUnlockToken, open, toJSON } from '.
 import { APPEND_STATE } from '../src/reader.js';
 import {
   ACCESS_VIEWS, COUNTRY_COLUMNS, COUNTRY_VIEWS, DOCUMENT_FILES, DOCUMENT_PACKAGE, EDIT_AFTER, EDIT_SETTINGS, FILES_VIEWS, FIXTURE_EXPIRY, FIXTURE_PACKAGE, PARTITIONS_SPLIT, PARTITION_VIEWS, appendedLive,
-  NESTED_COLUMNS, NESTED_GROWN_SPLIT, countryRows, fixtureFiles, nestedRowBefore, toCanonical,
+  NESTED_COLUMNS, NESTED_GROWN_SPLIT, countryRows, fixtureFiles, nestedRowBefore, regroupedOrder, toCanonical,
 } from './fixture-helpers.js';
 
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../spec/fixtures');
@@ -30,8 +30,9 @@ function optionsFor(file) {
 // The shared dataset's files (nested and edit fixtures have tables of their own, checked below).
 const files = fs.readdirSync(dir).filter((f) => f.endsWith('.jzm') && !f.endsWith('-access.jzm') && !f.includes('-nested') && !f.includes('-edit-'));
 const accessFiles = fs.readdirSync(dir).filter((f) => f.endsWith('-access.jzm'));
-/** Dataset rows a fixture should contain: appended fixtures have rows with id < 10 deleted. */
+/** Dataset rows a fixture should contain: appended fixtures have rows with id < 10 deleted; regrouped ones are reordered. */
 const liveRows = (file) => {
+  if (file.includes('-regrouped')) return regroupedOrder(dataset.rows, (r) => r.country);
   if (file.includes('-many-partitions')) return dataset.rows.slice(0, PARTITIONS_SPLIT[1]).filter(appendedLive);
   return file.includes('-appended') ? dataset.rows.filter(appendedLive) : dataset.rows;
 };
@@ -177,7 +178,7 @@ test('interop: browser-files-key.jzm opened with the owner key shows its files',
 // The owner's chunk map (spec 7.6.5): written by either library, read by both; older files without one read as before.
 for (const writer of ['js', 'dotnet']) {
   for (const [file, hasMap] of [
-    [`${writer}-access.jzm`, true], [`${writer}-appended-access.jzm`, true], [`${writer}-many-partitions-access.jzm`, true],
+    [`${writer}-access.jzm`, true], [`${writer}-appended-access.jzm`, true], [`${writer}-many-partitions-access.jzm`, true], [`${writer}-regrouped-access.jzm`, true],
     [`${writer}-tables-access.jzm`, true], [`${writer}-files-access.jzm`, false],
   ]) {
     test(`interop: ${file} ${hasMap ? 'has' : 'has no'} owner chunk map, and owner lookups by id find the rows`, () => {
@@ -358,6 +359,21 @@ for (const writer of ['js', 'dotnet']) {
         assert.deepEqual([...reader.find(filter, { select: ['id'] })].map((r) => r.id), ids); // the filter's fields only
         assert.equal(reader.count(filter), ids.length);
       }
+    } finally {
+      reader.close();
+    }
+  });
+}
+
+// Written with regroup (issue #275): each country's rows together, so a country spans ceil(rows / 64) chunks, where the
+// same rows written as they come make a chunk of nearly every row (js-access.jzm); either library reads the other's.
+for (const writer of ['js', 'dotnet']) {
+  test(`interop: ${writer}-regrouped-access.jzm keeps each partition in as few chunks as its rows need`, () => {
+    const reader = open(path.join(dir, `${writer}-regrouped-access.jzm`), { key: keys.key });
+    try {
+      const perCountry = new Map();
+      for (const r of dataset.rows) perCountry.set(r.country, (perCountry.get(r.country) ?? 0) + 1);
+      assert.equal(reader.chunkCount, [...perCountry.values()].reduce((n, k) => n + Math.ceil(k / 64), 0));
     } finally {
       reader.close();
     }

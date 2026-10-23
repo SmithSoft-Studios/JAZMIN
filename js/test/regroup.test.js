@@ -96,7 +96,7 @@ test('advise() suggests regrouping spread-out partitions, and no longer after it
   const before = open(file, { key: owner });
   const advice = before.advise();
   before.close();
-  assert.ok(advice.suggestions.some((s) => s.startsWith('5 of 5 partitions are spread through the file') && s.endsWith("compact({ regroup: true }) puts each partition's rows together.")), advice.suggestions.join('\n'));
+  assert.ok(advice.suggestions.some((s) => s.startsWith('5 of 5 partitions are spread through the file') && s.endsWith("compact({ regroup: true }) puts each partition's rows together (and write() with regroup: true writes them so).")), advice.suggestions.join('\n'));
   compact(file, { key: owner, regroup: true });
   const after = open(file, { key: owner });
   assert.deepEqual(after.advise().suggestions, []);

@@ -1,6 +1,7 @@
 // Writes JAZMIN format 1.0 files (docs/rfc/draft-jazmin-format-03.md).
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import v8 from 'node:v8';
 import {
   FileSecrets, KEY_SLOT_PAGE_BYTES, buildKeySlotList, buildKeySlotPages, buildSignature, checkAccessOptions, digest, headerKey,
   normalizeGrants, normalizeTableAccess, ownerDirectoryKey, partKey, partitionName,
@@ -11,7 +12,7 @@ import {
   encodeChunkDirectory, encodeChunkMap, encodeColumnDefinitions, encodeDelta, encodeHeader, encodeIndexDirectory, encodeOwnerCatalog, joinChunkMaps,
   encodePartitionTable, encodeStatistics,
 } from './catalog.js';
-import { columnBuffer, encodeColumnBuffers, nestedStage } from './columnar.js';
+import { columnBuffer, encodeColumnBuffers, heldStage, holdStage, nestedStage } from './columnar.js';
 import { isNested } from './nested.js';
 import {
   EVERYONE, FILE_BLOCK_SIZE, FILE_SOURCE, checkEdit, checkEditLimit, checkPages, fileSource, limitNarrows, normalizeEdit, normalizePackage,
@@ -169,6 +170,38 @@ export const KEPT_LOCKS = Symbol('jazmin.keptLocks');
 /** Internal: the masked columns a rewrite keeps, as the owner directory has them, each with its table's `tableName`. */
 export const KEPT_MASKS = Symbol('jazmin.keptMasks');
 
+/**
+ * `regroup`: the most rows, and estimated bytes (as `chunkBytes` counts them), held back before the partitions holding
+ * the most are written out (the same in .NET, so both write the same order). Below the limits a partition's rows are
+ * written once they fill a chunk: 8 partitions never hold more than 8 x 4,096 rows. Measured with streamed rows (docs/
+ * USER-GUIDE.md section 15.5): with 100 and 2,400 partitions 65,536 rows halved the chunks of 32,768 and used less
+ * memory in Node; .NET held about 20 MB more with 100 partitions and 26 MB less with 2,400 (131,072 rows: 54 MB
+ * more than 32,768 with 100). With wide rows in 100 partitions, 16 MB used the least memory in Node, and 64 MB took 2.3
+ * times the memory of 16 MB in .NET (a .NET string takes two bytes a character).
+ */
+const REGROUP_ROWS = 65536;
+const REGROUP_BYTES = 16 * 1024 * 1024;
+
+/** Internal: overrides the `regroup` limits ({ rows, bytes }), so tests can check them with a few rows. */
+export const REGROUP_LIMITS = Symbol('jazmin.regroupLimits');
+
+/** Internal: the rows and estimated bytes `regroup` holds now ({ rows, bytes }), for tests of the limits. */
+export const HELD = Symbol('jazmin.held');
+
+/** `regroup`: a json value held back, as the text JSON.stringify gave when the row was given. */
+class HeldJson {
+  constructor(text) {
+    this.text = text;
+  }
+}
+
+// `regroup`: how each value of a row held back is written (V8's serializer, values without identity only).
+const HELD_NULL = 0;
+const HELD_VALUE = 1; // a number, BigInt, string or boolean
+const HELD_BYTES = 2; // binary, its raw bytes
+const HELD_JSON = 3; // json, as its text
+const HELD_STAGE = 4; // a list or object, as its stage (holdStage)
+
 /** Where the writer keeps a stored content: by its bytes and its lock. */
 const contentSlot = (c) => (c.lock === undefined ? c.sha256 : `${c.sha256}/${c.lock}`);
 
@@ -323,19 +356,24 @@ export class JazminWriter {
   #stagers = null; // by column: list and object values are checked into a stage before any buffer takes them
   #pool = null; // SectionPool, started from the third chunk so small files never pay for workers
   #pending = []; // chunk parts being encoded by the pool, in file order: { entry, group }
+  #regroup = null; // regroup: the limits on the rows held ({ rows, bytes })
+  #held = null; // regroup, in a partitioned table: partition -> { values (serialized), rows, bytes }, the first held first
+  #heldRows = 0;
+  #heldBytes = 0;
 
   constructor(target, options = {}) {
     const {
       columns, metadata = {}, codec = DEFAULTS.codec, level, chunkRows = DEFAULTS.chunkRows,
       chunkBytes = DEFAULTS.chunkBytes, key, password, kdfIterations = DEFAULTS.kdfIterations, sortedBy, access, now,
       layout, files, package: packageSettings, tables, priority = 'balanced', compactIndexes = false, shapes, links,
-      onProgress, signal, locks,
+      onProgress, signal, locks, regroup = false,
     } = options;
     signal?.throwIfAborted();
     this.#progress = onProgress || signal ? { onProgress, signal, total: options[PROGRESS_TOTAL] ?? null, written: 0 } : null;
     const { maxDegreeOfParallelism = writeThreads(priority) } = options;
     checkPriority(priority);
     if (typeof compactIndexes !== 'boolean') throw new JazminValidationError('compactIndexes must be true or false');
+    if (typeof regroup !== 'boolean') throw new JazminValidationError('regroup must be true or false');
     if (!Number.isInteger(maxDegreeOfParallelism) || maxDegreeOfParallelism < 1) {
       throw new JazminValidationError('maxDegreeOfParallelism must be a positive integer');
     }
@@ -379,6 +417,16 @@ export class JazminWriter {
       : (options[KEPT_MASKS] ?? []).filter((m) => m.tableName === (t.name ?? '')));
     this.#otherMasks = cont ? (cont.directory?.masks ?? []).filter((m) => m.table !== cont.tableIndex) : [];
     this.#tableDefs = definitions.map((t) => tableDefinition(t, { named: tables !== undefined, access: Boolean(access), chunkRows, chunkBytes, kept: keptMasks(t) }));
+    if (regroup) {
+      // Rows stored a partition at a time: a sort order must start with the partition column (rows already grouped).
+      if (!this.#tableDefs.some((t) => t.partitionCol >= 0)) throw new JazminValidationError('regroup applies to access-controlled files with partitionBy');
+      for (const t of this.#tableDefs) {
+        if (t.partitionCol < 0 || !t.sortCols || t.sortCols[0] === t.partitionCol) continue;
+        throw new JazminValidationError(`regroup would break the sortedBy order [${describeOrder(t.order.keys)}]: `
+          + `it needs no sortedBy, or one that starts with the partition column '${t.partitionBy}' (then rows are already grouped)`);
+      }
+      this.#regroup = { rows: REGROUP_ROWS, bytes: REGROUP_BYTES, ...options[REGROUP_LIMITS] };
+    }
     const maskGroups = new Set(this.#otherMasks.map((m) => m.group));
     for (const m of [...this.#otherMasks, ...this.#tableDefs.flatMap((t) => t.masks)]) {
       if (!this.#locks.has(m.lock)) {
@@ -575,6 +623,8 @@ export class JazminWriter {
     this.#groups = def.columnGroups.map((g) => ({ name: g.name, cols: g.cols }));
     this.#chunks = [];
     this.#chunkPartition = null;
+    // regroup holds rows per partition, unless they arrive sorted by the partition column (then already grouped).
+    this.#held = this.#regroup && def.partitionCol >= 0 && !def.sortCols ? new Map() : null;
     this.#closeIndexBuilders();
     this.#indexBuilders = [];
     def.columns.forEach((column, col) => {
@@ -597,6 +647,7 @@ export class JazminWriter {
 
   /** Writes the current table's last chunk, indexes, statistics and directories; keeps its catalog entry. */
   #endTable() {
+    this.#writeHeld();
     this.#flushChunk();
     this.#writePending();
     const cont = this.#continue;
@@ -659,8 +710,14 @@ export class JazminWriter {
     };
   }
 
+  /** Rows given for the current table (with `regroup`, rows still held back included). */
   get rowCount() {
-    return this.#rowCount;
+    return this.#rowCount + this.#heldRows;
+  }
+
+  /** Internal: what `regroup` holds now (tests of its limits). */
+  get [HELD]() {
+    return { rows: this.#heldRows, bytes: this.#heldBytes };
   }
 
   /** Grants left out because they had already expired (access-controlled files). */
@@ -718,28 +775,136 @@ export class JazminWriter {
   writeRow(row) {
     if (this.#finished) throw new JazminValidationError('Writer is already finished');
     if (row === null || typeof row !== 'object') throw new JazminValidationError('Each row must be an object');
+    if (this.#held) {
+      this.#hold(this.#rowValues(row, this.#values, false));
+      return;
+    }
+    const values = this.#rowValues(row, this.#values, true);
+    if (this.#sortCols) this.#checkOrder(values, this.#rowCount);
+    this.#addValues(values);
+  }
+
+  /**
+   * A row's values, checked and normalized into `values`. A nested value is checked into its column's stage, and with
+   * `staged` stands as that stage (a row held for later keeps its value; #hold takes the stage).
+   */
+  #rowValues(row, values, staged) {
     if (this.#masker) row = this.#masker(row); // shown values made, unmasked values moved (spec 7.6.8)
-    const rowNumber = this.#rowCount;
+    const rowNumber = this.#rowCount + this.#heldRows; // the row's number as given
     for (const name in row) {
       if (!this.#names.has(name)) throw new JazminValidationError(`Row ${rowNumber}: unknown column '${name}'`);
     }
     const columns = this.#columns;
-    const values = this.#values;
     for (let i = 0; i < columns.length; i++) {
       const c = columns[i];
       let value = normalizeValue(c.type, row[c.name], c.name);
       if (value === null && !c.nullable) throw new JazminValidationError(`Row ${rowNumber}: column '${c.name}' is not nullable`);
       const stager = this.#stagers?.[i];
       if (stager && value !== null) {
-        const { stage } = stager;
-        stage.values.length = stage.lengths.length = stage.vi = stage.li = stage.bytes = 0;
-        stager.buffer.stage(value, stage);
-        value = stage;
+        this.#stage(stager, value);
+        if (staged) value = stager.stage;
       }
       values[i] = value;
     }
-    if (this.#sortCols) this.#checkOrder(values, rowNumber);
+    return values;
+  }
 
+  #stage(stager, value) {
+    const { stage } = stager;
+    stage.values.length = stage.lengths.length = stage.vi = stage.li = stage.bytes = 0;
+    stager.buffer.stage(value, stage);
+  }
+
+  /**
+   * regroup: holds a row with its partition's. A partition's rows are written once they fill a chunk; when the rows
+   * held reach a limit, the partitions holding the most are written until half of it is held.
+   */
+  #hold(values) {
+    const partition = partitionName(values[this.#current.partitionCol]);
+    let held = this.#held.get(partition);
+    if (!held) {
+      // Held as bytes (V8's own serialization, outside the JavaScript heap): rows kept as objects survive the young
+      // generation's collections, and V8 then grows it, by about 100 MB more for a large streamed input.
+      held = { values: new v8.DefaultSerializer(), rows: 0, bytes: 0 };
+      held.values.writeHeader();
+      this.#held.set(partition, held);
+    }
+    // Only values without identity are written: the serializer writes an object it has seen as a reference to it, so a
+    // buffer or list the caller reuses for the next row would read back as the first row's (and it keeps every object).
+    const out = held.values;
+    const columns = this.#columns;
+    let bytes = 0;
+    for (let i = 0; i < columns.length; i++) {
+      const v = values[i];
+      const type = columns[i].type;
+      if (v === null) out.writeUint32(HELD_NULL);
+      else if (this.#stagers?.[i]) {
+        out.writeUint32(HELD_STAGE);
+        holdStage(this.#stagers[i].stage, out);
+        bytes += this.#stagers[i].stage.bytes;
+      } else if (type === 'binary') {
+        out.writeUint32(HELD_BYTES);
+        out.writeUint32(v.length);
+        out.writeRawBytes(v);
+        bytes += estimateSize(type, v);
+      } else if (type === 'json') {
+        const text = JSON.stringify(v); // as written without regroup, whatever happens to the value later
+        out.writeUint32(HELD_JSON);
+        out.writeValue(text);
+        bytes += estimateSize(type, text);
+      } else {
+        out.writeUint32(HELD_VALUE);
+        out.writeValue(v);
+        bytes += estimateSize(type, v);
+      }
+    }
+    held.rows++;
+    held.bytes += bytes;
+    this.#heldRows++;
+    this.#heldBytes += bytes;
+    const limits = this.#regroup;
+    if (held.rows >= this.#current.chunkRows || held.bytes >= this.#current.chunkBytes) {
+      this.#writeHeldPartition(partition, held);
+    } else if (this.#heldRows >= limits.rows || this.#heldBytes >= limits.bytes) {
+      const most = [...this.#held].sort((a, b) => b[1].rows - a[1].rows); // ties: the first held first
+      for (const [p, h] of most) {
+        if (this.#heldRows <= limits.rows / 2 && this.#heldBytes <= limits.bytes / 2) break;
+        this.#writeHeldPartition(p, h);
+      }
+    }
+  }
+
+  #writeHeldPartition(partition, held) {
+    this.#held.delete(partition);
+    this.#heldRows -= held.rows;
+    this.#heldBytes -= held.bytes;
+    const stored = new v8.DefaultDeserializer(held.values.releaseBuffer());
+    stored.readHeader();
+    const values = this.#values;
+    for (let k = 0; k < held.rows; k++) {
+      for (let i = 0; i < values.length; i++) {
+        switch (stored.readUint32()) {
+          case HELD_NULL: values[i] = null; break;
+          case HELD_VALUE: values[i] = stored.readValue(); break;
+          case HELD_BYTES: values[i] = Buffer.from(stored.readRawBytes(stored.readUint32())); break; // a copy: not a view
+          case HELD_JSON: values[i] = new HeldJson(stored.readValue()); break;
+          default: values[i] = heldStage(stored);
+        }
+      }
+      this.#addValues(values);
+    }
+  }
+
+  /** regroup: writes every partition's rows held, the first held first. */
+  #writeHeld() {
+    if (!this.#held) return;
+    for (const [partition, held] of this.#held) this.#writeHeldPartition(partition, held);
+  }
+
+  /** Adds a row's checked values to the chunk (a chunk is written when full). */
+  #addValues(values) {
+    const columns = this.#columns;
+    const rowNumber = this.#rowCount;
     if (this.#access) {
       // A chunk holds exactly one partition, so a key can be granted whole chunks.
       const partition = this.#current.partitionCol >= 0 ? partitionName(values[this.#current.partitionCol]) : WHOLE_TABLE;
@@ -753,7 +918,7 @@ export class JazminWriter {
       for (let j = 0; j < group.cols.length; j++) {
         const col = group.cols[j];
         let v = values[col];
-        if (v !== null && columns[col].type === 'json') v = JSON.stringify(v);
+        if (v !== null && columns[col].type === 'json') v = v instanceof HeldJson ? v.text : JSON.stringify(v);
         if (v === null) group.buffers[j].addNull();
         else group.buffers[j].add(v);
         group.bytes += this.#stagers?.[col] && v !== null ? v.bytes : estimateSize(columns[col].type, v);
