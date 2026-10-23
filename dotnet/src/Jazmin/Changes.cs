@@ -350,7 +350,7 @@ internal static class Changes
         {
             try
             {
-                return (JazminReader.Open(change, new JazminReadOptions { Key = options.Key, Password = options.Password }), null);
+                return (JazminReader.Open(change, new JazminReadOptions { Key = options.Key, Password = options.Password, RefuseBrotli = true }), null);
             }
             catch (JazminKeyException)
             {
@@ -366,7 +366,7 @@ internal static class Changes
             JazminReader reader;
             try
             {
-                reader = JazminReader.Open(change, new JazminReadOptions { Key = owner.SubmissionKey(grant.KeyId) });
+                reader = JazminReader.Open(change, new JazminReadOptions { Key = owner.SubmissionKey(grant.KeyId), RefuseBrotli = true });
             }
             catch (JazminKeyException)
             {

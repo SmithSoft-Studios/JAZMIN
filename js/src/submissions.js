@@ -8,6 +8,7 @@ import { append } from './append.js';
 import { JazminError, JazminKeyError, JazminSubmissionRejectedError, JazminValidationError } from './errors.js';
 import { open } from './index.js';
 import { JazminKey } from './keys.js';
+import { NO_BROTLI } from './reader.js';
 
 /**
  * Kinds of file a submission may carry, told apart by their first bytes: never by the name or the type the phone
@@ -125,7 +126,7 @@ function planBatch(shared, ownerKey, { keyId, batch, idColumn, receivedAt, repla
   let files;
   let withFiles;
   try {
-    const reader = open(batch, { key: ownerKey.submissionKey(keyId) });
+    const reader = open(batch, { key: ownerKey.submissionKey(keyId), [NO_BROTLI]: true });
     try {
       if (expires !== null && reader.writtenAt.getTime() > expires) {
         throw new JazminSubmissionRejectedError(`The batch was written at ${reader.writtenAt.toISOString()}, after key ${keyId}'s access expired at ${grant.expires}`);
