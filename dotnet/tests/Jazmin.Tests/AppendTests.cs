@@ -231,6 +231,26 @@ public sealed class AppendTests : IDisposable
     }
 
     [Fact]
+    public void Upsert_ByAFloatKey_NaNAndTheInfinitiesAreKeysOfTheirOwn_NotTheEmptyKey_AsInJavaScript()
+    {
+        JazminColumn[] columns = [new("f", JazminType.Float), new("v", JazminType.String)];
+        static Dictionary<string, object?> Fv(double? f, string v) => new() { ["f"] = f, ["v"] = v };
+        foreach (var update in new[] { false, true })
+        {
+            var path = WriteWith($"float-{update}.jzm", columns, [Fv(null, "empty"), Fv(1.5, "a")]);
+            List<Dictionary<string, object?>> upsert = [Fv(double.PositiveInfinity, "up"), Fv(double.NegativeInfinity, "down"), Fv(null, "empty2"), Fv(double.NaN, "nan")];
+            if (update) JazminFile.Update(path, new JazminUpdate { Upsert = upsert, KeyColumns = ["f"] });
+            else
+            {
+                var result = JazminFile.Append(path, new JazminAppend { Upsert = upsert, KeyColumns = ["f"] });
+                Assert.Equal((3L, 1L), (result.Inserted, result.Updated));
+            }
+            var stored = Texts(path, r => $"{(r["f"] is double d ? d.ToString(System.Globalization.CultureInfo.InvariantCulture) : "null")}:{r["v"]}").Order(StringComparer.Ordinal);
+            Assert.Equal(["-Infinity:down", "1.5:a", "Infinity:up", "NaN:nan", "null:empty2"], stored);
+        }
+    }
+
+    [Fact]
     public void Upsert_ByASingleKeyColumn_AnEmptyKeyMatchesAnEmptyKey_AsInUpdateAndCompositeKeys()
     {
         foreach (var indexed in new[] { true, false })
