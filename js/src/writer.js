@@ -125,6 +125,13 @@ class Output {
     if (this.fd !== null) fs.fsyncSync(this.fd);
   }
 
+  /** sync() without blocking the event loop while the disk flushes. */
+  syncAsync() {
+    this.#flush();
+    if (this.fd === null) return Promise.resolve();
+    return new Promise((resolve, reject) => fs.fsync(this.fd, (error) => (error ? reject(error) : resolve())));
+  }
+
   close() {
     this.#flush();
     if (this.fd !== null) fs.closeSync(this.fd);
@@ -143,6 +150,9 @@ class Output {
 
 /** Internal option: continue an existing file instead of creating one (used by append()). */
 export const CONTINUE = Symbol('jazmin.continue');
+
+/** Internal: finish() whose two flushes to disk don't block the event loop (the group writer, openWriter). */
+export const FINISH_ASYNC = Symbol('jazmin.finishAsync');
 
 /** Internal: overrides the sorted-index page size ({ pageBytes }), so tests and fixtures can use many small pages. */
 export const PAGING = Symbol('jazmin.paging');
@@ -870,6 +880,32 @@ export class JazminWriter {
 
   /** Writes the catalog, header, key slots, signature and trailer. Returns a Buffer when writing in memory. */
   finish() {
+    const trailer = this.#writeEnd();
+    this.#out.sync(); // data first: a trailer must never point at data that is not on disk yet
+    this.#out.write(trailer);
+    this.#out.sync();
+    this.#finished = true;
+    return this.#out.close();
+  }
+
+  /** finish() with the same bytes, in the same order, but the flushes to disk awaited instead of blocking. */
+  async [FINISH_ASYNC]() {
+    if (this.#finished) throw new JazminValidationError('Writer is already finished');
+    this.#flushChunk();
+    while (this.#pending.length) {
+      await this.#pool.whenReady();
+      this.#writePending(1);
+    }
+    const trailer = this.#writeEnd();
+    await this.#out.syncAsync(); // data first: a trailer must never point at data that is not on disk yet
+    this.#out.write(trailer);
+    await this.#out.syncAsync();
+    this.#finished = true;
+    return this.#out.close();
+  }
+
+  /** Writes everything up to the trailer (catalog, header, key slots, signature) and returns the trailer, not yet written. */
+  #writeEnd() {
     if (this.#finished) throw new JazminValidationError('Writer is already finished');
     this.#endTable();
     if (!this.#continue) {
@@ -967,7 +1003,6 @@ export class JazminWriter {
       signature = { offset: this.#out.position, length: section.length };
       this.#out.write(section);
     }
-    this.#out.sync(); // data first: a trailer must never point at data that is not on disk yet
 
     const trailer = Buffer.alloc(TRAILER_SIZE);
     trailer.writeBigUInt64LE(BigInt(headerOffset), 0);
@@ -978,11 +1013,7 @@ export class JazminWriter {
     trailer.writeUInt32LE(signature?.length ?? 0, 32);
     trailer.writeUInt32LE(crc32(trailer.subarray(0, 36)), 36);
     MAGIC.copy(trailer, 40);
-    this.#out.write(trailer);
-    this.#out.sync();
-
-    this.#finished = true;
-    return this.#out.close();
+    return trailer;
   }
 
   /** Column groups for the header: definitions inline, or (restricted groups) in their own locked section (spec 7.6.5). */

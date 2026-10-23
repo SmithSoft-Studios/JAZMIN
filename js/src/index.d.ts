@@ -1013,6 +1013,59 @@ export interface AppendResult extends UpdateResult {
  */
 export function append(path: string, options: AppendOptions): AppendResult;
 
+/** beginAppend()'s options: append()'s, without the rows (give those with insert(), upsert() and delete()). */
+export type TransactionOptions = Omit<AppendOptions, 'insert' | 'upsert' | 'delete'>;
+
+/**
+ * Calls collected in memory and written by commit() as one append: all of them or none, with one pair of flushes to
+ * disk. They are written in call order, and each call's delete and upsert see the file as the earlier calls leave it.
+ * A call that would see a row an earlier call adds (a delete matching it, an upsert with its key, rows sorting before
+ * it in a sorted file) is refused at commit. No lock or file handle is held until commit().
+ */
+export interface JazminTransaction {
+  insert(rows: Record<string, unknown>[]): void;
+  /** Needs keyColumns in beginAppend()'s options. */
+  upsert(rows: Record<string, unknown>[]): void;
+  delete(filter: Filter): void;
+  /** Writes one append and returns its result. If it fails the file is left as it was; either way the transaction ends. */
+  commit(): AppendResult;
+  /** Discards the calls. */
+  rollback(): void;
+}
+
+/** Starts a transaction on a file: its calls are written by commit() as one append. */
+export function beginAppend(path: string, options?: TransactionOptions): JazminTransaction;
+
+/**
+ * openWriter()'s options: append()'s that apply to every batch. Those that change the file as a whole (metadata,
+ * grant, files, package, shapes, locks, columns) are refused: use append() or beginAppend() for them.
+ */
+export interface WriterOptions extends Omit<AppendOptions, 'insert' | 'upsert' | 'delete' | 'metadata' | 'grant' | 'addFiles' | 'removeFiles' | 'package' | 'addShapes' | 'removeShapes' | 'locks' | 'columns'> {
+  /** Milliseconds to wait for more calls before a batch is written (default 0: the next turn of the event loop). */
+  maxDelay?: number;
+  /** Rows per append at most (default 10,000); a single call with more is written alone. */
+  maxRows?: number;
+}
+
+/**
+ * Many callers' changes merged into few appends (group commit). Each call resolves with the result of the append that
+ * wrote it, shared by the other calls in that batch, or rejects with its own error: a failed batch is tried again in
+ * halves. Calls are written in call order; a call that would see a row an earlier call adds starts a new append.
+ */
+export interface JazminAppendWriter {
+  insert(rows: Record<string, unknown>[]): Promise<AppendResult>;
+  /** Needs keyColumns in openWriter()'s options. */
+  upsert(rows: Record<string, unknown>[]): Promise<AppendResult>;
+  delete(filter: Filter): Promise<AppendResult>;
+  /** Writes what is waiting now and resolves once it is written (or has failed). */
+  flush(): Promise<void>;
+  /** Writes what is waiting, then refuses further calls. */
+  close(): Promise<void>;
+}
+
+/** Opens a group writer on a file. The flushes to disk are awaited, so the event loop is not blocked while they run. */
+export function openWriter(path: string, options?: WriterOptions): JazminAppendWriter;
+
 /**
  * Key service: the unlock token (jzf1-...) of an online lock of the file's stored files, for reader.unlock(lockId,
  * { unlockToken }), after the service's own checks (owner key required). It stays the same across updates and appends.
