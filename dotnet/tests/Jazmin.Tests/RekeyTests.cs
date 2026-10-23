@@ -1,3 +1,4 @@
+using System.Globalization;
 using Jazmin.Query;
 using Xunit;
 
@@ -61,7 +62,7 @@ public sealed class RekeyTests
         Assert.Equal(["C2", "C3", "C9"], Rows(file, "clients").Select(r => (string)r["clientId"]!));
         var tx = Rows(file, "transactions");
         Assert.Equal(Enumerable.Repeat("C2", 10).Concat(Enumerable.Repeat("C3", 10)).Concat(Enumerable.Repeat("C9", 10)), tx.Select(r => (string)r["clientId"]!));
-        Assert.Equal(Enumerable.Range(0, 10).Select(i => i + 0.25m), tx.Skip(20).Select(r => Convert.ToDecimal(r["amount"]))); // equal keys keep their order
+        Assert.Equal(Enumerable.Range(0, 10).Select(i => i + 0.25m), tx.Skip(20).Select(r => Convert.ToDecimal(r["amount"], CultureInfo.InvariantCulture))); // equal keys keep their order
         using var reader = JazminReader.Open(file);
         var check = reader.CheckLinks().Single();
         Assert.Equal((0L, "merge"), (check.Missing, check.Method));
