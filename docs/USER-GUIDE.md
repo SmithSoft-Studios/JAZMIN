@@ -2665,6 +2665,9 @@ stopped part-way deletes the file it created; on a stream, it leaves the output 
 You decide when to tidy up with **`compact()`**, or let `autoCompact` do it at
 a threshold you choose.
 
+Each `append()` flushes to disk twice, however few rows it has, so many small
+appends cost far more than one large one: batch them (17.7).
+
 | | `update()` (rewrite) | `append()` | `compact()` |
 |---|---|---|---|
 | Cost | Whole file | Size of the change | Whole file |
@@ -2951,6 +2954,97 @@ How each kind of file is checked:
   straight after.
 - **Proof of who made a file** is a publisher signature (section 26).
   `verify()` checks that the file is whole, not who wrote it.
+
+### 17.7 Batch writes and transactions
+
+**Every call to `append()` flushes to disk twice, whatever its size.** The data is flushed before the end of the
+append (the trailer) is written, then the trailer is flushed, so that a crash leaves either the old version or the
+new one. On most disks that is most of an append's cost: one row costs about as much as a thousand. **So batch:**
+give one `append()` many rows, or let the library merge calls for you, in one of two ways.
+
+- **A transaction** writes several calls as **one append**: all of them, or none.
+- **The group writer** merges many callers' calls into as few appends as it can (group commit), for a server where
+  each request adds a row or two.
+
+Both write the calls **in call order**, and each call's `delete` and `upsert` see the file as the earlier calls leave
+it. The file afterwards is the one the calls give when run one after another, each its own `append()`.
+
+```js
+import { beginAppend, openWriter } from '@smithsoft-studios/jazmin';
+
+// A transaction: one append, all or nothing. Nothing is locked until commit().
+const tx = beginAppend('orders.jzm', { key, keyColumns: ['id'] }); // append()'s options, without the rows
+tx.upsert([{ id: 1, status: 'paid' }]);
+tx.insert([{ id: 3, status: 'new' }]);
+tx.delete({ id: 2 });
+const result = tx.commit();   // the append's result, as append() returns it; or tx.rollback()
+
+// The group writer: each call resolves with the result of the append that wrote it, shared by its batch.
+const writer = openWriter('orders.jzm', { key, keyColumns: ['id'], maxDelay: 0, maxRows: 10_000 });
+app.post('/orders', async (req, res) => {
+  const { appendCount } = await writer.insert([req.body]); // on disk once this resolves
+  res.json({ ok: true, appendCount });
+});
+await writer.flush();          // write what is waiting now
+await writer.close();          // write what is waiting, then refuse further calls
+```
+
+```csharp
+using (var tx = JazminFile.BeginAppend("orders.jzm", new JazminAppend { Key = key, KeyColumns = ["id"] }))
+{
+    tx.Upsert([new Dictionary<string, object?> { ["id"] = 1L, ["status"] = "paid" }]);
+    tx.Delete(JazminFilter.Eq("id", 2));
+    var result = tx.Commit();  // Dispose without Commit rolls back
+}
+
+await using var writer = JazminFile.OpenWriter("orders.jzm", new JazminAppend { Key = key }, maxDelay: TimeSpan.Zero, maxRows: 10_000);
+var appended = await writer.InsertAsync([row]);  // safe from many threads; DisposeAsync writes what is waiting
+```
+
+**The group writer.** A batch starts on the next turn of the event loop (in .NET, at once, on one background task), or
+`maxDelay` ms after its first call, and takes calls up to `maxRows` rows. Calls made while a batch is being written
+make the next batch. In JavaScript it waits for the disk without blocking the event loop, so a server keeps answering
+other requests meanwhile. Options that change the file as a whole (`metadata`, `grant`, `addFiles`, `removeFiles`,
+`package`, `addShapes`, `removeShapes`, `locks`, `columns`) are refused, because every batch would write them again:
+use `append()` or a transaction for those.
+
+**When calls can't be one append.** One append looks up the rows to delete or replace in the file as it was, so it
+can't see a row an earlier call in the same batch adds. A transaction refuses such a call at commit, and writes
+nothing; the group writer starts a new append there instead, so each caller still gets what running the calls in turn
+gives. That happens for:
+
+- a `delete` whose filter matches a row an earlier call adds;
+- an `upsert` with the key of a row an earlier call adds (by `insert` or `upsert`);
+- in a `sortedBy` file, a call whose rows sort before rows an earlier call adds.
+
+```text
+In this transaction, call 2 (delete) matches a row that call 1 (insert) adds: one append would not see those rows
+as the calls run one after another do. Commit the calls separately
+```
+
+**Errors.** A transaction is all or nothing: a commit that fails leaves the file byte for byte as it was, and ends
+the transaction (begin a new one). With the group writer, each caller gets their own error: a batch that fails on a
+bad value or filter is tried again in halves until the call at fault fails alone, and the others are written. An error
+that isn't about one call (another writer holds the file, a full disk, a wrong key) fails the whole batch.
+
+**What it costs.** 100 callers each adding one row to a 10,000-row file, each run in a process of its own
+(`node bench/group-commit.mjs`):
+
+| | Time until every row is on disk | Rows per second | Appends | Peak memory | Longest the event loop was blocked |
+|---|---:|---:|---:|---:|---:|
+| `append()` per caller | 1,065 ms (1,041-1,150) | 94 | 100 | 69 MB | 44 ms |
+| `openWriter()` | 31 ms (19-63) | 3,251 | 1 | 55 MB | 26 ms |
+| .NET: `JazminFile.Append` per caller | 1,905 ms (1,343-2,130) | | 100 | | |
+| .NET: `JazminFile.OpenWriter` | 32 ms (30-39) | | 2 | | |
+
+The median of 5 runs (min-max), on an Intel i7-3820 under Windows 11 with Node 24 and .NET 10, while other work ran
+on the machine; .NET's six rounds took turns in one process. Times depend most on the disk: there a flush took about
+2 ms, and most of each append was reading the file's directories and writing its rows. Where a flush takes longer (the
+trial in GitHub #275 measured about 100 ms per one-row append, almost all of it the two flushes), merging calls saves
+more. The same trial found that an append of many rows costs about what an append of one does.
+
+The file is an ordinary appended file: a batch can't be told from an `append()` with the same rows, and every 1.x
+release reads it. A batch is one append, so `autoCompact` and `appendCount` count it once.
 
 ## 18. Time-limited access
 

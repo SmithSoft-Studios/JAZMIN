@@ -40,6 +40,7 @@ viewer.
 | Feature (USER-GUIDE) | JS | .NET | Demo |
 |---|---|---|---|
 | Append, then compact (17) | 7 | 6 | |
+| Batch writes and transactions: one append for many calls (17.7) | 46 | 46 | |
 | Does the file need compacting? `storage()` (17.5) | 21 | 22 | |
 | Has the file changed? `verify()` (17.6) | 45 | 45 | |
 | Regrouping partitions (17.4) | 41 | 42 | |

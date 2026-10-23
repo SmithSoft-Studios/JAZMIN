@@ -188,3 +188,13 @@ const checks: LinkCheck[] = linked.checkLinks({ limit: 3, links: [{ ...link, fro
 const used: StorageReport = linked.storage();
 console.log(perTable, checks[0].missing, used.unusedBytes, linked.readerFeatures);
 linked.close();
+
+// Batch writes: one transaction is one append (all or none); the group writer merges callers into few appends.
+import { beginAppend, openWriter, type AppendResult, type JazminAppendWriter, type JazminTransaction } from '@smithsoft-studios/jazmin';
+const tx: JazminTransaction = beginAppend('tables.jzm', { table: 'clients', keyColumns: ['clientId'] });
+tx.upsert([{ clientId: 'C1', name: 'Acme Ltd' }]);
+const committed: AppendResult = tx.commit();
+const groupWriter: JazminAppendWriter = openWriter('tables.jzm', { table: 'clients', maxDelay: 5 });
+const batched: AppendResult[] = await Promise.all([groupWriter.insert([{ clientId: 'C8', name: 'Bolt' }]), groupWriter.insert([{ clientId: 'C9', name: 'Cog' }])]);
+await groupWriter.close();
+console.log(committed.updated, batched[0] === batched[1]);
