@@ -2518,6 +2518,8 @@ Rules:
 
 - **Sorted files stay sorted.** With `sortedBy`, new rows are merged into place.
   A row whose sort column changes moves to its new position.
+- **Upsert keys compare by value,** in `update()` and `append()` (section 17)
+  alike: decimals whatever their scale (`'1.5'` and `'1.50'` are one key).
 - **Only the owner can update an access-controlled file.** An access key gets
   *"Only the file owner's master key can modify this file"*. Grants carry over
   unless revoked.

@@ -45,6 +45,8 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   more, for the call's own rows only, while it picks the last rows. **Files written before this fix keep the duplicate
   rows they have, and a compaction doesn't remove them;** an upsert of that key (append or update) replaces them all
   with one row.
+- **An append's upsert by a decimal key column failed in JavaScript** with "Do not know how to serialize a BigInt"; equal
+  decimals now match whatever their scale (`'1.5'` and `'1.50'`), as in `update()` and .NET.
 
 ### Added
 - **Limits per key on what a key may send back (spec 7.9.1, #257).** A grant's `edit` (`columns`, `add`, `delete`)

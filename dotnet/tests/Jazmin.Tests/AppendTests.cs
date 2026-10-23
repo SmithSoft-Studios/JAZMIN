@@ -230,6 +230,20 @@ public sealed class AppendTests : IDisposable
         Assert.Equal(["2B3", "3B31"], Texts(path, Text, new JazminReadOptions { AccessKey = carol }));
     }
 
+    [Fact]
+    public void Upsert_ByADecimalKey_EqualValuesMatchWhateverTheirScale_AsInUpdate()
+    {
+        JazminColumn[] columns = [new("id", JazminType.Decimal) { Indexes = [JazminIndexKind.Sorted] }, new("kind", JazminType.String), new("v", JazminType.String)];
+        static Dictionary<string, object?> Dkv(object id, string v) => new() { ["id"] = id, ["kind"] = "a", ["v"] = v };
+        foreach (var (name, keyColumns) in new[] { ("single", new[] { "id" }), ("composite", new[] { "id", "kind" }) })
+        {
+            var path = WriteWith($"decimal-{name}.jzm", columns, [Dkv("1.5", "a"), Dkv("2", "x")]);
+            var result = JazminFile.Append(path, new JazminAppend { Upsert = [Dkv(1.50m, "b"), Dkv("3", "c"), Dkv("3.0", "d")], KeyColumns = keyColumns });
+            Assert.Equal(["x", "b", "d"], Texts(path, r => (string)r["v"]!));
+            Assert.Equal((3L, 1L, 1L, 0L), (result.RowCount, result.Inserted, result.Updated, result.Deleted));
+        }
+    }
+
     /// <summary>No handle is left open on the file: it can be opened with no sharing at all.</summary>
     private static void AssertClosed(string path)
     {
