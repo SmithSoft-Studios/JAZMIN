@@ -281,6 +281,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private readonly Stream _stream;
     private readonly bool _leaveOpen;
     private readonly bool _refuseBrotli; // JazminReadOptions.RefuseBrotli
+    private bool _released; // this reader has let go of the shared stream (guarded by _io)
     private readonly StringPool _strings = new();
     private readonly int _readAhead;
     private readonly int _columnsInFlight; // decoded columns a scan keeps in flight at most (memory budget)
@@ -451,7 +452,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     public JazminReader OpenTable(string name)
     {
         lock (_io)
-            if (_io.Readers == 0) throw new ObjectDisposedException(nameof(JazminReader));
+            if (_released) throw new ObjectDisposedException(nameof(JazminReader));
         return new JazminReader(_stream, new JazminReadOptions { Table = name, Priority = _priority, MaxDegreeOfParallelism = _readAhead }, _leaveOpen, this);
     }
 
@@ -628,12 +629,13 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <summary>Whether the file's sorted indexes may hold keys as differences (reader feature 'index-deltas'); update keeps them.</summary>
     internal bool CompactIndexes => _header.ReaderFeatures.Contains(FormatConstants.IndexDeltas);
 
-    /// <summary>Lets go of the shared stream: the last reader closes it (unless leaveOpen).</summary>
+    /// <summary>Lets go of the shared stream, once per reader: the last reader closes it (unless leaveOpen).</summary>
     private void Release()
     {
         lock (_io)
         {
-            if (_io.Readers == 0) return;
+            if (_released) return;
+            _released = true;
             if (--_io.Readers == 0 && !_leaveOpen) _stream.Dispose();
         }
     }

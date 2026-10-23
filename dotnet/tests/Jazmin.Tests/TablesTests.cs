@@ -185,6 +185,19 @@ public sealed class TablesTests : IDisposable
     }
 
     [Fact]
+    public void Disposing_a_reader_twice_leaves_the_file_open_for_the_other_tables_readers()
+    {
+        var path = Save("twice.jzm", WriteTables(new JazminWriteOptions { Tables = Tables(partitioned: false) }));
+        var clients = JazminReader.Open(path);
+        using var transactions = clients.OpenTable("transactions");
+        clients.Dispose();
+        clients.Dispose(); // once more: must not let go of the file a second time
+        Assert.Equal(150, transactions.RowCount);
+        Assert.Equal(150, transactions.Count(JazminFilter.Gte("amount", 0m))); // reads the file
+        Assert.Throws<ObjectDisposedException>(() => clients.OpenTable("transactions")); // a disposed reader opens nothing
+    }
+
+    [Fact]
     public void AppendUpdateAndCompact_ChangeOneTable_AndKeepTheOthers()
     {
         var owner = JazminKey.Generate();
