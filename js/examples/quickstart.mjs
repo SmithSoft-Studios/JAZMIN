@@ -730,4 +730,19 @@ await writer46.close();
 console.log('46.', committed46.appendCount, committed46.updated, committed46.inserted, committed46.deleted, '|', results46.map((r) => r.appendCount).join(','), results46[0].inserted);
 // 46. 1 1 1 1 | 2,2,2 3
 
+// 47. Rows of many partitions in turn (USER-GUIDE 15.5): a chunk holds one partition, so rows written as they come make
+// a chunk of nearly every row. write() with regroup: true stores each partition's rows together, each in the order
+// given; the file's row order then differs from the order given (here clinic 0's visits come first).
+const owner47 = JazminKey.generate();
+const visits47 = Array.from({ length: 1000 }, (_, i) => ({ clinic: `clinic ${i % 4}`, visit: i }));
+const clinics47 = (regroup) => {
+  const options = { columns: [{ name: 'clinic', type: 'string' }, { name: 'visit', type: 'int' }], key: owner47, access: { partitionBy: 'clinic', grants: [] }, regroup };
+  const reader = open(write(null, visits47, options), { key: owner47 });
+  const result = `${reader.chunkCount} chunks, first visits ${[...reader.rows()].slice(0, 3).map((r) => r.visit).join(', ')}`;
+  reader.close();
+  return result;
+};
+console.log('47.', `as given: ${clinics47(false)}; regrouped: ${clinics47(true)}`);
+// 47. as given: 1000 chunks, first visits 0, 1, 2; regrouped: 4 chunks, first visits 0, 4, 8
+
 fs.rmSync(dir, { recursive: true, force: true });

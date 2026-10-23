@@ -1190,6 +1190,7 @@ again on 7 October 2026.
 | `select` (query option) | every column | List only the columns you need. Only those, and the columns the filter uses, are decoded, on every kind of query: scans, index lookups and access-controlled files. In access-controlled files, a column group none of whose columns is needed is not read at all. A one-column read through an index took 45% of the time of reading every column |
 | indexes | none | Add `sorted` to columns used in `eq` / range filters, and `trigram` to text searched with `contains`. A `sorted` index on the first `sortedBy` column is not written, because chunk statistics already find its values; readers never used it. Large sorted indexes are paged automatically |
 | `compactIndexes` (JS) / `CompactIndexes` (.NET) | off | Turn on for much smaller indexes on whole numbers and dates, once every reader of the file is on 1.2 or later (3.3) |
+| `regroup` (JS) / `Regroup` (.NET) | off | Access-controlled files whose rows arrive with partitions mixed: rows are stored grouped by partition (a different row order), so chunks stay full instead of one per row (15.5) |
 | `kdfIterations` | 600,000 | Do not lower it in production. It only affects password-based files. Allowed: 1,000 to 10,000,000; readers refuse files outside that range |
 | `maxDegreeOfParallelism` (JS) / `MaxDegreeOfParallelism` (.NET writer) | By `priority` (20.4). Balanced: JS up to 2 worker threads; .NET one thread per core, up to 16 | Set 1, or `priority` memory, for the lowest memory. Raise it in .NET for faster writes. In JS, more than 2 gains little, because preparing rows on the main thread is the limit. JS compaction of a shared file is the exception: 2 threads made it only about 5% faster than 1, for about 35 MB more (250,000 records); for other files they made it about twice as fast |
 
@@ -1641,7 +1642,8 @@ statistics and chunks, each a section of the file with a key of its own.
   one partition, so rows written in turn for each customer make a chunk of
   every row: the file below grows from 2.9 MB to 65 MB, and every read is
   slow however it is done. `compact({ key, regroup: true })` rewrites such a
-  file with each partition's rows together (section 17.4).
+  file with each partition's rows together (section 17.4), and `write()` with
+  `regroup: true` writes it that way from the start (section 15.5).
 
 `npm run bench:partitions` (in `js/`) writes 600,000 rows into 2,400
 partitions, one per customer, and grants one key every partition and another
@@ -2192,10 +2194,71 @@ compilation.
 ### 15.5 Good to know
 
 - **Keep each partition's rows together** (for example `sortedBy` the
-  partition column). A chunk belongs to exactly one partition, so interleaved
-  rows produce many tiny chunks (section 9.13 measures it). The partition column and the `sortedBy`
-  columns must be in the default column group `*`, because every key needs
-  them.
+  partition column, or `regroup`, below). A chunk belongs to exactly one
+  partition, so interleaved rows produce many tiny chunks (section 9.13
+  measures it). The partition column and the `sortedBy` columns must be in
+  the default column group `*`, because every key needs them.
+- **Rows that arrive mixed: `regroup`.** When rows come in the order they
+  happened (each city's sales in turn, say), the writer can group them:
+
+  ```js
+  write('sales.jzm', rows, { columns, key: owner, access: { partitionBy: 'city', grants }, regroup: true });
+  ```
+
+  ```csharp
+  var options = new JazminWriteOptions { Key = owner, Access = new() { PartitionBy = "city", Grants = grants }, Regroup = true };
+  ```
+
+  - **The stored order changes.** Rows are stored grouped by partition, each
+    partition's rows in the order given. `rows()`, `get(n)` and row numbers
+    follow the stored order, not the order given. Every key still sees
+    exactly its rows and columns; sort or filter when order matters.
+  - **Memory stays bounded.** The writer holds back at most 65,536 rows, or
+    about 16 MB as `chunkBytes` counts them. A partition's rows are written
+    once they fill a chunk; at the limit, the partitions holding the most
+    are written, until half the limit is held. A few partitions never reach
+    it (8 partitions hold at most 8 chunks of rows). With hundreds of
+    partitions or very wide rows, chunks are then smaller than `chunkRows`,
+    but still far from one per row: 600,000 streamed rows in 2,400
+    partitions made 15,467 chunks in JS and 16,049 in .NET, where nearly
+    every row would be a chunk. In Node the rows held are kept as bytes
+    outside the JavaScript heap; in .NET as values, which take more memory
+    than the bytes counted (text takes two bytes a character). A row held
+    keeps its own copy of its values, so a buffer or list reused for the
+    next row is fine.
+  - **`sortedBy`** must start with the partition column (the rows then
+    arrive grouped, and are written as given); any other order is refused,
+    as `compact({ regroup: true })` refuses it.
+  - **Off by default:** without it, files are written exactly as before.
+    In JavaScript, `reader.advise()` points at it when a file's partitions
+    are spread out (section 25.1).
+  - **Measured** with the setup of issue #275: 50,000 rows, `partitionBy`
+    city of 8 in random order, a column group `private` holding `note`, and
+    grants for Durban, Cape Town and head office. Three runs each,
+    interleaved, on 22 October 2026 (Windows 11, Core i7-3820 at 3.6 GHz,
+    4 cores, Node 24.22, .NET 10); peak memory is the process's peak RSS
+    (Node) or peak working set (.NET):
+
+    | 50,000 rows | Rows as given | `regroup` |
+    |---|---:|---:|
+    | JS, an array: time | 12.3-20.7 s | 0.34-0.41 s |
+    | JS, an array: peak memory | 462-467 MB | 136 MB |
+    | JS, streamed (a generator): time | 12.2-12.9 s | 0.59-0.71 s |
+    | JS, streamed: peak memory | 422-452 MB | 96 MB |
+    | JS: file, chunks | 11.90 MB, 43,835 | 0.46 MB, 16 |
+    | .NET, an array: time | 3.2-3.4 s | 0.35-0.36 s |
+    | .NET, an array: peak memory | 157-167 MB | 80-81 MB |
+    | .NET, streamed: time | 3.2-3.4 s | 0.44-0.50 s |
+    | .NET, streamed: peak memory | 149-152 MB | 69-70 MB |
+    | .NET: file, chunks | 12.59 MB, 43,762 | 0.84 MB, 16 |
+
+    The same rows already grouped by city, written without `regroup`, took
+    0.56-0.58 s and 96 MB (JS) and 0.34-0.38 s and 53 MB (.NET). With
+    400,000 streamed rows, `regroup` took 3.3-3.6 s and 126-127 MB in JS
+    (grouped rows: 3.1-3.6 s, 137-138 MB), and 1.65-1.82 s and 85-87 MB in
+    .NET (grouped rows: 0.98-1.11 s, 59-61 MB): holding the rows costs .NET
+    about 0.7 s and 25 MB there. The two benchmarks' random text differs, so
+    compare file sizes within a library.
 - **Revoking a key protects new versions only.** Every update writes fresh
   secrets, so a revoked key cannot open the new file. Copies of the old file
   that the person already has remain readable with their old key.
@@ -2812,7 +2875,8 @@ keeps the rows in file order, so it keeps those chunks too.
 `compact({ key, regroup: true })` writes each partition's rows together
 instead, in their file order. Each partition then spans as few chunks as its
 rows need. `reader.advise()` suggests it when partitions are spread out
-(section 25.1).
+(section 25.1). A new file can be written that way from the start, with
+`write()`'s `regroup: true` (section 15.5).
 
 A simulated year of syncs, with 50 people, 3 syncs a day for 250 days, and
 4 rows per sync (150,000 rows, 37,500 appends):
@@ -5490,7 +5554,9 @@ account: one value's rows lie in about 49 chunk(s), about 4,708 KB to read (inde
   to measure this).
 - **In access-controlled files,** the advice also lists each partition's
   chunks, and suggests `compact({ regroup: true })` when appends have spread
-  a partition over more chunks than its rows need (section 17.4).
+  a partition over more chunks than its rows need (section 17.4), or rows
+  were written with partitions mixed; `write()` with `regroup: true` avoids
+  that from the start (section 15.5).
 
 ## 26. Publisher signatures: who published a file
 
