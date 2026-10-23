@@ -18,7 +18,7 @@ it, and credit you in the release notes unless you prefer not to be named.
 
 | Version | Supported |
 |---|---|
-| 1.7.x | Yes |
+| 1.7.x | Yes (security fixes until 31 January 2027; 1.8 is the current line) |
 | 1.6.x | No: upgrade to 1.7 (the same file format, and no breaking changes) |
 | 1.5.x | No: upgrade to 1.7 (the same file format, and no breaking changes) |
 | 1.4.x | No: upgrade to 1.7 (the same file format, and no breaking changes) |
