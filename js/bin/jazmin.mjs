@@ -73,7 +73,7 @@ A key or password only reads the facts of an encrypted file. A key or password o
 shell history: set JAZMIN_KEY or JAZMIN_PASSWORD instead, or pass --key-file or --password-file.
 --revocation-list <file> is a revocation list you hold (a compact JWS), for a fresher check than the file's own.
 
-Only the roots built into this release are trusted; no option or file can add one. Until they are built in (1.8.0),
+Only the roots built into this release are trusted; no option or file can add one. Until they are built in (1.8.1),
 signed files show as "signed by an unknown key", which shows no name.
 
 Exit codes:

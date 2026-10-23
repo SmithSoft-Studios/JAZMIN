@@ -654,7 +654,7 @@ chartReader.close();
 
 // 43. Publisher signatures (USER-GUIDE 26): who published a file, that it hasn't changed, and the facts signed with it.
 // A file written here has no publisher signature: 'none'. The repository's test files are signed under a test root no
-// release trusts, so they show as 'signed', with no name or facts, until SmithSoft's root is built in (1.8.0).
+// release trusts, so they show as 'signed', with no name or facts, until SmithSoft's root is built in (1.8.1).
 const signedTestFile = new URL('../../spec/fixtures/publisher/signed-plain.jzm', import.meta.url);
 const signed43 = fs.existsSync(signedTestFile) ? verifyPublisher(new Uint8Array(fs.readFileSync(signedTestFile))) : null;
 console.log('43.', verifyPublisher(file).status, ...(signed43 ? [signed43.status, signed43.name] : []));
