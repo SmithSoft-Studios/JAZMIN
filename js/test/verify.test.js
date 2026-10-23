@@ -4,6 +4,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { JazminError, JazminFormatError, JazminKey, JazminValidationError, append, inspect, open, write } from '../src/index.js';
+import { crc32 } from '../src/binary.js';
+import { KEY_ROTATION } from '../src/reader.js';
 
 // reader.verify(): checks every section of the file's current version, not only those a query reads (issue #275:
 // a byte changed in an index no query used went unnoticed). Shared files: each section's SHA-256 against the owner's
@@ -114,6 +116,33 @@ test('an appended file: the current version is checked whole, the bytes it repla
   const inTrailer = Buffer.from(good);
   inTrailer[good.length - 10] ^= 1;
   assert.throws(() => verifyOf(new Uint8Array(inTrailer), { key }), JazminFormatError);
+});
+
+test('a change only the authentication tag catches, in a section verify() decodes to find others, is a format error', () => {
+  const key = JazminKey.generate();
+  const good = write(null, rows(3000), { key, columns, chunkRows: 500 });
+  const reader = open(good, { key });
+  const directory = reader[KEY_ROTATION].sections.find((s) => s.sectionId.endsWith('/sorted')); // a sorted index's directory
+  reader.close();
+  const bad = Buffer.from(good);
+  bad[directory.offset + 16 + 20] ^= 1; // in the encrypted payload
+  const body = bad.subarray(directory.offset + 16, directory.offset + directory.length);
+  bad.writeUInt32LE(crc32(body), directory.offset + 12); // the CRC made right again: only the tag can tell
+  assert.throws(() => verifyOf(new Uint8Array(bad), { key }), (error) => error instanceof JazminFormatError && /modified/.test(error.message));
+});
+
+test('a shared file with locked embedded files verifies whole with the owner key, the locks left closed', () => {
+  const owner = JazminKey.generate();
+  const good = write(null, rows(200), {
+    key: owner, columns, access: { partitionBy: 'city', grants: [] },
+    files: [{ path: 'contract.pdf', content: Buffer.alloc(300 * 1024, 7), lock: 'contracts' }, { path: 'readme.txt', content: 'open' }],
+    locks: { contracts: { password: 'correct horse', iterations: 1000 } },
+  });
+  const result = verifyOf(good, { key: owner });
+  assert.deepEqual([result.checkedBy, result.unusedBytes], ['signature', 0]);
+  const bad = Buffer.from(good);
+  bad[Math.floor(good.length / 2)] ^= 1; // the locked 300 KB contract is most of the file
+  assert.throws(() => verifyOf(new Uint8Array(bad), { key: owner }), JazminError);
 });
 
 test('a closed reader refuses verify()', () => {

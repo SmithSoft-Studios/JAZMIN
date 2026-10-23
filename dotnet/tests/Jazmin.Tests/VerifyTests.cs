@@ -1,4 +1,6 @@
+using System.Buffers.Binary;
 using System.Text.Json.Nodes;
+using Jazmin.Format;
 using Jazmin.Query;
 using Xunit;
 
@@ -161,6 +163,40 @@ public sealed class VerifyTests
         var inTrailer = (byte[])good.Clone();
         inTrailer[good.Length - 10] ^= 1;
         Assert.Throws<JazminFormatException>(() => VerifyOf(inTrailer, options));
+    }
+
+    [Fact]
+    public void A_change_only_the_authentication_tag_catches_in_a_section_Verify_decodes_to_find_others_is_a_format_error()
+    {
+        var key = JazminKey.Generate();
+        var good = Write(3000, new JazminWriteOptions { Key = key, ChunkRows = 500 });
+        JazminReader.RotatedSection directory;
+        using (var reader = JazminReader.Open(good, new JazminReadOptions { Key = key }))
+            directory = reader.KeyRotation().Sections.First(s => s.SectionId.EndsWith("/sorted", StringComparison.Ordinal)); // a sorted index's directory
+        var bad = (byte[])good.Clone();
+        var at = (int)directory.Offset;
+        bad[at + 16 + 20] ^= 1; // in the encrypted payload
+        BinaryPrimitives.WriteUInt32LittleEndian(bad.AsSpan(at + 12), Crc32.Compute(bad.AsSpan(at + 16, directory.Length - 16))); // only the tag can tell
+        var error = Assert.Throws<JazminFormatException>(() => VerifyOf(bad, new JazminReadOptions { Key = key }));
+        Assert.Contains("modified", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_shared_file_with_locked_embedded_files_verifies_whole_with_the_owner_key_the_locks_left_closed()
+    {
+        var owner = JazminKey.Generate();
+        var good = Write(200, new JazminWriteOptions
+        {
+            Key = owner,
+            Access = new JazminAccessOptions { PartitionBy = "city" },
+            Files = [new JazminFileInput("contract.pdf", new byte[300 * 1024]) { Lock = "contracts" }, new JazminFileInput("readme.txt", "open"u8.ToArray())],
+            Locks = new Dictionary<string, JazminLockOptions?> { ["contracts"] = new() { Password = "correct horse", Iterations = 1000 } },
+        });
+        var result = VerifyOf(good, new JazminReadOptions { Key = owner });
+        Assert.Equal(("signature", 0L), (result.CheckedBy, result.UnusedBytes));
+        var bad = (byte[])good.Clone();
+        bad[good.Length / 2] ^= 1; // the locked 300 KB contract is most of the file
+        Assert.ThrowsAny<JazminException>(() => VerifyOf(bad, new JazminReadOptions { Key = owner }));
     }
 
     [Fact]

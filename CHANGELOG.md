@@ -71,10 +71,16 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   - **Plain files:** each section's checksum, which catches accidental damage only.
 
   Also the preamble's fixed values, and a damaged end of file that makes readers fall back to the version before the
-  last append. It returns `{ checkedBy, sections, bytes, unusedBytes }`; bytes earlier versions left behind are counted,
-  not checked. Measured on a 17 MB encrypted file of 200,000 rows with sorted and trigram indexes (Node 24, five runs):
-  66–118 ms against 243–433 ms to read every row, peak memory about 22 MB above opening it. **`jazmin check <file>`**
-  does the same from the command line (exit code 0 unchanged, 1 changed or damaged). No format change.
+  last append. It returns `{ checkedBy, sections, bytes, unusedBytes }` (.NET `JazminVerification`); bytes earlier
+  versions left behind are counted, not checked. A section that can't be decrypted with the key the file opened with
+  is reported as changed (a format error), not as a key error. Measured (five runs each, each in its own process):
+  - **Node 24:** a 17 MB encrypted file of 200,000 rows with sorted and trigram indexes, 66–118 ms against 243–433 ms
+    to read every row, peak memory about 22 MB above opening it.
+  - **.NET 10:** a 2.7 MB encrypted file of 200,000 rows with the same indexes, 16–27 ms (78–97 ms for a process's first
+    call), 262 KB allocated.
+
+  **`jazmin check <file>`** does the same from the command line (exit code 0 unchanged, 1 changed or damaged). No
+  format change.
 - **Limits per key on what a key may send back (spec 7.9.1, #257).** A grant's `edit` (`columns`, `add`, `delete`)
   narrows the document's `package.edit` for that key: one shared document where a doctor may acknowledge a result and
   infection control may only add a note. `writeChanges` refuses what the key may not send ("Column 'ackAction' can't

@@ -41,7 +41,7 @@ viewer.
 |---|---|---|---|
 | Append, then compact (17) | 7 | 6 | |
 | Does the file need compacting? `storage()` (17.5) | 21 | 22 | |
-| Has the file changed? `verify()` (17.6) | 45 | DOTNET_STEP | |
+| Has the file changed? `verify()` (17.6) | 45 | 45 | |
 | Regrouping partitions (17.4) | 41 | 42 | |
 | Changing indexes and the sort order (16.1) | 22 | 23 | |
 | Progress for a rewrite (16.1) | 34 | 35 | |
