@@ -921,7 +921,7 @@ Console.WriteLine($"42. {appendedChunks} chunks after 5 syncs; compacted: {compa
 
 // 43. Publisher signatures (USER-GUIDE 26): who published a file, that it hasn't changed, and the facts signed with it.
 // A file written here has no publisher signature: None. The repository's test files are signed under a test root no
-// release trusts, so they show as Signed, with no name or facts, until SmithSoft's root is built in (1.8.0).
+// release trusts, so they show as Signed, with no name or facts, until SmithSoft's root is built in (1.8.1).
 string? signedTestFile = null;
 for (var up = new DirectoryInfo(AppContext.BaseDirectory); up is not null && signedTestFile is null; up = up.Parent)
 {

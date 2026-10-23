@@ -135,8 +135,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   revocation list or an online status answer (User Guide section 26). It reads the file's end and hashes the rest in
   1 MiB chunks. A certified result rests on the roots SmithSoft publishes, built into the official readers, so it
   can't be forged with a root of one's own; anyone can still sign with their own key, shown as signed by an unknown
-  key. The roots are built in before this release, so until then signed files show as `signed`. Both libraries give the results
-  `spec/fixtures/publisher/expected.json` names for every test file.
+  key. Both libraries give the results `spec/fixtures/publisher/expected.json` names for every test file.
+  - **No roots in 1.8.0:** SmithSoft's roots are built in from 1.8.1. Until then every signed file shows as `signed`
+    (by an unknown key, with no name), never `certified`, and a 1.8.0 library never shows `certified`: upgrade to 1.8.1
+    for that. Nothing can be made to look certified in the meantime. Checking that a signed file hasn't changed since
+    it was signed works now.
 - **Publisher signatures in the browser reader:** `JazminBrowser.verifyPublisher(file, options)` in
   `jazmin-browser-publisher.js` (also in the full `jazmin-browser.js`; npm `…/browser/publisher`), with the libraries'
   results. A File or Blob is hashed in 1 MiB slices with the script's own SHA-256 (about 200 MB/s), never loaded whole.

@@ -5507,9 +5507,10 @@ against certificates that SmithSoft issues after verifying who the publisher is.
 
 Verifying is free, offline, and needs no key; a key or password only adds the facts of an encrypted file.
 
-> **Before 1.8.0:** the libraries verify signatures now. A certified result rests on the roots SmithSoft publishes,
-> which are built in before 1.8.0 is released, so it can't be forged with a root of one's own. Until then a signed
-> file shows as `signed`, never `certified`. The test files in
+> **1.8.0 has no roots yet:** the libraries verify signatures now. A certified result rests on the roots SmithSoft
+> publishes, built in from 1.8.1, so it can't be forged with a root of one's own. Until then a signed file shows as
+> `signed` (by an unknown key, with no name), never `certified`; a 1.8.0 library never shows `certified`, so upgrade
+> to 1.8.1 for that. That the file hasn't changed since it was signed is checked now. The test files in
 > `spec/fixtures/publisher` are signed under a test root that no release trusts.
 
 ### 26.1 Verifying
