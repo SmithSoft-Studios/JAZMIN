@@ -2960,6 +2960,18 @@ export class JazminReader {
    * an owner key, or the key or password of a file that isn't shared.
    */
   verify() {
+    try {
+      return this.#verifyWhole();
+    } catch (error) {
+      // The file opened with this key, so a section it can't decrypt was changed: say so, as for any other section.
+      if (!(error instanceof JazminKeyError)) throw error;
+      const changed = new JazminFormatError(`A section could not be decrypted with the key the file opened with - the file was modified (${error.message})`);
+      changed.cause = error;
+      throw changed;
+    }
+  }
+
+  #verifyWhole() {
     if (this.#closed) throw new JazminValidationError('This reader is closed');
     if (this.#access && !this.#access.isOwner) throw new JazminValidationError('A shared file is checked whole with its owner key');
     if (this.#recovered) {

@@ -646,6 +646,19 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// </summary>
     public JazminVerification Verify()
     {
+        try
+        {
+            return VerifyWhole();
+        }
+        catch (JazminKeyException e)
+        {
+            // The file opened with this key, so a section it can't decrypt was changed: say so, as for any other section.
+            throw new JazminFormatException($"A section could not be decrypted with the key the file opened with - the file was modified ({e.Message})", e);
+        }
+    }
+
+    private JazminVerification VerifyWhole()
+    {
         if (_closed) throw new JazminValidationException("This reader is closed");
         if (_access is { IsOwner: false }) throw new JazminValidationException("A shared file is checked whole with its owner key");
         if (Recovered)
