@@ -97,3 +97,41 @@ test('workers inherit the process options as they are, unless code given on the 
   assert.deepEqual(workerExecArgv(['--input-type=module', '-p', '1']), []);
   assert.deepEqual(workerExecArgv(['--eval=code()', '--trace-gc']), ['--trace-gc']);
 });
+
+test("a shared file whose partitions arrive mixed: each chunk keeps its place, digests and statistics, with 1 and 4 threads", () => {
+  // 800 chunks of 3 rows: the city changes every third row, which ends the chunk. Values grow with the id, so each
+  // chunk holds its own range of them, and a filter on one value skips every chunk but its own.
+  const pad = (i) => String(i).padStart(5, '0');
+  const mixed = Array.from({ length: 2400 }, (_, i) => ({
+    id: i, city: ['A', 'B', 'C'][Math.floor(i / 3) % 3], s: `v${pad(i)}`, amount: `${i}.5`, note: i % 5 ? `note ${i}` : null,
+    tags: i % 4 ? [`t${pad(i)}`, null] : null, addr: { zip: i, street: `${pad(i)} Main` },
+  }));
+  const shared = [
+    { name: 'id', type: 'int', nullable: false, index: 'sorted' }, { name: 'city', type: 'string' }, { name: 's', type: 'string' },
+    { name: 'amount', type: 'decimal' }, { name: 'note', type: 'string' }, { name: 'tags', type: 'list', item: { type: 'string' } },
+    { name: 'addr', type: 'object', fields: [{ name: 'zip', type: 'int' }, { name: 'street', type: 'string' }] },
+  ];
+  const owner = JazminKey.generate();
+  const reader = owner.createAccessKey();
+  const access = { partitionBy: 'city', columnGroups: { private: ['note', 'addr'] }, grants: [{ key: reader, rows: ['B'], columns: ['*', 'private'] }] };
+  const chunkOf = (id) => Math.floor(id / 3);
+  for (const threads of [1, 4]) {
+    const file = write(null, mixed, { columns: shared, key: owner, access, chunkRows: 4, maxDegreeOfParallelism: threads });
+    const r = open(file, { key: owner });
+    assert.equal(r.chunkCount, 800);
+    assert.deepEqual([...r.rows()].sort((a, b) => a.id - b.id), mixed, `${threads} threads: every row`);
+    for (const id of [0, 1, 799, 1200, 2399]) assert.equal(open(file, { key: owner }).get(id).id, id, `${threads} threads: get(${id})`);
+    const skips = (filter, expected) => {
+      const ids = mixed.filter(expected).map((x) => x.id);
+      assert.equal(r.explain(filter, { analyze: true }).chunksSkipped, 800 - new Set(ids.map(chunkOf)).size, `${threads} threads: ${JSON.stringify(filter)}`);
+      assert.deepEqual([...r.find(filter, { select: ['id'] })].map((x) => x.id).sort((a, b) => a - b), ids, JSON.stringify(filter));
+    };
+    skips({ addr: { match: { street: '01000 Main' } } }, (x) => x.id === 1000);
+    skips({ s: { gte: 'v02390' } }, (x) => x.id >= 2390);
+    skips({ amount: '1234.5' }, (x) => x.id === 1234);
+    skips({ tags: { any: 't00777' } }, (x) => x.id === 777);
+    skips({ addr: { match: { zip: { lt: 7 } } } }, (x) => x.id < 7);
+    // A key for one city reads its chunks, whose digests the directory holds.
+    assert.deepEqual([...open(file, { key: reader }).rows()].sort((a, b) => a.id - b.id), mixed.filter((x) => x.city === 'B'));
+  }
+});
