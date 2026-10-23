@@ -1089,7 +1089,9 @@ X.509 processing is needed):
   `.4` confirmation, `.5` publisher kind, `.6` log; for example
   `id-jazmin-policy` is `1.3.6.1.4.1.67330.1.1`. Test vectors use the same
   numbers under `2.999.1` (ITU-T X.660's arc for examples), which no real
-  certificate uses.
+  certificate uses. An identifier under the arc is never reused or given
+  another meaning: a change of meaning, such as a new certificate policy, gets
+  a new number.
 
 #### 6.9.5. Time, the Log and Status
 
