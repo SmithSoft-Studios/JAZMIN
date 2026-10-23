@@ -376,7 +376,7 @@ internal static class AccessCrypto
         return (lo - 1, (long)offset, (int)length, list.Slice(at + SlotIdSize + 12, 32).ToArray());
     }
 
-    /// <summary>Every page a key-slot list names.</summary>
+    /// <summary>Every page a key-slot list names, with its digest.</summary>
     public static List<SectionRef> KeySlotPages(ReadOnlySpan<byte> list)
     {
         if (list.Length < 4) throw new JazminFormatException("Key-slot list is truncated");
@@ -389,7 +389,7 @@ internal static class AccessCrypto
             var offset = BinaryPrimitives.ReadUInt64LittleEndian(list[(at + SlotIdSize)..]);
             var length = BinaryPrimitives.ReadUInt32LittleEndian(list[(at + SlotIdSize + 8)..]);
             if (offset > long.MaxValue || length > int.MaxValue) throw new JazminFormatException("Key-slot page is out of range");
-            pages.Add(new SectionRef((long)offset, (int)length));
+            pages.Add(new SectionRef((long)offset, (int)length, list.Slice(at + SlotIdSize + 12, 32).ToArray()));
         }
         return pages;
     }
@@ -424,6 +424,14 @@ internal static class AccessCrypto
         if (!expected) throw new JazminKeyException("This file was not signed by the owner of this key");
         if (!OwnerSigning.Verify(owner, SignatureMessage(fileId, keySlotsSection, headerSection), signature[PublicKeySize..]))
             throw new JazminFormatException("The file's owner signature is invalid - the file was modified");
+    }
+
+    /// <summary><see cref="JazminReader.Verify"/>: the signature again, by the owner public key (65 bytes) the file had when it was opened.</summary>
+    public static void VerifySignedBy(byte[] signature, byte[] fileId, ReadOnlySpan<byte> keySlotsSection, ReadOnlySpan<byte> headerSection, byte[] owner)
+    {
+        var signed = signature.Length == PublicKeySize + FormatConstants.SignatureSize && signature.AsSpan(0, PublicKeySize).SequenceEqual(owner)
+            && OwnerSigning.Verify(owner, SignatureMessage(fileId, keySlotsSection, headerSection), signature[PublicKeySize..]);
+        if (!signed) throw new JazminFormatException("The file's owner signature is invalid - the file was modified");
     }
 }
 

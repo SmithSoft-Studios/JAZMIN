@@ -981,6 +981,38 @@ Console.WriteLine($"44. {allowed44} | {refused44} | {JazminFile.ApplyChanges(ack
 JazminFile.GrantAccess(acks44, hospital44, new JazminGrant(ipc44) { Rows = ["W1"], Label = "Infection control" }); // Edit not given: the limit is kept
 // 44. ackNote | Column 'ackAction' can't be changed with this key | 1 applied
 
+// 45. Checking a whole file (USER-GUIDE 17.6): a query checks only the sections it reads, so a changed byte in an index
+// no query uses goes unnoticed. Verify() checks every section of the current version, one at a time: in a file with a
+// key or password by each section's CRC-32 and authentication tag, in a shared file by the owner's signature (owner
+// key), in a plain file by its CRC-32s. It names the first section that fails.
+var checked45 = Path.Combine(dir, "checked.jzm");
+var key45 = JazminKey.Generate();
+using (var writer = JazminWriter.Create(checked45,
+    [new("id", JazminType.Int) { Indexes = [JazminIndexKind.Sorted] }, new("name", JazminType.String) { Indexes = [JazminIndexKind.Trigram] }],
+    new JazminWriteOptions { Key = key45 }))
+{
+    for (var i = 1L; i <= 1000; i++) writer.WriteValues(i, $"customer {i}");
+}
+JazminVerification verified45;
+using (var reader = JazminReader.Open(checked45, new JazminReadOptions { Key = key45 })) verified45 = reader.Verify();
+var damaged45 = File.ReadAllBytes(checked45);
+damaged45[100] ^= 1; // one byte of a copy, in the first section after the 64-byte preamble
+string caught45;
+using (var reader = JazminReader.Open(damaged45, new JazminReadOptions { Key = key45 }))
+{
+    try
+    {
+        reader.Verify();
+        caught45 = "not noticed";
+    }
+    catch (JazminFormatException error)
+    {
+        caught45 = error.Message;
+    }
+}
+Console.WriteLine($"45. {verified45.CheckedBy}, {verified45.Sections} sections, {verified45.UnusedBytes} bytes unused | {caught45}");
+// 45. encryption, 8 sections, 0 bytes unused | Section '0/chunk/0/*' failed its CRC-32 check
+
 Directory.Delete(dir, true);
 
 /// <summary>
