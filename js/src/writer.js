@@ -966,6 +966,7 @@ export class JazminWriter {
   /** finish() for async code: waits for the compression workers without blocking. */
   async finishAsync() {
     if (this.#finished) throw new JazminValidationError('Writer is already finished');
+    this.#writeHeld(); // before the open chunk is flushed, as finish() does: rows held may join it
     this.#flushChunk();
     while (this.#pending.length) {
       await this.#pool.whenReady();
