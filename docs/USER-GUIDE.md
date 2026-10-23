@@ -5771,7 +5771,7 @@ signed-plain.jzm: Certified: signed by Sable Line Logistics (Pty) Ltd (verified 
   Revocation:   checked 2026-10-01T09:00:05Z (16 days ago)
 ```
 
-Several files, as the command shows them until 1.8.0, with the test files:
+Several files, as the command shows them until 1.8.1, with the test files:
 
 ```text
 $ jazmin verify signed-plain.jzm self-signed.jzm changed-byte.jzm
