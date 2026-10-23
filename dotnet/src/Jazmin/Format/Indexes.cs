@@ -37,10 +37,10 @@ internal static class RowSet
     {
         writer.VarUInt((ulong)rowIds.Count);
         long previous = 0;
-        foreach (var id in rowIds)
+        for (var i = 0; i < rowIds.Count; i++) // not foreach: over an IReadOnlyList that boxes an enumerator per list
         {
-            writer.VarUInt((ulong)(id - previous));
-            previous = id;
+            writer.VarUInt((ulong)(rowIds[i] - previous));
+            previous = rowIds[i];
         }
     }
 
@@ -796,9 +796,37 @@ internal static class Trigrams
 
 internal sealed class TrigramIndexBuilder : IIndexBuilder
 {
-    // Gram -> row ids. A gram of chars (c0, c1, c2) is keyed as c0 << 32 | c1 << 16 | c2: no strings are
-    // created while building, and numeric order equals ordinal string order.
-    private readonly Dictionary<ulong, List<long>> _grams = new();
+    // Gram -> its row ids, already encoded. A gram of chars (c0, c1, c2) is keyed as c0 << 32 | c1 << 16 | c2: no
+    // strings are created while building, and numeric order equals ordinal string order.
+    private readonly Dictionary<ulong, PostingBytes> _grams = new();
+
+    /// <summary>
+    /// A gram's row ids as their postings are written (spec 8): deltas as varints, a byte or two each, where a list of
+    /// longs takes 8 bytes each, in an array that grows by doubling. As the JavaScript builder keeps them.
+    /// </summary>
+    private sealed class PostingBytes
+    {
+        public byte[] Bytes = new byte[8];
+        public int Length;
+        public int Count;
+        private long _last;
+
+        /// <summary>Adds a row id not below the last one; the same id again (a gram repeated within one value) counts once.</summary>
+        public void Add(long rowId)
+        {
+            if (Count != 0 && rowId == _last) return;
+            if (Length + 10 > Bytes.Length) Array.Resize(ref Bytes, Bytes.Length * 2);
+            var delta = (ulong)(rowId - _last);
+            while (delta >= 0x80)
+            {
+                Bytes[Length++] = (byte)(delta | 0x80);
+                delta >>= 7;
+            }
+            Bytes[Length++] = (byte)delta;
+            Count++;
+            _last = rowId;
+        }
+    }
 
     public void Add(long rowId, object? internalValue)
     {
@@ -809,8 +837,8 @@ internal sealed class TrigramIndexBuilder : IIndexBuilder
         {
             var c = Lower(text[i]);
             var key = (a << 32) | (b << 16) | c;
-            if (!_grams.TryGetValue(key, out var ids)) _grams[key] = new List<long> { rowId };
-            else if (ids[^1] != rowId) ids.Add(rowId); // a gram repeated within one value counts once
+            if (!_grams.TryGetValue(key, out var ids)) _grams[key] = ids = new PostingBytes();
+            ids.Add(rowId);
             a = b;
             b = c;
         }
@@ -828,7 +856,9 @@ internal sealed class TrigramIndexBuilder : IIndexBuilder
             writer.UInt16((ushort)(gram >> 32));
             writer.UInt16((ushort)(gram >> 16));
             writer.UInt16((ushort)gram);
-            RowSet.WritePostings(writer, _grams[gram]);
+            var ids = _grams[gram];
+            writer.VarUInt((ulong)ids.Count);
+            writer.Bytes(ids.Bytes.AsSpan(0, ids.Length));
         }
         return writer.ToArray();
     }

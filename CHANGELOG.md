@@ -225,6 +225,13 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   186 -> 7.5 ms (ranges 173-202 -> 7.2-8.6 ms), bytes read on opening 5.5 MB -> 9.7 KB, memory an open reader holds
   2.0 MB -> 0.22 MB; unencrypted, open 25 -> 6.9 ms. Opening and the first query together take as long as before
   (591 and 590 ms) and read the same bytes, which now include the directories. No format change.
+- **.NET: writing a file with a trigram index takes less memory.** Each gram's row ids are kept as they are written
+  (varint deltas, a byte or two each), as the JavaScript library already does, instead of a growing list of 8-byte
+  numbers. Writing 200,000 rows with one trigram and two sorted indexes, median of 7 interleaved runs (range): peak
+  working set 94.2 (93.5-100.3) -> 72.6 (72.3-72.8) MB, allocated 141.0 -> 98.3 MB, 1,110 (918-1,165) -> 1,062
+  (1,022-1,104) ms. A shared write (partitioned, one grant) peaks at 101.3 -> 77.5 MB; compacting the file after 300
+  appends at 113.7 -> 87.4 MB, and an update at 113.7 -> 90.7 MB, each allocating about 42 MB less, at the same speed.
+  The files' data and index sections are byte for byte the same as before.
 - **Applying a change file to a shared file of many keys is faster** when the sender isn't named (`keyId`): each key's
   submission key is now tried on the change file's header alone, the file read once, instead of opening the file with
   each key in turn. With 5,001 keys and the sender last: finding the sender took about 290 ms in JavaScript and about

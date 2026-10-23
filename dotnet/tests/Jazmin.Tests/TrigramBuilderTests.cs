@@ -7,18 +7,19 @@ public class TrigramBuilderTests
 {
     /// <summary>
     /// The straightforward definition (spec 8.2): distinct ASCII-lower-cased grams, ordinal order (or, with
-    /// <paramref name="reversed"/>, the opposite order: an index that breaks the rule).
+    /// <paramref name="reversed"/>, the opposite order: an index that breaks the rule). Value i is row i, or
+    /// <paramref name="rowIds"/>[i].
     /// </summary>
-    private static byte[] Reference(IReadOnlyList<string?> values, bool reversed = false)
+    private static byte[] Reference(IReadOnlyList<string?> values, bool reversed = false, IReadOnlyList<long>? rowIds = null)
     {
         var grams = new SortedDictionary<string, List<long>>(StringComparer.Ordinal);
-        for (var id = 0; id < values.Count; id++)
+        for (var i = 0; i < values.Count; i++)
         {
-            if (values[id] is not { } text) continue;
+            if (values[i] is not { } text) continue;
             foreach (var gram in Trigrams.Of(text))
             {
                 if (!grams.TryGetValue(gram, out var ids)) grams[gram] = ids = new List<long>();
-                ids.Add(id);
+                ids.Add(rowIds?[i] ?? i);
             }
         }
         var writer = new ByteWriter();
@@ -46,6 +47,27 @@ public class TrigramBuilderTests
             for (var id = 0; id < values.Count; id++) builder.Add(id, values[id]);
             Assert.Equal(Reference(values), builder.Encode());
         }
+    }
+
+    [Fact]
+    public void Builder_WritesTheSameBytesAsTheDefinition_ForLongPostingsAndFarApartRowIds()
+    {
+        // Row ids as an append's index segment has them (not from 0), with gaps up to 2^40: deltas of one to six varint
+        // bytes. Some grams are in most rows, so their postings grow to thousands of entries.
+        string?[] words = ["common", "Common text", "rare", "x", null, "ünïcode", "COMMON", "abcabcabc"];
+        var random = new Random(3);
+        var rowIds = new List<long>();
+        var values = new List<string?>();
+        var rowId = 5_000_000_000L;
+        for (var i = 0; i < 40_000; i++)
+        {
+            rowId += random.Next(8) switch { 0 => 1L << random.Next(41), 1 => random.Next(1, 300), _ => 1 };
+            rowIds.Add(rowId);
+            values.Add(words[random.Next(words.Length)] is { } word ? $"{word} {i % 13}" : null);
+        }
+        var builder = new TrigramIndexBuilder();
+        for (var i = 0; i < values.Count; i++) builder.Add(rowIds[i], values[i]);
+        Assert.Equal(Reference(values, rowIds: rowIds), builder.Encode());
     }
 
     [Fact]
