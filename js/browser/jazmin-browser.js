@@ -1529,7 +1529,7 @@
       if (key === 'and' || key === 'or') {
         if (!Array.isArray(spec)) throw new JazminError(`'${key}' takes an array of filters`);
         const items = spec.map((f) => compileFilter(f, columns));
-        parts.push(key === 'and' ? (row) => items.every((p) => p(row)) : (row) => items.some((p) => p(row)));
+        parts.push(key === 'and' ? allOf(items) : anyOf(items));
       } else if (key === 'not') {
         const inner = compileFilter(spec, columns);
         parts.push((row) => !inner(row));
@@ -1545,7 +1545,22 @@
         }
       }
     }
-    return (row) => parts.every((p) => p(row));
+    return allOf(parts);
+  }
+
+  // Plain loops: `every` and `some` would make a closure for every row checked.
+  function allOf(predicates) {
+    return (row) => {
+      for (let i = 0; i < predicates.length; i++) if (!predicates[i](row)) return false;
+      return true;
+    };
+  }
+
+  function anyOf(predicates) {
+    return (row) => {
+      for (let i = 0; i < predicates.length; i++) if (predicates[i](row)) return true;
+      return false;
+    };
   }
 
   function condition(column, op, operand) {
