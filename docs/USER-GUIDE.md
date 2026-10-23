@@ -2862,7 +2862,8 @@ JazminFile.Compact("visits.jzm", owner, regroup: true);         // each partitio
   writer is changing ..."*. If a writer process was killed, delete the stale
   lock file.
 - **Readers see the version they opened.** Open a new reader to see the
-  latest changes.
+  latest changes, or ask an open reader with `changed()` and `refresh()`
+  (section 20.10).
 - **Revoking access** needs `compact()` or `update()`, because only a full
   rewrite re-locks the file with fresh secrets. New grants can be added with
   `append`, and existing ones widened.
@@ -4102,6 +4103,8 @@ the columns a query uses, and the chunk directories (one more for each
 append) by the first query that needs them. An access key other than the
 owner's still reads its own directories when it opens the file, because its
 `rowCount` counts only the rows it can see.
+To keep readers open across requests, with a new version picked up when the
+file changes, see section 20.10.
 
 ### 20.7 Look up by a second column
 
@@ -4173,6 +4176,134 @@ cd dotnet && dotnet run -c Release -f net10.0 --project bench/Jazmin.Benchmarks 
 Each measurement runs in its own process and reports time and peak memory
 (RSS) for JAZMIN and for streamed JSON. The files are kept so you can repeat
 single steps.
+
+### 20.10 Readers kept open: `changed()`, `refresh()` and a reader cache
+
+A reader reads the version of the file it opened, however long it stays
+open. A dashboard or a published view that keeps its reader can ask whether
+the file has changed since, and open the new version:
+
+```js
+let board = open('sales.jzm', { key });
+// ... later, before serving a page:
+const latest = board.refresh();          // board itself when nothing changed
+if (latest !== board) {
+  board.close();                         // the old reader read its version until now
+  board = latest;
+}
+board.changed();                         // false: the cheap check on its own
+```
+
+```csharp
+var board = JazminReader.Open("sales.jzm", new JazminReadOptions { Key = key });
+var latest = board.Refresh();            // board itself when nothing changed
+if (latest != board)
+{
+    board.Dispose();
+    board = latest;
+}
+```
+
+- **What counts as a change:** an append (a new version at the end of the
+  same file), or a file that `update()`, `compact()`, `rotateKey()` or
+  `rotateOwnerKey()` replaced (a new file id), or a file that is gone. Bytes
+  left by an interrupted append are not a change: a new reader would open the
+  same version.
+- **`changed()` is cheap:** it opens the file and compares its file id, its
+  size and its last 44 bytes with what the reader opened. Only a file that
+  grew is read further, back to the trailer a new reader would use. On
+  Windows, a file that is open is moved aside before it is replaced, so its
+  path is missing for an instant: `changed()` tries again for about 100 ms.
+- **`refresh()`** returns a new reader of the new version, opened from the
+  same path with the same options (key or password, table, priority), or the
+  same reader when nothing changed. The old reader keeps working until you
+  close it. If the new version can't be opened (the key was revoked or has
+  expired, the file is damaged), `refresh()` throws what `open()` would and
+  the old reader is untouched. A password file that was appended to keeps
+  its salt, so the key already derived from the password is reused rather
+  than derived again.
+- A reader opened from a path keeps the key or password it was given until
+  you close it, to open the next version. A reader opened from bytes or a
+  stream has no path: `changed()` and `refresh()` throw
+  `JazminValidationError` (.NET `JazminValidationException`). `openAsync`
+  readers have their path.
+
+**One file per tenant: `JazminReaderCache`.** A server that keeps each
+customer's data in a file of its own, with a key of its own, would otherwise
+open a file on every request. A cache keeps the readers open and leases one
+to each request:
+
+```js
+import { JazminReaderCache } from '@smithsoft-studios/jazmin';
+
+const readers = new JazminReaderCache({ max: 500 });   // one per process
+function invoices(tenant, customer) {
+  const lease = readers.open(tenant.file, { key: tenant.key });   // or: using lease = ...
+  try {
+    return [...lease.reader.find({ customer })];
+  } finally {
+    lease.release();                    // the reader stays open for the next request
+  }
+}
+// on shutdown: readers.close();
+```
+
+```csharp
+var readers = new JazminReaderCache(500);   // one per process; thread-safe
+List<JazminRow> Invoices(Tenant tenant, string customer)
+{
+    using var lease = readers.Open(tenant.File, new JazminReadOptions { Key = tenant.Key });
+    return lease.Reader.Find(JazminFilter.Eq("customer", customer)).ToList();
+}   // the lease is released (lease.Release() does the same); the reader stays open
+// on shutdown: readers.Dispose();
+```
+
+- **Never a stale version:** each `open()` checks an idle cached reader with
+  `changed()`. When its file changed, the reader is replaced by `refresh()`
+  and the old one closed.
+- **A reader in use is never closed or replaced under its user.** A second
+  request for the same file and key while the first holds its lease gets a
+  reader of its own, closed when that lease is released.
+- **Least recently used first:** beyond `max` readers (default 100), the
+  least recently used is closed, or, while it is leased, when its lease is
+  released.
+- **Per key:** a reader is reused only for the same path, key, password,
+  unlock token, table and priority. The cache matches them by an HMAC under a
+  random secret of its own: no key or password is kept as a map key, and
+  nothing is logged.
+- **Expiry:** each `open()` checks whether the cached reader's key has
+  expired. If it has, the reader is dropped and the file opened again, which
+  fails as `open()` would.
+- **`clear()`** closes every cached reader (leased ones when their leases are
+  released); **`close()`** (.NET `Dispose()`) does the same and refuses
+  `open()` from then on.
+- **Don't** close a leased reader yourself, or use it after `release()`.
+
+**What a cached reader holds:** the open file, the file's header (schema,
+chunk directory), the statistics and index pages its queries have read (at
+most 8 pages per index), the file's keys, and the key or password it was
+opened with. When its lease is released it lets go of the last chunk it
+decoded and of its read buffers, which a large file's chunk makes large:
+after a `get()` each, 20 idle readers of 200,000-row files hold 0.2 MB (Node)
+and 1.9 MB (.NET), against 6.4 MB and 13.7 MB if they kept them. .NET cached
+readers read without a `FileStream` buffer, 64 KB less each.
+
+Measured: 1,000 tenant files of 500 rows, each with its own key, each request
+looking up one row by its id (`node bench/tenants.mjs --mode open|cache`,
+`dotnet run -c Release -f net10.0 --project bench/Jazmin.Benchmarks -- tenants open|cache`;
+5 runs each, the modes taking turns, medians; Windows 11, Node 24.22, .NET
+10.0.13):
+
+| | Open the file per request | `JazminReaderCache` |
+|---|---:|---:|
+| Node: per request | 1.01 ms | **0.46 ms** |
+| Node: memory | RSS 87 MB | RSS 196 MB: 73 KB per cached reader |
+| .NET: per request | 1.07 ms | **0.83 ms** |
+| .NET: memory | working set 50 MB | working set 107 MB: 55 KB per cached reader |
+
+The first request for each file opens it, as without the cache. Cache only
+what you read often: with `max` readers open, memory grows by about `max` ×
+the figure above, more for files with many chunks or indexes.
 
 ---
 

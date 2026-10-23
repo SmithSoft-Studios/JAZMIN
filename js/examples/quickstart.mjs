@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, beginAppend, compact, createFileHandler, exportFile, exportString, fromCSV, grantAccess, issueFileUnlockToken, issueUnlockToken,
+  JAZMIN, JazminKey, JazminReaderCache, JazminUnlockRequiredError, JazminWriter, append, beginAppend, compact, createFileHandler, exportFile, exportString, fromCSV, grantAccess, issueFileUnlockToken, issueUnlockToken,
   listFileUnlockTokens, open, openAsync, openWriter,
   applyChanges, fileSubmission, from, portableHtml, portableScript, rotateKey, toJSON, toXML, update, verifyPublisher, write, writeAsync,
   writeChanges,
@@ -744,5 +744,35 @@ const clinics47 = (regroup) => {
 };
 console.log('47.', `as given: ${clinics47(false)}; regrouped: ${clinics47(true)}`);
 // 47. as given: 1000 chunks, first visits 0, 1, 2; regrouped: 4 chunks, first visits 0, 4, 8
+
+// 48. Readers kept open (USER-GUIDE 20.10): a dashboard picks up new appends with refresh(), and a server with one
+// encrypted file per tenant keeps their readers in a JazminReaderCache instead of opening a file per request.
+const live48 = path.join(dir, 'live.jzm');
+write(live48, [{ id: 1, total: 10 }], { columns: [{ name: 'id', type: 'int', nullable: false, index: 'sorted' }, { name: 'total', type: 'int' }] });
+let board48 = open(live48);
+append(live48, { insert: [{ id: 2, total: 20 }] });
+const changed48 = board48.changed();
+const fresh48 = board48.refresh(); // a new reader of the new version; the old one reads its version until closed
+if (fresh48 !== board48) board48.close();
+board48 = fresh48;
+const tenants48 = ['acme', 'bolt'].map((name) => {
+  const tenantKey = JazminKey.generate();
+  const tenantFile = path.join(dir, `${name}.jzm`);
+  write(tenantFile, [{ id: 1, total: name.length }], { columns: [{ name: 'id', type: 'int', nullable: false, index: 'sorted' }, { name: 'total', type: 'int' }], key: tenantKey });
+  return { tenantFile, tenantKey };
+});
+const cache48 = new JazminReaderCache({ max: 500 }); // one per process; each cached reader holds its open file and what it has read
+const lookup48 = ({ tenantFile, tenantKey }) => {
+  const lease = cache48.open(tenantFile, { key: tenantKey }); // checked with changed() first: never a stale version
+  try {
+    return [...lease.reader.find({ id: 1 })][0].total;
+  } finally {
+    lease.release(); // the reader stays open for the next request
+  }
+};
+console.log('48.', changed48, board48.rowCount, 'rows |', tenants48.map(lookup48), tenants48.map(lookup48), cache48.size, 'readers cached');
+board48.close();
+cache48.close();
+// 48. true 2 rows | [ 4, 4 ] [ 4, 4 ] 2 readers cached
 
 fs.rmSync(dir, { recursive: true, force: true });

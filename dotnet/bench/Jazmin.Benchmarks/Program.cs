@@ -25,6 +25,12 @@ if (args.Length > 0 && args[0] == "access")
     return;
 }
 
+if (args.Length > 0 && args[0] == "tenants")
+{
+    TenantsBenchmark.Run(args);
+    return;
+}
+
 var rowsCount = args.Length > 0 ? int.Parse(args[0]) : 200_000;
 var countries = new[] { "ZA", "NA", "BW", "ZW", "MZ", "LS", "SZ", "ZM" };
 var first = new[] { "Ann", "Bob", "Thabo", "Lerato", "Pieter", "Aisha", "Sipho", "Maria" };
