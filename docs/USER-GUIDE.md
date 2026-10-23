@@ -1202,7 +1202,7 @@ With `analyze`, it also **runs the query** and reports what it actually read:
 | Field | Meaning |
 |---|---|
 | `rows` | Rows returned |
-| `bytesRead` | Bytes read from the file: chunks, index pages, statistics and directories |
+| `bytesRead` | Bytes read from the file: chunks, index pages, statistics and directories (the first query of a reader also reads the chunk directories, which opening leaves for it) |
 | `chunksRead` | Chunks read and decoded |
 | `indexPagesRead` | Index sections read: directories, pages and trigram indexes |
 | `columnsDecoded` | Column streams decoded (one per column per chunk; a chunk without matching rows decodes only the filter's columns) |
@@ -2537,7 +2537,11 @@ Rules:
   - **JavaScript on Windows** replaces an open file in two quick steps,
     because Node has no single-step way: for an instant the file's name is
     missing, so a program opening it at that moment may not find it. .NET
-    replaces it in one step.
+    replaces it in one step where Windows and the disk allow it, and in two
+    elsewhere. A JAZMIN reader (`open`, `openAsync`, `JazminReader.Open`)
+    that finds the name missing on Windows tries again for about 0.1 s, so
+    it opens the new version; a file that really is missing is reported that
+    much later.
 
 ### 16.1 Changing indexes and the sort order
 
@@ -2723,6 +2727,41 @@ JazminFile.Compact("visits.jzm", owner, regroup: true);         // each partitio
   - **Deleted rows** keep their space until `compact()`.
   - **So pick an `autoCompact` threshold** that suits how often you append
     and delete. For example, `appends: 100` keeps both in check.
+- **Opening after many appends.** Each append adds a chunk directory. A
+  reader reads them when a query first needs them, not when it opens the
+  file, so opening, and an append (which opens the file first), cost little
+  more after hundreds of appends than after none. Measured on an encrypted
+  file of 200,000 rows with sorted and trigram indexes, after 400 one-row
+  appends (Windows, Node.js 24 and .NET 10; the median of 5 runs):
+
+  | | Before 1.8 | 1.8 |
+  |---|---:|---:|
+  | Open and close, JavaScript | 34 ms | 4.3 ms |
+  | Open and close, .NET | 20 ms | 2.5 ms |
+  | Memory an open reader holds, JavaScript | 1.9 MB | 0.5 MB |
+  | Memory one open allocates, .NET | 2.6 MB | 0.6 MB |
+  | One-row append, JavaScript | 50 ms | 25 ms |
+  | One-row append, .NET | 50 ms | 25 ms |
+
+  The same file without appends opens in about 1 ms (JavaScript) and 0.4 ms
+  (.NET), before and after. An access key other than the owner's still reads
+  its own directories when it opens the file, because its `rowCount` counts
+  only the rows it can see.
+  - **The limit:** an append to a file with `sortedBy` (or `sort`) still
+    reads every chunk directory, because it needs the table's last row to
+    check that the new rows sort after it. After 400 appends it took about
+    the same time as before (JavaScript 57 and 44 ms, .NET 45 and 41 ms, with
+    overlapping ranges). Compacting brings it back down.
+- **Batch your rows.** Each `append()` call has a fixed cost: it opens the
+  file, flushes it to disk twice (as the format requires for crash safety)
+  and writes a new header. In JavaScript, on a file of 200,000 rows, one call
+  took 14-15 ms with 1 row, 12-17 ms with 100 rows and 15-38 ms with 1,000
+  rows. So append rows in batches, one call per batch, rather than one call
+  per row.
+- **The first append after copying a large file** can take seconds: its
+  flush also writes the copy out to disk, which the system may still hold in
+  memory. After copying a 500 MB file, the first one-row append took 1.3-1.6 s
+  and the next 15-16 ms.
 - **Crash safety.** If the process dies during an append, readers ignore the
   incomplete part and use the previous version (`reader.recovered` is
   `true`). The next append removes the incomplete part. A failed append, for
@@ -3808,7 +3847,10 @@ foreach (var account in accountsToRender)
 
 A reader is not thread-safe. Use one reader per thread, or open one per
 request. Opening is cheap because the column statistics are only loaded for
-the columns a query uses.
+the columns a query uses, and the chunk directories (one more for each
+append) by the first query that needs them. An access key other than the
+owner's still reads its own directories when it opens the file, because its
+`rowCount` counts only the rows it can see.
 
 ### 20.7 Look up by a second column
 

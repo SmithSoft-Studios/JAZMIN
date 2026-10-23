@@ -642,10 +642,11 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     /// <remarks>
     /// The file is opened so that appends (which only add bytes after the version this reader uses)
-    /// and updates (which replace the file by renaming) can proceed while it is open.
+    /// and updates (which replace the file by renaming) can proceed while it is open. On Windows, a path that is missing
+    /// for the instant an update replaces the file is waited for briefly (about 0.1 s).
     /// </remarks>
     public static JazminReader Open(string path, JazminReadOptions? options = null) =>
-        new(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16, FileOptions.RandomAccess), options, false);
+        new(OpenRetry.WhenPresent(() => new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16, FileOptions.RandomAccess)), options, false);
 
     public static JazminReader Open(byte[] data, JazminReadOptions? options = null) =>
         new(new MemoryStream(data, writable: false), options, false);
@@ -968,7 +969,8 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// <summary>
     /// Partitions (spec 6.3) are listed as they are needed: a key holder looks up only its own in the partition table,
     /// and the owner lists them all only for queries that do not pin the partition column. Appends' deltas are small
-    /// and read now.
+    /// and read now. Chunk directories are read by the first query that needs them (Plan, EnsureAllChunks), so a file
+    /// opens as fast after many appends as after none; only an access key reads its own now, for RowCount.
     /// </summary>
     private void OpenPartitions()
     {
@@ -991,7 +993,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 }
             }
         }
-        if (_access is not { IsOwner: true }) EnsureAllChunks(); // one partition, or only this key's own
+        if (_access is { IsOwner: false }) EnsureAllChunks(); // only this key's own: RowCount needs them
     }
 
     private PartitionInfo NewPartition(string id, IEnumerable<SectionRef> segments)
@@ -2924,6 +2926,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     public long Count(JazminFilter? filter, IProgress<JazminReadProgress>? progress, CancellationToken cancellationToken = default)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (filter is null) return RowCount; // the header's: no chunk directory is read (as in JavaScript)
         var plan = Plan(filter);
         if (plan is null) return RowCount;
         var rowIds = Candidates(plan);

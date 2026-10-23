@@ -400,7 +400,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         {
             _output = cont is null
                 ? new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 16)
-                : new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete, 1 << 16);
+                : OpenRetry.WhenPresent(() => new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete, 1 << 16));
         }
         try
         {

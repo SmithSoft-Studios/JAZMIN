@@ -53,6 +53,11 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 - **JavaScript: an upsert by a float key took NaN, Infinity and -Infinity for the empty key** (`append()` and
   `update()`): in one call, `Infinity` and `-Infinity` were one key, and `NaN` replaced the rows with an empty key.
   Each is now a key of its own, as in .NET.
+- **Opening a file on Windows while `update()` or `compact()` replaces it** (#275). Where the file can't be replaced
+  in one step (always in JavaScript, which has no single-step way), its path is missing for an instant, and a reader
+  opening it then failed with "file not found". `open`, `openAsync` and `JazminReader.Open` / `OpenAsync` (and an
+  append's own open of the file) now try again on Windows after 1, 3, 6, 12, 25 and 50 ms, so they open the new
+  version; a path that really is missing is reported about 0.1 s later than before. Other systems are unchanged.
 
 ### Added
 - **Limits per key on what a key may send back (spec 7.9.1, #257).** A grant's `edit` (`columns`, `add`, `delete`)
@@ -103,6 +108,20 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   for a web font (the viewer's tests check it is shown without the network).
 
 ### Changed
+- **Opening a file, and appending to it, no longer slow down as appends add up** (#275). A reader read every chunk
+  directory (one more per append) when it opened a file; it now reads them when a query first needs them (JS and
+  .NET), as the owner of a shared file already did. On an encrypted file of 200,000 rows with sorted and trigram
+  indexes, after 400 one-row appends (Windows, median of 5 runs, before and after interleaved on a busy machine):
+  open and close 34.4 -> 4.3 ms in JavaScript and 20.4 -> 2.5 ms in .NET (after 50 appends 5.7 -> 2.3 ms and 4.0 ->
+  0.7 ms; without appends about 1 ms and 0.4 ms, unchanged); memory an open reader holds 1.9 -> 0.5 MB (JS, heap
+  and buffers), allocated by one open 2.6 -> 0.6 MB (.NET); a one-row append 50 -> 25 ms in both (ranges 42-85 ->
+  15-30 ms in JS, 40-95 -> 21-97 ms in .NET), its peak memory growth 7.0 -> 3.8 MB (JS) and its allocations 4.7 ->
+  2.6 MB (.NET). **Still the same:** an append to a table with `sortedBy` or `sort` reads every directory, for the
+  last row (after 400 appends 57 -> 44 ms in JS and 45 -> 41 ms in .NET, with overlapping ranges). A damaged chunk
+  directory is now reported by the first query, with the same `JazminFormatError` / `JazminFormatException`, instead
+  of by `open`. `explain({ analyze })` of a reader's first query counts the directories it reads (230 more bytes on
+  `js-paged-key.jzm`); a count without a filter still reads only the header. An access key
+  other than the owner's still reads its own directories when it opens the file. No format change.
 - **Applying a change file to a shared file of many keys is faster** when the sender isn't named (`keyId`): each key's
   submission key is now tried on the change file's header alone, the file read once, instead of opening the file with
   each key in turn. With 5,001 keys and the sender last: finding the sender took about 290 ms in JavaScript and about

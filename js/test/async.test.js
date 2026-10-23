@@ -83,7 +83,8 @@ test('findAsync reads chunks with non-blocking reads and lets other work run', a
     fs.read = originalRead;
   }
   assert.ok(asyncReads >= chunks, `chunk reads were asynchronous (${asyncReads})`);
-  assert.ok(syncReads <= 2, `only small metadata sections were read synchronously (${syncReads})`);
+  // Small metadata sections: the chunk directory (read by the first query, issue #275) and statistics.
+  assert.ok(syncReads <= 3, `only small metadata sections were read synchronously (${syncReads})`);
   assert.ok(turns >= chunks / 2, `the event loop ran between chunks (${turns} turns for ${chunks} chunks)`);
   r.close();
 });

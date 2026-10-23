@@ -5,6 +5,7 @@ import { jsonPieces, parseJsonRows } from './formats/json.js';
 import { readJsonObjects } from './formats/json-stream.js';
 import { parseXml, readXmlRows, xmlPieces, xmlRecord } from './formats/xml.js';
 import { JazminReader, fileSource } from './reader.js';
+import { openFileAsync } from './open-retry.js';
 import { maskedView } from './masks.js';
 import { verifyPublisher as verifyWith } from './publisher.js';
 import { PREAMBLE_SIZE } from './constants.js';
@@ -58,7 +59,7 @@ const OPEN_TAIL = 1 << 20; // bytes read from the end of a file by openAsync: tr
  */
 export async function openAsync(source, options) {
   if (typeof source !== 'string') return open(source, options);
-  const fd = await new Promise((resolve, reject) => fs.open(source, 'r', (error, f) => (error ? reject(error) : resolve(f))));
+  const fd = await openFileAsync(source, 'r');
   let src;
   try {
     const { size } = await new Promise((resolve, reject) => fs.fstat(fd, (error, s) => (error ? reject(error) : resolve(s))));
