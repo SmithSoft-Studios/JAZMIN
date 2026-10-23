@@ -4214,7 +4214,11 @@ if (latest != board)
 - **`changed()` is cheap:** it opens the file and compares its file id, its
   size, its last 44 bytes and the first 16 bytes of its header section (they
   hold its checksum) with what the reader opened. Only a file that
-  grew is read further, back to the trailer a new reader would use. On
+  grew is read further, back to the trailer a new reader would use, and
+  only through the bytes added since the last check: while an append is
+  being written, or after one was interrupted, each check reads just what
+  is new (with 64 MB left by an unfinished append, about 1 ms per check
+  instead of 40 to 100 ms). On
   Windows, a file that is open is moved aside before it is replaced, so its
   path is missing for an instant: `changed()` tries again for about 100 ms.
 - **`refresh()`** returns a new reader of the new version, opened from the

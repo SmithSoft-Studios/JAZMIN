@@ -325,8 +325,9 @@ function readAt(fd, position, length) {
  * Finds the trailer of the latest complete version: normally the last 44 bytes. In a file that has been appended to,
  * an interrupted append leaves extra bytes at the end; the previous version is then found by scanning back for a
  * valid trailer (spec 4.2). `read(position, length)` reads the file. Returns { trailer, validEnd, recovered, last }.
+ * With `floor` (changed()), the scan stops at the trailers that end there: null when none ends after it.
  */
-function findTrailer(read, size, flags) {
+function findTrailer(read, size, flags, floor = 0) {
   const parse = (t) => ({
     header: { offset: Number(t.readBigUInt64LE(0)), length: t.readUInt32LE(8) },
     keySlots: { offset: Number(t.readBigUInt64LE(12)), length: t.readUInt32LE(20) },
@@ -348,8 +349,9 @@ function findTrailer(read, size, flags) {
     return { trailer: parse(last), validEnd: size, recovered: false, last };
   }
   const BLOCK = 1 << 20;
-  for (let end = size; end > PREAMBLE_SIZE + TRAILER_SIZE; end -= BLOCK - TRAILER_SIZE) {
-    const start = Math.max(PREAMBLE_SIZE, end - BLOCK);
+  const low = Math.max(PREAMBLE_SIZE, floor - TRAILER_SIZE);
+  for (let end = size; end > low + TRAILER_SIZE; end -= BLOCK - TRAILER_SIZE) {
+    const start = Math.max(low, end - BLOCK);
     const block = read(start, end - start);
     for (let i = block.lastIndexOf(MAGIC); i >= 0; i = i > 0 ? block.lastIndexOf(MAGIC, i - 1) : -1) {
       const at = start + i - 40; // trailer start
@@ -357,8 +359,9 @@ function findTrailer(read, size, flags) {
       const candidate = read(at, TRAILER_SIZE);
       if (valid(candidate, at)) return { trailer: parse(candidate), validEnd: at + TRAILER_SIZE, recovered: true, last };
     }
-    if (start === PREAMBLE_SIZE) break;
+    if (start === low) break;
   }
+  if (floor) return null;
   throw new JazminFormatError('Missing trailer - file is truncated or incomplete');
 }
 
@@ -717,13 +720,13 @@ export class JazminReader {
   #aheadBuffer = Buffer.alloc(0); // file-read buffer of chunks read ahead (the pool copies what it is given)
   #cost = null; // while explain({ analyze: true }) runs a query: what it reads (see QueryCost in index.d.ts)
   // Opened from a path: the path and the options it was opened with (refresh() opens the new version with them; kept
-  // until close()), the key derived from a password, and the file's size and last 44 bytes when opened and its header
-  // section's envelope (changed()).
+  // until close()), the key derived from a password, the file's size and last 44 bytes when last found to hold this
+  // version (when opened, then each changed() that says no) and the header section's envelope (changed()).
   #path = null;
   #openOptions = null;
   #derived = null; // { salt, iterations, master }
-  #openedSize = 0;
-  #tail = null;
+  #checkedSize = 0;
+  #checkedTail = null;
   #headerEnvelope = null;
 
   /**
@@ -871,8 +874,8 @@ export class JazminReader {
     this.#path = from.#path;
     this.#openOptions = from.#openOptions && { ...from.#openOptions, table };
     this.#derived = from.#derived;
-    this.#openedSize = from.#openedSize;
-    this.#tail = from.#tail;
+    this.#checkedSize = from.#checkedSize;
+    this.#checkedTail = from.#checkedTail;
     this.#headerEnvelope = from.#headerEnvelope;
     try {
       this.#openTable(table);
@@ -912,15 +915,23 @@ export class JazminReader {
       const size = fs.fstatSync(fd).size;
       if (size < PREAMBLE_SIZE + TRAILER_SIZE) return true;
       if (!readAt(fd, 8, 16).equals(this.#fileId)) return true;
-      if (size !== this.#openedSize || !readAt(fd, size - TRAILER_SIZE, TRAILER_SIZE).equals(this.#tail)) {
-        // Grown (or rewritten at the end): changed unless a new reader would open the same version (an interrupted append).
+      const tail = readAt(fd, size - TRAILER_SIZE, TRAILER_SIZE);
+      if (size !== this.#checkedSize || !tail.equals(this.#checkedTail)) {
+        // Grown (or rewritten at the end): changed unless a new reader would open the same version (an interrupted or
+        // unfinished append). While the bytes checked last time are still there (their last 44 are), they hold no newer
+        // trailer: only the bytes added since are searched, not all those after this version on every call.
         const flags = readAt(fd, 4, 2).readUInt16LE(0);
-        const { trailer } = findTrailer((position, length) => readAt(fd, position, length), size, flags);
-        if (trailer.header.offset !== this.#headerRef.offset || trailer.header.length !== this.#headerRef.length) return true;
+        const grown = size > this.#checkedSize && readAt(fd, this.#checkedSize - TRAILER_SIZE, TRAILER_SIZE).equals(this.#checkedTail);
+        const found = findTrailer((position, length) => readAt(fd, position, length), size, flags, grown ? this.#checkedSize : 0);
+        const header = found?.trailer.header ?? this.#headerRef;
+        if (header.offset !== this.#headerRef.offset || header.length !== this.#headerRef.length) return true;
       }
       // The same file id, size and trailer can still be another version: a copy of the file, appended to alike, put in
       // its place. Its header section differs, and so does the envelope's CRC-32 of it (encrypted: with a random nonce).
-      return !readAt(fd, this.#headerRef.offset, ENVELOPE_SIZE).equals(this.#headerEnvelope);
+      if (!readAt(fd, this.#headerRef.offset, ENVELOPE_SIZE).equals(this.#headerEnvelope)) return true;
+      this.#checkedSize = size;
+      this.#checkedTail = tail;
+      return false;
     } catch (error) {
       if (error instanceof JazminFormatError) return true; // damaged: opening it again reports what is wrong
       throw error;
@@ -988,8 +999,8 @@ export class JazminReader {
     const { trailer, validEnd, recovered, last } = findTrailer((position, length) => this.#source.read(position, length), size, flags);
     this.#validEnd = validEnd;
     this.#recovered = recovered;
-    this.#openedSize = size;
-    this.#tail = last;
+    this.#checkedSize = size;
+    this.#checkedTail = last;
     return trailer;
   }
 

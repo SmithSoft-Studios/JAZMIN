@@ -1,6 +1,7 @@
 // The cache's expiry test moves the clock on purpose: the option is obsolete for callers, still honoured until 2.0.
 #pragma warning disable CS0618
 
+using System.Security.Cryptography;
 using Jazmin.Query;
 using Xunit;
 
@@ -241,12 +242,18 @@ public sealed class RefreshTests : IDisposable
     public void ACopyOfTheSameFile_AppendedToAlike_PutInItsPlace_IsAChange()
     {
         var key = JazminKey.Generate();
-        var path = Write("restored.jzm", 2, new JazminWriteOptions { Key = key });
-        var other = path + ".copy";
-        File.Copy(path, other); // the same file elsewhere: a backup, another machine's synced copy
-        JazminFile.Append(path, new JazminAppend { Key = key, Insert = [new Dictionary<string, object?> { ["id"] = 2L, ["section"] = "two" }] });
-        JazminFile.Append(other, new JazminAppend { Key = key, Insert = [new Dictionary<string, object?> { ["id"] = 2L, ["section"] = "TWO" }] });
-        Assert.Equal(new FileInfo(path).Length, new FileInfo(other).Length);
+        var path = Path.Combine(_dir, "restored.jzm");
+        var (other, source) = (path + ".copy", Write("restored.base", 2, new JazminWriteOptions { Key = key }));
+        static byte[] Last44(string f) => File.ReadAllBytes(f)[^44..];
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            File.Copy(source, path, true);
+            File.Copy(source, other, true); // the same file elsewhere: a backup, another machine's synced copy
+            JazminFile.Append(path, new JazminAppend { Key = key, Insert = [new Dictionary<string, object?> { ["id"] = 2L, ["section"] = "two" }] });
+            JazminFile.Append(other, new JazminAppend { Key = key, Insert = [new Dictionary<string, object?> { ["id"] = 2L, ["section"] = "TWO" }] });
+            if (new FileInfo(path).Length == new FileInfo(other).Length) break; // (now and then a byte apart: tried again)
+        }
+        Assert.Equal(Last44(path), Last44(other)); // the same size and trailer
         using var cache = new JazminReaderCache(10);
         JazminReader first;
         using (var lease = cache.Open(path, new JazminReadOptions { Key = key }))
@@ -260,6 +267,41 @@ public sealed class RefreshTests : IDisposable
         using var second = cache.Open(path, new JazminReadOptions { Key = key });
         Assert.NotSame(first, second.Reader);
         Assert.Equal("TWO", second.Reader.Find(JazminFilter.Eq("id", 2L)).Single()["section"]);
+    }
+
+    [Fact]
+    public void AnAppendBeingWritten_IsNotAChangeUntilItIsDone_HoweverOftenChangedIsAsked()
+    {
+        var path = Write("growing.jzm", 3);
+        JazminFile.Append(path, new JazminAppend { Insert = Rows(3, 1) });
+        using var r = JazminReader.Open(path);
+        for (var i = 0; i < 3; i++)
+        {
+            using (var f = new FileStream(path, FileMode.Append)) f.Write(RandomNumberGenerator.GetBytes(40_000)); // its trailer not yet written
+            Assert.False(r.Changed());
+        }
+        JazminFile.Append(path, new JazminAppend { Insert = Rows(4, 1) }); // done (it starts again from the end of the last version)
+        Assert.True(r.Changed());
+        using var fresh = r.Refresh();
+        Assert.Equal(Range(0, 5), Ids(fresh));
+    }
+
+    [Fact]
+    public void AnAppendThatFinishedInsideBytesCheckedBefore_ThenMoreBytesAfterThem_IsAChange()
+    {
+        var path = Write("finished-inside.jzm", 3);
+        JazminFile.Append(path, new JazminAppend { Insert = Rows(3, 1) });
+        using var r = JazminReader.Open(path);
+        using (var f = new FileStream(path, FileMode.Append)) f.Write(RandomNumberGenerator.GetBytes(200_000)); // an interrupted append
+        Assert.False(r.Changed());
+        var checkedSize = new FileInfo(path).Length;
+        JazminFile.Append(path, new JazminAppend { Insert = Rows(4, 1) }); // replaces those bytes: a new version, ending well before them
+        Assert.True(new FileInfo(path).Length < checkedSize);
+        using (var f = new FileStream(path, FileMode.Append)) f.Write(RandomNumberGenerator.GetBytes(300_000)); // the next append, unfinished
+        Assert.True(new FileInfo(path).Length > checkedSize);
+        Assert.True(r.Changed());
+        using var fresh = r.Refresh();
+        Assert.Equal(Range(0, 5), Ids(fresh));
     }
 
     // ---- JazminReaderCache -----------------------------------------------------------------------------------------

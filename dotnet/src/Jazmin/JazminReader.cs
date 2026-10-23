@@ -376,14 +376,14 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private bool[]? _cachedWanted; // the columns the cached chunk decoded (null: all)
     private CostCounter? _cost; // while Explain(analyze: true) runs a query: what it reads
     // Opened from a path: the path and the options it was opened with (Refresh opens the new version with them; kept
-    // until Dispose), the key derived from a password, and the file's size and last 44 bytes when opened and its header
-    // section's envelope (Changed).
+    // until Dispose), the key derived from a password, the file's size and last 44 bytes when last found to hold this
+    // version (when opened, then each Changed that says no) and the header section's envelope (Changed).
     private readonly string? _path;
     private readonly int _bufferSize; // of the FileStream: Refresh opens the new version the same way
     private JazminReadOptions? _openOptions;
     private DerivedKey? _derived;
-    private long _openedSize;
-    private byte[] _tail = [];
+    private long _checkedSize;
+    private byte[] _checkedTail = [];
     private byte[] _headerEnvelope = [];
     private bool _disposed;
 
@@ -412,7 +412,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         if (from is not null)
         {
             if (from._openOptions is { } opened) _openOptions = opened.Copy(options.Table);
-            (_derived, _openedSize, _tail, _headerEnvelope) = (from._derived, from._openedSize, from._tail, from._headerEnvelope);
+            (_derived, _checkedSize, _checkedTail, _headerEnvelope) = (from._derived, from._checkedSize, from._checkedTail, from._headerEnvelope);
         }
         else if (path is not null)
         {
@@ -932,16 +932,22 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         try
         {
             if (!ReadAt(8, 16).AsSpan().SequenceEqual(_fileId)) return true;
-            if (size != _openedSize || !ReadAt(size - FormatConstants.TrailerSize, FormatConstants.TrailerSize).AsSpan().SequenceEqual(_tail))
+            var tail = ReadAt(size - FormatConstants.TrailerSize, FormatConstants.TrailerSize);
+            if (size != _checkedSize || !tail.AsSpan().SequenceEqual(_checkedTail))
             {
-                // Grown (or rewritten at the end): changed unless a new reader would open the same version (an interrupted append).
+                // Grown (or rewritten at the end): changed unless a new reader would open the same version (an interrupted or
+                // unfinished append). While the bytes checked last time are still there (their last 44 are), they hold no
+                // newer trailer: only the bytes added since are searched, not all those after this version on every call.
                 var flags = BinaryPrimitives.ReadUInt16LittleEndian(ReadAt(FormatConstants.FlagsOffset, 2));
-                var (trailer, _, _, _) = FindTrailer(ReadAt, size, flags);
-                if (trailer.Header.Offset != _headerRef.Offset || trailer.Header.Length != _headerRef.Length) return true;
+                var grown = size > _checkedSize && ReadAt(_checkedSize - FormatConstants.TrailerSize, FormatConstants.TrailerSize).AsSpan().SequenceEqual(_checkedTail);
+                var header = FindTrailer(ReadAt, size, flags, grown ? _checkedSize : 0).Trailer?.Header ?? _headerRef;
+                if (header.Offset != _headerRef.Offset || header.Length != _headerRef.Length) return true;
             }
             // The same file id, size and trailer can still be another version: a copy of the file, appended to alike, put
             // in its place. Its header section differs, and so does the envelope's CRC-32 of it (encrypted: with a random nonce).
-            return !ReadAt(_headerRef.Offset, FormatConstants.EnvelopeSize).AsSpan().SequenceEqual(_headerEnvelope);
+            if (!ReadAt(_headerRef.Offset, FormatConstants.EnvelopeSize).AsSpan().SequenceEqual(_headerEnvelope)) return true;
+            (_checkedSize, _checkedTail) = (size, tail);
+            return false;
         }
         catch (Exception e) when (e is JazminFormatException or EndOfStreamException)
         {
@@ -1191,13 +1197,17 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private Trailer LocateTrailer(long size, ushort flags)
     {
         var (trailer, validEnd, recovered, last) = FindTrailer(Read, size, flags);
-        (_validEnd, _openedSize, _tail) = (validEnd, size, last); // the size and last 44 bytes: see Changed
+        (_validEnd, _checkedSize, _checkedTail) = (validEnd, size, last); // the size and last 44 bytes: see Changed
         if (recovered) Recovered = true;
-        return trailer;
+        return trailer!;
     }
 
-    /// <summary>See <see cref="LocateTrailer"/>: <paramref name="read"/> reads the file. Also returns the last 44 bytes.</summary>
-    private static (Trailer Trailer, long ValidEnd, bool Recovered, byte[] Last) FindTrailer(Func<long, int, byte[]> read, long size, ushort flags)
+    /// <summary>
+    /// See <see cref="LocateTrailer"/>: <paramref name="read"/> reads the file. Also returns the last 44 bytes. With
+    /// <paramref name="floor"/> (<see cref="Changed"/>), the scan stops at the trailers that end there: a null trailer
+    /// when none ends after it.
+    /// </summary>
+    private static (Trailer? Trailer, long ValidEnd, bool Recovered, byte[] Last) FindTrailer(Func<long, int, byte[]> read, long size, ushort flags, long floor = 0)
     {
         static Trailer Parse(byte[] t) => new(
             new SectionRef((long)BinaryPrimitives.ReadUInt64LittleEndian(t), (int)BinaryPrimitives.ReadUInt32LittleEndian(t.AsSpan(8))),
@@ -1223,9 +1233,10 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         }
 
         const int block = 1 << 20;
-        for (var end = size; end > FormatConstants.PreambleSize + FormatConstants.TrailerSize; end -= block - FormatConstants.TrailerSize)
+        var low = Math.Max(FormatConstants.PreambleSize, floor - FormatConstants.TrailerSize);
+        for (var end = size; end > low + FormatConstants.TrailerSize; end -= block - FormatConstants.TrailerSize)
         {
-            var start = Math.Max(FormatConstants.PreambleSize, end - block);
+            var start = Math.Max(low, end - block);
             var bytes = read(start, (int)(end - start));
             for (var i = bytes.AsSpan().LastIndexOf(FormatConstants.Magic); i >= 0; i = i > 0 ? bytes.AsSpan(0, i).LastIndexOf(FormatConstants.Magic) : -1)
             {
@@ -1235,8 +1246,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 if (!Valid(candidate, at)) continue;
                 return (Parse(candidate), at + FormatConstants.TrailerSize, true, last);
             }
-            if (start == FormatConstants.PreambleSize) break;
+            if (start == low) break;
         }
+        if (floor > 0) return (null, 0, false, last);
         throw new JazminFormatException("Missing trailer - file is truncated or incomplete");
     }
 

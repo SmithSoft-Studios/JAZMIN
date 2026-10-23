@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -397,11 +398,16 @@ test('a copy of the same file, appended to alike, put in its place is a change (
   const file = tmp('restored.jzm');
   const other = `${file}.copy`;
   const key = JazminKey.generate();
-  write(file, rows(0, 2), { columns, key });
-  fs.copyFileSync(file, other); // the same file elsewhere: a backup, another machine's synced copy
-  append(file, { key, insert: [{ id: 2, section: 'two' }] });
-  append(other, { key, insert: [{ id: 2, section: 'TWO' }] });
-  assert.equal(fs.statSync(other).size, fs.statSync(file).size);
+  const last44 = (f) => fs.readFileSync(f).subarray(-44);
+  write(`${file}.base`, rows(0, 2), { columns, key });
+  for (let attempt = 0; attempt < 20; attempt++) {
+    fs.copyFileSync(`${file}.base`, file);
+    fs.copyFileSync(`${file}.base`, other); // the same file elsewhere: a backup, another machine's synced copy
+    append(file, { key, insert: [{ id: 2, section: 'two' }] });
+    append(other, { key, insert: [{ id: 2, section: 'TWO' }] });
+    if (fs.statSync(other).size === fs.statSync(file).size) break; // (now and then a byte apart: tried again)
+  }
+  assert.ok(last44(other).equals(last44(file)), 'the same size and trailer');
   const cache = new JazminReaderCache({ max: 10 });
   const first = cache.open(file, { key });
   assert.equal([...first.reader.find({ id: 2 })][0].section, 'two');
@@ -414,4 +420,40 @@ test('a copy of the same file, appended to alike, put in its place is a change (
   assert.equal([...second.reader.find({ id: 2 })][0].section, 'TWO');
   second.release();
   cache.close();
+});
+
+test('an append being written is not a change until it is done, however often changed() is asked', () => {
+  const file = tmp('growing.jzm');
+  write(file, rows(0, 3), { columns });
+  append(file, { insert: rows(3, 1) });
+  const r = open(file);
+  for (let i = 0; i < 3; i++) {
+    fs.appendFileSync(file, crypto.randomBytes(40_000)); // more of the append's bytes, its trailer not yet written
+    assert.equal(r.changed(), false);
+  }
+  append(file, { insert: rows(4, 1) }); // done (this append starts again from the end of the last version)
+  assert.equal(r.changed(), true);
+  const fresh = r.refresh();
+  assert.deepEqual(ids(fresh), [0, 1, 2, 3, 4]);
+  r.close();
+  fresh.close();
+});
+
+test('an append that finished inside bytes checked before, then more bytes after them, is a change', () => {
+  const file = tmp('finished-inside.jzm');
+  write(file, rows(0, 3), { columns });
+  append(file, { insert: rows(3, 1) });
+  const r = open(file);
+  fs.appendFileSync(file, crypto.randomBytes(200_000)); // an interrupted append
+  assert.equal(r.changed(), false);
+  const checked = fs.statSync(file).size;
+  append(file, { insert: rows(4, 1) }); // replaces those bytes: a new version, ending well before them
+  assert.ok(fs.statSync(file).size < checked);
+  fs.appendFileSync(file, crypto.randomBytes(300_000)); // the next append, unfinished, now past the size checked
+  assert.ok(fs.statSync(file).size > checked);
+  assert.equal(r.changed(), true);
+  const fresh = r.refresh();
+  assert.deepEqual(ids(fresh), [0, 1, 2, 3, 4]);
+  r.close();
+  fresh.close();
 });
