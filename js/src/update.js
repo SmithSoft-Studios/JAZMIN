@@ -58,8 +58,10 @@ function replaceOpenFile(temp, path) {
   }
 }
 
+/** A key value as JSON can hold it: JSON would write NaN and the infinities as null, the empty key. */
 function keyText(value) {
-  return typeof value === 'bigint' ? `${value}n` : value;
+  if (typeof value === 'bigint') return `${value}n`;
+  return typeof value === 'number' && !Number.isFinite(value) ? String(value) : value;
 }
 
 /**

@@ -10,8 +10,10 @@ import { keyId, normalizeValue, toKey } from './types.js';
 import { accessFor, checkAppendGrants, columnsWithIndexes, updateUnlocked } from './update.js';
 import { CONTINUE, JazminWriter } from './writer.js';
 
+/** A key value as JSON can hold it: JSON would write NaN and the infinities as null, the empty key. */
 function keyText(value) {
-  return typeof value === 'bigint' ? `${value}n` : value;
+  if (typeof value === 'bigint') return `${value}n`;
+  return typeof value === 'number' && !Number.isFinite(value) ? String(value) : value;
 }
 
 /**

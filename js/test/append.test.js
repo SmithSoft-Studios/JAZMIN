@@ -320,6 +320,18 @@ test('upsert in a shared file: the last row for a key wins when its rows are in 
   assert.deepEqual(rowsOf(file, { key: carol }).map((r) => [r.id, r.amount]), [[2, 3], [3, 31]]);
 });
 
+test('upsert by a float key: NaN, Infinity and -Infinity are keys of their own, not the empty key, as in .NET', () => {
+  for (const fn of ['append', 'update']) {
+    const file = tmp(`float-${fn}.jzm`);
+    write(file, [{ f: null, v: 'empty' }, { f: 1.5, v: 'a' }], { columns: [{ name: 'f', type: 'float' }, { name: 'v', type: 'string' }] });
+    const call = fn === 'append' ? append : update;
+    const result = call(file, { upsert: [{ f: Infinity, v: 'up' }, { f: -Infinity, v: 'down' }, { f: null, v: 'empty2' }, { f: NaN, v: 'nan' }], keyColumns: ['f'] });
+    const stored = rowsOf(file).map((r) => `${r.f}:${r.v}`).sort();
+    assert.deepEqual(stored, ['-Infinity:down', '1.5:a', 'Infinity:up', 'NaN:nan', 'null:empty2'], fn);
+    if (fn === 'append') assert.deepEqual([result.inserted, result.updated], [3, 1], fn);
+  }
+});
+
 test('upsert by a single key column: an empty key matches an empty key, as in update() and composite keys', () => {
   for (const index of ['sorted', undefined]) {
     const file = tmp(`null-key-${index ?? 'none'}.jzm`);
