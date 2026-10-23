@@ -94,6 +94,21 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
   **`jazmin check <file>`** does the same from the command line (exit code 0 unchanged, 1 changed or damaged;
   `--quick` for the quick check, which says what it left out). No format change.
+- **Batch writes and transactions (#275).** Each append flushes to disk twice, however few rows it has, so many small
+  appends cost far more than one large one. `beginAppend(path, options)` collects `insert`, `upsert` and `delete`
+  calls and writes them on `commit()` as one append: all or nothing, the file left byte for byte as it was if the
+  commit fails; `rollback()` discards them, and nothing is locked until the commit. `openWriter(path, { maxDelay,
+  maxRows })` merges many callers' calls into few appends (group commit): each call resolves with the result of the
+  append that wrote it, a bad call fails alone, and the flushes to disk are awaited instead of blocking Node's event
+  loop. Calls are written in call order, and the file ends up as running them one after another would; a call that
+  one append can't write that way (a delete matching, or an upsert with the key of, a row an earlier call adds) is
+  refused by a transaction and starts a new append in the writer. **.NET:** `JazminFile.BeginAppend` (a disposable
+  `JazminTransaction`; disposing without `Commit` rolls back) and `JazminFile.OpenWriter` (`JazminAppendWriter`:
+  `InsertAsync` / `UpsertAsync` / `DeleteAsync` / `FlushAsync` / `DisposeAsync`, safe for concurrent callers). 100
+  callers adding one row each to a 10,000-row file: one append each took 1,065 ms (median of 5 runs) in JavaScript and
+  1,905 ms in .NET; through the writer 31 ms and 32 ms, in 1 and 2 appends (User Guide 17.7, `node
+  bench/group-commit.mjs`). No format change: a batch is an ordinary append, byte for byte what `append()` writes for
+  the same rows.
 - **Limits per key on what a key may send back (spec 7.9.1, #257).** A grant's `edit` (`columns`, `add`, `delete`)
   narrows the document's `package.edit` for that key: one shared document where a doctor may acknowledge a result and
   infection control may only add a note. `writeChanges` refuses what the key may not send ("Column 'ackAction' can't

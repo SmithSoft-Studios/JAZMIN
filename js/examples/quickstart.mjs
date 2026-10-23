@@ -4,8 +4,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
-  JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, compact, createFileHandler, exportFile, exportString, fromCSV, grantAccess, issueFileUnlockToken, issueUnlockToken,
-  listFileUnlockTokens, open, openAsync,
+  JAZMIN, JazminKey, JazminUnlockRequiredError, JazminWriter, append, beginAppend, compact, createFileHandler, exportFile, exportString, fromCSV, grantAccess, issueFileUnlockToken, issueUnlockToken,
+  listFileUnlockTokens, open, openAsync, openWriter,
   applyChanges, fileSubmission, from, portableHtml, portableScript, rotateKey, toJSON, toXML, update, verifyPublisher, write, writeAsync,
   writeChanges,
 } from '../src/index.js';
@@ -713,5 +713,21 @@ try {
 }
 console.log('45.', checked45.checkedBy, checked45.unusedBytes, 'unused bytes |', refused45);
 // 45. encryption 0 unused bytes | JazminFormatError
+
+// 46. Batch writes and transactions (USER-GUIDE 17.7): each append flushes to disk twice, whatever its size, so batch.
+// A transaction writes its calls as one append (all or none); the group writer merges many callers' calls into few
+// appends and awaits the flushes, so a server isn't blocked while the disk works.
+const orders46 = path.join(dir, 'orders.jzm');
+write(orders46, [{ id: 1, status: 'new' }, { id: 2, status: 'new' }], { columns: [{ name: 'id', type: 'int', nullable: false }, { name: 'status', type: 'string' }] });
+const tx46 = beginAppend(orders46, { keyColumns: ['id'] });
+tx46.upsert([{ id: 1, status: 'paid' }]);
+tx46.insert([{ id: 3, status: 'new' }]);
+tx46.delete({ id: 2 });
+const committed46 = tx46.commit();
+const writer46 = openWriter(orders46);
+const results46 = await Promise.all([4, 5, 6].map((id) => writer46.insert([{ id, status: 'new' }]))); // three callers
+await writer46.close();
+console.log('46.', committed46.appendCount, committed46.updated, committed46.inserted, committed46.deleted, '|', results46.map((r) => r.appendCount).join(','), results46[0].inserted);
+// 46. 1 1 1 1 | 2,2,2 3
 
 fs.rmSync(dir, { recursive: true, force: true });

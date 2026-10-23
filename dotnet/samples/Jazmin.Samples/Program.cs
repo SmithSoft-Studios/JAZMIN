@@ -1013,6 +1013,29 @@ using (var reader = JazminReader.Open(damaged45, new JazminReadOptions { Key = k
 Console.WriteLine($"45. {verified45.CheckedBy}, {verified45.Sections} sections, {verified45.UnusedBytes} bytes unused | {caught45}");
 // 45. encryption, 8 sections, 0 bytes unused | Section '0/chunk/0/*' failed its CRC-32 check
 
+// 46. Batch writes and transactions (USER-GUIDE 17.7): each append flushes to disk twice, whatever its size, so batch.
+// A transaction writes its calls as one append (all or none); the group writer merges many callers' calls into few
+// appends, on one background task, safe for concurrent callers.
+var orders46 = Path.Combine(dir, "orders.jzm");
+using (var writer = JazminWriter.Create(orders46, [new("id", JazminType.Int) { Nullable = false }, new("status", JazminType.String)]))
+{
+    writer.WriteRow(new Dictionary<string, object?> { ["id"] = 1L, ["status"] = "new" });
+    writer.WriteRow(new Dictionary<string, object?> { ["id"] = 2L, ["status"] = "new" });
+}
+JazminAppendResult committed46;
+using (var tx = JazminFile.BeginAppend(orders46, new JazminAppend { KeyColumns = ["id"] }))
+{
+    tx.Upsert([new Dictionary<string, object?> { ["id"] = 1L, ["status"] = "paid" }]);
+    tx.Insert([new Dictionary<string, object?> { ["id"] = 3L, ["status"] = "new" }]);
+    tx.Delete(JazminFilter.Eq("id", 2));
+    committed46 = tx.Commit(); // Dispose without Commit rolls back
+}
+JazminAppendResult[] results46;
+await using (var groupWriter = JazminFile.OpenWriter(orders46, maxDelay: TimeSpan.FromMilliseconds(5)))
+    results46 = await Task.WhenAll(new[] { 4L, 5L, 6L }.Select(id => groupWriter.InsertAsync([new Dictionary<string, object?> { ["id"] = id, ["status"] = "new" }]))); // three callers
+Console.WriteLine($"46. {committed46.AppendCount} {committed46.Updated} {committed46.Inserted} {committed46.Deleted} | {string.Join(",", results46.Select(r => r.AppendCount))} {results46[0].Inserted}");
+// 46. 1 1 1 1 | 2,2,2 3
+
 Directory.Delete(dir, true);
 
 /// <summary>
