@@ -31,6 +31,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   as its `cause`. The viewer showed nothing when the next or previous page failed, leaving the old page and its line
   as they were; it now says so on its status line, with **Open again** (User Guide section 24). A file that doesn't
   change reads as before.
+- **.NET: disposing a reader twice closed the file under its other tables' readers.** Each `Dispose()` let go of the
+  shared file again, so a second call on one table's reader could close the file while another table's reader was
+  still using it ("Cannot access a closed file"). A reader now lets go once, and a disposed reader's `OpenTable()`
+  throws `ObjectDisposedException` even while other readers keep the file open. JavaScript was not affected.
 
 ### Added
 - **Limits per key on what a key may send back (spec 7.9.1, #257).** A grant's `edit` (`columns`, `add`, `delete`)
