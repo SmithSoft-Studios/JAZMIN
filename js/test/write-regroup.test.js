@@ -261,6 +261,34 @@ test('write regroup: nested, json, binary and large int values are held and writ
   for (const city of CITIES) assert.deepEqual(read.filter((r) => r.city === city), rows.filter((r) => r.city === city), city);
 });
 
+test('write regroup: at the limit the partitions holding the most go first; ties: the first held, counted from when held again', () => {
+  // Limit 4 rows: B [1, 3] at row 3; C [2, 4] at row 5; A [0, 7] before D (2 each) at row 7; D [5, 6] at row 9; then
+  // E [8, 11] before B [9, 10] (2 each: B, written before, is held again after E); B at the end. The same in .NET.
+  const cities = ['A', 'B', 'C', 'B', 'C', 'D', 'D', 'A', 'E', 'B', 'B', 'E'];
+  const rows = cities.map((city, id) => ({ id, city, amount: id, note: null }));
+  const file = tmp('order.jzm');
+  write(file, rows, { columns, key: owner, access, chunkRows: 100, regroup: true, [REGROUP_LIMITS]: { rows: 4 } });
+  const { rows: read, chunks } = readAll(file, owner);
+  assert.deepEqual(ids(read), [1, 3, 2, 4, 0, 7, 5, 6, 8, 11, 9, 10]);
+  assert.equal(chunks, 6);
+});
+
+test('write regroup: a nested value counts toward chunkBytes the same, held or not', () => {
+  // A row: id 5 + city 'Durban' 7 + tags 5 + 3 + nums 3 x 5 = 35 estimated bytes, so a chunk of 100 takes 3 rows.
+  const nestedColumns = [
+    { name: 'id', type: 'int' }, { name: 'city', type: 'string' },
+    { name: 'tags', type: 'list', item: { type: 'string' } }, { name: 'nums', type: 'list', item: { type: 'int' } },
+  ];
+  const rows = Array.from({ length: 30 }, (_, id) => ({ id, city: 'Durban', tags: ['abcd', 'ef'], nums: [1, 2, 3] }));
+  for (const regroup of [false, true]) {
+    const file = tmp(`nested-bytes-${regroup}.jzm`);
+    write(file, rows, { columns: nestedColumns, key: owner, access: { partitionBy: 'city', grants: [] }, chunkBytes: 100, regroup });
+    const { rows: read, chunks } = readAll(file, owner);
+    assert.equal(chunks, 10, `regroup ${regroup}`); // the same in .NET (WriteRegroupTests.cs)
+    assert.deepEqual(ids(read), ids(rows));
+  }
+});
+
 test('write regroup: json values are stored as JSON.stringify gives them, as without regroup (toJSON, functions)', () => {
   class Money {
     constructor(cents) {

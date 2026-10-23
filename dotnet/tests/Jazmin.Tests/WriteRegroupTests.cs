@@ -345,6 +345,43 @@ public sealed class WriteRegroupTests : IDisposable
     }
 
     [Fact]
+    public void At_the_limit_the_partitions_holding_the_most_go_first_ties_the_first_held_counted_from_when_held_again()
+    {
+        // Limit 4 rows: B [1, 3] at row 3; C [2, 4] at row 5; A [0, 7] before D (2 each) at row 7; D [5, 6] at row 9; then
+        // E [8, 11] before B [9, 10] (2 each: B, written before, is held again after E); B at the end. The same in JS.
+        string[] cities = ["A", "B", "C", "B", "C", "D", "D", "A", "E", "B", "B", "E"];
+        var rows = cities.Select((city, id) => new Row(id, city, id, "")).ToList();
+        var options = new JazminWriteOptions { Key = Owner, Access = Access(), ChunkRows = 100, Regroup = true, RegroupRows = 4 };
+        var path = Write("order.jzm", rows, options);
+        using var reader = JazminReader.Open(path, new JazminReadOptions { Key = Owner });
+        Assert.Equal(new long[] { 1, 3, 2, 4, 0, 7, 5, 6, 8, 11, 9, 10 }, Ids(reader.Rows()));
+        Assert.Equal(6, reader.ChunkCount);
+    }
+
+    [Fact]
+    public void A_nested_value_counts_toward_ChunkBytes_the_same_held_or_not()
+    {
+        // A row: id 5 + city "Durban" 7 + tags 5 + 3 + nums 3 x 5 = 35 estimated bytes, so a chunk of 100 takes 3 rows.
+        JazminColumn[] columns =
+        [
+            new("id", JazminType.Int), new("city", JazminType.String),
+            JazminColumn.ListOf("tags", new JazminColumn("item", JazminType.String)), JazminColumn.ListOf("nums", new JazminColumn("item", JazminType.Int)),
+        ];
+        foreach (var regroup in new[] { false, true })
+        {
+            var path = Path.Combine(_dir, $"nested-bytes-{regroup}.jzm");
+            var options = new JazminWriteOptions { Key = Owner, Access = new JazminAccessOptions { PartitionBy = "city" }, ChunkBytes = 100, Regroup = regroup };
+            using (var writer = JazminWriter.Create(path, columns, options))
+            {
+                for (var i = 0; i < 30; i++) writer.WriteValues((long)i, "Durban", new[] { "abcd", "ef" }, new long[] { 1, 2, 3 });
+            }
+            using var reader = JazminReader.Open(path, new JazminReadOptions { Key = Owner });
+            Assert.Equal(10, reader.ChunkCount); // the same in JS (write-regroup.test.js)
+            Assert.Equal(Enumerable.Range(0, 30).Select(i => (long)i), Ids(reader.Rows()));
+        }
+    }
+
+    [Fact]
     public void A_row_held_keeps_the_values_given_though_the_caller_reuses_a_buffer_or_list_for_the_next_row()
     {
         JazminColumn[] columns =
