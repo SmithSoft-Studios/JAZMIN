@@ -237,6 +237,31 @@ public sealed class RefreshTests : IDisposable
         Assert.Equal(Range(10, 3), Ids(fresh));
     }
 
+    [Fact]
+    public void ACopyOfTheSameFile_AppendedToAlike_PutInItsPlace_IsAChange()
+    {
+        var key = JazminKey.Generate();
+        var path = Write("restored.jzm", 2, new JazminWriteOptions { Key = key });
+        var other = path + ".copy";
+        File.Copy(path, other); // the same file elsewhere: a backup, another machine's synced copy
+        JazminFile.Append(path, new JazminAppend { Key = key, Insert = [new Dictionary<string, object?> { ["id"] = 2L, ["section"] = "two" }] });
+        JazminFile.Append(other, new JazminAppend { Key = key, Insert = [new Dictionary<string, object?> { ["id"] = 2L, ["section"] = "TWO" }] });
+        Assert.Equal(new FileInfo(path).Length, new FileInfo(other).Length);
+        using var cache = new JazminReaderCache(10);
+        JazminReader first;
+        using (var lease = cache.Open(path, new JazminReadOptions { Key = key }))
+        {
+            first = lease.Reader;
+            Assert.Equal("two", first.Find(JazminFilter.Eq("id", 2L)).Single()["section"]);
+        }
+        File.Move(path, path + ".old"); // as a restore or a sync tool puts the copy in place
+        File.Move(other, path);
+        Assert.True(first.Changed());
+        using var second = cache.Open(path, new JazminReadOptions { Key = key });
+        Assert.NotSame(first, second.Reader);
+        Assert.Equal("TWO", second.Reader.Find(JazminFilter.Eq("id", 2L)).Single()["section"]);
+    }
+
     // ---- JazminReaderCache -----------------------------------------------------------------------------------------
 
     [Fact]
