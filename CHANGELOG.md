@@ -214,6 +214,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   50,000 rows of 8 cities in random order (43,835 chunks of two parts), the heap held before `finish()` went from 59.4
   to 51.5 MB (about 95 bytes a digest) and the peak memory from 360-361 to 299-346 MB (five runs each, interleaved).
   The files are byte for byte the same.
+  - **Then without an object per chunk:** what the writer keeps of each chunk until `finish()` writes the chunk
+    directories (its place, row count, digests and statistics) is now kept in a few typed arrays, with the digests in
+    one byte array and the statistics' bounds in another. A list or object column's leaf statistics are still objects.
+    The same setup (43,744 chunks of two parts), seven runs each, interleaved, against the step above: the heap held
+    before `finish()` went from 44.1 to 0.6 MB, with 6.4 to 21.2 MB held outside it (the arrays); the peak memory
+    from 293-345 MB (median 335) to 251-273 MB (median 253); the time from 10.2-10.9 s to 8.3-8.9 s, of which
+    `finish()` 0.48-0.52 s to 0.46-0.52 s. A plain write of 200,000 rows (49 chunks) and a regrouped write (16 chunks)
+    stay as they were: 126-129 MB and 1.1-1.2 s, 95-97 MB and 0.34-0.42 s. The files are byte for byte the same.
 
 ## 1.7.2 - 2026-10-20 (file format 1.0)
 A security fix to `grantAccess()` in the JavaScript library, and a clearer error for a damaged owner key.

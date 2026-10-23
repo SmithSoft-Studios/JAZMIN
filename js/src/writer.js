@@ -236,12 +236,6 @@ const sha256 = (...parts) => {
 };
 
 /**
- * A digest kept until the file is finished (a chunk part's), copied into Node's shared pool of small buffers: a hash's
- * own buffer held about 95 bytes more of heap (43,835 chunks of two parts: 59.4 -> 51.5 MB).
- */
-const pooled = (hash) => Buffer.from(hash);
-
-/**
  * A table's definition, checked (spec 6.2): { name, columns, sortedBy, sortCols, order, chunkRows, chunkBytes,
  * partitionBy, partitionCol, columnGroups }; `order` is its sort order (sort-keys.js normalizeOrder), `sortedBy` its
  * plain leading keys (the catalog's sorted_by). Partition columns and column groups belong to access-controlled files.
@@ -298,21 +292,148 @@ function tableDefinition(t, { named, access, chunkRows, chunkBytes, kept = [] })
  *             that sees one (its groups) must see every column it uses
  */
 
-/** A nested column's leaf statistics over a segment's chunks (spec 6.4): every chunk of a writer has the same leaves. */
-function leafEntries(chunks, col) {
-  const first = chunks[0].stats[col].leaves;
-  if (!first) return [];
-  return first.map((leaf, k) => {
-    const bounds = chunks.map((c) => c.stats[col].leaves[k].stats.bounds());
-    return {
-      path: leaf.path,
-      counts: chunks.map((c) => c.stats[col].leaves[k].count),
-      nullCounts: chunks.map((c) => c.stats[col].leaves[k].stats.nulls),
-      min: bounds.map((x) => x.min),
-      max: bounds.map((x) => x.max),
+const DIGEST_SIZE = 32;
+
+/**
+ * The chunks a writer wrote, kept until finish() writes their directories, statistics and chunk map (spec 6.3, 6.4,
+ * 7.6.5). A shared file can have tens of thousands of chunks, so there is no object per chunk: its numbers are kept in
+ * typed arrays, its parts' digests in one byte array and its columns' bounds (already in key form) in another. A
+ * nested column's leaf statistics are still kept as objects. Chunk `c`'s part for column group `g` is item
+ * `c * groupCount + g`; its statistics for column `col` are item `c * columnCount + col`.
+ */
+class ChunkLog {
+  count = 0;
+  partitions = []; // partition ids, in the order first written
+  #partitionIndex = new Map(); // partition id -> its place in `partitions`
+  #groupCount;
+  #columnCount;
+  // Numbers (Float64Array: offsets and row numbers can pass 2^32). All grow together, holding #capacity chunks.
+  #capacity = 64;
+  #rowStarts;
+  #rowCounts;
+  #partitionOf; // a place in `partitions`
+  #offsets; // by part
+  #lengths; // by part
+  #digests; // by part, DIGEST_SIZE bytes each; null when parts have none
+  #nulls; // by chunk and column
+  #boundEnds; // by chunk and column, two each: where its min ends in #bounds, then its max
+  #bounds = new Uint8Array(4096); // every bound, one after another: each starts where the one before ends
+  #leaves = new Map(); // chunk * columnCount + col -> a nested column's leaves: [{ path, count, nulls, min, max }]
+
+  constructor(groupCount, columnCount, withDigests) {
+    this.#groupCount = groupCount;
+    this.#columnCount = columnCount;
+    const n = this.#capacity;
+    this.#rowStarts = new Float64Array(n);
+    this.#rowCounts = new Float64Array(n);
+    this.#partitionOf = new Float64Array(n);
+    this.#offsets = new Float64Array(n * groupCount);
+    this.#lengths = new Float64Array(n * groupCount);
+    this.#digests = withDigests ? new Uint8Array(n * groupCount * DIGEST_SIZE) : null;
+    this.#nulls = new Float64Array(n * columnCount);
+    this.#boundEnds = new Float64Array(n * columnCount * 2);
+  }
+
+  /** Records a chunk and its columns' statistics (ColumnStats, with `leaves` for nested columns); returns its number. */
+  add(rowStart, rowCount, partition, stats) {
+    if (this.count === this.#capacity) this.#grow();
+    const c = this.count++;
+    this.#rowStarts[c] = rowStart;
+    this.#rowCounts[c] = rowCount;
+    if (!this.#partitionIndex.has(partition)) {
+      this.#partitionIndex.set(partition, this.partitions.length);
+      this.partitions.push(partition);
+    }
+    this.#partitionOf[c] = this.#partitionIndex.get(partition);
+    let end = c ? this.#boundEnds[c * this.#columnCount * 2 - 1] : 0;
+    for (let col = 0; col < this.#columnCount; col++) {
+      const at = c * this.#columnCount + col;
+      const { min, max } = stats[col].bounds();
+      this.#nulls[at] = stats[col].nulls;
+      this.#bounds = withRoom(this.#bounds, end + min.length + max.length);
+      this.#bounds.set(min, end);
+      this.#boundEnds[at * 2] = end += min.length;
+      this.#bounds.set(max, end);
+      this.#boundEnds[at * 2 + 1] = end += max.length;
+      const leaves = stats[col].leaves;
+      if (leaves) this.#leaves.set(at, leaves.map((leaf) => ({ path: leaf.path, count: leaf.count, nulls: leaf.stats.nulls, ...leaf.stats.bounds() })));
+    }
+    return c;
+  }
+
+  /** Where chunk `c`'s part for column group `g` was written, and its digest (shared files). */
+  setPart(c, g, offset, length, digest) {
+    const at = c * this.#groupCount + g;
+    this.#offsets[at] = offset;
+    this.#lengths[at] = length;
+    if (this.#digests) this.#digests.set(digest, at * DIGEST_SIZE);
+  }
+
+  #grow() {
+    const twice = (array) => withRoom(array, array.length * 2);
+    this.#capacity *= 2;
+    this.#rowStarts = twice(this.#rowStarts);
+    this.#rowCounts = twice(this.#rowCounts);
+    this.#partitionOf = twice(this.#partitionOf);
+    this.#offsets = twice(this.#offsets);
+    this.#lengths = twice(this.#lengths);
+    this.#digests = this.#digests && twice(this.#digests);
+    this.#nulls = twice(this.#nulls);
+    this.#boundEnds = twice(this.#boundEnds);
+  }
+
+  /** Each partition's chunks: Map partition id -> [chunk number], in the order first written. */
+  byPartition() {
+    const lists = this.partitions.map(() => []);
+    for (let c = 0; c < this.count; c++) lists[this.#partitionOf[c]].push(c);
+    return new Map(this.partitions.map((id, p) => [id, lists[p]]));
+  }
+
+  /** The chunk map's lists of these chunks (spec 7.6.5), as encodeChunkMap takes them. */
+  chunkMap() {
+    return { rowCounts: this.#rowCounts.subarray(0, this.count), partitions: this.partitions, partitionOf: this.#partitionOf.subarray(0, this.count) };
+  }
+
+  /** `chunks` (numbers) as encodeChunkDirectory takes them; the first chunk of this log has ordinal `firstOrdinal`. */
+  directory(chunks, firstOrdinal) {
+    const g = this.#groupCount;
+    const digest = (at) => (this.#digests ? Buffer.from(this.#digests.buffer, at * DIGEST_SIZE, DIGEST_SIZE) : undefined);
+    return chunks.map((c) => ({
+      ordinal: firstOrdinal + c, rowStart: this.#rowStarts[c], rowCount: this.#rowCounts[c],
+      parts: Array.from({ length: g }, (_, k) => ({ offset: this.#offsets[c * g + k], length: this.#lengths[c * g + k], digest: digest(c * g + k) })),
+    }));
+  }
+
+  /** Column `col`'s statistics over `chunks` (numbers), as encodeStatistics takes them. */
+  statistics(chunks, col) {
+    const at = (c) => c * this.#columnCount + col;
+    // Bound `b` (2 x at(c), + 1 for the max): a Buffer over its bytes.
+    const bound = (b) => {
+      const start = b ? this.#boundEnds[b - 1] : 0;
+      return Buffer.from(this.#bounds.buffer, start, this.#boundEnds[b] - start);
     };
-  });
+    // A nested column's leaves: every chunk of a writer has the same ones.
+    const leaves = (this.#leaves.get(at(chunks[0])) ?? []).map((leaf, k) => {
+      const each = chunks.map((c) => this.#leaves.get(at(c))[k]);
+      return { path: leaf.path, counts: each.map((x) => x.count), nullCounts: each.map((x) => x.nulls), min: each.map((x) => x.min), max: each.map((x) => x.max) };
+    });
+    return {
+      nullCounts: chunks.map((c) => this.#nulls[at(c)]),
+      min: chunks.map((c) => bound(at(c) * 2)),
+      max: chunks.map((c) => bound(at(c) * 2 + 1)),
+      leaves,
+    };
+  }
 }
+
+/** `array` (a typed array) if it holds `n` items, or a copy of it at least twice as long. */
+function withRoom(array, n) {
+  if (n <= array.length) return array;
+  const longer = new array.constructor(Math.max(n, array.length * 2));
+  longer.set(array);
+  return longer;
+}
+
 export class JazminWriter {
   #out;
   #columns;
@@ -333,7 +454,7 @@ export class JazminWriter {
   #chunkRows = 0;
   #chunkStats;
   #chunkPartition = null;
-  #chunks = []; // chunks this writer wrote: { ordinal, rowStart, rowCount, partition, parts, stats }
+  #chunks = null; // chunks this writer wrote (a ChunkLog)
   #firstOrdinal = 0;
   #indexBuilders = [];
   #rowCount = 0;
@@ -361,7 +482,7 @@ export class JazminWriter {
   #usesNested = false; // a table has list or object columns: the header names the feature (spec 5.4)
   #stagers = null; // by column: list and object values are checked into a stage before any buffer takes them
   #pool = null; // SectionPool, started from the third chunk so small files never pay for workers
-  #pending = []; // chunk parts being encoded by the pool, in file order: { entry, group }
+  #pending = []; // chunk parts being encoded by the pool, in file order: { chunk (its number), group }
   #regroup = null; // regroup: the limits on the rows held ({ rows, bytes })
   #held = null; // regroup, in a partitioned table: partition -> { values (serialized), rows, bytes }, the first held first
   #heldRows = 0;
@@ -627,7 +748,7 @@ export class JazminWriter {
     this.#orderKey = def.order ? orderKeyMaker(def.order.keys) : null;
     this.#orderCompare = def.order ? orderComparer(def.order.keys) : null;
     this.#groups = def.columnGroups.map((g) => ({ name: g.name, cols: g.cols }));
-    this.#chunks = [];
+    this.#chunks = new ChunkLog(this.#groups.length, def.columns.length, Boolean(this.#access));
     this.#chunkPartition = null;
     // regroup holds rows per partition, unless they arrive sorted by the partition column (then already grouped).
     this.#held = this.#regroup && def.partitionCol >= 0 && !def.sortCols ? new Map() : null;
@@ -660,7 +781,7 @@ export class JazminWriter {
     const t = this.#tableIndex;
     const segment = cont ? cont.header.appendCount + 1 : 0;
     // A new file always lists its indexes, even without rows, so appends and updates keep them.
-    const newIndexes = !cont || this.#chunks.length ? this.#writeIndexes(segment) : [];
+    const newIndexes = !cont || this.#chunks.count ? this.#writeIndexes(segment) : [];
     const indexes = [...(cont?.indexes ?? []), ...newIndexes];
     const written = this.#writeDirectories(); // [{ id, segments: [ref] }] for the partitions this writer added to
     const table = {
@@ -672,7 +793,7 @@ export class JazminWriter {
       partitionBy: this.#current.partitionBy ?? '',
       rowCount: this.#rowCount,
       deletedCount: cont?.deleted.length ?? 0,
-      chunkCount: this.#firstOrdinal + this.#chunks.length,
+      chunkCount: this.#firstOrdinal + this.#chunks.count,
       partitions: [],
       partitionTable: null,
       indexes: this.#access ? [] : indexes,
@@ -696,10 +817,7 @@ export class JazminWriter {
   #writeChunkMap(segment) {
     if (!this.#options.chunkMap) return {};
     const cont = this.#continue;
-    // This writer's chunks.
-    const partitions = [...new Set(this.#chunks.map((c) => c.partition))];
-    const index = new Map(partitions.map((id, i) => [id, i]));
-    const written = { rowCounts: this.#chunks.map((c) => c.rowCount), partitions, partitionOf: this.#chunks.map((c) => index.get(c.partition)) };
+    const written = this.#chunks.chunkMap(); // this writer's chunks
     const ownerKey = (sectionId) => sectionKeyFrom(this.#secrets.owner, this.#salt, sectionId);
     if (!cont) {
       const sectionId = `${this.#tableIndex}/chunkmap`;
@@ -957,13 +1075,13 @@ export class JazminWriter {
    * compression workers without blocking, and gives other work the event loop after each chunk.
    */
   async writeRowsAsync(rows) {
-    let chunks = this.#chunks.length;
+    let chunks = this.#chunks.count;
     for await (const row of rows) {
       // The next chunk could have to wait for a worker: wait here, without blocking, instead.
       if (this.#pool && this.#pool.pending >= this.#pool.capacity - this.#groups.length) await this.#pool.whenReady();
       this.writeRow(row);
-      if (this.#chunks.length !== chunks) {
-        chunks = this.#chunks.length;
+      if (this.#chunks.count !== chunks) {
+        chunks = this.#chunks.count;
         await new Promise((resolve) => setImmediate(resolve));
       }
     }
@@ -984,19 +1102,16 @@ export class JazminWriter {
   #flushChunk() {
     if (this.#chunkRows === 0) return;
     if (this.#progress) this.#reportRows(this.#chunkRows);
-    const ordinal = this.#firstOrdinal + this.#chunks.length;
+    const ordinal = this.#firstOrdinal + this.#chunks.count;
     const partition = this.#access ? this.#secrets.addPartition(this.#chunkPartition) : WHOLE_TABLE;
-    const entry = {
-      ordinal, rowStart: this.#rowCount - this.#chunkRows, rowCount: this.#chunkRows, partition,
-      parts: this.#groups.map(() => ({ offset: 0, length: 0 })), stats: this.#chunkStats,
-    };
+    const stats = this.#chunkStats;
     // Nested columns' leaves (spec 6.4): taken before encoding resets the buffers.
     for (const group of this.#groups) {
       group.cols.forEach((col, j) => {
-        if (typeof group.buffers[j].leafStats === 'function') entry.stats[col].leaves = group.buffers[j].leafStats();
+        if (typeof group.buffers[j].leafStats === 'function') stats[col].leaves = group.buffers[j].leafStats();
       });
     }
-    this.#chunks.push(entry);
+    const chunk = this.#chunks.add(this.#rowCount - this.#chunkRows, this.#chunkRows, partition, stats);
     const pool = this.#sectionPool();
     const partitionSecret = this.#access ? this.#secrets.partitionSecret(partition) : null;
     this.#groups.forEach((group, g) => {
@@ -1008,11 +1123,11 @@ export class JazminWriter {
       if (pool) {
         // Compressed (and encrypted) on a worker; written in order once ready.
         pool.submit(raw, { codec: this.#options.codec, level: this.#options.level, fileId: this.#fileId, sectionId, key });
-        this.#pending.push({ entry, group: g });
+        this.#pending.push({ chunk, group: g });
         if (pool.pending >= pool.capacity) this.#writePending(1);
       } else {
         const section = this.#section(raw, sectionId, key);
-        Object.assign(entry.parts[g], { offset: this.#out.position, length: section.length, ...(this.#access ? { digest: pooled(digest(section)) } : {}) });
+        this.#chunks.setPart(chunk, g, this.#out.position, section.length, this.#access ? digest(section) : null);
         this.#out.write(section);
       }
     });
@@ -1021,7 +1136,7 @@ export class JazminWriter {
 
   /** The worker pool for chunk sections, or null to encode on this thread (small files, parallelism 1, no workers). */
   #sectionPool() {
-    if (this.#pool || this.#parallelism <= 1 || this.#chunks.length < 3) return this.#pool;
+    if (this.#pool || this.#parallelism <= 1 || this.#chunks.count < 3) return this.#pool;
     try {
       this.#pool = new SectionPool(this.#parallelism);
     } catch {
@@ -1033,11 +1148,9 @@ export class JazminWriter {
   /** Writes up to `count` encoded chunk parts from the pool, oldest first. */
   #writePending(count = Infinity) {
     for (; count > 0 && this.#pending.length > 0; count--) {
-      const { entry, group } = this.#pending.shift();
+      const { chunk, group } = this.#pending.shift();
       const { envelope, body } = this.#pool.take();
-      Object.assign(entry.parts[group], {
-        offset: this.#out.position, length: envelope.length + body.length, ...(this.#access ? { digest: pooled(sha256(envelope, body)) } : {}),
-      });
+      this.#chunks.setPart(chunk, group, this.#out.position, envelope.length + body.length, this.#access ? sha256(envelope, body) : null);
       this.#out.write(envelope);
       // In memory the parts are kept: copy the body out of the worker's larger output buffer.
       this.#out.write(this.#out.fd === null ? Buffer.from(body) : body);
@@ -1252,13 +1365,9 @@ export class JazminWriter {
    * Returns [{ id, idText, segments: [ref] }], sorted by id.
    */
   #writeDirectories() {
-    const byPartition = new Map();
-    for (const chunk of this.#chunks) {
-      if (!byPartition.has(chunk.partition)) byPartition.set(chunk.partition, []);
-      byPartition.get(chunk.partition).push(chunk);
-    }
+    const log = this.#chunks;
     const written = [];
-    for (const [partition, chunks] of byPartition) {
+    for (const [partition, chunks] of log.byPartition()) {
       // Segment n of a partition's directory (n > 0 after appends) has ids ending "/n".
       const position = this.#continue?.segmentCounts.get(partition) ?? 0;
       const suffix = position ? `/${position}` : '';
@@ -1269,15 +1378,12 @@ export class JazminWriter {
       const blocks = this.#access ? this.#groups.map((g) => ({ group: g.name, cols: g.cols })) : this.#columns.map((_, i) => ({ group: DEFAULT_COLUMN_GROUP, cols: [i] }));
       const statistics = blocks.map((block, b) => {
         const sectionId = `${this.#tableIndex}/stats/${partition}/${b}${suffix}`;
-        const columns = block.cols.map((col) => {
-          const bounds = chunks.map((c) => c.stats[col].bounds());
-          return { nullCounts: chunks.map((c) => c.stats[col].nulls), min: bounds.map((x) => x.min), max: bounds.map((x) => x.max), leaves: leafEntries(chunks, col) };
-        });
+        const columns = block.cols.map((col) => log.statistics(chunks, col));
         const key = this.#access ? partKey(secret, this.#secrets.columnSecret(block.group), this.#salt, sectionId) : this.#keys?.sectionKey(KEYRING_GROUPS.data, sectionId);
         return { columns: block.cols, section: this.#writeSection(encodeStatistics(columns), sectionId, key) };
       });
       const sectionId = `${this.#tableIndex}/dir/${partition}${suffix}`;
-      const ref = this.#writeSection(encodeChunkDirectory({ chunks, statistics }, Boolean(this.#access)), sectionId, this.#key(sectionId, secret));
+      const ref = this.#writeSection(encodeChunkDirectory({ chunks: log.directory(chunks, this.#firstOrdinal), statistics }, Boolean(this.#access)), sectionId, this.#key(sectionId, secret));
       written.push({ id: this.#access ? Buffer.from(partition, 'base64url') : Buffer.alloc(0), segments: [ref] });
     }
     return written.sort((a, b) => Buffer.compare(a.id, b.id));
