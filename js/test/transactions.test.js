@@ -403,3 +403,74 @@ test('several deletes in one transaction: each row counts once, for the first ca
   };
   assert.deepEqual(ids(file), ids(expected));
 });
+
+test('transactions and the group writer match one append() per call: autoCompact, several tables, composite and decimal keys', async () => {
+  const setups = [
+    {
+      name: 'autoCompact', keyColumns: ['id'], options: { autoCompact: { appends: 1 } },
+      write: (file) => base(file),
+      calls: [['insert', [{ id: 10, v: 'x' }]], ['upsert', [{ id: 2, v: 'B' }, { id: 11, v: 'y' }]], ['delete', { id: 1 }]],
+    },
+    {
+      name: 'tables', keyColumns: ['id'], options: { table: 'orders' },
+      write: (file) => write(file, { notes: [{ n: 1 }], orders: [{ id: 1, v: 'a' }, { id: 2, v: 'b' }] }, {
+        tables: [{ name: 'notes', columns: [{ name: 'n', type: 'int' }] }, { name: 'orders', columns }], now: NOW,
+      }),
+      calls: [['upsert', [{ id: 2, v: 'B' }, { id: 3, v: 'c' }]], ['delete', { id: 1 }], ['insert', [{ id: 4, v: 'd' }]]],
+    },
+    {
+      name: 'composite and decimal keys', keyColumns: ['code', 'price'], options: {},
+      write: (file) => write(file, [{ code: 'A', price: '1.50', v: 'a' }, { code: 'A', price: '2.00', v: 'b' }, { code: 'B', price: '1.5', v: 'c' }], {
+        columns: [{ name: 'code', type: 'string' }, { name: 'price', type: 'decimal' }, { name: 'v', type: 'string' }], now: NOW,
+      }),
+      // '1.5' and '1.50' are one key; in one call the last row for a key wins.
+      calls: [['upsert', [{ code: 'A', price: '1.5', v: 'A1' }, { code: 'A', price: '1.500', v: 'A2' }]], ['delete', { v: 'b' }], ['upsert', [{ code: 'B', price: '1.50', v: 'C' }]]],
+    },
+  ];
+  const rowsIn = (file, table) => {
+    const r = open(file, { table });
+    try {
+      return [...r.rows()].map((x) => JSON.stringify(x));
+    } finally {
+      r.close();
+    }
+  };
+  for (const setup of setups) {
+    const { table } = setup.options;
+    const expected = tmp(`${setup.name}-seq.jzm`);
+    setup.write(expected);
+    let counts = { inserted: 0, updated: 0, deleted: 0 };
+    for (const [kind, arg] of setup.calls) {
+      const r = append(expected, { ...setup.options, keyColumns: setup.keyColumns, now: NOW, [kind]: arg });
+      counts = { inserted: counts.inserted + r.inserted, updated: counts.updated + r.updated, deleted: counts.deleted + r.deleted };
+    }
+    const viaTx = tmp(`${setup.name}-tx.jzm`);
+    setup.write(viaTx);
+    const tx = beginAppend(viaTx, { ...setup.options, keyColumns: setup.keyColumns, now: NOW });
+    run(tx, setup.calls);
+    const committed = tx.commit();
+    assert.deepEqual(rowsIn(viaTx, table), rowsIn(expected, table), `${setup.name}: transaction`);
+    assert.deepEqual({ inserted: committed.inserted, updated: committed.updated, deleted: committed.deleted }, counts, `${setup.name}: counts`);
+    if (table) assert.deepEqual(rowsIn(viaTx, 'notes'), rowsIn(expected, 'notes'), `${setup.name}: the other table`);
+
+    const viaWriter = tmp(`${setup.name}-writer.jzm`);
+    setup.write(viaWriter);
+    const w = openWriter(viaWriter, { ...setup.options, keyColumns: setup.keyColumns, now: NOW });
+    await Promise.all(setup.calls.map(([kind, arg]) => w[kind](arg)));
+    await w.close();
+    assert.deepEqual(rowsIn(viaWriter, table), rowsIn(expected, table), `${setup.name}: group writer`);
+  }
+});
+
+test('the group writer: a batch that fails for a reason not about its calls leaves the file byte for byte as it was', async () => {
+  const file = tmp('locked.jzm');
+  base(file);
+  const before = fs.readFileSync(file);
+  fs.writeFileSync(`${file}.lock`, ''); // another writer holds the file
+  const w = openWriter(file, { maxDelay: 0 });
+  const results = await Promise.allSettled([w.insert([{ id: 10, v: 'x' }]), w.insert([{ id: 11, v: 'y' }])]);
+  await w.close();
+  assert.deepEqual(results.map((r) => r.status), ['rejected', 'rejected']);
+  assert.ok(fs.readFileSync(file).equals(before));
+  fs.rmSync(`${file}.lock`);
+});
