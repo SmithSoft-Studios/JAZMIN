@@ -25,7 +25,7 @@ const withKey = { JAZMIN_KEY: keys.key };
 test('every command has help, and mistakes are usage errors', () => {
   const main = jazmin(['--help']);
   assert.equal(main.status, 0);
-  for (const command of ['inspect', 'query', 'explain', 'advise', 'convert', 'keygen', 'script', 'verify']) {
+  for (const command of ['inspect', 'query', 'explain', 'advise', 'convert', 'keygen', 'script', 'verify', 'check']) {
     assert.match(main.stdout, new RegExp(`^  ${command}`, 'm'));
     const help = jazmin([command, '--help']);
     assert.deepEqual([help.status, help.stdout.startsWith(`Usage: jazmin ${command}`)], [0, true], command);
@@ -182,6 +182,29 @@ for (const fixture of publisher.fixtures) {
     }
   });
 }
+
+test('check: every section of a file, with exit code 0 when unchanged and 1 when a byte changed', () => {
+  const ok = jazmin(['check', paged], withKey);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, /^Unchanged: every section checked \(\d+ sections, [\d,]+ bytes\) by its encryption/);
+  assert.doesNotMatch(ok.stdout + ok.stderr, new RegExp(keys.key));
+  const json = JSON.parse(jazmin(['check', paged, '--json'], withKey).stdout);
+  assert.deepEqual([json.checkedBy, json.unusedBytes], ['encryption', 0]);
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-cli-check-'));
+  const bad = path.join(dir, 'bad.jzm');
+  const bytes = fs.readFileSync(paged);
+  bytes[200] ^= 1;
+  fs.writeFileSync(bad, bytes);
+  const changed = jazmin(['check', bad], withKey);
+  assert.equal(changed.status, 1);
+  assert.match(changed.stderr, /^Changed or damaged: /);
+
+  const plain = jazmin(['check', path.join(fixtures, 'js-plain.jzm')]);
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.match(plain.stdout, /accidental damage only/);
+  assert.equal(jazmin(['check', paged]).status, 2); // encrypted, and no key
+});
 
 test('verify: several files print one line each and a summary; the exit code is the worst', () => {
   const all = verifyTest(['signed-plain.jzm', 'withdrawn.jzm', 'unsigned.jzm']);

@@ -689,4 +689,29 @@ asIpc44.close();
 grantAccess(acks44, hospital44, ipc44, { rows: ['W1'] }); // given again without edit: the limit is kept (edit: null removes it)
 // 44. [ 'ackNote' ] | Column 'ackAction' can't be changed with this key | 1 applied
 
+// 45. Has the file changed? (USER-GUIDE 17.6): verify() checks every section, also those no query reads (an index).
+const key45 = JazminKey.generate();
+const statement45 = path.join(dir, 'statement.jzm');
+write(statement45, Array.from({ length: 2000 }, (_, i) => ({ id: i, payee: `payee ${i % 40}` })), {
+  key: key45, columns: [{ name: 'id', type: 'int', index: 'sorted' }, { name: 'payee', type: 'string', index: 'trigram' }],
+});
+const whole45 = open(statement45, { key: key45 });
+const checked45 = whole45.verify();
+whole45.close();
+const changed45 = fs.readFileSync(statement45);
+changed45[changed45.length - 200] ^= 1; // one bit, near the end of the file
+let refused45;
+try {
+  const r45 = open(new Uint8Array(changed45), { key: key45 });
+  try {
+    r45.verify();
+  } finally {
+    r45.close();
+  }
+} catch (error) {
+  refused45 = error.name;
+}
+console.log('45.', checked45.checkedBy, checked45.unusedBytes, 'unused bytes |', refused45);
+// 45. encryption 0 unused bytes | JazminFormatError
+
 fs.rmSync(dir, { recursive: true, force: true });

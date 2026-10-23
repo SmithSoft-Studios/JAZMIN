@@ -3021,11 +3021,12 @@ export class JazminReader {
       }
     });
 
-    let scratch = Buffer.alloc(0); // one section at a time
+    let largest = 0;
+    for (const { ref } of sections.values()) largest = Math.max(largest, ref.length);
+    const scratch = Buffer.allocUnsafeSlow(largest); // one buffer, one section at a time
     for (const offset of [...sections.keys()].sort((a, b) => a - b)) {
       const { ref, sectionId, key } = sections.get(offset);
       if (!(ref.length >= ENVELOPE_SIZE)) throw new JazminFormatError(`Section '${sectionId}' is truncated`);
-      if (scratch.length < ref.length) scratch = Buffer.allocUnsafe(ref.length);
       const section = this.#source.read(ref.offset, ref.length, scratch);
       if (sectionPayloadLength(section) + ENVELOPE_SIZE !== ref.length) throw new JazminFormatError(`Section '${sectionId}' length mismatch`);
       if (this.#access) {

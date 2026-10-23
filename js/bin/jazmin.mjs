@@ -4,7 +4,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { JazminError, JazminKey, exportFile, fromCSV, fromXML, importJSONFile, inspect, open, portableScript } from '../src/index.js';
+import { JazminError, JazminFormatError, JazminKey, exportFile, fromCSV, fromXML, importJSONFile, inspect, open, portableScript } from '../src/index.js';
 import { writeShape } from '../src/shape.js';
 import { verifyFiles } from './verify.mjs';
 
@@ -22,6 +22,7 @@ Commands:
   keygen            A new key (or, with --access, an access key from the owner key)
   script <file>     The file as a script, which a page opened from disk opens with JazminBrowser.openScript()
   verify <file>...  Who published a file (its publisher signature), and that it hasn't changed since
+  check <file>      That not one section of a file changed or was damaged, with its key: every section, not only those read
 
 Keys: set JAZMIN_KEY (key text), JAZMIN_PASSWORD or JAZMIN_UNLOCK_TOKEN, or pass --key-file, --password-file or
 --unlock-token-file. Keys are never printed, except by keygen.
@@ -80,6 +81,18 @@ Exit codes:
   1  withdrawn, superseded, signed (an unknown key), changed, invalid, none (not signed), not-verified (not a JAZMIN
      file), or a file that could not be read: anything a script should not rely on. With several files, the worst.
   2  the command line is wrong`,
+  check: `Usage: jazmin check <file> [--json]
+
+Checks every section of the file's current version, not only those a query reads: in a shared file each section
+against the owner's signature (needs the owner key), in an encrypted file each section's authentication tag, in a
+plain file each section's checksum (accidental damage only). Reads one section at a time; decodes nothing it needn't.
+Bytes earlier versions left behind (after appends) are counted, not checked: compact() removes them.
+--json prints { checkedBy, sections, bytes, unusedBytes }.
+
+Exit codes:
+  0  unchanged
+  1  changed or damaged (the first section that failed is named), or the file could not be opened (a wrong key)
+  2  the command line is wrong, or an encrypted file was given no key`,
 };
 
 const KEY_OPTIONS = { 'key-file': { type: 'string' }, 'password-file': { type: 'string' }, 'unlock-token-file': { type: 'string' } };
@@ -339,6 +352,36 @@ const commands = {
     if (list !== undefined && !fs.existsSync(list)) throw new JazminError(`No such file: ${list}`);
     const revocationList = list === undefined ? undefined : fs.readFileSync(list, 'utf8');
     return verifyFiles(positionals, { key, password, revocationList, json: values.json }, { out, err: (text) => process.stderr.write(`${text}\n`) });
+  },
+
+  check(args) {
+    const { values, positionals } = parse(args, { ...KEY_OPTIONS, json: { type: 'boolean' } });
+    const file = fileArgument(positionals);
+    const facts = inspect(file);
+    const keys = keyOptions(values);
+    if ((facts.encrypted || facts.accessControlled) && !keys.key && !keys.password) {
+      throw new UsageError('The file is encrypted: set JAZMIN_KEY or JAZMIN_PASSWORD (or --key-file), the owner key for a shared file');
+    }
+    let reader;
+    let result;
+    try {
+      reader = open(file, keys); // damage can show while opening, too
+      result = reader.verify();
+    } catch (error) {
+      if (!(error instanceof JazminFormatError)) throw error; // a wrong key, an access key, not a JAZMIN file...
+      process.stderr.write(`Changed or damaged: ${error.message}\n`);
+      return 1;
+    } finally {
+      reader?.close();
+    }
+    if (values.json) {
+      out(JSON.stringify(result, null, 2));
+      return 0;
+    }
+    const by = { signature: "the owner's signature", encryption: 'its encryption', checksum: 'its checksums (accidental damage only: a plain file can be changed on purpose without this noticing; encrypt or sign it for that)' };
+    out(`Unchanged: every section checked (${result.sections} sections, ${result.bytes.toLocaleString('en-US')} bytes) by ${by[result.checkedBy]}.`);
+    if (result.unusedBytes) out(`${result.unusedBytes.toLocaleString('en-US')} bytes earlier versions left behind are not used or checked; compact() removes them.`);
+    return 0;
   },
 };
 

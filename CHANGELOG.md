@@ -61,6 +61,20 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   Other systems are unchanged.
 
 ### Added
+- **`reader.verify()`: has the file changed? (#275, User Guide 17.6).** A reader checks each part of a file when it
+  reads it, so a change in a part no query reads, such as an index you don't use, went unnoticed: in a user's trial,
+  about half of the single-byte changes to an encrypted file passed a full read of every row. `verify()` (.NET
+  `reader.Verify()`) checks every section of the current version, one at a time, and throws a format error naming the
+  first that changed:
+  - **Shared files:** each section's SHA-256 against the owner's signature (needs the owner key).
+  - **Files with a key or password:** each section's authentication tag. Any change is caught.
+  - **Plain files:** each section's checksum, which catches accidental damage only.
+
+  Also the preamble's fixed values, and a damaged end of file that makes readers fall back to the version before the
+  last append. It returns `{ checkedBy, sections, bytes, unusedBytes }`; bytes earlier versions left behind are counted,
+  not checked. Measured on a 17 MB encrypted file of 200,000 rows with sorted and trigram indexes (Node 24, five runs):
+  66–118 ms against 243–433 ms to read every row, peak memory about 22 MB above opening it. **`jazmin check <file>`**
+  does the same from the command line (exit code 0 unchanged, 1 changed or damaged). No format change.
 - **Limits per key on what a key may send back (spec 7.9.1, #257).** A grant's `edit` (`columns`, `add`, `delete`)
   narrows the document's `package.edit` for that key: one shared document where a doctor may acknowledge a result and
   infection control may only add a note. `writeChanges` refuses what the key may not send ("Column 'ackAction' can't
