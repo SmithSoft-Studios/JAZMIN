@@ -91,8 +91,15 @@ function appendUnlocked(path, options) {
         }
         upserted = kept.reverse();
       }
-      // A single key column can use its index (or chunk statistics) instead of a full scan.
-      const filter = keyColumns.length === 1 ? { [keyColumns[0]]: { in: upserted.map((r) => r[keyColumns[0]]).filter((v) => v != null) } } : null;
+      // A single key column can use its index (or chunk statistics) instead of a full scan. An empty key matches the
+      // empty cells, which a sorted index lists apart (its null postings).
+      let filter = null;
+      if (keyColumns.length === 1) {
+        const name = keyColumns[0];
+        const values = upserted.map((r) => r[name]).filter((v) => v != null);
+        const empty = values.length < upserted.length ? { [name]: null } : null;
+        filter = !empty ? { [name]: { in: values } } : values.length ? { or: [{ [name]: { in: values } }, empty] } : empty;
+      }
       const matchedKeys = new Set();
       for (const [rowId, row] of reader[ROWS_WITH_IDS](filter)) {
         const k = keyOf(row);

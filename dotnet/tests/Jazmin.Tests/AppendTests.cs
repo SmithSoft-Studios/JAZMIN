@@ -231,6 +231,24 @@ public sealed class AppendTests : IDisposable
     }
 
     [Fact]
+    public void Upsert_ByASingleKeyColumn_AnEmptyKeyMatchesAnEmptyKey_AsInUpdateAndCompositeKeys()
+    {
+        foreach (var indexed in new[] { true, false })
+        {
+            JazminColumn[] columns = [new("id", JazminType.Int) { Indexes = indexed ? [JazminIndexKind.Sorted] : [] }, new("v", JazminType.String)];
+            var path = WriteWith($"null-key-{indexed}.jzm", columns, [Iv(null, "n"), Iv(1, "a"), Iv(2, "b"), Iv(null, "n2")], new JazminWriteOptions { ChunkRows = 2 });
+            var both = JazminFile.Append(path, new JazminAppend { Upsert = [Iv(null, "m"), Iv(1, "c")], KeyColumns = ["id"] });
+            Assert.Equal(["2b", "m", "1c"], Texts(path, IdV));
+            // The two empty-key rows the file had are replaced by one: the second counts as deleted, as in Update.
+            Assert.Equal((3L, 0L, 2L, 1L), (both.RowCount, both.Inserted, both.Updated, both.Deleted));
+            // Only empty keys.
+            var nulls = JazminFile.Append(path, new JazminAppend { Upsert = [Iv(null, "z")], KeyColumns = ["id"] });
+            Assert.Equal(["2b", "1c", "z"], Texts(path, IdV));
+            Assert.Equal((3L, 0L, 1L), (nulls.RowCount, nulls.Inserted, nulls.Updated));
+        }
+    }
+
+    [Fact]
     public void Upsert_ByADecimalKey_EqualValuesMatchWhateverTheirScale_AsInUpdate()
     {
         JazminColumn[] columns = [new("id", JazminType.Decimal) { Indexes = [JazminIndexKind.Sorted] }, new("kind", JazminType.String), new("v", JazminType.String)];

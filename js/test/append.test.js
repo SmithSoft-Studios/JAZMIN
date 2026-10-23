@@ -320,6 +320,24 @@ test('upsert in a shared file: the last row for a key wins when its rows are in 
   assert.deepEqual(rowsOf(file, { key: carol }).map((r) => [r.id, r.amount]), [[2, 3], [3, 31]]);
 });
 
+test('upsert by a single key column: an empty key matches an empty key, as in update() and composite keys', () => {
+  for (const index of ['sorted', undefined]) {
+    const file = tmp(`null-key-${index ?? 'none'}.jzm`);
+    write(file, [{ id: null, v: 'n' }, { id: 1, v: 'a' }, { id: 2, v: 'b' }, { id: null, v: 'n2' }], {
+      columns: [{ name: 'id', type: 'int', ...(index ? { index } : {}) }, { name: 'v', type: 'string' }],
+      chunkRows: 2,
+    });
+    const both = append(file, { upsert: [{ id: null, v: 'm' }, { id: 1, v: 'c' }], keyColumns: ['id'] });
+    assert.deepEqual(rowsOf(file).map((r) => `${r.id}${r.v}`), ['2b', 'nullm', '1c'], `index: ${index}`);
+    // The two empty-key rows the file had are replaced by one: the second counts as deleted, as in update().
+    assert.deepEqual([both.rowCount, both.inserted, both.updated, both.deleted], [3, 0, 2, 1], `index: ${index}`);
+    // Only empty keys.
+    const nulls = append(file, { upsert: [{ id: null, v: 'z' }], keyColumns: ['id'] });
+    assert.deepEqual(rowsOf(file).map((r) => `${r.id}${r.v}`), ['2b', '1c', 'nullz'], `index: ${index}`);
+    assert.deepEqual([nulls.rowCount, nulls.inserted, nulls.updated], [3, 0, 1], `index: ${index}`);
+  }
+});
+
 test('upsert by a decimal key: equal values match whatever their scale, as in update()', () => {
   for (const [name, keyColumns] of [['single', ['id']], ['composite', ['id', 'kind']]]) {
     const file = tmp(`decimal-${name}.jzm`);
