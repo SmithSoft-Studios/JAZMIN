@@ -73,6 +73,27 @@ public sealed class JazminReadOptions
 
     /// <summary>The table to read, by name (default: the first). See <see cref="JazminReader.Tables"/>.</summary>
     public string? Table { get; set; }
+
+    /// <summary>Internal (<see cref="JazminReader.Refresh"/>): the key the last version derived from <see cref="Password"/>.</summary>
+    internal JazminReader.DerivedKey? Derived { get; set; }
+
+    /// <summary>A copy for a reader to keep (the caller may change these options later), reading <paramref name="table"/>.</summary>
+    internal JazminReadOptions Copy(string? table) => new()
+    {
+        CandidateKeys = CandidateKeys,
+        Key = Key,
+        AccessKey = AccessKey,
+        Password = Password,
+        UnlockToken = UnlockToken,
+#pragma warning disable CS0618 // the clock option is obsolete for callers, still honoured until 2.0
+        Now = Now,
+#pragma warning restore CS0618
+        AccessState = AccessState,
+        CheckClockRollback = CheckClockRollback,
+        Priority = Priority,
+        _maxDegreeOfParallelism = _maxDegreeOfParallelism,
+        Table = table,
+    };
 }
 
 public sealed class JazminQueryOptions
@@ -346,7 +367,6 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private List<IndexRef>? _indexRefs;
     private bool? _sortStatsComplete;
     private ushort _flags;
-    private bool _closed;
     private long[] _deleted = Array.Empty<long>(); // sorted row ids removed by appends
     private long? _deletedVisible;
     private long _validEnd;
@@ -355,6 +375,18 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private object?[][]? _cachedRows;
     private bool[]? _cachedWanted; // the columns the cached chunk decoded (null: all)
     private CostCounter? _cost; // while Explain(analyze: true) runs a query: what it reads
+    // Opened from a path: the path and the options it was opened with (Refresh opens the new version with them; kept
+    // until Dispose), the key derived from a password, and the file's size and last 44 bytes when opened (Changed).
+    private readonly string? _path;
+    private readonly int _bufferSize; // of the FileStream: Refresh opens the new version the same way
+    private JazminReadOptions? _openOptions;
+    private DerivedKey? _derived;
+    private long _openedSize;
+    private byte[] _tail = [];
+    private bool _disposed;
+
+    /// <summary>A key derived from a password, for the file's salt and iterations: Refresh reuses it for the next version.</summary>
+    internal sealed record DerivedKey(byte[] Salt, uint Iterations, byte[] Master);
 
     /// <summary>Counts what a query reads (see <see cref="JazminQueryCost"/>). Updated on the thread that iterates.</summary>
     private sealed class CostCounter
@@ -366,13 +398,24 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     }
 
     /// <summary>Opens the file, or (<paramref name="from"/>, set by <see cref="OpenTable"/>) shares that reader's open file, keys and checks.</summary>
-    private JazminReader(Stream stream, JazminReadOptions? options, bool leaveOpen, JazminReader? from = null)
+    private JazminReader(Stream stream, JazminReadOptions? options, bool leaveOpen, JazminReader? from = null, string? path = null, int bufferSize = 0)
     {
+        _bufferSize = from?._bufferSize ?? bufferSize;
         if (!stream.CanSeek || !stream.CanRead) throw new JazminValidationException("The stream must be readable and seekable");
         _stream = stream;
         _leaveOpen = leaveOpen;
         options ??= new JazminReadOptions();
         _refuseBrotli = from?._refuseBrotli ?? options.RefuseBrotli;
+        _path = from is null ? path : from._path;
+        if (from is not null)
+        {
+            if (from._openOptions is { } opened) _openOptions = opened.Copy(options.Table);
+            (_derived, _openedSize, _tail) = (from._derived, from._openedSize, from._tail);
+        }
+        else if (path is not null)
+        {
+            _openOptions = options.Copy(options.Table);
+        }
         _readAhead = Math.Max(1, options.MaxDegreeOfParallelism);
         _priority = options.Priority;
         _columnsInFlight = _priority == JazminPriority.Speed ? 1024 : 128;
@@ -665,7 +708,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     private JazminVerification VerifyWhole(bool quick)
     {
-        if (_closed) throw new JazminValidationException("This reader is closed");
+        if (_disposed) throw new JazminValidationException("This reader is closed");
         if (_access is { IsOwner: false }) throw new JazminValidationException("A shared file is checked whole with its owner key");
         if (Recovered)
         {
@@ -852,8 +895,114 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// and updates (which replace the file by renaming) can proceed while it is open. On Windows, a path that is missing
     /// for the instant an update replaces the file is waited for briefly (about 0.1 s).
     /// </remarks>
-    public static JazminReader Open(string path, JazminReadOptions? options = null) =>
-        new(OpenRetry.WhenPresent(() => new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1 << 16, FileOptions.RandomAccess)), options, false);
+    public static JazminReader Open(string path, JazminReadOptions? options = null) => OpenFile(path, options, 1 << 16);
+
+    /// <summary>
+    /// Open, with a FileStream buffer of <paramref name="bufferSize"/> bytes (0: none). <see cref="JazminReaderCache"/>
+    /// opens its readers without one: the 64 KB buffer would be most of what each cached reader holds.
+    /// </summary>
+    internal static JazminReader OpenFile(string path, JazminReadOptions? options, int bufferSize) =>
+        new(OpenRetry.WhenPresent(() => new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, bufferSize, FileOptions.RandomAccess)), options, false, null, path,
+            bufferSize);
+
+    /// <summary>
+    /// Whether the file at this reader's path is no longer the version it opened: an append added a version, or an
+    /// update, compaction or key rotation replaced the file (a new file id). Cheap: the file is opened and its file id,
+    /// size and last 44 bytes compared; only when it grew is the trailer a new reader would use looked for. Bytes left by
+    /// an interrupted append are not a change. A file that is gone counts as changed. Only for readers opened from a path.
+    /// </summary>
+    public bool Changed()
+    {
+        CheckPath();
+        using var file = OpenToCheck(_path!);
+        if (file is null) return true;
+        var size = file.Length;
+        if (size < FormatConstants.PreambleSize + FormatConstants.TrailerSize) return true;
+        byte[] ReadAt(long position, int length)
+        {
+            if (position < 0 || length < 0 || position + length > size) throw new JazminFormatException("Unexpected end of file");
+            var buffer = new byte[length];
+            file.Position = position;
+            file.ReadExactly(buffer);
+            return buffer;
+        }
+        try
+        {
+            if (!ReadAt(8, 16).AsSpan().SequenceEqual(_fileId)) return true;
+            if (size == _openedSize && ReadAt(size - FormatConstants.TrailerSize, FormatConstants.TrailerSize).AsSpan().SequenceEqual(_tail)) return false;
+            // Grown (or rewritten at the end): changed unless a new reader would open the same version (an interrupted append).
+            var flags = BinaryPrimitives.ReadUInt16LittleEndian(ReadAt(FormatConstants.FlagsOffset, 2));
+            var (trailer, _, _, _) = FindTrailer(ReadAt, size, flags);
+            return trailer.Header.Offset != _headerRef.Offset || trailer.Header.Length != _headerRef.Length;
+        }
+        catch (Exception e) when (e is JazminFormatException or EndOfStreamException)
+        {
+            return true; // damaged, or cut short while read: opening it again reports what is wrong
+        }
+    }
+
+    /// <summary>
+    /// This reader when the file is unchanged (see <see cref="Changed"/>); otherwise a new reader of the new version,
+    /// opened from the same path with the same options. This reader stays open and keeps reading its version until you
+    /// dispose it. If the new version can't be opened (key revoked or expired, file damaged), this throws as Open would
+    /// and this reader is untouched. A password file whose salt and iterations are unchanged (an append) reuses the key
+    /// derived from the password.
+    /// </summary>
+    public JazminReader Refresh()
+    {
+        CheckPath();
+        if (!Changed()) return this;
+        var options = _openOptions!.Copy(_openOptions.Table);
+        options.Derived = _derived;
+        return OpenFile(_path!, options, _bufferSize);
+    }
+
+    private void CheckPath()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_path is null) throw new JazminValidationException("Changed and Refresh need a reader opened from a file path, not from bytes or a stream");
+    }
+
+    /// <summary>
+    /// Opens a file for <see cref="Changed"/>. An update replaces a file by renaming; on Windows an open file is moved
+    /// aside first, so the path is missing for an instant: a missing path, or one Windows can't open yet, is tried again
+    /// for about 100 ms. Null when the file is still missing.
+    /// </summary>
+    private static FileStream? OpenToCheck(string path)
+    {
+        var deadline = Environment.TickCount64 + 100;
+        while (true)
+        {
+            try
+            {
+                return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.None);
+            }
+            catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException
+                || (OperatingSystem.IsWindows() && e is UnauthorizedAccessException or IOException))
+            {
+                if (Environment.TickCount64 >= deadline)
+                {
+                    if (e is FileNotFoundException or DirectoryNotFoundException) return null;
+                    throw;
+                }
+                Thread.Sleep(5);
+            }
+        }
+    }
+
+    /// <summary>Internal (tests): the key derived from the password, or null.</summary>
+    internal byte[]? DerivedKeyBytes => _derived?.Master;
+
+    /// <summary>Internal (<see cref="JazminReaderCache"/>): when this reader's access key expires, or null.</summary>
+    internal DateTimeOffset? AccessExpires => _access?.Expires;
+
+    /// <summary>Internal (<see cref="JazminReaderCache"/>): no query is running; the last decoded chunk is let go.</summary>
+    internal void Idle()
+    {
+        _cachedOrdinal = -1;
+        _cachedRows = null;
+        _cachedWanted = null;
+    }
 
     public static JazminReader Open(byte[] data, JazminReadOptions? options = null) =>
         new(new MemoryStream(data, writable: false), options, false);
@@ -948,7 +1097,10 @@ public sealed class JazminReader : IDisposable, IIndexProvider
                 throw new JazminKeyException("This file was encrypted with a key, not a password");
             if (options.Password is not null && iterations is < FormatConstants.MinKdfIterations or > FormatConstants.MaxKdfIterations)
                 throw new JazminFormatException($"The file asks for {iterations} password iterations; readers accept {FormatConstants.MinKdfIterations} to {FormatConstants.MaxKdfIterations}");
-            var master = options.Password is not null ? Crypto.DeriveFromPassword(options.Password, salt, (int)iterations) : options.Key!.ToBytes();
+            // Refresh: a new version with the same salt and iterations (an append) reuses the key derived for the last one.
+            var derived = options.Derived is { } d && d.Iterations == iterations && d.Salt.AsSpan().SequenceEqual(salt) ? d.Master : null;
+            var master = options.Password is not null ? derived ?? Crypto.DeriveFromPassword(options.Password, salt, (int)iterations) : options.Key!.ToBytes();
+            if (options.Password is not null && _path is not null) _derived = new DerivedKey(salt, iterations, master);
             keys = new KeySchedule(master, salt);
         }
         else if (options.Key is not null || options.Password is not null)
@@ -1023,6 +1175,15 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// </summary>
     private Trailer LocateTrailer(long size, ushort flags)
     {
+        var (trailer, validEnd, recovered, last) = FindTrailer(Read, size, flags);
+        (_validEnd, _openedSize, _tail) = (validEnd, size, last); // the size and last 44 bytes: see Changed
+        if (recovered) Recovered = true;
+        return trailer;
+    }
+
+    /// <summary>See <see cref="LocateTrailer"/>: <paramref name="read"/> reads the file. Also returns the last 44 bytes.</summary>
+    private static (Trailer Trailer, long ValidEnd, bool Recovered, byte[] Last) FindTrailer(Func<long, int, byte[]> read, long size, ushort flags)
+    {
         static Trailer Parse(byte[] t) => new(
             new SectionRef((long)BinaryPrimitives.ReadUInt64LittleEndian(t), (int)BinaryPrimitives.ReadUInt32LittleEndian(t.AsSpan(8))),
             new SectionRef((long)BinaryPrimitives.ReadUInt64LittleEndian(t.AsSpan(12)), (int)BinaryPrimitives.ReadUInt32LittleEndian(t.AsSpan(20))),
@@ -1036,31 +1197,28 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             return Math.Max(p.Header.Offset + p.Header.Length, p.Signature.Length > 0 ? p.Signature.Offset + p.Signature.Length : 0) == at;
         }
 
-        var last = Read(size - FormatConstants.TrailerSize, FormatConstants.TrailerSize);
+        var last = read(size - FormatConstants.TrailerSize, FormatConstants.TrailerSize);
         if (Valid(last, size - FormatConstants.TrailerSize) || (flags & FormatConstants.FlagAppended) == 0)
         {
             if (!last.AsSpan(40, 4).SequenceEqual(FormatConstants.Magic)) throw new JazminFormatException("Missing trailer - file is truncated or incomplete");
             if (Crc32.Compute(last.AsSpan(0, 36)) != BinaryPrimitives.ReadUInt32LittleEndian(last.AsSpan(36)))
                 throw new JazminFormatException("Trailer failed its CRC-32 check");
             if (!Valid(last, size - FormatConstants.TrailerSize)) throw new JazminFormatException("Trailer points outside the file");
-            _validEnd = size;
-            return Parse(last);
+            return (Parse(last), size, false, last);
         }
 
         const int block = 1 << 20;
         for (var end = size; end > FormatConstants.PreambleSize + FormatConstants.TrailerSize; end -= block - FormatConstants.TrailerSize)
         {
             var start = Math.Max(FormatConstants.PreambleSize, end - block);
-            var bytes = Read(start, (int)(end - start));
+            var bytes = read(start, (int)(end - start));
             for (var i = bytes.AsSpan().LastIndexOf(FormatConstants.Magic); i >= 0; i = i > 0 ? bytes.AsSpan(0, i).LastIndexOf(FormatConstants.Magic) : -1)
             {
                 var at = start + i - 40; // trailer start
                 if (at < FormatConstants.PreambleSize || at + FormatConstants.TrailerSize > size) continue;
-                var candidate = Read(at, FormatConstants.TrailerSize);
+                var candidate = read(at, FormatConstants.TrailerSize);
                 if (!Valid(candidate, at)) continue;
-                _validEnd = at + FormatConstants.TrailerSize;
-                Recovered = true;
-                return Parse(candidate);
+                return (Parse(candidate), at + FormatConstants.TrailerSize, true, last);
             }
             if (start == FormatConstants.PreambleSize) break;
         }
@@ -3458,7 +3616,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     public void Dispose()
     {
-        _closed = true;
+        _disposed = true;
+        _openOptions = null; // the key or password it was opened with
+        _derived = null;
         _access?.Readers.Remove(this);
         _cachedRows = null;
         foreach (var index in _indexes.Values) (index as LazyTrigramIndex)?.Release(); // their buffers go back to the pool

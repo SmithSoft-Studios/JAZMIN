@@ -276,6 +276,89 @@ function chunksDone(watch, matches) {
 /** Internal: openTable() passes this as the source, with the reader it shares the open file with. */
 const SHARED = Symbol('jazmin.shared');
 const FIND_KEY = Symbol('jazmin.findKey');
+/** Internal: refresh() passes the key already derived from a password ({ salt, iterations, master }) to the new reader. */
+const DERIVED = Symbol('jazmin.derived');
+/** Internal (tests): the key a reader derived from its password, or null. */
+export const DERIVED_KEY = Symbol('jazmin.derivedKey');
+/** Internal (JazminReaderCache): when this reader's access key expires (ms), or undefined. */
+export const ACCESS_EXPIRES = Symbol('jazmin.accessExpires');
+/** Internal (JazminReaderCache): lets go of the last decoded chunk and the read buffers while the reader waits, idle. */
+export const IDLE = Symbol('jazmin.idle');
+
+const pause = new Int32Array(new SharedArrayBuffer(4));
+
+/**
+ * Opens a file for changed(). update() replaces a file by renaming; on Windows an open file is moved aside first, so
+ * the path is missing for an instant (update.js replaceOpenFile): a missing path, or one Windows can't open yet, is
+ * tried again for about 100 ms. Returns null when the file is still missing.
+ */
+function openToCheck(path) {
+  const deadline = Date.now() + 100;
+  for (;;) {
+    try {
+      return fs.openSync(path, 'r');
+    } catch (error) {
+      const passing = error.code === 'ENOENT' || (process.platform === 'win32' && (error.code === 'EPERM' || error.code === 'EBUSY'));
+      if (!passing) throw error;
+      if (Date.now() >= deadline) {
+        if (error.code === 'ENOENT') return null;
+        throw error;
+      }
+      Atomics.wait(pause, 0, 0, 5);
+    }
+  }
+}
+
+function readAt(fd, position, length) {
+  const buf = Buffer.alloc(length);
+  for (let offset = 0; offset < length;) {
+    const n = fs.readSync(fd, buf, offset, length - offset, position + offset);
+    if (n === 0) throw new JazminFormatError('Unexpected end of file');
+    offset += n;
+  }
+  return buf;
+}
+
+/**
+ * Finds the trailer of the latest complete version: normally the last 44 bytes. In a file that has been appended to,
+ * an interrupted append leaves extra bytes at the end; the previous version is then found by scanning back for a
+ * valid trailer (spec 4.2). `read(position, length)` reads the file. Returns { trailer, validEnd, recovered, last }.
+ */
+function findTrailer(read, size, flags) {
+  const parse = (t) => ({
+    header: { offset: Number(t.readBigUInt64LE(0)), length: t.readUInt32LE(8) },
+    keySlots: { offset: Number(t.readBigUInt64LE(12)), length: t.readUInt32LE(20) },
+    signature: { offset: Number(t.readBigUInt64LE(24)), length: t.readUInt32LE(32) },
+  });
+  const valid = (t, at) => {
+    if (!t.subarray(40, 44).equals(MAGIC) || crc32(t.subarray(0, 36)) !== t.readUInt32LE(36)) return false;
+    const p = parse(t);
+    const ok = (r) => r.offset >= PREAMBLE_SIZE && r.offset + r.length <= at;
+    if (!ok(p.header) || (p.keySlots.length && !ok(p.keySlots)) || (p.signature.length && !ok(p.signature))) return false;
+    return Math.max(p.header.offset + p.header.length, p.signature.length ? p.signature.offset + p.signature.length : 0) === at;
+  };
+  const last = Buffer.alloc(TRAILER_SIZE); // its own memory (not the shared pool): a reader keeps it while open
+  read(size - TRAILER_SIZE, TRAILER_SIZE).copy(last);
+  if (valid(last, size - TRAILER_SIZE) || !(flags & FLAG_APPENDED)) {
+    if (!last.subarray(40, 44).equals(MAGIC)) throw new JazminFormatError('Missing trailer - file is truncated or incomplete');
+    if (crc32(last.subarray(0, 36)) !== last.readUInt32LE(36)) throw new JazminFormatError('Trailer failed its CRC-32 check');
+    if (!valid(last, size - TRAILER_SIZE)) throw new JazminFormatError('Trailer points outside the file');
+    return { trailer: parse(last), validEnd: size, recovered: false, last };
+  }
+  const BLOCK = 1 << 20;
+  for (let end = size; end > PREAMBLE_SIZE + TRAILER_SIZE; end -= BLOCK - TRAILER_SIZE) {
+    const start = Math.max(PREAMBLE_SIZE, end - BLOCK);
+    const block = read(start, end - start);
+    for (let i = block.lastIndexOf(MAGIC); i >= 0; i = i > 0 ? block.lastIndexOf(MAGIC, i - 1) : -1) {
+      const at = start + i - 40; // trailer start
+      if (at < PREAMBLE_SIZE || at + TRAILER_SIZE > size) continue;
+      const candidate = read(at, TRAILER_SIZE);
+      if (valid(candidate, at)) return { trailer: parse(candidate), validEnd: at + TRAILER_SIZE, recovered: true, last };
+    }
+    if (start === PREAMBLE_SIZE) break;
+  }
+  throw new JazminFormatError('Missing trailer - file is truncated or incomplete');
+}
 
 /**
  * Internal (applyChanges): the index of the first of `keys` (key bytes) that opens the key-encrypted file `source`, or
@@ -631,13 +714,23 @@ export class JazminReader {
   #ahead = null; // priority 'speed': { pool, ordinals } - chunks being decoded on worker threads, in the order submitted
   #aheadBuffer = Buffer.alloc(0); // file-read buffer of chunks read ahead (the pool copies what it is given)
   #cost = null; // while explain({ analyze: true }) runs a query: what it reads (see QueryCost in index.d.ts)
+  // Opened from a path: the path and the options it was opened with (refresh() opens the new version with them; kept
+  // until close()), the key derived from a password, and the file's size and last 44 bytes when opened (changed()).
+  #path = null;
+  #openOptions = null;
+  #derived = null; // { salt, iterations, master }
+  #openedSize = 0;
+  #tail = null;
 
   /**
    * options: key | password; for online access keys `unlockToken` (from the owner's key service);
    * `now` (Date / ms, default the system clock) and `accessState` ({ dir } | custom store | false)
    * for expiring keys - see enforceExpiry; `table`: the name of the table to read (default: the first).
    */
-  constructor(source, { key, password, unlockToken, now, accessState, table, priority = 'balanced', [SHARED]: from, [FIND_KEY]: candidates, [NO_BROTLI]: noBrotli = false } = {}) {
+  constructor(source, {
+    key, password, unlockToken, now, accessState, table, priority = 'balanced', [SHARED]: from, [FIND_KEY]: candidates, [DERIVED]: derived,
+    [NO_BROTLI]: noBrotli = false,
+  } = {}) {
     this.#noBrotli = noBrotli;
     if (source === SHARED) {
       this.#share(from, table);
@@ -655,15 +748,17 @@ export class JazminReader {
     checkPriority(priority);
     this.#readOptions = { unlockToken, now, accessState, table, priority };
     this.#source = openSource(source);
+    this.#path = typeof source === 'string' ? source : this.#source.path ?? null;
+    if (this.#path !== null) this.#openOptions = { key, password, unlockToken, now, accessState, table, priority };
     try {
-      this.#open(key, password);
+      this.#open(key, password, derived);
     } catch (error) {
       this.#source.close();
       throw error;
     }
   }
 
-  #open(key, password) {
+  #open(key, password, derived) {
     const { size } = this.#source;
     if (size < PREAMBLE_SIZE + TRAILER_SIZE) throw new JazminFormatError('File is too small to be JAZMIN');
     const preamble = this.#source.read(0, PREAMBLE_SIZE);
@@ -697,7 +792,10 @@ export class JazminReader {
         if (password && !(iterations >= MIN_KDF_ITERATIONS && iterations <= MAX_KDF_ITERATIONS)) {
           throw new JazminFormatError(`The file asks for ${iterations} password iterations; readers accept ${MIN_KDF_ITERATIONS} to ${MAX_KDF_ITERATIONS}`);
         }
-        const master = password ? deriveFromPassword(password, this.#salt, iterations) : parsedKey.bytes;
+        // refresh(): a new version with the same salt and iterations (an append) reuses the key derived for the last one.
+        const reuse = password && derived?.iterations === iterations && derived.salt.equals(this.#salt);
+        const master = reuse ? derived.master : password ? deriveFromPassword(password, this.#salt, iterations) : parsedKey.bytes;
+        if (password && this.#path !== null) this.#derived = { salt: this.#salt, iterations, master };
         this.#keys = new KeySchedule(master, this.#salt);
       } else if (key || password) {
         throw new JazminKeyError('A key was supplied but the file is not encrypted');
@@ -765,6 +863,11 @@ export class JazminReader {
     this.#recovered = from.#recovered;
     this.kdfIterations = from.kdfIterations;
     this.encrypted = from.encrypted;
+    this.#path = from.#path;
+    this.#openOptions = from.#openOptions && { ...from.#openOptions, table };
+    this.#derived = from.#derived;
+    this.#openedSize = from.#openedSize;
+    this.#tail = from.#tail;
     try {
       this.#openTable(table);
     } catch (error) {
@@ -783,11 +886,67 @@ export class JazminReader {
     return new JazminReader(SHARED, { table: name, [SHARED]: this });
   }
 
+  #checkPath(what) {
+    if (this.#closed) throw new JazminValidationError('This reader is closed');
+    if (this.#path === null) throw new JazminValidationError(`${what} needs a reader opened from a file path, not from bytes`);
+  }
+
   /**
-   * Finds the trailer of the latest complete version: normally the last 44 bytes. In a file that has been
-   * appended to, an interrupted append leaves extra bytes at the end; the previous version is then found by
-   * scanning back for a valid trailer (spec 4.2).
+   * Whether the file at this reader's path is no longer the version it opened: an append added a version, or update(),
+   * compact() or a key rotation replaced the file (a new file id). Cheap: the file is opened and its file id, size and
+   * last 44 bytes compared; only when it grew is the trailer a new reader would use looked for. Bytes left by an
+   * interrupted append are not a change. A file that is gone counts as changed.
    */
+  changed() {
+    this.#checkPath('changed()');
+    const fd = openToCheck(this.#path);
+    if (fd === null) return true;
+    try {
+      const size = fs.fstatSync(fd).size;
+      if (size < PREAMBLE_SIZE + TRAILER_SIZE) return true;
+      if (!readAt(fd, 8, 16).equals(this.#fileId)) return true;
+      if (size === this.#openedSize && readAt(fd, size - TRAILER_SIZE, TRAILER_SIZE).equals(this.#tail)) return false;
+      // Grown (or rewritten at the end): changed unless a new reader would open the same version (an interrupted append).
+      const flags = readAt(fd, 4, 2).readUInt16LE(0);
+      const { trailer } = findTrailer((position, length) => readAt(fd, position, length), size, flags);
+      return trailer.header.offset !== this.#headerRef.offset || trailer.header.length !== this.#headerRef.length;
+    } catch (error) {
+      if (error instanceof JazminFormatError) return true; // damaged: opening it again reports what is wrong
+      throw error;
+    } finally {
+      fs.closeSync(fd);
+    }
+  }
+
+  /**
+   * This reader when the file is unchanged (see changed()); otherwise a new reader of the new version, opened from the
+   * same path with the same options. This reader stays open and keeps reading its version until you close it. If the
+   * new version can't be opened (key revoked or expired, file damaged), this throws as open() would and this reader is
+   * untouched. A password file whose salt and iterations are unchanged (an append) reuses the key derived from it.
+   */
+  refresh() {
+    this.#checkPath('refresh()');
+    if (!this.changed()) return this;
+    return new JazminReader(this.#path, { ...this.#openOptions, [DERIVED]: this.#derived });
+  }
+
+  /** Internal (tests): the key derived from the password, or null. */
+  get [DERIVED_KEY]() {
+    return this.#derived?.master ?? null;
+  }
+
+  /** Internal (JazminReaderCache): when this reader's access key expires (ms), or undefined. */
+  get [ACCESS_EXPIRES]() {
+    return this.#access?.expires ? Date.parse(this.#access.expires) : undefined;
+  }
+
+  /** Internal (JazminReaderCache): no query is running; the last decoded chunk and the read buffers are let go. */
+  [IDLE]() {
+    this.#cachedChunk = { ordinal: -1, wanted: null, types: null, chunk: null };
+    this.#scratch = Buffer.alloc(0);
+    this.#aheadBuffer = Buffer.alloc(0);
+  }
+
   /** See findKey: the preamble, trailer and header section read once, then each key tried on the header alone. */
   #findKey(keys) {
     const { size } = this.#source;
@@ -808,44 +967,14 @@ export class JazminReader {
     return -1;
   }
 
+  /** Finds the trailer of the latest complete version (see findTrailer), and keeps the file's size and last 44 bytes for changed(). */
   #locateTrailer(size, flags) {
-    const parse = (t) => ({
-      header: { offset: Number(t.readBigUInt64LE(0)), length: t.readUInt32LE(8) },
-      keySlots: { offset: Number(t.readBigUInt64LE(12)), length: t.readUInt32LE(20) },
-      signature: { offset: Number(t.readBigUInt64LE(24)), length: t.readUInt32LE(32) },
-    });
-    const valid = (t, at) => {
-      if (!t.subarray(40, 44).equals(MAGIC) || crc32(t.subarray(0, 36)) !== t.readUInt32LE(36)) return false;
-      const p = parse(t);
-      const ok = (r) => r.offset >= PREAMBLE_SIZE && r.offset + r.length <= at;
-      if (!ok(p.header) || (p.keySlots.length && !ok(p.keySlots)) || (p.signature.length && !ok(p.signature))) return false;
-      return Math.max(p.header.offset + p.header.length, p.signature.length ? p.signature.offset + p.signature.length : 0) === at;
-    };
-    const last = this.#source.read(size - TRAILER_SIZE, TRAILER_SIZE);
-    if (valid(last, size - TRAILER_SIZE) || !(flags & FLAG_APPENDED)) {
-      if (!last.subarray(40, 44).equals(MAGIC)) throw new JazminFormatError('Missing trailer - file is truncated or incomplete');
-      if (crc32(last.subarray(0, 36)) !== last.readUInt32LE(36)) throw new JazminFormatError('Trailer failed its CRC-32 check');
-      if (!valid(last, size - TRAILER_SIZE)) throw new JazminFormatError('Trailer points outside the file');
-      this.#validEnd = size;
-      return parse(last);
-    }
-    const BLOCK = 1 << 20;
-    for (let end = size; end > PREAMBLE_SIZE + TRAILER_SIZE; end -= BLOCK - TRAILER_SIZE) {
-      const start = Math.max(PREAMBLE_SIZE, end - BLOCK);
-      const block = this.#source.read(start, end - start);
-      for (let i = block.lastIndexOf(MAGIC); i >= 0; i = i > 0 ? block.lastIndexOf(MAGIC, i - 1) : -1) {
-        const at = start + i - 40; // trailer start
-        if (at < PREAMBLE_SIZE || at + TRAILER_SIZE > size) continue;
-        const candidate = this.#source.read(at, TRAILER_SIZE);
-        if (valid(candidate, at)) {
-          this.#validEnd = at + TRAILER_SIZE;
-          this.#recovered = true;
-          return parse(candidate);
-        }
-      }
-      if (start === PREAMBLE_SIZE) break;
-    }
-    throw new JazminFormatError('Missing trailer - file is truncated or incomplete');
+    const { trailer, validEnd, recovered, last } = findTrailer((position, length) => this.#source.read(position, length), size, flags);
+    this.#validEnd = validEnd;
+    this.#recovered = recovered;
+    this.#openedSize = size;
+    this.#tail = last;
+    return trailer;
   }
 
   /** Verifies the owner signature, unseals this key's slot and decrypts the header (spec 7.6.6). */
@@ -3535,6 +3664,8 @@ export class JazminReader {
   close() {
     if (this.#closed) return;
     this.#closed = true;
+    this.#openOptions = null; // the key or password it was opened with
+    this.#derived = null;
     this.#access?.reopen?.delete(this.#reopen);
     this.#ahead?.pool?.close();
     this.#ahead = null;

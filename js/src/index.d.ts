@@ -1257,8 +1257,48 @@ export class JazminReader implements Iterable<JazminRow> {
    * most, and those count() reads (0 when indexes or chunk statistics answer it).
    */
   estimate(filter?: Filter | null, options?: { offset?: number }): ReadEstimate;
+  /**
+   * Whether the file at this reader's path is no longer the version it opened: an append added a version, or update(),
+   * compact() or a key rotation replaced it. Cheap: the file's id, size and last 44 bytes are compared. Bytes left by an
+   * interrupted append are not a change; a file that is gone is. Throws JazminValidationError for a reader opened from bytes.
+   */
+  changed(): boolean;
+  /**
+   * This reader when the file is unchanged; otherwise a NEW reader of the new version, opened from the same path with the
+   * same options. This reader keeps reading its version until you close it. If the new version can't be opened (key
+   * revoked or expired, file damaged), throws as open() would and this reader is untouched.
+   */
+  refresh(): JazminReader;
   close(): void;
   [Symbol.iterator](): Iterator<JazminRow>;
+}
+
+/** A reader leased from a JazminReaderCache: release it when the request is done (or `using`). */
+export interface JazminReaderLease {
+  /** For this lease only: don't close it, and don't use it after release(). */
+  readonly reader: JazminReader;
+  /** Releases the lease (twice is harmless): the reader stays open for the next request. */
+  release(): void;
+  [Symbol.dispose](): void;
+}
+
+/**
+ * Open readers kept for the next request, least recently used closed first (default max 100). open() leases a reader:
+ * an idle cached reader is checked with changed() and replaced by refresh() when its file changed; a reader in use
+ * gets a separate reader for that lease only. Entries are matched by path and an HMAC of key, password, unlock token,
+ * table and priority. An expired key is dropped and refused as open() refuses it.
+ */
+export class JazminReaderCache {
+  constructor(options?: { max?: number });
+  readonly max: number;
+  /** How many readers are cached. */
+  readonly size: number;
+  open(path: string, options?: ReadOptions): JazminReaderLease;
+  /** Closes every cached reader; those leased now close when their leases are released. */
+  clear(): void;
+  /** clear(), and open() refuses from now on. */
+  close(): void;
+  [Symbol.dispose](): void;
 }
 
 export class JazminWriter {
