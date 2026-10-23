@@ -1,7 +1,7 @@
 // TypeScript quick start - type-checked by `npm run typecheck`, and run by CI (`node examples/typescript/quickstart.ts`).
 // What this shows: the library's types in use (columns, filters, links, storage and update results) on the JavaScript
 // examples: write, query, append, compact, update and export (USER-GUIDE 5, the TypeScript guide).
-import { JAZMIN, JazminKey, JazminKeyError, accessKeyOf, append, compact, importJSONFile, open, toCSV, update, write, type Filter, type JazminColumnInput, type JazminLink, type LinkCheck, type StorageReport, type UpdateResult } from '@smithsoft-studios/jazmin';
+import { JAZMIN, JazminKey, JazminKeyError, JazminReaderCache, type JazminReaderLease, accessKeyOf, append, compact, importJSONFile, open, toCSV, update, write, type Filter, type JazminColumnInput, type JazminLink, type LinkCheck, type StorageReport, type UpdateResult } from '@smithsoft-studios/jazmin';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -198,3 +198,19 @@ const groupWriter: JazminAppendWriter = openWriter('tables.jzm', { table: 'clien
 const batched: AppendResult[] = await Promise.all([groupWriter.insert([{ clientId: 'C8', name: 'Bolt' }]), groupWriter.insert([{ clientId: 'C9', name: 'Cog' }])]);
 await groupWriter.close();
 console.log(committed.updated, batched[0] === batched[1]);
+
+// Readers kept open (USER-GUIDE 20.10): refresh() after an append, and a cache of leased readers.
+let board = open('tables.jzm', { table: 'payments' });
+const isStale: boolean = board.changed();
+const latest = board.refresh();
+if (latest !== board) board.close();
+board = latest;
+const readers = new JazminReaderCache({ max: 100 });
+const lease: JazminReaderLease = readers.open('tables.jzm', { table: 'payments' });
+try {
+  console.log(isStale, lease.reader.rowCount, readers.size);
+} finally {
+  lease.release(); // or `using lease = ...` where the runtime has it (Node 24)
+}
+readers.close();
+board.close();

@@ -1054,6 +1054,36 @@ string Clinics47(bool regroup)
 Console.WriteLine($"47. as given: {Clinics47(false)}; regrouped: {Clinics47(true)}");
 // 47. as given: 1000 chunks, first visits 0, 1, 2; regrouped: 4 chunks, first visits 0, 4, 8
 
+// 48. Readers kept open (USER-GUIDE 20.10): a dashboard picks up new appends with Refresh(), and a server with one
+// encrypted file per tenant keeps their readers in a JazminReaderCache instead of opening a file per request.
+var live48 = Path.Combine(dir, "live.jzm");
+JazminColumn[] columns48 = [new("id", JazminType.Int) { Nullable = false, Indexes = [JazminIndexKind.Sorted] }, new("total", JazminType.Int)];
+using (var writer = JazminWriter.Create(live48, columns48)) writer.WriteValues(1L, 10L);
+var board48 = JazminReader.Open(live48);
+JazminFile.Append(live48, new JazminAppend { Insert = [new Dictionary<string, object?> { ["id"] = 2L, ["total"] = 20L }] });
+var changed48 = board48.Changed();
+var fresh48 = board48.Refresh(); // a new reader of the new version; the old one reads its version until disposed
+if (fresh48 != board48) board48.Dispose();
+board48 = fresh48;
+var tenants48 = new[] { "acme", "bolt" }.Select(name =>
+{
+    var tenantKey = JazminKey.Generate();
+    var tenantFile = Path.Combine(dir, $"{name}.jzm");
+    using var writer = JazminWriter.Create(tenantFile, columns48, new JazminWriteOptions { Key = tenantKey });
+    writer.WriteValues(1L, (long)name.Length);
+    return (File: tenantFile, Key: tenantKey);
+}).ToList();
+var cache48 = new JazminReaderCache(500); // one per process, thread-safe; each cached reader holds its open file and what it has read
+long Lookup48((string File, JazminKey Key) tenant)
+{
+    using var lease = cache48.Open(tenant.File, new JazminReadOptions { Key = tenant.Key }); // checked with Changed() first
+    return (long)lease.Reader.Find(JazminFilter.Eq("id", 1L)).First()["total"]!; // the reader stays open for the next request
+}
+Console.WriteLine($"48. {changed48} {board48.RowCount} rows | {string.Join(", ", tenants48.Select(Lookup48))} | {string.Join(", ", tenants48.Select(Lookup48))} | {cache48.Count} readers cached");
+board48.Dispose();
+cache48.Dispose();
+// 48. True 2 rows | 4, 4 | 4, 4 | 2 readers cached
+
 Directory.Delete(dir, true);
 
 /// <summary>

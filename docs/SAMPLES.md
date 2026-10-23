@@ -32,6 +32,7 @@ viewer.
 | Newest rows first, `reverse: true` (9.7) | 30 | 31 | `pick-file.html` (Newest 20) |
 | What a read will cost, `estimate()` (9.6) | 35 | 36 | `pick-file.html` (What will this read?) |
 | Progress and Stop on long reads (22.1) | 33 | 34 | the viewer's busy display (`pick-file.html`) |
+| Readers kept open: `changed()`, `refresh()`, a reader cache (20.10) | 48 | 48 | |
 | Text orders: ignoring case, numbers by value (16.1) | 31 | 32 | `sort-order.html` |
 | Which versions read a file (3.2) | 26 | 27 | |
 

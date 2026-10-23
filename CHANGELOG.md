@@ -110,6 +110,30 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   1,905 ms in .NET; through the writer 31 ms and 32 ms, in 1 and 2 appends (User Guide 17.7, `node
   bench/group-commit.mjs`). No format change: a batch is an ordinary append, byte for byte what `append()` writes for
   the same rows.
+- **Readers kept open pick up new versions: `reader.changed()`, `reader.refresh()` and `JazminReaderCache` (#275, User
+  Guide 20.10).** For dashboards, published views and one encrypted file per tenant. No format change.
+  - **`changed()`** (.NET `Changed()`) says whether the file at the reader's path is no longer the version it opened:
+    an append, a file `update()`, `compact()` or a key rotation replaced (a new file id), or a file that is gone. It
+    opens the file and compares the file id, the size and the last 44 bytes; bytes left by an interrupted append are not
+    a change. On Windows a path missing while a file is replaced is tried again for about 100 ms.
+  - **`refresh()`** (.NET `Refresh()`) returns a new reader of the new version, opened from the same path with the same
+    options, or the same reader when nothing changed. The old reader keeps working until it is closed; a refresh that
+    fails (key revoked or expired, file damaged) throws what `open()` would and leaves it untouched. A password file
+    that was appended to reuses the key already derived from the password. Readers opened from bytes or a stream refuse
+    both with `JazminValidationError` (.NET `JazminValidationException`); `openAsync` readers know their path.
+  - **`new JazminReaderCache({ max })`** (.NET `new JazminReaderCache(max)`, thread-safe, `IDisposable`):
+    `cache.open(path, options)` leases a reader (`lease.reader`, `lease.release()`, also `using`). An idle cached reader
+    is checked with `changed()` and replaced when its file changed; a reader in use is never closed or replaced under
+    its user (another request gets a reader of its own); the least recently used is closed first; an expired key is
+    refused as `open()` refuses it. Entries are matched by path and an HMAC of key, password, unlock token, table and
+    priority under a random secret of the cache. `clear()` and `close()` (.NET `Clear()`, `Dispose()`).
+  - **Measured** (1,000 tenant files of 500 rows, each with its own key, one row looked up per request; 5 runs each,
+    medians): **Node 24** 1.01 ms per request opening the file, 0.46 ms with the cache, which holds about 73 KB per
+    reader (RSS 87 -> 196 MB); **.NET 10** 1.07 ms, 0.83 ms with the cache, about 55 KB per reader (working set 50 ->
+    107 MB). Cached readers let go of their last decoded chunk and read buffers between requests (20 idle readers of
+    200,000-row files: 0.2 MB instead of 6.4 MB in Node, 1.9 MB instead of 13.7 MB in .NET), and in .NET read without
+    a 64 KB `FileStream` buffer. Opening a file per request is as fast as before (Node 1.02 ms, .NET 1.06 ms before this
+    change, in the same runs).
 - **Limits per key on what a key may send back (spec 7.9.1, #257).** A grant's `edit` (`columns`, `add`, `delete`)
   narrows the document's `package.edit` for that key: one shared document where a doctor may acknowledge a result and
   infection control may only add a note. `writeChanges` refuses what the key may not send ("Column 'ackAction' can't
