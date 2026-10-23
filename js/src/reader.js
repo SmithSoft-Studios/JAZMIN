@@ -717,12 +717,14 @@ export class JazminReader {
   #aheadBuffer = Buffer.alloc(0); // file-read buffer of chunks read ahead (the pool copies what it is given)
   #cost = null; // while explain({ analyze: true }) runs a query: what it reads (see QueryCost in index.d.ts)
   // Opened from a path: the path and the options it was opened with (refresh() opens the new version with them; kept
-  // until close()), the key derived from a password, and the file's size and last 44 bytes when opened (changed()).
+  // until close()), the key derived from a password, and the file's size and last 44 bytes when opened and its header
+  // section's envelope (changed()).
   #path = null;
   #openOptions = null;
   #derived = null; // { salt, iterations, master }
   #openedSize = 0;
   #tail = null;
+  #headerEnvelope = null;
 
   /**
    * options: key | password; for online access keys `unlockToken` (from the owner's key service);
@@ -781,6 +783,7 @@ export class JazminReader {
     const trailer = this.#locateTrailer(size, flags);
     this.#headerRef = trailer.header;
     const headerSection = Buffer.from(this.#source.read(trailer.header.offset, trailer.header.length));
+    this.#headerEnvelope = Buffer.from(headerSection.subarray(0, ENVELOPE_SIZE)); // changed(): a copy of its own
 
     let raw;
     if (flags & FLAG_ACCESS) {
@@ -870,6 +873,7 @@ export class JazminReader {
     this.#derived = from.#derived;
     this.#openedSize = from.#openedSize;
     this.#tail = from.#tail;
+    this.#headerEnvelope = from.#headerEnvelope;
     try {
       this.#openTable(table);
     } catch (error) {
@@ -895,9 +899,10 @@ export class JazminReader {
 
   /**
    * Whether the file at this reader's path is no longer the version it opened: an append added a version, or update(),
-   * compact() or a key rotation replaced the file (a new file id). Cheap: the file is opened and its file id, size and
-   * last 44 bytes compared; only when it grew is the trailer a new reader would use looked for. Bytes left by an
-   * interrupted append are not a change. A file that is gone counts as changed.
+   * compact() or a key rotation replaced the file (a new file id), or a copy of the file with another version was put in
+   * its place. Cheap: the file is opened and its file id, size, last 44 bytes and header section's envelope compared;
+   * only when it grew is the trailer a new reader would use looked for. Bytes left by an interrupted append are not a
+   * change. A file that is gone counts as changed.
    */
   changed() {
     this.#checkPath('changed()');
@@ -907,11 +912,15 @@ export class JazminReader {
       const size = fs.fstatSync(fd).size;
       if (size < PREAMBLE_SIZE + TRAILER_SIZE) return true;
       if (!readAt(fd, 8, 16).equals(this.#fileId)) return true;
-      if (size === this.#openedSize && readAt(fd, size - TRAILER_SIZE, TRAILER_SIZE).equals(this.#tail)) return false;
-      // Grown (or rewritten at the end): changed unless a new reader would open the same version (an interrupted append).
-      const flags = readAt(fd, 4, 2).readUInt16LE(0);
-      const { trailer } = findTrailer((position, length) => readAt(fd, position, length), size, flags);
-      return trailer.header.offset !== this.#headerRef.offset || trailer.header.length !== this.#headerRef.length;
+      if (size !== this.#openedSize || !readAt(fd, size - TRAILER_SIZE, TRAILER_SIZE).equals(this.#tail)) {
+        // Grown (or rewritten at the end): changed unless a new reader would open the same version (an interrupted append).
+        const flags = readAt(fd, 4, 2).readUInt16LE(0);
+        const { trailer } = findTrailer((position, length) => readAt(fd, position, length), size, flags);
+        if (trailer.header.offset !== this.#headerRef.offset || trailer.header.length !== this.#headerRef.length) return true;
+      }
+      // The same file id, size and trailer can still be another version: a copy of the file, appended to alike, put in
+      // its place. Its header section differs, and so does the envelope's CRC-32 of it (encrypted: with a random nonce).
+      return !readAt(fd, this.#headerRef.offset, ENVELOPE_SIZE).equals(this.#headerEnvelope);
     } catch (error) {
       if (error instanceof JazminFormatError) return true; // damaged: opening it again reports what is wrong
       throw error;

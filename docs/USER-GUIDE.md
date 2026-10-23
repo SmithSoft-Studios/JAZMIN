@@ -4206,11 +4206,14 @@ if (latest != board)
 
 - **What counts as a change:** an append (a new version at the end of the
   same file), or a file that `update()`, `compact()`, `rotateKey()` or
-  `rotateOwnerKey()` replaced (a new file id), or a file that is gone. Bytes
+  `rotateOwnerKey()` replaced (a new file id), or a file that is gone. So is
+  a copy of the same file with another version put in its place, as a
+  backup restore or a sync tool does, even when it is the same size. Bytes
   left by an interrupted append are not a change: a new reader would open the
   same version.
 - **`changed()` is cheap:** it opens the file and compares its file id, its
-  size and its last 44 bytes with what the reader opened. Only a file that
+  size, its last 44 bytes and the first 16 bytes of its header section (they
+  hold its checksum) with what the reader opened. Only a file that
   grew is read further, back to the trailer a new reader would use. On
   Windows, a file that is open is moved aside before it is replaced, so its
   path is missing for an instant: `changed()` tries again for about 100 ms.

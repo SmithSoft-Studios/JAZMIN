@@ -113,9 +113,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 - **Readers kept open pick up new versions: `reader.changed()`, `reader.refresh()` and `JazminReaderCache` (#275, User
   Guide 20.10).** For dashboards, published views and one encrypted file per tenant. No format change.
   - **`changed()`** (.NET `Changed()`) says whether the file at the reader's path is no longer the version it opened:
-    an append, a file `update()`, `compact()` or a key rotation replaced (a new file id), or a file that is gone. It
-    opens the file and compares the file id, the size and the last 44 bytes; bytes left by an interrupted append are not
-    a change. On Windows a path missing while a file is replaced is tried again for about 100 ms.
+    an append, a file `update()`, `compact()` or a key rotation replaced (a new file id), a copy of the file with
+    another version put in its place (a backup restore, a sync tool; even of the same size), or a file that is gone. It
+    opens the file and compares the file id, the size, the last 44 bytes and the header section's 16-byte envelope (its
+    checksum); bytes left by an interrupted append are not a change. On Windows a path missing while a file is replaced is tried again for about 100 ms.
   - **`refresh()`** (.NET `Refresh()`) returns a new reader of the new version, opened from the same path with the same
     options, or the same reader when nothing changed. The old reader keeps working until it is closed; a refresh that
     fails (key revoked or expired, file damaged) throws what `open()` would and leaves it untouched. A password file

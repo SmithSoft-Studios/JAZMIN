@@ -376,13 +376,15 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private bool[]? _cachedWanted; // the columns the cached chunk decoded (null: all)
     private CostCounter? _cost; // while Explain(analyze: true) runs a query: what it reads
     // Opened from a path: the path and the options it was opened with (Refresh opens the new version with them; kept
-    // until Dispose), the key derived from a password, and the file's size and last 44 bytes when opened (Changed).
+    // until Dispose), the key derived from a password, and the file's size and last 44 bytes when opened and its header
+    // section's envelope (Changed).
     private readonly string? _path;
     private readonly int _bufferSize; // of the FileStream: Refresh opens the new version the same way
     private JazminReadOptions? _openOptions;
     private DerivedKey? _derived;
     private long _openedSize;
     private byte[] _tail = [];
+    private byte[] _headerEnvelope = [];
     private bool _disposed;
 
     /// <summary>A key derived from a password, for the file's salt and iterations: Refresh reuses it for the next version.</summary>
@@ -410,7 +412,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         if (from is not null)
         {
             if (from._openOptions is { } opened) _openOptions = opened.Copy(options.Table);
-            (_derived, _openedSize, _tail) = (from._derived, from._openedSize, from._tail);
+            (_derived, _openedSize, _tail, _headerEnvelope) = (from._derived, from._openedSize, from._tail, from._headerEnvelope);
         }
         else if (path is not null)
         {
@@ -907,9 +909,10 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     /// <summary>
     /// Whether the file at this reader's path is no longer the version it opened: an append added a version, or an
-    /// update, compaction or key rotation replaced the file (a new file id). Cheap: the file is opened and its file id,
-    /// size and last 44 bytes compared; only when it grew is the trailer a new reader would use looked for. Bytes left by
-    /// an interrupted append are not a change. A file that is gone counts as changed. Only for readers opened from a path.
+    /// update, compaction or key rotation replaced the file (a new file id), or a copy of the file with another version
+    /// was put in its place. Cheap: the file is opened and its file id, size, last 44 bytes and header section's envelope
+    /// compared; only when it grew is the trailer a new reader would use looked for. Bytes left by an interrupted append
+    /// are not a change. A file that is gone counts as changed. Only for readers opened from a path.
     /// </summary>
     public bool Changed()
     {
@@ -929,11 +932,16 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         try
         {
             if (!ReadAt(8, 16).AsSpan().SequenceEqual(_fileId)) return true;
-            if (size == _openedSize && ReadAt(size - FormatConstants.TrailerSize, FormatConstants.TrailerSize).AsSpan().SequenceEqual(_tail)) return false;
-            // Grown (or rewritten at the end): changed unless a new reader would open the same version (an interrupted append).
-            var flags = BinaryPrimitives.ReadUInt16LittleEndian(ReadAt(FormatConstants.FlagsOffset, 2));
-            var (trailer, _, _, _) = FindTrailer(ReadAt, size, flags);
-            return trailer.Header.Offset != _headerRef.Offset || trailer.Header.Length != _headerRef.Length;
+            if (size != _openedSize || !ReadAt(size - FormatConstants.TrailerSize, FormatConstants.TrailerSize).AsSpan().SequenceEqual(_tail))
+            {
+                // Grown (or rewritten at the end): changed unless a new reader would open the same version (an interrupted append).
+                var flags = BinaryPrimitives.ReadUInt16LittleEndian(ReadAt(FormatConstants.FlagsOffset, 2));
+                var (trailer, _, _, _) = FindTrailer(ReadAt, size, flags);
+                if (trailer.Header.Offset != _headerRef.Offset || trailer.Header.Length != _headerRef.Length) return true;
+            }
+            // The same file id, size and trailer can still be another version: a copy of the file, appended to alike, put
+            // in its place. Its header section differs, and so does the envelope's CRC-32 of it (encrypted: with a random nonce).
+            return !ReadAt(_headerRef.Offset, FormatConstants.EnvelopeSize).AsSpan().SequenceEqual(_headerEnvelope);
         }
         catch (Exception e) when (e is JazminFormatException or EndOfStreamException)
         {
@@ -1074,6 +1082,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         var trailer = LocateTrailer(size, flags);
         _headerRef = trailer.Header;
         var headerSection = Read(trailer.Header.Offset, trailer.Header.Length);
+        _headerEnvelope = headerSection[..Math.Min(headerSection.Length, FormatConstants.EnvelopeSize)]; // Changed: a copy of its own
 
         if ((flags & FormatConstants.FlagAccess) != 0)
         {

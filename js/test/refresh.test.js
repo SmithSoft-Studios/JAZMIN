@@ -392,3 +392,26 @@ test('a lock opened through one lease is not open for the next: the cache closes
   third.release();
   cache.close();
 });
+
+test('a copy of the same file, appended to alike, put in its place is a change (same file id, size and trailer)', () => {
+  const file = tmp('restored.jzm');
+  const other = `${file}.copy`;
+  const key = JazminKey.generate();
+  write(file, rows(0, 2), { columns, key });
+  fs.copyFileSync(file, other); // the same file elsewhere: a backup, another machine's synced copy
+  append(file, { key, insert: [{ id: 2, section: 'two' }] });
+  append(other, { key, insert: [{ id: 2, section: 'TWO' }] });
+  assert.equal(fs.statSync(other).size, fs.statSync(file).size);
+  const cache = new JazminReaderCache({ max: 10 });
+  const first = cache.open(file, { key });
+  assert.equal([...first.reader.find({ id: 2 })][0].section, 'two');
+  first.release();
+  fs.renameSync(file, `${file}.old`); // as a restore or a sync tool puts the copy in place
+  fs.renameSync(other, file);
+  assert.equal(first.reader.changed(), true);
+  const second = cache.open(file, { key });
+  assert.notEqual(second.reader, first.reader);
+  assert.equal([...second.reader.find({ id: 2 })][0].section, 'TWO');
+  second.release();
+  cache.close();
+});
