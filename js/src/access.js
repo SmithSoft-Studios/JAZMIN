@@ -346,14 +346,18 @@ export function findKeySlotPage(list, id) {
   };
 }
 
-/** Every page a key-slot list names: [{ offset, length }]. */
+/** Every page a key-slot list names: [{ offset, length, digest }]. */
 export function keySlotPages(list) {
   if (list.length < 4) throw new JazminFormatError('Key-slot list is truncated');
   const count = list.readUInt32LE(0);
   if (list.length !== 4 + count * PAGE_ENTRY_SIZE) throw new JazminFormatError('Key-slot list has the wrong length');
   return Array.from({ length: count }, (_, i) => {
     const at = 4 + i * PAGE_ENTRY_SIZE;
-    return { offset: Number(list.readBigUInt64LE(at + SLOT_ID_SIZE)), length: list.readUInt32LE(at + SLOT_ID_SIZE + 8) };
+    return {
+      offset: Number(list.readBigUInt64LE(at + SLOT_ID_SIZE)),
+      length: list.readUInt32LE(at + SLOT_ID_SIZE + 8),
+      digest: list.subarray(at + SLOT_ID_SIZE + 12, at + PAGE_ENTRY_SIZE),
+    };
   });
 }
 
@@ -409,6 +413,13 @@ export function verifyOwner(signatureRaw, fileId, keySlotsSection, headerSection
   if (!verify(Buffer.from(owner), signatureMessage(fileId, keySlotsSection, headerSection), signatureRaw.subarray(PUBLIC_KEY_SIZE))) {
     throw new JazminFormatError("The file's owner signature is invalid - the file was modified");
   }
+}
+
+/** reader.verify(): the signature again, by the owner public key (65 bytes) the file had when it was opened. */
+export function verifySignedBy(signatureRaw, fileId, keySlotsSection, headerSection, owner) {
+  const signed = signatureRaw.length === PUBLIC_KEY_SIZE + SIGNATURE_SIZE && signatureRaw.subarray(0, PUBLIC_KEY_SIZE).equals(owner)
+    && verify(Buffer.from(owner), signatureMessage(fileId, keySlotsSection, headerSection), signatureRaw.subarray(PUBLIC_KEY_SIZE));
+  if (!signed) throw new JazminFormatError("The file's owner signature is invalid - the file was modified");
 }
 
 /** SHA-256 of a whole section (spec 7.6.5). */

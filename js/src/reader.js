@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import { Readable } from 'node:stream';
 import {
   FileSecrets, digest, findKeySlotPage, headerKey, keySlotPages, ownerDirectoryKey, parseKeySlots, partKey, partitionName, sectionKeyFrom,
-  unsealSlot, verifyOwner,
+  unsealSlot, verifyOwner, verifySignedBy,
 } from './access.js';
 import { crc32, parseJsonText } from './binary.js';
 import { checkLinks, readLinks } from './links.js';
@@ -886,6 +886,7 @@ export class JazminReader {
       directory: null,
       keySlots: { ...trailer.keySlots, section: slotsSection },
       signature: trailer.signature,
+      signedBy: Buffer.from(signature.subarray(0, 65)), // the owner public key checked above, for verify()
     };
     this.#refuseBrotli(headerSection, 'header');
     return decodeSection(headerSection, { key: headerKey(b(bundle.header), this.#salt), fileId: this.#fileId, sectionId: 'header' });
@@ -2948,6 +2949,107 @@ export class JazminReader {
       directory.pages.forEach((page, n) => add(page, `${base}/page/${n}`, index));
       if (directory.nulls) add(directory.nulls, `${base}/nulls`, index);
     }
+  }
+
+  /**
+   * Checks every section of the file's current version, not only those queries read (issue #275): in a shared file
+   * each section's SHA-256 against the owner's signature, in a file with a key or password each section's CRC-32 and
+   * authentication tag (any change is caught), in a plain file each CRC-32 (accidental damage only). One section at a
+   * time, nothing decoded or kept. Throws a JazminFormatError naming the first section that fails. Bytes the current
+   * version doesn't use (replaced by appends) are counted, not checked: compact() removes them. Needs the whole file:
+   * an owner key, or the key or password of a file that isn't shared.
+   */
+  verify() {
+    if (this.#closed) throw new JazminValidationError('This reader is closed');
+    if (this.#access && !this.#access.isOwner) throw new JazminValidationError('A shared file is checked whole with its owner key');
+    if (this.#recovered) {
+      throw new JazminFormatError('The file ends in an append that did not finish, or whose end was changed: this reader opened '
+        + 'the version before it. compact() keeps that version and removes the rest');
+    }
+    const preamble = this.#source.read(0, PREAMBLE_SIZE);
+    // Fields the spec fixes (4.1) but nothing else depends on: reserved bytes, no salt in a plain file, no iterations without a password.
+    const fixed = preamble.readUInt16LE(6) === 0 && preamble.readUInt32LE(60) === 0
+      && (this.encrypted || preamble.subarray(24, 56).every((b) => b === 0))
+      && ((this.#flags & FLAG_PASSWORD) !== 0 || preamble.readUInt32LE(56) === 0);
+    if (!fixed) throw new JazminFormatError('The preamble has values the format does not allow - the file was modified');
+
+    const sections = new Map(); // offset -> { ref, sectionId, key }: each section once, however often it is referenced
+    const add = (ref, sectionId, key) => {
+      if (ref?.length && !sections.has(ref.offset)) sections.set(ref.offset, { ref, sectionId, key });
+    };
+    const keyOf = (group, sectionId) => this.#keys?.sectionKey(group, sectionId);
+    let bytes = 0;
+    if (this.#access) {
+      // The signature covers the header and the key-slot list; the list holds every page's digest (spec 7.6.4).
+      const { keySlots, signature } = this.#access;
+      const slotsSection = this.#source.read(keySlots.offset, keySlots.length);
+      const signatureSection = this.#source.read(signature.offset, signature.length);
+      const signatureRaw = decodeSection(plainSection(signatureSection, 'signature'), { key: undefined, fileId: this.#fileId, sectionId: 'signature' });
+      const headerSection = this.#source.read(this.#headerRef.offset, this.#headerRef.length);
+      verifySignedBy(signatureRaw, this.#fileId, slotsSection, headerSection, this.#access.signedBy);
+      bytes += keySlots.length + signature.length + this.#headerRef.length;
+      const list = decodeSection(plainSection(slotsSection, 'keyslots'), { key: undefined, fileId: this.#fileId, sectionId: 'keyslots' });
+      keySlotPages(list).forEach((page, n) => add(page, `keyslots/${n}`));
+      add(this.#header.access.ownerDirectory, 'owner');
+      add(this.#header.access.ownerCatalog, 'owner/catalog');
+    } else {
+      add(this.#headerRef, 'header', this.#keys?.headerKey);
+    }
+    this.#header.deltas.forEach((ref, i) => add(ref, `delta/${i}`, keyOf(KEYRING_GROUPS.data, `delta/${i}`)));
+    const files = this.#header.files;
+    if (files) {
+      const suffix = files.segment ? `/${files.segment}` : '';
+      for (const dir of files.directories) add(dir.section, `files/dir${suffix}`, keyOf(KEYRING_GROUPS.files, `files/dir${suffix}`));
+      for (const content of this.#files().contents.values()) {
+        content.blocks.forEach((block, b) => {
+          const sectionId = `file/${content.id}/${b}`;
+          add(block, sectionId, content.key && !this.#access ? hkdf(Buffer.from(content.key, 'base64'), this.#salt, `JAZMIN/1/${sectionId}`) : undefined);
+        });
+      }
+    }
+    this.#header.tables.forEach((table, t) => {
+      const reader = t === this.#tableIndex ? this : new JazminReader(SHARED, { table: table.name, [SHARED]: this });
+      try {
+        reader.#tableSections((ref, sectionId, group) => add(ref, sectionId, keyOf(group, sectionId)));
+        if (this.#access) {
+          const entry = this.#ownerCatalog().find((e) => e.table === t);
+          add(entry?.chunkMap, `${t}/chunkmap`);
+          add(entry?.chunkMapAppended, `${t}/chunkmap/${entry?.chunkMapSegment}`);
+        }
+      } finally {
+        if (reader !== this) reader.close();
+      }
+    });
+
+    let scratch = Buffer.alloc(0); // one section at a time
+    for (const offset of [...sections.keys()].sort((a, b) => a - b)) {
+      const { ref, sectionId, key } = sections.get(offset);
+      if (!(ref.length >= ENVELOPE_SIZE)) throw new JazminFormatError(`Section '${sectionId}' is truncated`);
+      if (scratch.length < ref.length) scratch = Buffer.allocUnsafe(ref.length);
+      const section = this.#source.read(ref.offset, ref.length, scratch);
+      if (sectionPayloadLength(section) + ENVELOPE_SIZE !== ref.length) throw new JazminFormatError(`Section '${sectionId}' length mismatch`);
+      if (this.#access) {
+        if (ref.digest === undefined) throw new JazminFormatError(`Section '${sectionId}' has no digest`);
+        const actual = digest(section);
+        const matches = typeof ref.digest === 'string' ? actual.toString('base64') === ref.digest : actual.equals(ref.digest);
+        if (!matches) throw new JazminFormatError(`Section '${sectionId}' does not match the owner's signature`);
+      } else if (!this.encrypted) {
+        // The CRC-32 covers the payload, not the envelope: check its fixed bytes, and its codec and length by decoding.
+        if (section[1] !== 0 || section[2] !== 0 || section[3] !== 0) throw new JazminFormatError(`Section '${sectionId}' has an invalid envelope`);
+        decodeSection(section, { key: undefined, fileId: this.#fileId, sectionId });
+      } else {
+        const opens = sectionKeyCheck(section, { fileId: this.#fileId, sectionId }); // checks the CRC-32 first
+        if (opens === null && this.encrypted) throw new JazminFormatError(`Section '${sectionId}' is not encrypted but the file is`);
+        if (opens !== null && !(key && opens(key))) throw new JazminFormatError(`Section '${sectionId}' failed its authentication check - the file was modified`);
+      }
+      bytes += ref.length;
+    }
+    return {
+      checkedBy: this.#access ? 'signature' : this.encrypted ? 'encryption' : 'checksum',
+      sections: sections.size + (this.#access ? 3 : 0),
+      bytes,
+      unusedBytes: this.#source.size - PREAMBLE_SIZE - TRAILER_SIZE - bytes,
+    };
   }
 
   /**
