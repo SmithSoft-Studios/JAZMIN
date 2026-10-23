@@ -18,14 +18,15 @@ it, and credit you in the release notes unless you prefer not to be named.
 
 | Version | Supported |
 |---|---|
-| 1.7.x | Yes |
-| 1.6.x | No: upgrade to 1.7 (the same file format, and no breaking changes) |
-| 1.5.x | No: upgrade to 1.7 (the same file format, and no breaking changes) |
-| 1.4.x | No: upgrade to 1.7 (the same file format, and no breaking changes) |
-| 1.3.x | No: upgrade to 1.7 (the same file format, and no breaking changes) |
-| 1.2.x | No: upgrade to 1.7 (the same file format, and no breaking changes) |
-| 1.1.x | No: upgrade to 1.7 (the same file format, and no breaking changes) |
-| 1.0.x | No: upgrade to 1.7 (1.1 fixed a data-loss bug in the JS writer) |
+| 1.8.x | Yes |
+| 1.7.x | No: upgrade to 1.8 (the same file format; Node.js 22.23.4, 24.22.1 or 26.12.1 or later) |
+| 1.6.x | No: upgrade to 1.8 (the same file format) |
+| 1.5.x | No: upgrade to 1.8 (the same file format) |
+| 1.4.x | No: upgrade to 1.8 (the same file format) |
+| 1.3.x | No: upgrade to 1.8 (the same file format) |
+| 1.2.x | No: upgrade to 1.8 (the same file format) |
+| 1.1.x | No: upgrade to 1.8 (the same file format) |
+| 1.0.x | No: upgrade to 1.8 (1.1 fixed a data-loss bug in the JS writer) |
 | Pre-release versions (before 1.0.0) | No |
 
 ## Scope

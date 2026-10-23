@@ -3,7 +3,17 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
-## Unreleased
+## 1.8.0 - 2026-10-23 (file format 1.0)
+Check a whole file, also the parts no query reads; write many changes as one append; keep readers open across
+requests and pick up new versions; write shared files whose rows arrive mixed; and open files with many appends much
+faster, in the libraries and the viewer. Publisher signatures and `jazmin verify` arrive (SmithSoft's roots follow in
+1.8.1), with per-key limits on what a key may send back, and a guard for the Node.js Brotli flaw (CVE-2026-111497).
+
+- **Compatibility:** the same file format; every earlier file reads as before. Files that use per-key edit limits name
+  the writer feature `edit-limits` (older releases read them; see below for what they do with them). JavaScript needs
+  Node.js 22.23.4, 24.22.1 or 26.12.1 or later: npm warns on others, and on a release without the Brotli fix
+  Brotli-compressed sections are refused. Changes of behaviour: upserts (the last row for a key wins; empty keys match),
+  a damaged chunk directory reported by the first query rather than by `open`, and .NET `Storage()` (below).
 
 ### Security
 - **Brotli and CVE-2026-111497** (Node.js, October 2026: an out-of-bounds write in the Brotli decoder). A JAZMIN file
