@@ -308,6 +308,56 @@ public sealed class VerifyTests
         }
     }
 
+    /// <summary>The offset of the first deflate-compressed section: sections follow each other from byte 64, chunk data first.</summary>
+    private static int FirstCompressedSection(byte[] file)
+    {
+        for (var at = 64; at < file.Length - 44; at += 16 + (int)BinaryPrimitives.ReadUInt32LittleEndian(file.AsSpan(at + 8)))
+            if (file[at] == (byte)JazminCodec.Deflate) return at;
+        throw new InvalidOperationException("no compressed section");
+    }
+
+    [Fact]
+    public void Verify_quick_checks_a_plain_files_sections_by_their_checksums_and_envelopes_without_decompressing()
+    {
+        var good = Write(1500, new JazminWriteOptions { ChunkRows = 500 });
+        var full = VerifyOf(good, new JazminReadOptions());
+        JazminVerification Quick(byte[] data)
+        {
+            using var r = JazminReader.Open(data);
+            return r.Verify(quick: true);
+        }
+        Assert.Equal(full, Quick(good)); // the same sections and bytes
+        var at = FirstCompressedSection(good);
+        // Caught by both: a changed payload byte (its CRC-32), an unknown codec.
+        var payload = (byte[])good.Clone();
+        payload[at + 20] ^= 1;
+        Assert.Throws<JazminFormatException>(() => Quick(payload));
+        var codec = (byte[])good.Clone();
+        codec[at] = 7;
+        Assert.Throws<JazminFormatException>(() => Quick(codec));
+        // Caught only by the full check: the decompressed length in the envelope, which no CRC-32 covers. A query reading
+        // the section would refuse it too.
+        var rawLength = (byte[])good.Clone();
+        BinaryPrimitives.WriteUInt32LittleEndian(rawLength.AsSpan(at + 4), BinaryPrimitives.ReadUInt32LittleEndian(rawLength.AsSpan(at + 4)) + 1);
+        Assert.Throws<JazminFormatException>(() => VerifyOf(rawLength, new JazminReadOptions()));
+        Assert.Equal(full, Quick(rawLength));
+    }
+
+    [Fact]
+    public void Verify_quick_on_an_encrypted_file_is_the_full_check_since_the_tag_covers_the_envelope_too()
+    {
+        var key = JazminKey.Generate();
+        var good = Write(1500, new JazminWriteOptions { Key = key, ChunkRows = 500 });
+        var options = new JazminReadOptions { Key = key };
+        using (var reader = JazminReader.Open(good, options))
+            Assert.Equal(reader.Verify(), reader.Verify(quick: true));
+        var at = FirstCompressedSection(good);
+        var rawLength = (byte[])good.Clone();
+        BinaryPrimitives.WriteUInt32LittleEndian(rawLength.AsSpan(at + 4), BinaryPrimitives.ReadUInt32LittleEndian(rawLength.AsSpan(at + 4)) + 1);
+        using var changed = JazminReader.Open(rawLength, options);
+        Assert.Throws<JazminFormatException>(() => changed.Verify(quick: true));
+    }
+
     [Fact]
     public void A_closed_reader_refuses_Verify()
     {

@@ -2932,6 +2932,17 @@ How each kind of file is checked:
   `compact()` and `update()` write the file again without it.
 - **An append that didn't finish** (or a changed end of file) makes a reader
   open the version before it. `verify()` fails then.
+- **A quick check of a plain file:** `verify({ quick: true })` (.NET
+  `Verify(quick: true)`, `jazmin check --quick`) checks each section's
+  checksum and envelope without decompressing it: about 7 times faster in
+  Node and 5 times in .NET (a plain 2.3 MB file of 200,000 rows: 27 → 3.6 ms
+  and 22 → 4.5 ms, median of 5 runs). What it leaves out: the decompressed
+  length in a compressed section's envelope, which no checksum covers. A
+  change there is found when a query reads that section, not by the quick
+  check. Encrypted and shared files are checked in full either way: their
+  authentication tags and signatures cover the envelope, and nothing is
+  decompressed. The choice is the checker's, so it isn't stored in the file:
+  a setting in a plain file could be changed by anyone.
 - **Speed and memory:** one section at a time. Measured on a
   200,000-row encrypted file of 17 MB with sorted and trigram indexes (Node 24,
   five runs, each in its own process): 66–118 ms, against 243–433 ms to read
@@ -5344,7 +5355,7 @@ npx @smithsoft-studios/jazmin --help          # or, installed in a project: npx 
 | `jazmin keygen [--access]` | A new key or, with `--access`, an access key issued from the owner key |
 | `jazmin script <file.jzm> [<file.js>] [--name <name>]` | The file as a script (default: `<file.jzm>.js` beside it), which a page opened from disk opens with `JazminBrowser.openScript()` (section 24.4). Needs no key: the file inside stays encrypted |
 | `jazmin verify <file> [<file> ...] [--key <key> \| --password <text>] [--revocation-list <file>] [--json]` | Who published each file and that it hasn't changed since: its publisher signature (section 26.1). `--json` prints the results as JSON |
-| `jazmin check <file> [--json]` | That not one section changed or was damaged: every section, not only those a query reads (section 17.6). Exit code 0 unchanged, 1 changed or damaged (the section is named), 2 a usage error or an encrypted file without a key |
+| `jazmin check <file> [--quick] [--json]` | That not one section changed or was damaged: every section, not only those a query reads (section 17.6; `--quick`: a plain file without decompressing). Exit code 0 unchanged, 1 changed or damaged (the section is named), 2 a usage error or an encrypted file without a key |
 
 Every command takes `--help`. `--table <name>` picks a table in a file with
 several.

@@ -1177,10 +1177,12 @@ export class JazminReader implements Iterable<JazminRow> {
   storage(): StorageReport;
   /**
    * Checks every section of the file's current version, not only those queries read: throws a JazminFormatError
-   * naming the first section that changed or is damaged. One section at a time; nothing is kept. Owner key for shared
-   * files.
+   * naming the first section that changed or is damaged. One section at a time. Owner key for shared files.
+   * `quick` (a plain file; other files are checked the same either way): each section's CRC-32 and envelope without
+   * decompressing it, several times faster; a changed decompressed length in a compressed section's envelope is then
+   * left to the query that reads the section.
    */
-  verify(): VerifyResult;
+  verify(options?: { quick?: boolean }): VerifyResult;
   explain(filter: Filter): QueryPlan;
   /**
    * Runs the query (with any find() options) and reports what it read. Indexes and the last chunk this reader

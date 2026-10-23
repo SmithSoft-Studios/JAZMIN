@@ -5,6 +5,8 @@ import path from 'node:path';
 import { test } from 'node:test';
 import { JazminError, JazminFormatError, JazminKey, JazminValidationError, append, inspect, open, write } from '../src/index.js';
 import { crc32 } from '../src/binary.js';
+import { decodeChunkDirectory, decodeHeader } from '../src/catalog.js';
+import { decodeSection } from '../src/section.js';
 import { KEY_ROTATION } from '../src/reader.js';
 
 // reader.verify(): checks every section of the file's current version, not only those a query reads (issue #275:
@@ -234,6 +236,75 @@ test('signed files: the publisher signature block is counted apart; bytes added 
       assert.equal(result.unusedBytes, 0, fixture.file);
       assert.equal(result.publisherBytes > 0, fixture.file !== 'unsigned.jzm', fixture.file);
     }
+  }
+});
+
+/** The offset of a compressed (deflate) chunk part in a plain file: a section no query has read when it opens. */
+function compressedChunkPart(file) {
+  const t = file.length - 44;
+  const fileId = file.subarray(8, 24);
+  const at = Number(file.readBigUInt64LE(t));
+  const header = decodeHeader(decodeSection(file.subarray(at, at + file.readUInt32LE(t + 8)), { fileId, sectionId: 'header' }));
+  const table = header.tables[0];
+  const ref = table.partitions[0].segments[0];
+  const directory = decodeChunkDirectory(decodeSection(file.subarray(ref.offset, ref.offset + ref.length), { fileId, sectionId: '0/dir/*' }), table.columnGroups.length);
+  const part = directory.chunks.flatMap((c) => c.parts).find((p) => file[p.offset] === 1);
+  assert.ok(part, 'a deflate-compressed chunk part');
+  return part.offset;
+}
+
+test('verify({ quick: true }): a plain file\'s sections by their checksums and envelopes, without decompressing them', () => {
+  const good = write(null, rows(1500), { columns, chunkRows: 500 });
+  const full = verifyOf(new Uint8Array(good));
+  assert.deepEqual(verifyOf(new Uint8Array(good), { }), full);
+  const reader = open(new Uint8Array(good));
+  try {
+    assert.deepEqual(reader.verify({ quick: true }), full, 'the same sections and bytes');
+    assert.throws(() => reader.verify({ quick: 'yes' }), JazminValidationError);
+  } finally {
+    reader.close();
+  }
+  const quick = (bytes) => {
+    const r = open(new Uint8Array(bytes));
+    try {
+      return r.verify({ quick: true });
+    } finally {
+      r.close();
+    }
+  };
+  const part = compressedChunkPart(good);
+  // Caught by both: a changed payload byte (its CRC-32), an unknown codec.
+  const payload = Buffer.from(good);
+  payload[part + 20] ^= 1;
+  assert.throws(() => quick(payload), JazminFormatError);
+  const codec = Buffer.from(good);
+  codec[part] = 7;
+  assert.throws(() => quick(codec), JazminFormatError);
+  // Caught only by the full check: the decompressed length in the envelope, which no CRC-32 covers. A query reading
+  // the section would refuse it too.
+  const rawLength = Buffer.from(good);
+  rawLength.writeUInt32LE(rawLength.readUInt32LE(part + 4) + 1, part + 4);
+  assert.throws(() => verifyOf(new Uint8Array(rawLength)), JazminFormatError);
+  assert.deepEqual(quick(rawLength), full);
+});
+
+test('verify({ quick: true }) on an encrypted file is the full check: the tag covers the envelope too', () => {
+  const key = JazminKey.generate();
+  const good = write(null, rows(1500), { key, columns, chunkRows: 500 });
+  const reader = open(new Uint8Array(good), { key });
+  const section = reader[KEY_ROTATION].sections.find((s) => s.sectionId.includes('/chunk/'));
+  try {
+    assert.deepEqual(reader.verify({ quick: true }), reader.verify());
+  } finally {
+    reader.close();
+  }
+  const rawLength = Buffer.from(good);
+  rawLength.writeUInt32LE(rawLength.readUInt32LE(section.offset + 4) + 1, section.offset + 4);
+  const r = open(new Uint8Array(rawLength), { key });
+  try {
+    assert.throws(() => r.verify({ quick: true }), JazminFormatError);
+  } finally {
+    r.close();
   }
 });
 
