@@ -2222,10 +2222,15 @@ compilation.
     but still far from one per row: 600,000 streamed rows in 2,400
     partitions made 15,467 chunks in JS and 16,049 in .NET, where nearly
     every row would be a chunk. In Node the rows held are kept as bytes
-    outside the JavaScript heap; in .NET as values, which take more memory
-    than the bytes counted (text takes two bytes a character). A row held
-    keeps its own copy of its values, so a buffer or list reused for the
-    next row is fine.
+    outside the JavaScript heap; in .NET as values. A row held keeps its own
+    copy of its values, so a buffer or list reused for the next row is fine.
+  - **Text can take twice the bytes counted.** `chunkBytes` counts a
+    character as one byte. Held text takes two bytes a character in .NET,
+    and in Node too when it has any character beyond Latin-1 (`€`, Greek,
+    Cyrillic, Chinese, emoji). Measured in Node with 60,000 rows of 1,000
+    characters in 100 partitions, 16 MB counted as held: peak memory
+    95-96 MB for Latin text, 133-136 MB for Chinese text (three runs each,
+    23 October 2026, the machine below).
   - **`sortedBy`** must start with the partition column (the rows then
     arrive grouped, and are written as given); any other order is refused,
     as `compact({ regroup: true })` refuses it.
