@@ -76,6 +76,112 @@ public sealed class UpdateTests : IDisposable
         Assert.Equal(new[] { "A1", "A1", "B10", "B11", "C30", "D20", "D21", "E0" }, r.Rows().Select(x => $"{x["section"]}{x["id"]}"));
     }
 
+    private static readonly JazminColumn[] IdAndV = [new("id", JazminType.Int), new("v", JazminType.String)];
+
+    private static Dictionary<string, object?> Iv(long? id, string v) => new() { ["id"] = id, ["v"] = v };
+
+    private string WriteWith(string name, JazminColumn[] columns, IEnumerable<Dictionary<string, object?>> rows)
+    {
+        var path = Path.Combine(_dir, name);
+        using var writer = JazminWriter.Create(path, columns);
+        foreach (var row in rows) writer.WriteRow(row);
+        return path;
+    }
+
+    private static string[] Texts(string path, Func<JazminRow, string> text, JazminReadOptions? options = null)
+    {
+        using var r = JazminReader.Open(path, options);
+        return r.Rows().Select(text).ToArray();
+    }
+
+    private static string IdV(JazminRow row) => $"{row["id"]}{row["v"]}";
+
+    [Fact]
+    public void Upsert_TheLastRowForAKeyWins_AsIfTheRowsWereUpsertedOneAfterAnother()
+    {
+        var path = WriteWith("last.jzm", IdAndV, [Iv(1, "a"), Iv(2, "x")]);
+        var result = JazminFile.Update(path, new JazminUpdate { Upsert = [Iv(1, "b"), Iv(1, "c"), Iv(3, "p"), Iv(3, "q")], KeyColumns = ["id"] });
+        Assert.Equal(["1c", "2x", "3q"], Texts(path, IdV));
+        Assert.Equal(new JazminUpdateResult(3, 1, 1, 0), result);
+
+        // One after another, a new key is added at the end and then replaced where it is.
+        JazminFile.Update(path, new JazminUpdate { Upsert = [Iv(4, "d"), Iv(5, "e"), Iv(4, "f")], KeyColumns = ["id"] });
+        Assert.Equal(["4f", "5e"], Texts(path, IdV).Skip(3));
+
+        // Keys with empty parts: an empty part matches an empty part.
+        JazminColumn[] abv = [new("a", JazminType.Int), new("b", JazminType.String), new("v", JazminType.String)];
+        static Dictionary<string, object?> Abv(long? a, string? b, string v) => new() { ["a"] = a, ["b"] = b, ["v"] = v };
+        var composite = WriteWith("composite.jzm", abv, [Abv(1, null, "old"), Abv(2, "x", "kept")]);
+        var both = JazminFile.Update(composite, new JazminUpdate
+        {
+            Upsert = [Abv(1, null, "1"), Abv(1, "x", "2"), Abv(1, null, "3"), Abv(null, null, "4"), Abv(2, "y", "5"), Abv(null, null, "6")],
+            KeyColumns = ["a", "b"],
+        });
+        Assert.Equal(["3", "kept", "2", "6", "5"], Texts(composite, r => (string)r["v"]!));
+        Assert.Equal(new JazminUpdateResult(5, 3, 1, 0), both);
+
+        var single = WriteWith("single-null.jzm", IdAndV, [Iv(1, "a")]);
+        var nulls = JazminFile.Update(single, new JazminUpdate { Upsert = [Iv(null, "n1"), Iv(1, "b"), Iv(null, "n2")], KeyColumns = ["id"] });
+        Assert.Equal(["1b", "n2"], Texts(single, IdV));
+        Assert.Equal(new JazminUpdateResult(2, 1, 1, 0), nulls);
+    }
+
+    [Fact]
+    public void Upsert_InASortedFile_TheLastRowForAKeyGoesInAtItsSortedPlace()
+    {
+        var path = Write("sorted-last.jzm", [Row(1, "B"), Row(2, "D")], new JazminWriteOptions { SortedBy = ["section"] });
+        var result = JazminFile.Update(path, new JazminUpdate { Upsert = [Row(1, "E"), Row(9, "F"), Row(1, "A"), Row(9, "C")], KeyColumns = ["id"] });
+        Assert.Equal(["A1", "C9", "D2"], Texts(path, r => $"{r["section"]}{r["id"]}"));
+        Assert.Equal(new JazminUpdateResult(3, 1, 1, 0), result);
+    }
+
+    [Fact]
+    public void Upsert_InASharedFile_TheLastRowForAKeyWins_WhenItsRowsAreInDifferentPartitions()
+    {
+        var owner = JazminKey.Generate();
+        var bob = owner.CreateAccessKey();
+        var carol = owner.CreateAccessKey();
+        var path = Write("shared-last.jzm", [Row(1, "A", 1), Row(2, "B", 2)], new JazminWriteOptions
+        {
+            Key = owner,
+            Access = new JazminAccessOptions { PartitionBy = "section", Grants = [new JazminGrant(bob) { Rows = ["A"] }, new JazminGrant(carol) { Rows = ["B"] }] },
+        });
+        var result = JazminFile.Update(path, new JazminUpdate
+        {
+            Key = owner,
+            Upsert = [Row(1, "B", 10), Row(3, "A", 30), Row(1, "A", 11), Row(3, "B", 31)],
+            KeyColumns = ["id"],
+        });
+        Assert.Equal(new JazminUpdateResult(3, 1, 1, 0), result);
+        static string Text(JazminRow r) => $"{r["id"]}{r["amount"]}";
+        Assert.Equal(["111"], Texts(path, Text, new JazminReadOptions { AccessKey = bob }));
+        Assert.Equal(["22", "331"], Texts(path, Text, new JazminReadOptions { AccessKey = carol }));
+    }
+
+    [Fact]
+    public void Upsert_InSeveralTablesAtOnce_TheLastRowForAKeyWinsInEach()
+    {
+        var path = Path.Combine(_dir, "tables-last.jzm");
+        using (var writer = JazminWriter.Create(path, new JazminWriteOptions { Tables = [new JazminTable("first", IdAndV), new JazminTable("second", IdAndV)] }))
+        {
+            writer.WriteRow(Iv(1, "a"));
+            writer.StartTable("second");
+            writer.WriteRow(Iv(1, "a"));
+        }
+        var result = JazminFile.Update(path, new JazminUpdate
+        {
+            Tables = new Dictionary<string, JazminTableChanges>
+            {
+                ["first"] = new() { Upsert = [Iv(1, "b"), Iv(1, "c")], KeyColumns = ["id"] },
+                ["second"] = new() { Upsert = [Iv(2, "p"), Iv(2, "q")], KeyColumns = ["id"] },
+            },
+        });
+        Assert.Equal((1L, 0L, 1L, 0L), (result.Tables!["first"].RowCount, result.Tables["first"].Inserted, result.Tables["first"].Updated, result.Tables["first"].Deleted));
+        Assert.Equal(new JazminUpdateResult(2, 1, 0, 0), result.Tables["second"]);
+        Assert.Equal(["1c"], Texts(path, IdV, new JazminReadOptions { Table = "first" }));
+        Assert.Equal(["1a", "2q"], Texts(path, IdV, new JazminReadOptions { Table = "second" }));
+    }
+
     [Fact]
     public void Encrypted_StaysProtected_AndFailedUpdateLeavesFileUntouched()
     {

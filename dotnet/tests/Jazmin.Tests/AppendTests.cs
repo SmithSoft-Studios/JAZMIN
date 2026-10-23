@@ -137,6 +137,99 @@ public sealed class AppendTests : IDisposable
         Assert.Equal(new[] { 19L, 20, 21 }, Ids(path, filter: JazminFilter.Gte("id", 19)));
     }
 
+    private static readonly JazminColumn[] IdAndV = [new("id", JazminType.Int), new("v", JazminType.String)];
+
+    private static Dictionary<string, object?> Iv(long? id, string v) => new() { ["id"] = id, ["v"] = v };
+
+    private static Dictionary<string, object?> Sa(long id, string section, double amount) => new() { ["id"] = id, ["section"] = section, ["amount"] = amount };
+
+    private string WriteWith(string name, JazminColumn[] columns, IEnumerable<Dictionary<string, object?>> rows, JazminWriteOptions? options = null)
+    {
+        var path = Path.Combine(_dir, name);
+        using var writer = JazminWriter.Create(path, columns, options);
+        foreach (var row in rows) writer.WriteRow(row);
+        return path;
+    }
+
+    private static string[] Texts(string path, Func<JazminRow, string> text, JazminReadOptions? options = null)
+    {
+        using var r = JazminReader.Open(path, options);
+        return r.Rows().Select(text).ToArray();
+    }
+
+    private static string IdV(JazminRow row) => $"{row["id"]}{row["v"]}";
+
+    [Fact]
+    public void Upsert_TheLastRowForAKeyWins_AsIfTheRowsWereUpsertedOneAfterAnother()
+    {
+        var path = WriteWith("last.jzm", IdAndV, [Iv(1, "a"), Iv(2, "x")]);
+        var result = JazminFile.Append(path, new JazminAppend { Upsert = [Iv(1, "b"), Iv(1, "c"), Iv(3, "p"), Iv(3, "q")], KeyColumns = ["id"] });
+        Assert.Equal(["2x", "1c", "3q"], Texts(path, IdV));
+        Assert.Equal(new JazminAppendResult(3, 1, 1, 0, 1, 1, false), result);
+
+        // Appended one after another, a key given again moves to the end: the rows kept are in the order of their last rows.
+        JazminFile.Append(path, new JazminAppend { Upsert = [Iv(4, "d"), Iv(5, "e"), Iv(4, "f")], KeyColumns = ["id"] });
+        Assert.Equal(["5e", "4f"], Texts(path, IdV).Skip(3));
+
+        // Keys with empty parts compare as upsert already compares them: an empty part matches an empty part.
+        JazminColumn[] abv = [new("a", JazminType.Int), new("b", JazminType.String), new("v", JazminType.String)];
+        static Dictionary<string, object?> Abv(long? a, string? b, string v) => new() { ["a"] = a, ["b"] = b, ["v"] = v };
+        var composite = WriteWith("composite.jzm", abv, [Abv(1, null, "old"), Abv(2, "x", "kept")]);
+        var both = JazminFile.Append(composite, new JazminAppend
+        {
+            Upsert = [Abv(1, null, "1"), Abv(1, "x", "2"), Abv(1, null, "3"), Abv(null, null, "4"), Abv(2, "y", "5"), Abv(null, null, "6")],
+            KeyColumns = ["a", "b"],
+        });
+        Assert.Equal(["kept", "2", "3", "5", "6"], Texts(composite, r => (string)r["v"]!));
+        Assert.Equal((5L, 3L, 1L, 0L), (both.RowCount, both.Inserted, both.Updated, both.Deleted));
+
+        var single = WriteWith("single-null.jzm", IdAndV, [Iv(1, "a")]);
+        var nulls = JazminFile.Append(single, new JazminAppend { Upsert = [Iv(null, "n1"), Iv(1, "b"), Iv(null, "n2")], KeyColumns = ["id"] });
+        Assert.Equal(["1b", "n2"], Texts(single, IdV));
+        Assert.Equal((2L, 1L, 1L), (nulls.RowCount, nulls.Inserted, nulls.Updated));
+    }
+
+    [Fact]
+    public void Upsert_InASortedFile_OnlyTheLastRowForAKeyMustSortAfterTheExistingRows()
+    {
+        JazminColumn[] timed = [new("id", JazminType.Int), new("t", JazminType.Int)];
+        static Dictionary<string, object?> It(long id, long t) => new() { ["id"] = id, ["t"] = t };
+        var path = WriteWith("sorted-last.jzm", timed, [It(1, 1), It(2, 3)], new JazminWriteOptions { SortedBy = ["t"] });
+        // The first row for id 9 would sort before the existing rows, but the last one replaces it.
+        var result = JazminFile.Append(path, new JazminAppend { Upsert = [It(9, 0), It(8, 4), It(9, 5), It(8, 6)], KeyColumns = ["id"] });
+        Assert.Equal(["1:1", "2:3", "9:5", "8:6"], Texts(path, r => $"{r["id"]}:{r["t"]}"));
+        Assert.Equal((4L, 2L, 0L), (result.RowCount, result.Inserted, result.Updated));
+        // And the other way round: the last row decides, so the append is refused and the file left as it was.
+        var before = File.ReadAllBytes(path);
+        var error = Assert.Throws<JazminValidationException>(() => JazminFile.Append(path, new JazminAppend { Upsert = [It(7, 9), It(7, 2)], KeyColumns = ["id"] }));
+        Assert.Contains("must sort after the existing rows", error.Message);
+        Assert.Equal(before, File.ReadAllBytes(path));
+    }
+
+    [Fact]
+    public void Upsert_InASharedFile_TheLastRowForAKeyWins_WhenItsRowsAreInDifferentPartitions()
+    {
+        var owner = JazminKey.Generate();
+        var bob = owner.CreateAccessKey();
+        var carol = owner.CreateAccessKey();
+        var path = Write("shared-last.jzm", [Row(1, "A"), Row(2, "B")], new JazminWriteOptions
+        {
+            Key = owner,
+            Access = new JazminAccessOptions { PartitionBy = "section", Grants = [new JazminGrant(bob) { Rows = ["A"] }, new JazminGrant(carol) { Rows = ["B"] }] },
+        });
+        var result = JazminFile.Append(path, new JazminAppend
+        {
+            Key = owner,
+            Upsert = [Sa(1, "B", 10), Sa(3, "A", 30), Sa(1, "A", 11), Sa(3, "B", 31)],
+            KeyColumns = ["id"],
+        });
+        Assert.Equal((3L, 1L, 1L, 0L), (result.RowCount, result.Inserted, result.Updated, result.Deleted));
+        static string Text(JazminRow r) => $"{r["id"]}{r["section"]}{r["amount"]}";
+        Assert.Equal(["2B3", "1A11", "3B31"], Texts(path, Text, new JazminReadOptions { Key = owner }));
+        Assert.Equal(["1A11"], Texts(path, Text, new JazminReadOptions { AccessKey = bob }));
+        Assert.Equal(["2B3", "3B31"], Texts(path, Text, new JazminReadOptions { AccessKey = carol }));
+    }
+
     /// <summary>No handle is left open on the file: it can be opened with no sharing at all.</summary>
     private static void AssertClosed(string path)
     {

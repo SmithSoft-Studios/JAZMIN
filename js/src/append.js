@@ -72,10 +72,26 @@ function appendUnlocked(path, options) {
     const removed = new Set();
     let updated = 0;
     if (deleteWhere) for (const [rowId] of reader[ROWS_WITH_IDS](deleteWhere)) removed.add(rowId);
+    // In one call the last row for a key wins, as if the rows were upserted one after another: a key's earlier rows are
+    // left out, and the rows kept are appended in the order of their last rows. Only a call that gives a key more than
+    // once pays for it: a second set of the call's keys, found going backwards.
+    let upserted = upsert;
     if (upsert.length) {
       const pending = new Set(upsert.map(keyOf));
+      if (pending.size < upsert.length) {
+        const seen = new Set();
+        const kept = [];
+        for (let i = upsert.length - 1; i >= 0; i--) {
+          const k = keyOf(upsert[i]);
+          if (!seen.has(k)) {
+            seen.add(k);
+            kept.push(upsert[i]);
+          }
+        }
+        upserted = kept.reverse();
+      }
       // A single key column can use its index (or chunk statistics) instead of a full scan.
-      const filter = keyColumns.length === 1 ? { [keyColumns[0]]: { in: upsert.map((r) => r[keyColumns[0]]).filter((v) => v != null) } } : null;
+      const filter = keyColumns.length === 1 ? { [keyColumns[0]]: { in: upserted.map((r) => r[keyColumns[0]]).filter((v) => v != null) } } : null;
       const matchedKeys = new Set();
       for (const [rowId, row] of reader[ROWS_WITH_IDS](filter)) {
         const k = keyOf(row);
@@ -123,7 +139,7 @@ function appendUnlocked(path, options) {
     const sortedBy = reader.sort ?? reader.sortedBy;
     const existingMetadata = reader.metadata;
     const before = { rowCount: reader.rowCount, appendCount: reader.appendCount };
-    let incoming = [...insert, ...upsert];
+    let incoming = [...insert, ...upserted];
     if (sortedBy) {
       const { keys } = normalizeOrder(sortedBy, columns);
       const orderKey = orderKeyMaker(keys);
@@ -160,7 +176,7 @@ function appendUnlocked(path, options) {
     // The new version's counts follow from the change: no need to open the file again.
     result = {
       rowCount: before.rowCount - removed.size + incoming.length,
-      inserted: insert.length + upsert.length - updated,
+      inserted: insert.length + upserted.length - updated,
       updated,
       deleted: deletedNow,
       appendCount: before.appendCount + 1,

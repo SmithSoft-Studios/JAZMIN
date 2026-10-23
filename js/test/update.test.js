@@ -41,6 +41,91 @@ test('unsorted file: upsert replaces in place, inserts append, delete removes; i
   r.close();
 });
 
+const rowsOf = (file, options) => {
+  const r = open(file, options);
+  try {
+    return [...r.rows()];
+  } finally {
+    r.close();
+  }
+};
+
+test('upsert: in one call the last row for a key wins, as if the rows were upserted one after another (#275)', () => {
+  const file = tmp('last.jzm');
+  const plain = [{ name: 'id', type: 'int' }, { name: 'v', type: 'string' }];
+  write(file, [{ id: 1, v: 'a' }, { id: 2, v: 'x' }], { columns: plain });
+  const result = update(file, { upsert: [{ id: 1, v: 'b' }, { id: 1, v: 'c' }, { id: 3, v: 'p' }, { id: 3, v: 'q' }], keyColumns: ['id'] });
+  assert.deepEqual(rowsOf(file), [{ id: 1, v: 'c' }, { id: 2, v: 'x' }, { id: 3, v: 'q' }]);
+  assert.deepEqual(result, { rowCount: 3, inserted: 1, updated: 1, deleted: 0, expiredGrantsRemoved: 0 });
+
+  // One after another, a new key is added at the end and then replaced where it is.
+  update(file, { upsert: [{ id: 4, v: 'd' }, { id: 5, v: 'e' }, { id: 4, v: 'f' }], keyColumns: ['id'] });
+  assert.deepEqual(rowsOf(file).slice(3), [{ id: 4, v: 'f' }, { id: 5, v: 'e' }]);
+
+  // Keys with empty parts: an empty part matches an empty part.
+  const composite = tmp('composite.jzm');
+  write(composite, [{ a: 1, b: null, v: 'old' }, { a: 2, b: 'x', v: 'kept' }], {
+    columns: [{ name: 'a', type: 'int' }, { name: 'b', type: 'string' }, { name: 'v', type: 'string' }],
+  });
+  const both = update(composite, {
+    upsert: [
+      { a: 1, b: null, v: '1' }, { a: 1, b: 'x', v: '2' }, { a: 1, b: null, v: '3' },
+      { a: null, b: null, v: '4' }, { a: 2, b: 'y', v: '5' }, { a: null, b: null, v: '6' },
+    ],
+    keyColumns: ['a', 'b'],
+  });
+  assert.deepEqual(rowsOf(composite).map((r) => r.v), ['3', 'kept', '2', '6', '5']);
+  assert.deepEqual(both, { rowCount: 5, inserted: 3, updated: 1, deleted: 0, expiredGrantsRemoved: 0 });
+
+  const single = tmp('single-null.jzm');
+  write(single, [{ id: 1, v: 'a' }], { columns: plain });
+  const nulls = update(single, { upsert: [{ id: null, v: 'n1' }, { id: 1, v: 'b' }, { id: null, v: 'n2' }], keyColumns: ['id'] });
+  assert.deepEqual(rowsOf(single), [{ id: 1, v: 'b' }, { id: null, v: 'n2' }]);
+  assert.deepEqual([nulls.rowCount, nulls.inserted, nulls.updated], [2, 1, 1]);
+});
+
+test('upsert in a sorted file: the last row for a key goes in at its sorted place', () => {
+  const file = tmp('sorted-last.jzm');
+  write(file, [{ id: 1, section: 'B' }, { id: 2, section: 'D' }], { columns, sortedBy: ['section'] });
+  const result = update(file, { upsert: [{ id: 1, section: 'E' }, { id: 9, section: 'F' }, { id: 1, section: 'A' }, { id: 9, section: 'C' }], keyColumns: ['id'] });
+  assert.deepEqual(rowsOf(file).map((r) => `${r.section}${r.id}`), ['A1', 'C9', 'D2']);
+  assert.deepEqual(result, { rowCount: 3, inserted: 1, updated: 1, deleted: 0, expiredGrantsRemoved: 0 });
+});
+
+test('upsert in a shared file: the last row for a key wins when its rows are in different partitions', () => {
+  const owner = JazminKey.generate();
+  const bob = owner.createAccessKey();
+  const carol = owner.createAccessKey();
+  const file = tmp('shared-last.jzm');
+  write(file, [{ id: 1, section: 'A', amount: 1 }, { id: 2, section: 'B', amount: 2 }], {
+    columns, key: owner,
+    access: { partitionBy: 'section', grants: [{ key: bob, rows: ['A'] }, { key: carol, rows: ['B'] }] },
+  });
+  const result = update(file, {
+    key: owner,
+    upsert: [{ id: 1, section: 'B', amount: 10 }, { id: 3, section: 'A', amount: 30 }, { id: 1, section: 'A', amount: 11 }, { id: 3, section: 'B', amount: 31 }],
+    keyColumns: ['id'],
+  });
+  assert.deepEqual(result, { rowCount: 3, inserted: 1, updated: 1, deleted: 0, expiredGrantsRemoved: 0 });
+  assert.deepEqual(rowsOf(file, { key: bob }).map((r) => [r.id, r.amount]), [[1, 11]]);
+  assert.deepEqual(rowsOf(file, { key: carol }).map((r) => [r.id, r.amount]), [[2, 2], [3, 31]]);
+});
+
+test('upsert in several tables at once: the last row for a key wins in each', () => {
+  const file = tmp('tables-last.jzm');
+  const plain = [{ name: 'id', type: 'int' }, { name: 'v', type: 'string' }];
+  write(file, { first: [{ id: 1, v: 'a' }], second: [{ id: 1, v: 'a' }] }, { tables: [{ name: 'first', columns: plain }, { name: 'second', columns: plain }] });
+  const result = update(file, {
+    tables: {
+      first: { upsert: [{ id: 1, v: 'b' }, { id: 1, v: 'c' }], keyColumns: ['id'] },
+      second: { upsert: [{ id: 2, v: 'p' }, { id: 2, v: 'q' }], keyColumns: ['id'] },
+    },
+  });
+  assert.deepEqual(result.tables, { first: { rowCount: 1, inserted: 0, updated: 1, deleted: 0 }, second: { rowCount: 2, inserted: 1, updated: 0, deleted: 0 } });
+  assert.deepEqual(rowsOf(file, { table: 'first' }), [{ id: 1, v: 'c' }]);
+  assert.deepEqual(rowsOf(file, { table: 'second' }), [{ id: 1, v: 'a' }, { id: 2, v: 'q' }]);
+});
+
 test('the writer enforces sortedBy order', () => {
   assert.throws(() => write(null, [{ id: 2, section: 'B' }, { id: 1, section: 'A' }], { columns, sortedBy: ['section'] }), /out of order/);
 });

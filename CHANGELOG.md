@@ -35,6 +35,16 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   shared file again, so a second call on one table's reader could close the file while another table's reader was
   still using it ("Cannot access a closed file"). A reader now lets go once, and a disposed reader's `OpenTable()`
   throws `ObjectDisposedException` even while other readers keep the file open. JavaScript was not affected.
+- **An append's upsert kept every row for a key given more than once** (#275). `append(f, { upsert: [{ id: 1, v: 'b' },
+  { id: 1, v: 'c' }], keyColumns: ['id'] })` stored both rows. Now the last row for a key wins, as if the rows were
+  upserted one after another: only `{ id: 1, v: 'c' }` is stored, the rows kept are appended in the order of their
+  last rows, and `inserted` and `rowCount` count them once. In a sorted file only the last row has to sort after the
+  existing rows; in a shared file the last row decides the partition. .NET `JazminFile.Append` does the same.
+  `update()` and `JazminFile.Update` (`tables` included) already kept only the last row; that is now tested in both
+  libraries. An append with no repeated key needs no more memory than before; one with a repeated key holds a little
+  more, for the call's own rows only, while it picks the last rows. **Files written before this fix keep the duplicate
+  rows they have, and a compaction doesn't remove them;** an upsert of that key (append or update) replaces them all
+  with one row.
 
 ### Added
 - **Limits per key on what a key may send back (spec 7.9.1, #257).** A grant's `edit` (`columns`, `add`, `delete`)

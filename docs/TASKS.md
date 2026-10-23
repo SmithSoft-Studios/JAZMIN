@@ -34,7 +34,7 @@ Status: ✅ done · 🔶 partly done · 🔜 next · ⬜ later
 | ✅ U-1 | Updates: insert / upsert / delete / metadata, `sortedBy` merge, atomic replace; grant / revoke with fresh secrets | `update.test.js`, `UpdateTests`; RFC §11.1 |
 | ✅ T-2 | Time-limited access: offline expiry with clock-floor and last-seen checks; online grants with unlock tokens from a key service | `expiry.test.js`, `ExpiryTests`, Carol/Erin interop grants; RFC §7.7 |
 | ✅ T-4 | Sample key service: unlock tokens gated by 2FA (TotpAuthSharp) | `Jazmin.KeyService.Tests` (8 tests) | No |
-| ✅ U-2 | Append-only updates with compaction, index segments, deletes, crash recovery and a writer lock (format 1.2) | `append.test.js`, `AppendTests`, appended interop fixtures; RFC §11.2 |
+| ✅ U-2 | Append-only updates with compaction, index segments, deletes, crash recovery and a writer lock (format 1.2); an upsert that gives a key twice keeps the last row, as `update()` does (#275) | `append.test.js`, `AppendTests`, appended interop fixtures; RFC §11.2 |
 | ✅ P-0 | Read-path speed: compiled .NET materializer, exact LINQ translation, binary search over sorted chunks, no index load on the leading sort column, slicing-by-8 / native CRC-32, JsonDocument header parsing | Benchmarks in USER-GUIDE §14–15 |
 
 ## Done: file format 1.0

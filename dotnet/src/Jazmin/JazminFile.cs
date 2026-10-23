@@ -22,7 +22,7 @@ public sealed class JazminUpdate
     /// <summary>New rows.</summary>
     public IReadOnlyList<IReadOnlyDictionary<string, object?>> Insert { get; set; } = Array.Empty<IReadOnlyDictionary<string, object?>>();
 
-    /// <summary>Rows that replace existing rows with the same <see cref="KeyColumns"/>; unmatched rows are inserted.</summary>
+    /// <summary>Rows that replace existing rows with the same <see cref="KeyColumns"/>; unmatched rows are inserted. The last row for a key wins.</summary>
     public IReadOnlyList<IReadOnlyDictionary<string, object?>> Upsert { get; set; } = Array.Empty<IReadOnlyDictionary<string, object?>>();
 
     public IReadOnlyList<string>? KeyColumns { get; set; }
@@ -155,7 +155,7 @@ public sealed class JazminTableChanges
     /// <summary>New rows.</summary>
     public IReadOnlyList<IReadOnlyDictionary<string, object?>> Insert { get; set; } = Array.Empty<IReadOnlyDictionary<string, object?>>();
 
-    /// <summary>Rows that replace existing rows with the same <see cref="KeyColumns"/>; unmatched rows are inserted.</summary>
+    /// <summary>Rows that replace existing rows with the same <see cref="KeyColumns"/>; unmatched rows are inserted. The last row for a key wins.</summary>
     public IReadOnlyList<IReadOnlyDictionary<string, object?>> Upsert { get; set; } = Array.Empty<IReadOnlyDictionary<string, object?>>();
 
     public IReadOnlyList<string>? KeyColumns { get; set; }
@@ -265,7 +265,7 @@ public sealed class JazminAppend
 
     public IReadOnlyList<IReadOnlyDictionary<string, object?>> Insert { get; set; } = Array.Empty<IReadOnlyDictionary<string, object?>>();
 
-    /// <summary>Rows that replace existing rows with the same <see cref="KeyColumns"/> (the old rows are marked deleted).</summary>
+    /// <summary>Rows that replace existing rows with the same <see cref="KeyColumns"/> (the old rows are marked deleted). The last row for a key wins.</summary>
     public IReadOnlyList<IReadOnlyDictionary<string, object?>> Upsert { get; set; } = Array.Empty<IReadOnlyDictionary<string, object?>>();
 
     public IReadOnlyList<string>? KeyColumns { get; set; }
@@ -1236,12 +1236,20 @@ public static class JazminFile
             if (append.Delete is not null)
                 foreach (var row in reader.RowsWithIds(append.Delete)) removed.Add(row.RowId);
             long updated = 0;
+            // In one call the last row for a key wins, as if the rows were upserted one after another: a key's earlier rows
+            // are left out (found going backwards: a key seen already), and the rows kept are appended in the order of their
+            // last rows. The set holds the call's keys only, sized once; the marks are made only when a key is given twice.
+            var upserted = append.Upsert;
             if (append.Upsert.Count > 0)
             {
-                var pending = append.Upsert.Select(r => shape.KeyText(shape.ValuesOf(r), keyCols)).ToHashSet(StringComparer.Ordinal);
+                var pending = new HashSet<string>(append.Upsert.Count, StringComparer.Ordinal);
+                bool[]? superseded = null;
+                for (var i = append.Upsert.Count - 1; i >= 0; i--)
+                    if (!pending.Add(shape.KeyText(shape.ValuesOf(append.Upsert[i]), keyCols))) (superseded ??= new bool[append.Upsert.Count])[i] = true;
+                if (superseded is not null) upserted = append.Upsert.Where((_, i) => !superseded[i]).ToList();
                 // A single key column can use its index (or chunk statistics) instead of a full scan.
                 var filter = keyCols.Length == 1
-                    ? JazminFilter.In(shape.Columns[keyCols[0]].Name, append.Upsert.Select(r => r.GetValueOrDefault(shape.Columns[keyCols[0]].Name)).Where(v => v is not null).ToArray())
+                    ? JazminFilter.In(shape.Columns[keyCols[0]].Name, upserted.Select(r => r.GetValueOrDefault(shape.Columns[keyCols[0]].Name)).Where(v => v is not null).ToArray())
                     : null;
                 var matched = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var row in reader.RowsWithIds(filter))
@@ -1257,7 +1265,7 @@ public static class JazminFile
 
             var state = reader.AppendState();
             var allDeleted = state.Deleted.Concat(removed).Distinct().Order().ToArray();
-            var incoming = append.Insert.Concat(append.Upsert).Select(shape.ValuesOf).ToList();
+            var incoming = append.Insert.Concat(upserted).Select(shape.ValuesOf).ToList();
             var columns = Grown(shape.Columns, incoming, append.Columns);
             // The table's order, other text comparisons included (spec 6.7): appended rows are put in it.
             var sortedBy = reader.Order;
@@ -1311,7 +1319,7 @@ public static class JazminFile
             writer.Finish();
 
             // The new version's counts follow from the change: no need to open the file again.
-            result = new JazminAppendResult(rowCountBefore - removed.Count + incoming.Count, append.Insert.Count + append.Upsert.Count - updated, updated, deletedNow,
+            result = new JazminAppendResult(rowCountBefore - removed.Count + incoming.Count, append.Insert.Count + upserted.Count - updated, updated, deletedNow,
                 appendCountBefore + 1, allDeleted.Length, false) { ExpiredGrantsRemoved = writer.ExpiredGrants };
         }
         catch

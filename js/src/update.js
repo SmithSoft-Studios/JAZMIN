@@ -71,7 +71,7 @@ function keyText(value) {
  * options:
  *   key | password      required for encrypted files; the OWNER key for access-controlled files
  *   insert: rows        new rows
- *   upsert: rows        replace rows whose keyColumns match, insert the rest
+ *   upsert: rows        replace rows whose keyColumns match, insert the rest; the last row for a key wins
  *   keyColumns: [...]   columns identifying a row for upsert
  *   delete: filter      remove matching rows
  *   metadata: {...}     merged into the existing metadata

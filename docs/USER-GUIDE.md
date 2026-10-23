@@ -2484,7 +2484,7 @@ took **3.0 s** with a **74 MB** process peak (Node.js).
 | Change | JavaScript (`update`) | .NET (`JazminFile.Update`) |
 |---|---|---|
 | Add rows | `insert: [rows]` | `Insert = [rows]` |
-| Replace rows with the same key (or add them) | `upsert: [rows], keyColumns: ['id']` | `Upsert = [rows], KeyColumns = ["id"]` |
+| Replace rows with the same key (or add them); in one call, the last row for a key wins | `upsert: [rows], keyColumns: ['id']` | `Upsert = [rows], KeyColumns = ["id"]` |
 | Remove rows | `delete: { status: 'void' }` | `Delete = JazminFilter.Eq("status", "void")` |
 | Change columns on the rows a filter matches | `set: { status: 'paid' }, where: { id: 7 }` | `Set = new Dictionary<string, object?> { ["status"] = "paid" }, Where = JazminFilter.Eq("id", 7)` |
 | Change metadata (merged) | `metadata: { ... }` | `Metadata = new JsonObject { ... }` |
@@ -2725,6 +2725,12 @@ JazminFile.Compact("visits.jzm", owner, regroup: true);         // each partitio
   incomplete part and use the previous version (`reader.recovered` is
   `true`). The next append removes the incomplete part. A failed append, for
   example one with an invalid row, leaves the file exactly as it was.
+- **Upsert: the last row for a key wins.** When one append's `upsert` gives
+  a key more than once, only the last row for it is stored, as if the rows
+  were upserted one after another; `update()` does the same. In a sorted file
+  only that last row has to sort after the existing rows. Releases up to
+  1.7.2 stored every row from `append()`: a file written then keeps those
+  rows, also after `compact()`, until that key is upserted again.
 - **One writer at a time.** `append`, `update` and `compact` take a lock file
   (`statements.jzm.lock`) while they work. A second writer gets *"Another
   writer is changing ..."*. If a writer process was killed, delete the stale
