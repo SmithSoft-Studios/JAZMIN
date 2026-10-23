@@ -35,6 +35,7 @@ import { encodeSection } from './section.js';
 import { SectionPool } from './section-pool.js';
 import { ColumnStats } from './stats.js';
 import { normalizeValue } from './types.js';
+import { openFileSync } from './open-retry.js';
 
 const FLAGS_OFFSET = 4; // preamble: magic (4) | flags u16 | reserved u16 | file id | salt | kdf iterations | reserved
 
@@ -61,7 +62,7 @@ class Output {
     this.position = appendAt ?? 0;
     this.fd = null;
     if (path && appendAt !== undefined) {
-      this.fd = fs.openSync(path, 'r+');
+      this.fd = openFileSync(path, 'r+'); // an append: on Windows the path may be missing for an instant (open-retry.js)
       fs.ftruncateSync(this.fd, appendAt);
     } else if (path) {
       this.fd = fs.openSync(path, 'w');

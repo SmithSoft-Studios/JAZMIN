@@ -34,6 +34,7 @@ import { SectionPool } from './section-pool.js';
 import { decodeSection, sectionKeyCheck, sectionPayloadLength } from './section.js';
 import { decodeBound } from './stats.js';
 import { compareKeys } from './types.js';
+import { openFileSync } from './open-retry.js';
 
 
 /** First index in a sorted array whose value is >= target. */
@@ -391,7 +392,7 @@ export function fileSource(fd, size) {
 export function openSource(source) {
   if (source?.[SOURCE]) return source;
   if (typeof source === 'string') {
-    const fd = fs.openSync(source, 'r');
+    const fd = openFileSync(source, 'r');
     return fileSource(fd, fs.fstatSync(fd).size);
   }
   if (source instanceof Uint8Array) {
@@ -949,7 +950,8 @@ export class JazminReader {
   /**
    * Partitions (spec 6.3) are listed as they are needed: a key holder looks up only its own in the partition table,
    * and the owner lists them all only for queries that do not pin the partition column. Appends' deltas are small
-   * and read now.
+   * and read now. Chunk directories are read by the first query that needs them (#plan, #ensureAllChunks), so a file
+   * opens as fast after many appends as after none; only an access key reads its own now, for rowCount.
    */
   #openPartitions() {
     const n = this.#table.chunkCount;
@@ -976,7 +978,7 @@ export class JazminReader {
         }
       }
     });
-    if (!this.#access?.isOwner) this.#ensureAllChunks(); // one partition, or only this key's own
+    if (this.#access && !this.#access.isOwner) this.#ensureAllChunks(); // only this key's own: rowCount needs them
   }
 
   #newPartition(id, base) {

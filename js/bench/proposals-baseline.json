@@ -1,106 +1,106 @@
 {
   "open": {
-    "bytes": 788,
+    "bytes": 454,
     "rows": 0
   },
   "id lookup": {
-    "bytes": 153903,
+    "bytes": 153887,
     "rows": 1
   },
   "account page, first account": {
-    "bytes": 103604,
+    "bytes": 103588,
     "rows": 50
   },
   "account page, last account": {
-    "bytes": 87075,
+    "bytes": 87059,
     "rows": 50
   },
   "account page, time-sorted file": {
-    "bytes": 449140,
+    "bytes": 449130,
     "rows": 50
   },
   "account count, time-sorted file": {
-    "bytes": 58870,
+    "bytes": 58860,
     "rows": 755
   },
   "account count, account-sorted file": {
-    "bytes": 103604,
+    "bytes": 103588,
     "rows": 755
   },
   "monthly counts over a year": {
-    "bytes": 1087717,
+    "bytes": 1087707,
     "rows": 200000
   },
   "keyset page within an account": {
-    "bytes": 104858,
+    "bytes": 104841,
     "rows": 50
   },
   "one day, all accounts": {
-    "bytes": 5056261,
+    "bytes": 5056244,
     "rows": 549
   },
   "one day, time-sorted file": {
-    "bytes": 100148,
+    "bytes": 100138,
     "rows": 549
   },
   "deep page (offset 150,000)": {
-    "bytes": 99773,
+    "bytes": 99763,
     "rows": 50
   },
   "newest 50 (offset rowCount - 50)": {
-    "bytes": 83651,
+    "bytes": 83641,
     "rows": 50
   },
   "sum of amount, select": {
-    "bytes": 4822130,
+    "bytes": 4822120,
     "rows": 200000
   },
   "sum of amount, all columns": {
-    "bytes": 4822130,
+    "bytes": 4822120,
     "rows": 200000
   },
   "account amounts through an index": {
-    "bytes": 4880212,
+    "bytes": 4880202,
     "rows": 755
   },
   "reference lookup, select": {
-    "bytes": 147388,
+    "bytes": 147372,
     "rows": 1
   },
   "access file: account amounts": {
-    "bytes": 53035,
+    "bytes": 53036,
     "rows": 755
   },
   "access file: all amounts": {
-    "bytes": 6071275,
+    "bytes": 6210729,
     "rows": 200000
   },
   "get() one day, time order": {
-    "bytes": 55106229,
+    "bytes": 55106213,
     "rows": 549
   },
   "get() one day, position order": {
-    "bytes": 5012204,
+    "bytes": 5012188,
     "rows": 549
   },
   "browser: open": {
-    "bytes": 798,
+    "bytes": 782,
     "rows": 0
   },
   "browser: id lookup": {
-    "bytes": 153903,
+    "bytes": 153887,
     "rows": 1
   },
   "browser: account page, first account": {
-    "bytes": 103604,
+    "bytes": 103588,
     "rows": 50
   },
   "browser: account page, last account": {
-    "bytes": 87075,
+    "bytes": 87059,
     "rows": 50
   },
   "browser: query() deep page with total": {
-    "bytes": 102405,
+    "bytes": 102389,
     "rows": 50
   }
 }
