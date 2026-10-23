@@ -755,6 +755,21 @@ export interface ColumnArrays {
   nulls: Record<string, Uint8Array>;
 }
 
+/** What reader.verify() checked: every section of the file's current version. */
+export interface VerifyResult {
+  /**
+   * How each section was checked: 'signature' (a shared file: each section against the owner's signature),
+   * 'encryption' (each section's authentication tag: any change is caught) or 'checksum' (a plain file: CRC-32,
+   * accidental damage only).
+   */
+  checkedBy: 'signature' | 'encryption' | 'checksum';
+  sections: number;
+  /** Bytes checked (the 64-byte preamble and 44-byte trailer are checked on opening and not counted). */
+  bytes: number;
+  /** Bytes earlier versions left behind (after appends): not used, not checked; compact() removes them. */
+  unusedBytes: number;
+}
+
 /** How a file's bytes are used (reader.storage()): what compact() would give back. */
 export interface StorageReport {
   /** The file's size. */
@@ -1158,6 +1173,12 @@ export class JazminReader implements Iterable<JazminRow> {
    * stored, chunks and index segments per table. Reads directories, not rows. Owner key for shared files.
    */
   storage(): StorageReport;
+  /**
+   * Checks every section of the file's current version, not only those queries read: throws a JazminFormatError
+   * naming the first section that changed or is damaged. One section at a time; nothing is kept. Owner key for shared
+   * files.
+   */
+  verify(): VerifyResult;
   explain(filter: Filter): QueryPlan;
   /**
    * Runs the query (with any find() options) and reports what it read. Indexes and the last chunk this reader

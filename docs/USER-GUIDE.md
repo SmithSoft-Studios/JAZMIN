@@ -206,7 +206,8 @@ You supply either a **key** or a **password**:
 
 The key unlocks the header. The header holds extra secrets which, *combined
 with your key*, unlock each chunk and index with its own unique key.
-Everything is authenticated, so any tampering is detected.
+Everything is authenticated, so tampering is detected: in each part of the
+file when it is read, and in the whole file with `reader.verify()` (17.6).
 
 ---
 
@@ -1771,6 +1772,11 @@ changes the file, and gives and takes away access, and it can't be revoked.
 editing bytes, swapping chunks, copying sections from another file, and
 stripping encryption. Plain files have CRC checks, which catch accidental
 damage only.
+- **When:** a reader checks each part of the file when it reads it. A change
+  in a part no query reads (an index you don't use, say) goes unnoticed until
+  something reads it.
+- **Before you trust a file you received,** check all of it with
+  `reader.verify()` or `jazmin check` (17.6).
 
 **Do not mix attacker-supplied text and secrets in one compressed and
 encrypted file** if an attacker can see the file size. Compression can leak
@@ -2872,6 +2878,52 @@ opening the file takes.
 
 The last file is the worst case `storage()` is there to catch: about one row
 per chunk, which `compact({ regroup: true })` fixes.
+
+### 17.6 Has the file changed? `verify()`
+
+A reader checks each part of a file (a chunk, an index page) when it reads it,
+and refuses a part that changed. It doesn't check parts it never reads. So a
+file you received can open and answer queries even though a byte in an index
+you never use was changed. `reader.verify()` (.NET `reader.Verify()`) checks
+every section of the file:
+
+```js
+const r = open('statement.jzm', { key });
+const v = r.verify();   // throws a JazminFormatError naming the first section that changed
+r.close();
+v.checkedBy;    // 'signature', 'encryption' or 'checksum' (below)
+v.sections;     // sections checked
+v.bytes;        // bytes checked
+v.unusedBytes;  // bytes earlier versions left behind: not used, not checked
+```
+
+```csharp
+using var r = JazminReader.Open("statement.jzm", new JazminReadOptions { Key = key });
+var v = r.Verify();   // throws a JazminFormatException naming the first section that changed
+```
+
+From the command line: `jazmin check statement.jzm` (section 25).
+
+How each kind of file is checked:
+
+| File | Checked by | What it catches |
+|---|---|---|
+| Shared (access control) | Each section's SHA-256 against the owner's signature. Needs the owner key | Any change |
+| Encrypted with a key or password | Each section's authentication tag | Any change |
+| Plain | Each section's CRC-32 | Accidental damage only: anyone can change a plain file and its checksums |
+
+- **Unused bytes** (17.5) aren't part of the current version, so they aren't
+  checked. `compact()` removes them.
+- **An append that didn't finish** (or a changed end of file) makes a reader
+  open the version before it. `verify()` fails then.
+- **Speed and memory:** one section at a time, nothing kept. Measured on a
+  200,000-row encrypted file of 17 MB with sorted and trigram indexes (Node 24,
+  five runs, each in its own process): 66–118 ms, against 243–433 ms to read
+  every row. Peak memory was about 22 MB above what opening the file takes;
+  most of it is the largest section (the 5 MB trigram index) and buffers freed
+  straight after.
+- **Proof of who made a file** is a publisher signature (section 26).
+  `verify()` checks that the file is whole, not who wrote it.
 
 ## 18. Time-limited access
 
@@ -5276,6 +5328,7 @@ npx @smithsoft-studios/jazmin --help          # or, installed in a project: npx 
 | `jazmin keygen [--access]` | A new key or, with `--access`, an access key issued from the owner key |
 | `jazmin script <file.jzm> [<file.js>] [--name <name>]` | The file as a script (default: `<file.jzm>.js` beside it), which a page opened from disk opens with `JazminBrowser.openScript()` (section 24.4). Needs no key: the file inside stays encrypted |
 | `jazmin verify <file> [<file> ...] [--key <key> \| --password <text>] [--revocation-list <file>] [--json]` | Who published each file and that it hasn't changed since: its publisher signature (section 26.1). `--json` prints the results as JSON |
+| `jazmin check <file> [--json]` | That not one section changed or was damaged: every section, not only those a query reads (section 17.6). Exit code 0 unchanged, 1 changed or damaged (the section is named), 2 a usage error or an encrypted file without a key |
 
 Every command takes `--help`. `--table <name>` picks a table in a file with
 several.
