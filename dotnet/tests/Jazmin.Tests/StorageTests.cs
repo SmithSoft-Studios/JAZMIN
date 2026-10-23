@@ -106,4 +106,19 @@ public sealed class StorageTests
         using var bob = JazminReader.Open(file, new JazminReadOptions { AccessKey = JazminAccessKey.Parse((string)Keys["bob"]!) });
         Assert.Contains("measured with its owner key", Assert.Throws<JazminValidationException>(() => bob.Storage()).Message);
     }
+
+    [Fact]
+    public void A_reader_measures_the_version_it_opened_not_bytes_appended_since_as_JavaScript_does()
+    {
+        var file = Path.Combine(Directory.CreateTempSubdirectory("jazmin-storage-").FullName, "later.jzm");
+        JazminColumn[] columns = [new("id", JazminType.Int)];
+        using (var writer = JazminWriter.Create(file, columns))
+            for (var i = 0; i < 100; i++) writer.WriteRow(new Dictionary<string, object?> { ["id"] = (long)i });
+        using var reader = JazminReader.Open(file);
+        var before = reader.Storage();
+        JazminFile.Append(file, new JazminAppend { Insert = [new Dictionary<string, object?> { ["id"] = 100L }] });
+        var after = reader.Storage();
+        Assert.Equal((before.FileBytes, before.UnusedBytes), (after.FileBytes, after.UnusedBytes));
+        Assert.Equal(0, reader.Verify().UnusedBytes);
+    }
 }

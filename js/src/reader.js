@@ -34,7 +34,7 @@ import { SectionPool } from './section-pool.js';
 import { decodeSection, sectionKeyCheck, sectionPayloadLength } from './section.js';
 import { decodeBound } from './stats.js';
 import { compareKeys } from './types.js';
-import { openFileSync } from './open-retry.js';
+import { openFileOrNull, openFileSync } from './open-retry.js';
 
 
 /** First index in a sorted array whose value is >= target. */
@@ -286,26 +286,6 @@ export const ACCESS_EXPIRES = Symbol('jazmin.accessExpires');
 export const IDLE = Symbol('jazmin.idle');
 /** Internal (JazminReaderCache): whether unlock() has opened a lock of this reader (or of a reader sharing its file). */
 export const LOCKS_OPENED = Symbol('jazmin.locksOpened');
-
-const pause = new Int32Array(new SharedArrayBuffer(4));
-
-// On Windows, update() and compact() replace a file that readers have open in two steps (update.js replaceOpenFile):
-// the open file is moved aside and the new version renamed in, so for an instant the path is missing. Opening it is
-// tried again after these waits (about 0.1 s in all). Elsewhere a replace is one step: a missing file is gone.
-const MISSING_WAITS_MS = [1, 3, 6, 12, 25, 50];
-
-/** Opens a file for changed(), waiting briefly on Windows for a path that is missing while the file is replaced; null when it is missing. */
-function openToCheck(path) {
-  for (let attempt = 0; ; attempt++) {
-    try {
-      return fs.openSync(path, 'r');
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-      if (process.platform !== 'win32' || attempt >= MISSING_WAITS_MS.length) return null;
-      Atomics.wait(pause, 0, 0, MISSING_WAITS_MS[attempt]);
-    }
-  }
-}
 
 function readAt(fd, position, length) {
   const buf = Buffer.alloc(length);
@@ -905,7 +885,7 @@ export class JazminReader {
    */
   changed() {
     this.#checkPath('changed()');
-    const fd = openToCheck(this.#path);
+    const fd = openFileOrNull(this.#path, 'r'); // waits briefly on Windows while the file is replaced
     if (fd === null) return true;
     try {
       const size = fs.fstatSync(fd).size;

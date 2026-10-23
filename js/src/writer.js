@@ -1176,6 +1176,7 @@ export class JazminWriter {
   /** finish() with the same bytes, in the same order, but the flushes to disk awaited instead of blocking. */
   async [FINISH_ASYNC]() {
     if (this.#finished) throw new JazminValidationError('Writer is already finished');
+    this.#writeHeld(); // as finish() does (appends hold no rows today: regroup is write()'s)
     this.#flushChunk();
     while (this.#pending.length) {
       await this.#pool.whenReady();
