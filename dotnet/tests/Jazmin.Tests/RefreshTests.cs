@@ -212,7 +212,10 @@ public sealed class RefreshTests : IDisposable
         File.Move(path, path + ".moved");
         var started = DateTime.UtcNow;
         Assert.True(r.Changed());
-        Assert.True(DateTime.UtcNow - started >= TimeSpan.FromMilliseconds(90), "a missing path is tried again for about 100 ms");
+        if (OperatingSystem.IsWindows())
+            Assert.True(DateTime.UtcNow - started >= TimeSpan.FromMilliseconds(90), "on Windows a missing path is tried again for about 100 ms");
+        else
+            Assert.True(DateTime.UtcNow - started < TimeSpan.FromMilliseconds(90), "elsewhere a missing path is not waited for (a replace there is one step)");
         Assert.Throws<FileNotFoundException>(() => r.Refresh());
         Assert.Equal(Range(0, 2), Ids(r));
         File.Move(path + ".moved", path);

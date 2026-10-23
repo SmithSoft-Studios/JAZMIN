@@ -315,14 +315,15 @@ test('clear() and close(): idle readers close now, leased ones when released; a 
   assert.throws(() => new JazminReaderCache({ max: 0 }), JazminValidationError);
 });
 
-test('a file that is gone counts as changed (after a short wait for a replace); refresh() throws as open() would', () => {
+test('a file that is gone counts as changed (on Windows after a short wait for a replace); refresh() throws as open() would', () => {
   const file = tmp('gone.jzm');
   write(file, rows(0, 2), { columns });
   const r = open(file);
   fs.renameSync(file, `${file}.moved`);
   const start = Date.now();
   assert.equal(r.changed(), true);
-  assert.ok(Date.now() - start >= 90, 'a missing path is tried again for about 100 ms');
+  if (process.platform === 'win32') assert.ok(Date.now() - start >= 90, 'on Windows a missing path is tried again for about 100 ms');
+  else assert.ok(Date.now() - start < 90, 'elsewhere a missing path is not waited for (a replace there is one step)');
   assert.throws(() => r.refresh(), { code: 'ENOENT' });
   assert.deepEqual(ids(r), [0, 1]);
   fs.renameSync(`${file}.moved`, file);

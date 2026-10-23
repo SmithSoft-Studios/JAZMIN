@@ -289,24 +289,20 @@ export const LOCKS_OPENED = Symbol('jazmin.locksOpened');
 
 const pause = new Int32Array(new SharedArrayBuffer(4));
 
-/**
- * Opens a file for changed(). update() replaces a file by renaming; on Windows an open file is moved aside first, so
- * the path is missing for an instant (update.js replaceOpenFile): a missing path, or one Windows can't open yet, is
- * tried again for about 100 ms. Returns null when the file is still missing.
- */
+// On Windows, update() and compact() replace a file that readers have open in two steps (update.js replaceOpenFile):
+// the open file is moved aside and the new version renamed in, so for an instant the path is missing. Opening it is
+// tried again after these waits (about 0.1 s in all). Elsewhere a replace is one step: a missing file is gone.
+const MISSING_WAITS_MS = [1, 3, 6, 12, 25, 50];
+
+/** Opens a file for changed(), waiting briefly on Windows for a path that is missing while the file is replaced; null when it is missing. */
 function openToCheck(path) {
-  const deadline = Date.now() + 100;
-  for (;;) {
+  for (let attempt = 0; ; attempt++) {
     try {
       return fs.openSync(path, 'r');
     } catch (error) {
-      const passing = error.code === 'ENOENT' || (process.platform === 'win32' && (error.code === 'EPERM' || error.code === 'EBUSY'));
-      if (!passing) throw error;
-      if (Date.now() >= deadline) {
-        if (error.code === 'ENOENT') return null;
-        throw error;
-      }
-      Atomics.wait(pause, 0, 0, 5);
+      if (error.code !== 'ENOENT') throw error;
+      if (process.platform !== 'win32' || attempt >= MISSING_WAITS_MS.length) return null;
+      Atomics.wait(pause, 0, 0, MISSING_WAITS_MS[attempt]);
     }
   }
 }

@@ -978,28 +978,25 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     }
 
     /// <summary>
-    /// Opens a file for <see cref="Changed"/>. An update replaces a file by renaming; on Windows an open file is moved
-    /// aside first, so the path is missing for an instant: a missing path, or one Windows can't open yet, is tried again
-    /// for about 100 ms. Null when the file is still missing.
+    /// On Windows, where a one-step replace isn't supported, Update and Compact replace a file that readers have open in
+    /// two steps (<see cref="WindowsFiles.TryReplaceInTwoSteps"/>): for an instant its path is missing. Opening it is
+    /// tried again after these waits (about 0.1 s in all). Elsewhere a replace is one step: a missing file is gone.
     /// </summary>
+    private static readonly int[] MissingWaitsMs = [1, 3, 6, 12, 25, 50];
+
+    /// <summary>Opens a file for <see cref="Changed"/>, waiting briefly on Windows for a path that is missing while the file is replaced; null when it is missing.</summary>
     private static FileStream? OpenToCheck(string path)
     {
-        var deadline = Environment.TickCount64 + 100;
-        while (true)
+        for (var attempt = 0; ; attempt++)
         {
             try
             {
                 return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.None);
             }
-            catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException
-                || (OperatingSystem.IsWindows() && e is UnauthorizedAccessException or IOException))
+            catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
             {
-                if (Environment.TickCount64 >= deadline)
-                {
-                    if (e is FileNotFoundException or DirectoryNotFoundException) return null;
-                    throw;
-                }
-                Thread.Sleep(5);
+                if (!OperatingSystem.IsWindows() || attempt >= MissingWaitsMs.Length) return null;
+                Thread.Sleep(MissingWaitsMs[attempt]);
             }
         }
     }
