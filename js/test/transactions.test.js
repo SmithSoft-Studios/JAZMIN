@@ -341,6 +341,41 @@ test('transactions and the group writer on encrypted and access-controlled files
   }
 });
 
+test('masked columns: a delete after a call that adds rows is a clash, since the writer changes rows as it stores them', async () => {
+  const { JazminKey } = await import('../src/index.js');
+  const owner = JazminKey.generate();
+  const staff = [{ id: 1, dept: 'A', salary: '52000.00' }, { id: 2, dept: 'A', salary: '61000.50' }];
+  const maskedColumns = [{ name: 'id', type: 'int' }, { name: 'dept', type: 'string' }, { name: 'salary', type: 'decimal', mask: { lock: 'hr', rows: { id: { gte: 2 } } } }];
+  const start = (name) => {
+    const file = tmp(name);
+    write(file, staff, { columns: maskedColumns, key: owner, access: { partitionBy: 'dept', grants: [] }, locks: { hr: { online: true } } });
+    return file;
+  };
+  const show = (file) => {
+    const r = open(file, { key: owner });
+    try {
+      return [...r.rows()].map((x) => JSON.stringify(x));
+    } finally {
+      r.close();
+    }
+  };
+  // Row 0 is outside the mask's rows, so the writer stores its salary in salary_unmasked, where the delete looks.
+  const calls = [['insert', [{ id: 0, dept: 'A', salary: '70000.00' }]], ['delete', { salary_unmasked: { gte: '60000' } }]];
+  const expected = start('seq.jzm');
+  for (const [kind, arg] of calls) append(expected, { key: owner, [kind]: arg });
+  assert.equal(show(expected).length, 2, 'run in turn, the delete removes the inserted row');
+
+  const tx = beginAppend(start('tx.jzm'), { key: owner });
+  run(tx, calls);
+  assert.throws(() => tx.commit(), /call 2 \(delete\) may match a row that call 1 \(insert\) adds/);
+
+  const grouped = start('writer.jzm');
+  const w = openWriter(grouped, { key: owner });
+  await Promise.all(calls.map(([kind, arg]) => w[kind](arg)));
+  await w.close();
+  assert.deepEqual(show(grouped), show(expected));
+});
+
 test('several deletes in one transaction: each row counts once, for the first call that deletes it', () => {
   const dated = [{ name: 'id', type: 'int' }, { name: 'at', type: 'datetime' }];
   const rows = Array.from({ length: 6 }, (_, i) => ({ id: i, at: new Date(Date.UTC(2026, 0, i + 1)) }));
