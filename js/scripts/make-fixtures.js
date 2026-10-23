@@ -66,6 +66,8 @@ write(path.join(dir, 'js-key.jzm'), rows, { ...base, key: keys.key });
 write(path.join(dir, 'js-password.jzm'), rows, { ...base, password: keys.password, kdfIterations: keys.kdfIterations });
 // Key slots in small pages (spec 7.6.4), so readers of either library find slots across pages.
 write(path.join(dir, 'js-access.jzm'), rows, { ...base, key: keys.key, access: accessFixture(keys), [PAGING]: { keySlotPageBytes: 300 } });
+// The same, written with regroup (issue #275): each country's rows together, in the order regroupedOrder gives.
+write(path.join(dir, 'js-regrouped-access.jzm'), rows, { ...base, key: keys.key, access: accessFixture(keys), regroup: true });
 
 // Sorted indexes in many small pages (spec 8.3).
 write(path.join(dir, 'js-paged-key.jzm'), rows, { ...base, key: keys.key, [PAGING]: { pageBytes: 512 } });

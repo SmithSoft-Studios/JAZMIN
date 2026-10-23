@@ -112,6 +112,22 @@ public sealed class JazminWriteOptions
     public bool CompactIndexes { get; set; }
 
     /// <summary>
+    /// Access-controlled files with PartitionBy: rows are stored grouped by partition, each partition's rows in the order
+    /// given, so rows of many partitions in turn don't make a chunk of nearly every row (a chunk holds one partition).
+    /// Row order and row numbers then differ from the order given. The writer holds back up to 65,536 rows (or about
+    /// 16 MB, as ChunkBytes counts them), and writes a partition's rows once they fill a chunk, or the partitions holding
+    /// the most when it reaches that limit. A SortedBy must start with the partition column (rows already grouped).
+    /// Default false: rows are stored in the order given. As compact's regroup (<see cref="JazminFile.Compact(string, JazminUpdate, bool)"/>).
+    /// </summary>
+    public bool Regroup { get; set; }
+
+    /// <summary>The most rows <see cref="Regroup"/> holds back (tests lower it).</summary>
+    internal int RegroupRows { get; set; } = 65536; // as the JS writer, which says why (REGROUP_ROWS)
+
+    /// <summary>The most estimated bytes <see cref="Regroup"/> holds back (tests lower it).</summary>
+    internal long RegroupBytes { get; set; } = 16 * 1024 * 1024;
+
+    /// <summary>
     /// Chunks encoded, compressed and encrypted at the same time on worker threads. 1 does everything on the calling
     /// thread. The file is the same either way. Default by <see cref="Priority"/>: Balanced and Speed one per
     /// processor, at most 16 (more threads did not write faster); Memory 1.
@@ -252,6 +268,19 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     private object?[]? _sortKeyScratch;
     private string? _chunkPartition;
     private int _chunkRows;
+    private long _rowCount; // rows written to the current table's chunks (held rows not yet)
+    private Dictionary<string, HeldRows>? _held; // Regroup, in a partitioned table: the rows held back, by partition
+    private long _heldRows;
+    private long _heldBytes;
+    private long _heldOrder; // numbers held partitions in the order they were first held
+
+    /// <summary>A partition's rows held back by <see cref="JazminWriteOptions.Regroup"/>, normalized.</summary>
+    private sealed class HeldRows(long order)
+    {
+        public long Order { get; } = order;
+        public List<object?[]> Rows { get; } = new();
+        public long Bytes { get; set; }
+    }
     private long _position;
     private bool _finished;
     private readonly string? _createdPath; // the file this writer created (not an append): deleted when a stop abandons it
@@ -313,6 +342,15 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             if (columns is null) throw new JazminValidationException("Give the columns, or the Tables option");
             var name = cont?.Table.Name ?? "";
             _tables = [Spec(name, columns, SortOrder.Of(_options.SortedBy, _options.Sort), access?.PartitionBy, access?.ColumnGroups, null, null, named: false, KeptMasks(name))];
+        }
+        if (_options.Regroup)
+        {
+            // Rows stored a partition at a time: a sort order must start with the partition column (rows already grouped).
+            if (!_tables.Any(t => t.PartitionCol >= 0)) throw new JazminValidationException("Regroup applies to access-controlled files with PartitionBy");
+            foreach (var t in _tables)
+                if (t.PartitionCol >= 0 && t.SortCols is [var first, ..] && first != t.PartitionCol)
+                    throw new JazminValidationException($"Regroup would break the SortedBy order [{SortOrder.Describe(t.Order!)}]: it needs no SortedBy, " +
+                        $"or one that starts with the partition column '{t.PartitionBy}' (then rows are already grouped)");
         }
         // Each masked column's lock is one of the file's, and its group is of one table.
         foreach (var (column, lockId) in _otherMasks.Select(m => ((string?)m["column"], (string?)m["lock"])).Concat(_tables.SelectMany(t => t.Masks.Select(m => ((string?)m.Column, (string?)m.Lock)))))
@@ -657,8 +695,11 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     /// <summary>Columns of the table rows go to.</summary>
     public IReadOnlyList<JazminColumn> Columns => _columns;
 
-    /// <summary>Rows written to the current table.</summary>
-    public long RowCount { get; private set; }
+    /// <summary>Rows written to the current table (with <see cref="JazminWriteOptions.Regroup"/>, rows still held back included).</summary>
+    public long RowCount => _rowCount + _heldRows;
+
+    /// <summary>What <see cref="JazminWriteOptions.Regroup"/> holds back now (tests of its limits).</summary>
+    internal (long Rows, long Bytes) Held => (_heldRows, _heldBytes);
 
     /// <summary>Name of the table rows go to.</summary>
     public string TableName => _current.Name;
@@ -748,6 +789,8 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
         _parts = table.ColumnGroups.Select(g => new Part(g.Name, g.Cols)).ToArray();
         _chunks.Clear();
         _chunkPartition = null;
+        // Regroup holds rows per partition, unless they arrive sorted by the partition column (then already grouped).
+        _held = _options.Regroup && table.PartitionCol >= 0 && table.SortCols is null ? new Dictionary<string, HeldRows>(StringComparer.Ordinal) : null;
         CloseIndexBuilders();
         _indexBuilders.Clear();
         for (var i = 0; i < _columns.Length; i++)
@@ -764,7 +807,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             }
         }
         var cont = _continue;
-        RowCount = cont?.Table.RowCount ?? 0;
+        _rowCount = cont?.Table.RowCount ?? 0;
         _firstOrdinal = cont?.Table.ChunkCount ?? 0;
         if (cont is not null && _sortCols is not null && cont.LastRow is not null)
         {
@@ -780,6 +823,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     /// <summary>Writes the current table's last chunk, indexes, statistics and directories, and keeps its catalog entry.</summary>
     private void EndTable()
     {
+        WriteAllHeld();
         FlushChunk();
         DrainPending(all: true);
         var cont = _continue;
@@ -796,7 +840,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             SortedBy = _current.SortedBy?.ToList() ?? new List<string>(),
             Sort = SortOrder.Catalog(_current.Order), // other text orders (spec 6.7); SortedBy keeps the plain leading keys
             PartitionBy = _current.PartitionBy ?? "",
-            RowCount = RowCount,
+            RowCount = _rowCount,
             DeletedCount = cont?.Deleted.Length ?? 0,
             ChunkCount = _firstOrdinal + _chunks.Count,
             Indexes = _access is null ? indexes : new List<IndexRef>(),
@@ -930,14 +974,28 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     {
         if (_finished) throw new JazminValidationException("Writer is already finished");
         if (values.Length != _columns.Length) Fault($"Row {RowCount}: expected {_columns.Length} values, got {values.Length}");
-        var normalized = _normalized;
+        if (_held is not null)
+        {
+            Hold(Normalize(values, new object?[_columns.Length], held: true));
+            return;
+        }
+        AddValues(Normalize(values, _normalized, held: false));
+    }
+
+    /// <summary>
+    /// A row's values, checked and normalized into <paramref name="normalized"/>. A nested value is checked into its
+    /// column's stage, and stands as that stage, unless the row is <paramref name="held"/> back (Regroup): then it keeps
+    /// its value, and Hold takes a copy of the stage.
+    /// </summary>
+    private object?[] Normalize(object?[] values, object?[] normalized, bool held)
+    {
         try
         {
             if (_masker is not null) values = _masker.Apply(values); // shown values made, unmasked values moved (spec 7.6.8)
-            var directDates = _directDates ??= DirectDateColumns();
+            var directDates = held ? null : (_directDates ??= DirectDateColumns());
             for (var i = 0; i < _columns.Length; i++)
             {
-                if (directDates[i] && values[i] is { } raw && Values.ToEpochMs(raw) is { } ms)
+                if (directDates is not null && directDates[i] && values[i] is { } raw && Values.ToEpochMs(raw) is { } ms)
                 {
                     _dateMs[i] = ms; // stored straight into the column buffer: no boxed long per value
                     normalized[i] = DateMarker;
@@ -949,7 +1007,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
                 {
                     stage.Clear();
                     _stagers[i].Stager.Stage(nested, stage);
-                    normalized[i] = stage;
+                    if (!held) normalized[i] = stage;
                 }
             }
             if (_sortCols is not null) CheckOrder(normalized);
@@ -959,7 +1017,69 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             _faulted = true;
             throw;
         }
+        return normalized;
+    }
 
+    /// <summary>
+    /// Regroup: holds a row back with its partition's. A partition's rows are written once they fill a chunk; when the
+    /// rows held reach a limit, the partitions holding the most are written until half of it is held.
+    /// </summary>
+    private void Hold(object?[] normalized)
+    {
+        // A row held keeps its own copies: the caller may reuse a buffer or list for the next row.
+        long bytes = 0;
+        for (var i = 0; i < normalized.Length; i++)
+        {
+            if (normalized[i] is not null && _stagers?[i].Stage is { } stage)
+            {
+                bytes += NestedColumn.StagedBytes(stage);
+                normalized[i] = stage.Copy();
+            }
+            else
+            {
+                bytes += EstimateSize(normalized[i]);
+                if (normalized[i] is byte[] data) normalized[i] = data.Clone();
+            }
+        }
+        var partition = AccessCrypto.PartitionName(normalized[_current.PartitionCol]);
+        if (!_held!.TryGetValue(partition, out var held)) _held[partition] = held = new HeldRows(_heldOrder++);
+        held.Rows.Add(normalized);
+        held.Bytes += bytes;
+        _heldRows++;
+        _heldBytes += bytes;
+        if (held.Rows.Count >= _current.ChunkRows || held.Bytes >= _current.ChunkBytes)
+        {
+            WriteHeld(partition, held);
+        }
+        else if (_heldRows >= _options.RegroupRows || _heldBytes >= _options.RegroupBytes)
+        {
+            // The partitions holding the most rows first; ties: the first held first.
+            foreach (var (p, h) in _held.OrderByDescending(e => e.Value.Rows.Count).ThenBy(e => e.Value.Order).ToList())
+            {
+                if (_heldRows <= _options.RegroupRows / 2 && _heldBytes <= _options.RegroupBytes / 2) break;
+                WriteHeld(p, h);
+            }
+        }
+    }
+
+    private void WriteHeld(string partition, HeldRows held)
+    {
+        _held!.Remove(partition);
+        _heldRows -= held.Rows.Count;
+        _heldBytes -= held.Bytes;
+        foreach (var row in held.Rows) AddValues(row); // a list or object as its own stage, copied when held
+    }
+
+    /// <summary>Regroup: writes every partition's rows held back, the first held first.</summary>
+    private void WriteAllHeld()
+    {
+        if (_held is null) return;
+        foreach (var (p, h) in _held.OrderBy(e => e.Value.Order).ToList()) WriteHeld(p, h);
+    }
+
+    /// <summary>Adds a row's checked values to the chunk (a chunk is written when full).</summary>
+    private void AddValues(object?[] normalized)
+    {
         if (_access is not null)
         {
             // A chunk holds exactly one partition, so a key can be granted whole chunks.
@@ -983,9 +1103,9 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             }
             bytes += part.Bytes;
         }
-        foreach (var ix in _indexBuilders) ix.Builder.Add(RowCount, normalized[ix.Col]);
+        foreach (var ix in _indexBuilders) ix.Builder.Add(_rowCount, normalized[ix.Col]);
 
-        RowCount++;
+        _rowCount++;
         _chunkRows++;
         if (_chunkRows >= _current.ChunkRows || bytes >= _current.ChunkBytes) FlushChunk();
     }
@@ -1084,7 +1204,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
             for (var j = 0; j < part.Cols.Length; j++) stats[part.Cols[j]] = part.Columns[j].Stats(); // before a worker resets the buffers
         var entry = new WrittenChunk
         {
-            Ordinal = ordinal, RowStart = RowCount - _chunkRows, RowCount = _chunkRows, Partition = partition,
+            Ordinal = ordinal, RowStart = _rowCount - _chunkRows, RowCount = _chunkRows, Partition = partition,
             Parts = new SectionRef[_parts.Length], Stats = stats,
         };
         _chunks.Add(entry);
@@ -1633,6 +1753,7 @@ public sealed class JazminWriter : IDisposable, IAsyncDisposable
     public async Task FinishAsync(CancellationToken cancellationToken = default)
     {
         if (_finished) return;
+        WriteAllHeld();
         FlushChunk();
         while (_pending.Count > 0)
         {

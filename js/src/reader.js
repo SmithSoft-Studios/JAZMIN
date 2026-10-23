@@ -3489,7 +3489,7 @@ export class JazminReader {
       if (scattered.length) {
         const { partitionBy, sortedBy } = this.#table;
         const regroup = !sortedBy.length || sortedBy[0] === partitionBy
-          ? "compact({ regroup: true }) puts each partition's rows together."
+          ? "compact({ regroup: true }) puts each partition's rows together (and write() with regroup: true writes them so)."
           : `compact({ regroup: true }) would put each partition's rows together, but needs a file without sortedBy, or sorted by '${partitionBy}' first.`;
         report.suggestions.push(`${scattered.length} of ${report.partitions.length} partitions are spread through the file in separate chunks `
           + `(for example '${scattered[0].partition}': ${scattered[0].rows} rows in ${scattered[0].chunks} chunks): ${regroup}`);

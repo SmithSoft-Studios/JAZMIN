@@ -307,6 +307,15 @@ internal sealed class NestedStage
         Lengths.Clear();
         ValueAt = LengthAt = 0;
     }
+
+    /// <summary>A stage of its own with these values, binary ones copied (Regroup holds a row back with it).</summary>
+    public NestedStage Copy()
+    {
+        var copy = new NestedStage();
+        foreach (var value in Values) copy.Values.Add(value is byte[] data ? data.Clone() : value);
+        copy.Lengths.AddRange(Lengths);
+        return copy;
+    }
 }
 
 /// <summary>A list or object column (or field, or list of items) being written: values are split as they are added.</summary>
@@ -420,6 +429,24 @@ internal sealed class NestedColumn : ColumnBuffer
                 for (var i = 0; i < fields.Length; i++) StageChild(_fields![i], fields[i], getters[i](value), _fieldPaths![i], stage);
                 return;
         }
+    }
+
+    /// <summary>The approximate bytes a staged value adds (as <see cref="TakeBytes"/> counts them once it is added).</summary>
+    public static long StagedBytes(NestedStage stage)
+    {
+        long bytes = 0;
+        foreach (var value in stage.Values)
+        {
+            bytes += value switch
+            {
+                null => 0,
+                string s => s.Length + 1,
+                byte[] b => b.Length + 2,
+                _ when ReferenceEquals(value, Present) => 0, // a nested list or object: its own values follow
+                _ => 5,
+            };
+        }
+        return bytes;
     }
 
     /// <summary>Adds a staged value (a <see cref="NestedStage"/>), or stages and then adds any other value.</summary>

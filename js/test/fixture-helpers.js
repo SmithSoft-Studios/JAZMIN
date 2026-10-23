@@ -124,6 +124,28 @@ export const PARTITION_VIEWS = [
   ['sally', () => true, []],
 ];
 
+/**
+ * *-regrouped-access.jzm: the dataset written with the access fixture's options, chunkRows 64 and regroup (issue #275).
+ * The order both writers store its rows in: rows held per partition (country), a partition's rows written once it holds
+ * chunkRows, the rest at the end, the partition held first first (no limit is reached with 500 rows).
+ */
+export function regroupedOrder(rows, partitionOf, chunkRows = 64) {
+  const held = new Map();
+  const stored = [];
+  for (const row of rows) {
+    const p = partitionOf(row);
+    if (!held.has(p)) held.set(p, []);
+    const list = held.get(p);
+    list.push(row);
+    if (list.length >= chunkRows) {
+      held.delete(p);
+      stored.push(...list);
+    }
+  }
+  for (const list of held.values()) stored.push(...list);
+  return stored;
+}
+
 /** Embedded files of the *-files-key.jzm and *-files-access.jzm fixtures (mirrored in the .NET InteropTests). */
 export function fixtureFiles() {
   const pattern = Buffer.from(Array.from({ length: 600_000 }, (_, i) => (i * 31 + 7) & 255));

@@ -61,11 +61,40 @@ public class InteropTests
 
     private static bool AppendedLive(JsonObject r) => long.Parse((string)r["id"]!, CultureInfo.InvariantCulture) >= 10;
 
-    /// <summary>Dataset rows a fixture should contain.</summary>
+    /// <summary>Dataset rows a fixture should contain, in its order.</summary>
     private static List<JsonObject> LiveRows(string file) =>
-        file.Contains("-many-partitions") ? DatasetRows().Take(PartitionsSplit.Total).Where(AppendedLive).ToList()
+        file.Contains("-regrouped") ? RegroupedOrder(DatasetRows())
+        : file.Contains("-many-partitions") ? DatasetRows().Take(PartitionsSplit.Total).Where(AppendedLive).ToList()
         : file.Contains("-appended") ? DatasetRows().Where(AppendedLive).ToList()
         : DatasetRows();
+
+    /// <summary>
+    /// *-regrouped-access.jzm: the dataset written with the access fixture's options, ChunkRows 64 and Regroup (issue
+    /// #275). The order both writers store its rows in: rows held per partition (country), a partition's rows written
+    /// once it holds ChunkRows, the rest at the end, the partition held first first (no limit is reached with 500 rows).
+    /// Mirrored in js/test/fixture-helpers.js (regroupedOrder).
+    /// </summary>
+    private static List<JsonObject> RegroupedOrder(List<JsonObject> rows, int chunkRows = 64)
+    {
+        var held = new List<(string? Country, List<JsonObject> Rows)>();
+        var stored = new List<JsonObject>();
+        foreach (var row in rows)
+        {
+            var country = (string?)row["country"];
+            var at = held.FindIndex(h => h.Country == country);
+            if (at < 0)
+            {
+                held.Add((country, []));
+                at = held.Count - 1;
+            }
+            held[at].Rows.Add(row);
+            if (held[at].Rows.Count < chunkRows) continue;
+            stored.AddRange(held[at].Rows);
+            held.RemoveAt(at);
+        }
+        foreach (var (_, list) in held) stored.AddRange(list);
+        return stored;
+    }
 
     /// <summary>Canonical text of a dataset cell (int as string, datetime ISO, binary base64...).</summary>
     private static string Canonical(JazminType type, JsonNode? node) => node is null ? "<null>" : type switch
@@ -545,11 +574,13 @@ public class InteropTests
     [InlineData("js-access.jzm", true)]
     [InlineData("js-appended-access.jzm", true)]
     [InlineData("js-many-partitions-access.jzm", true)]
+    [InlineData("js-regrouped-access.jzm", true)]
     [InlineData("js-tables-access.jzm", true)]
     [InlineData("js-files-access.jzm", false)]
     [InlineData("dotnet-access.jzm", true)]
     [InlineData("dotnet-appended-access.jzm", true)]
     [InlineData("dotnet-many-partitions-access.jzm", true)]
+    [InlineData("dotnet-regrouped-access.jzm", true)]
     [InlineData("dotnet-tables-access.jzm", true)]
     [InlineData("dotnet-files-access.jzm", false)]
     public void Owner_chunk_maps_are_read_across_libraries(string file, bool hasMap)
@@ -616,6 +647,7 @@ public class InteropTests
     [Theory]
     [InlineData("js-access.jzm")]
     [InlineData("js-many-partitions-access.jzm")]
+    [InlineData("js-regrouped-access.jzm")]
     public void ReadsAccessControlledFileWrittenByJavaScript(string file) => AssertAccessViews(file);
 
     [Fact]
@@ -636,6 +668,41 @@ public class InteropTests
                 writer.WriteValues(columns.Select(c => FromDataset(c.Type, row[c.Name])).ToArray());
         }
         AssertAccessViews(file, OutDir);
+    }
+
+    /// <summary>
+    /// Written with Regroup (issue #275): each country's rows together, in the order RegroupedOrder gives, so a country
+    /// spans ceil(rows / 64) chunks, where the same rows written as they come make a chunk of nearly every row.
+    /// </summary>
+    [Fact]
+    public void WritesRegroupedAccessFileForJavaScript()
+    {
+        const string file = "dotnet-regrouped-access.jzm";
+        var columns = DatasetColumns();
+        using (var writer = JazminWriter.Create(Path.Combine(OutDir, file), columns, new JazminWriteOptions
+        {
+            ChunkRows = 64,
+            Metadata = Dataset["metadata"]!.DeepClone().AsObject(),
+            Key = JazminKey.Parse((string)Keys["key"]!),
+            Access = AccessFixture(),
+            Regroup = true,
+        }))
+        {
+            foreach (var row in DatasetRows())
+                writer.WriteValues(columns.Select(c => FromDataset(c.Type, row[c.Name])).ToArray());
+        }
+        AssertAccessViews(file, OutDir);
+        AssertRegroupedChunks(Path.Combine(OutDir, file));
+    }
+
+    [Fact]
+    public void ReadsRegroupedAccessFileWrittenByJavaScript() => AssertRegroupedChunks(Path.Combine(Dir, "js-regrouped-access.jzm"));
+
+    private static void AssertRegroupedChunks(string path)
+    {
+        using var reader = JazminReader.Open(path, new JazminReadOptions { Key = JazminKey.Parse((string)Keys["key"]!) });
+        var expected = DatasetRows().GroupBy(r => (string?)r["country"]).Sum(g => (g.Count() + 63) / 64);
+        Assert.Equal(expected, reader.ChunkCount);
     }
 
     [Fact]

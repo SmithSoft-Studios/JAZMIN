@@ -557,6 +557,15 @@ export interface WriteOptions extends RewriteProgressOptions {
    * such files, naming the feature. Default false until 2.0. An append keeps the file's choice.
    */
   compactIndexes?: boolean;
+  /**
+   * Access-controlled files with partitionBy: rows are stored grouped by partition, each partition's rows in the order
+   * given, so rows of many partitions in turn don't make a chunk of nearly every row (a chunk holds one partition). Row
+   * order and row numbers then differ from the order given. The writer holds back up to 65,536 rows (or about 16 MB, as
+   * chunkBytes counts them), and writes a partition's rows once they fill a chunk, or the partitions holding the most
+   * when it reaches that limit. A sortedBy must start with the partition column (rows already grouped). Default false:
+   * rows are stored in the order given. As compact({ regroup: true }) for an existing file.
+   */
+  regroup?: boolean;
   /** Files to embed. Identical content is stored once. */
   files?: FileInput[];
   package?: PackageSettings;
