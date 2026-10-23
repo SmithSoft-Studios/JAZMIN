@@ -122,7 +122,13 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   directory is now reported by the first query, with the same `JazminFormatError` / `JazminFormatException`, instead
   of by `open`. `explain({ analyze })` of a reader's first query counts the directories it reads (230 more bytes on
   `js-paged-key.jzm`); a count without a filter still reads only the header. An access key
-  other than the owner's still reads its own directories when it opens the file. No format change.
+  other than the owner's still reads its own directories when it opens the file. **The browser reader, and so the
+  viewer, does the same** for files that aren't shared, with the same results from every read (find, query, count,
+  columnArrays, estimate, explain, exports). On 200,000 encrypted rows after 1,000 one-row appends (the browser reader
+  hosted in Node 24 on Windows; median of 7 rounds, each the median of 5 opens, before and after interleaved): open
+  186 -> 7.5 ms (ranges 173-202 -> 7.2-8.6 ms), bytes read on opening 5.5 MB -> 9.7 KB, memory an open reader holds
+  2.0 MB -> 0.22 MB; unencrypted, open 25 -> 6.9 ms. Opening and the first query together take as long as before
+  (591 and 590 ms) and read the same bytes, which now include the directories. No format change.
 - **Applying a change file to a shared file of many keys is faster** when the sender isn't named (`keyId`): each key's
   submission key is now tried on the change file's header alone, the file read once, instead of opening the file with
   each key in turn. With 5,001 keys and the sender last: finding the sender took about 290 ms in JavaScript and about

@@ -2966,31 +2966,42 @@
     const dirSegments = []; // { partition, suffix, chunks, statistics, loaded: block number -> promise of its loading }
     const groupCount = table.groups.length;
     let hiddenRows = 0;
-    // The partitions' directories are read a few at a time, and used in the order they are listed. In a function of its
-    // own, given the list, so that neither is kept with the reader.
-    await (async (listed) => {
-      const secrets = [];
-      for (const batch of inBatches(listed, () => null)) secrets.push(...await Promise.all(batch.map(([id]) => (access ? file.gate(() => file.partitionSecret(id)) : null))));
-      const toRead = [];
-      listed.forEach(([id, list], p) => {
-        const secret = secrets[p];
-        if (access && !(secret && groups.some((g) => g.visible))) return; // another key's partition: not read
-        list.forEach((ref, s) => toRead.push({ id, s, ref, secret, sectionId: `${index}/dir/${id}${s ? `/${s}` : ''}` }));
-      });
-      // Read a batch at a time, so that only one batch of their bytes is held at once.
-      for (const batch of inBatches(toRead, (t) => t.ref)) {
-        const stored = await file.readSections(batch.map((t) => t.ref));
-        const directories = await Promise.all(batch.map(({ ref, secret, sectionId }, k) => file.gate(async () => (
-          readDirectory(await file.section(ref, sectionId, await file.key(sectionId, secret), { requireDigest, bytes: stored[k] }), groupCount)))));
-        batch.forEach(({ id, s, secret }, k) => {
-          const segmentChunks = directories[k].chunks.map((c) => ({ ...c, partition: id, partitionSecret: secret, stats: [] }));
-          chunks.push(...segmentChunks);
-          dirSegments.push({ partition: id, suffix: s ? `/${s}` : '', chunks: segmentChunks, statistics: directories[k].statistics, loaded: new Map() });
+    // The chunk directories (one more per append) are read by the first query that needs them (route), as the library's
+    // reader does, so that a file opens as fast after many appends as after none. An access key other than the owner's
+    // reads its own now: rowCount needs them.
+    let unread = [...segments]; // the partitions and their directory segments, until they are read
+    let directoriesLoading = null; // their loading, once started
+    const ensureDirectories = () => (directoriesLoading ??= (async () => {
+      const pending = unread;
+      unread = null;
+      // The partitions' directories are read a few at a time, and used in the order they are listed. In a function of
+      // its own, given the list, so that neither is kept with the reader.
+      await (async (listed) => {
+        const secrets = [];
+        for (const batch of inBatches(listed, () => null)) secrets.push(...await Promise.all(batch.map(([id]) => (access ? file.gate(() => file.partitionSecret(id)) : null))));
+        const toRead = [];
+        listed.forEach(([id, list], p) => {
+          const secret = secrets[p];
+          if (access && !(secret && groups.some((g) => g.visible))) return; // another key's partition: not read
+          list.forEach((ref, s) => toRead.push({ id, s, ref, secret, sectionId: `${index}/dir/${id}${s ? `/${s}` : ''}` }));
         });
-      }
-    })([...segments]);
-    chunks.sort((a, b) => a.ordinal - b.ordinal);
-    for (let i = 1; i < chunks.length; i++) if (chunks[i].ordinal === chunks[i - 1].ordinal) throw new JazminFormatError('Chunk ordinals are inconsistent');
+        // Read a batch at a time, so that only one batch of their bytes is held at once.
+        for (const batch of inBatches(toRead, (t) => t.ref)) {
+          const stored = await file.readSections(batch.map((t) => t.ref));
+          const directories = await Promise.all(batch.map(({ ref, secret, sectionId }, k) => file.gate(async () => (
+            readDirectory(await file.section(ref, sectionId, await file.key(sectionId, secret), { requireDigest, bytes: stored[k] }), groupCount)))));
+          batch.forEach(({ id, s, secret }, k) => {
+            const segmentChunks = directories[k].chunks.map((c) => ({ ...c, partition: id, partitionSecret: secret, stats: [] }));
+            chunks.push(...segmentChunks);
+            dirSegments.push({ partition: id, suffix: s ? `/${s}` : '', chunks: segmentChunks, statistics: directories[k].statistics, loaded: new Map() });
+          });
+        }
+      })(pending);
+      chunks.sort((a, b) => a.ordinal - b.ordinal);
+      for (let i = 1; i < chunks.length; i++) if (chunks[i].ordinal === chunks[i - 1].ordinal) throw new JazminFormatError('Chunk ordinals are inconsistent');
+    })());
+    const lazy = !access || access.isOwner;
+    if (!lazy) await ensureDirectories();
 
     let deleted = [];
     if (table.deletes) {
@@ -3013,7 +3024,9 @@
       return chunk.rowCount - (below(chunk.rowStart + chunk.rowCount) - below(chunk.rowStart));
     };
     const visibleColumns = columns.filter(Boolean).map(({ position, ...c }) => c);
-    const visibleRows = chunks.reduce((n, c) => n + c.rowCount, 0) - deleted.filter((id) => chunks.some((c) => id >= c.rowStart && id < c.rowStart + c.rowCount)).length;
+    // Lazy: every row is this reader's (as the library's rowCount); an access key counts the rows of its own chunks.
+    const visibleRows = lazy ? table.rowCount - deleted.length
+      : chunks.reduce((n, c) => n + c.rowCount, 0) - deleted.filter((id) => chunks.some((c) => id >= c.rowStart && id < c.rowStart + c.rowCount)).length;
     hiddenRows = table.rowCount - table.deletedCount - visibleRows;
 
     /**
@@ -3241,6 +3254,7 @@
      * (from..to: the chunk's candidates in rowIds; rowIds null: every row of each chunk is checked).
      */
     async function route(plan) {
+      await ensureDirectories();
       if (!plan) return { runs: chunks.map((chunk) => ({ chunk })), rowIds: null };
       const cols = planColumns(plan);
       const leading = planColumnsList.find((c) => c.name === table.sortedBy[0]);

@@ -2747,6 +2747,12 @@ JazminFile.Compact("visits.jzm", owner, regroup: true);         // each partitio
   (.NET), before and after. An access key other than the owner's still reads
   its own directories when it opens the file, because its `rowCount` counts
   only the rows it can see.
+  - **In a browser:** the browser reader, and so the viewer, opens files
+    that aren't shared the same way. After 1,000 one-row appends to 200,000
+    encrypted rows it opened in 7.5 ms instead of 186 ms, and an open reader
+    held 0.22 MB instead of 2.0 MB (hosted in Node.js 24; the median of 7
+    runs). Its first query reads the directories, so opening and a first
+    query together take as long as before.
   - **The limit:** an append to a file with `sortedBy` (or `sort`) still
     reads every chunk directory, because it needs the table's last row to
     check that the new rows sort after it. After 400 appends it took about

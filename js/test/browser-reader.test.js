@@ -115,7 +115,6 @@ test('browser reader: plans queries as the library does, reading the same chunks
     const access = name.endsWith('-access.jzm');
     const libraryOptions = nodeOptions(name, access ? 'bob' : null);
     const library = open(path.join(dir, name), libraryOptions);
-    library.explain(null); // the chunk directories, which the browser reader reads when it opens the file
     const { ms: libraryMs, ...expected } = library.explain(filter, { analyze: true, ...options });
     library.close();
     const reader = await JazminBrowser.open(new Blob([fixture(name)]), { key: libraryOptions.key });
@@ -144,7 +143,6 @@ test('browser reader: plans text searches as the library does, before and after 
   for (const appended of [false, true]) {
     if (appended) append(file, { insert: Array.from({ length: 8000 }, (_, i) => row(12_000 + i)) });
     const library = open(file);
-    library.explain(null); // the chunk directories, which the browser reader reads when it opens the file
     const reader = await JazminBrowser.open(new Blob([fs.readFileSync(file)]));
     try {
       for (const filter of filters) {
@@ -330,7 +328,6 @@ test('browser reader: filters on nested columns skip, read and decode as the lib
     [{ not: { staff: { any: { bio: null } } } }, { select: ['id'] }],
   ]) {
     const library = open(bytes);
-    library.explain(null); // the chunk directories, which the browser reader reads when it opens the file
     const { ms: libraryMs, ...expected } = library.explain(filter, { analyze: true, ...options });
     const reader = await JazminBrowser.open(new Blob([bytes]));
     const { ms, ...actual } = await reader.explain(filter, { analyze: true, ...options });
