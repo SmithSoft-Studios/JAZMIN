@@ -19,6 +19,16 @@ export function openFileSync(path, flags) {
   }
 }
 
+/** openFileSync, or null when the path is still missing (reader.changed(): a file that is gone has changed). */
+export function openFileOrNull(path, flags) {
+  try {
+    return openFileSync(path, flags);
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
 /** fs.open as a promise, waiting briefly on Windows for a path that is missing while the file is replaced. */
 export async function openFileAsync(path, flags) {
   for (let attempt = 0; ; attempt++) {

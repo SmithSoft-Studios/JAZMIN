@@ -35,6 +35,8 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   shared file again, so a second call on one table's reader could close the file while another table's reader was
   still using it ("Cannot access a closed file"). A reader now lets go once, and a disposed reader's `OpenTable()`
   throws `ObjectDisposedException` even while other readers keep the file open. JavaScript was not affected.
+- **.NET: `reader.Storage()` counted bytes another writer appended after the reader opened the file** as unused. It
+  now measures the version the reader opened, as JavaScript's `storage()` does.
 - **An append's upsert kept every row for a key given more than once** (#275). `append(f, { upsert: [{ id: 1, v: 'b' },
   { id: 1, v: 'c' }], keyColumns: ['id'] })` stored both rows. Now the last row for a key wins, as if the rows were
   upserted one after another: only `{ id: 1, v: 'c' }` is stored, the rows kept are appended in the order of their

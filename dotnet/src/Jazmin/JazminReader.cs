@@ -312,8 +312,9 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     private readonly Stream _stream;
     private readonly bool _leaveOpen;
+    private bool _released; // disposed: this reader has let go of the shared stream (set under _io)
+    private long _fileBytes; // the file's size when it was opened: Storage measures that version
     private readonly bool _refuseBrotli; // JazminReadOptions.RefuseBrotli
-    private bool _released; // this reader has let go of the shared stream (guarded by _io)
     private readonly StringPool _strings = new();
     private readonly int _readAhead;
     private readonly int _columnsInFlight; // decoded columns a scan keeps in flight at most (memory budget)
@@ -385,7 +386,6 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private long _checkedSize;
     private byte[] _checkedTail = [];
     private byte[] _headerEnvelope = [];
-    private bool _disposed;
 
     /// <summary>A key derived from a password, for the file's salt and iterations: Refresh reuses it for the next version.</summary>
     internal sealed record DerivedKey(byte[] Salt, uint Iterations, byte[] Master);
@@ -407,7 +407,6 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         _stream = stream;
         _leaveOpen = leaveOpen;
         options ??= new JazminReadOptions();
-        _refuseBrotli = from?._refuseBrotli ?? options.RefuseBrotli;
         _path = from is null ? path : from._path;
         if (from is not null)
         {
@@ -418,6 +417,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         {
             _openOptions = options.Copy(options.Table);
         }
+        _refuseBrotli = from?._refuseBrotli ?? options.RefuseBrotli;
         _readAhead = Math.Max(1, options.MaxDegreeOfParallelism);
         _priority = options.Priority;
         _columnsInFlight = _priority == JazminPriority.Speed ? 1024 : 128;
@@ -446,7 +446,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             else
             {
                 (_header, _fileId, _salt, _keys, _access, _metadata) = (from._header, from._fileId, from._salt, from._keys, from._access, from._metadata);
-                (_flags, _validEnd, Recovered, KdfIterations, _headerRef) = (from._flags, from._validEnd, from.Recovered, from.KdfIterations, from._headerRef);
+                (_flags, _validEnd, _fileBytes, Recovered, KdfIterations, _headerRef) = (from._flags, from._validEnd, from._fileBytes, from.Recovered, from.KdfIterations, from._headerRef);
             }
             // One table at a time (spec 6.2): the caller chooses it by name; the first by default.
             _tableIndex = options.Table is null ? 0 : _header.Tables.FindIndex(t => t.Name == options.Table);
@@ -645,7 +645,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         }
         long usedBytes = FormatConstants.PreambleSize + FormatConstants.TrailerSize + chunkBytes;
         foreach (var length in used.Values) usedBytes += length;
-        var fileBytes = _stream.Length;
+        var fileBytes = _fileBytes;
         return new JazminStorage(fileBytes, usedBytes, fileBytes - usedBytes, tables.Sum(t => t.DeletedRows), tables.Sum(t => t.DeletedBytes), _header.AppendCount, tables);
     }
 
@@ -710,7 +710,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     private JazminVerification VerifyWhole(bool quick)
     {
-        if (_disposed) throw new JazminValidationException("This reader is closed");
+        if (_released) throw new JazminValidationException("This reader is closed");
         if (_access is { IsOwner: false }) throw new JazminValidationException("A shared file is checked whole with its owner key");
         if (Recovered)
         {
@@ -917,7 +917,8 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     public bool Changed()
     {
         CheckPath();
-        using var file = OpenToCheck(_path!);
+        // Waits briefly on Windows while the file is replaced; a file that is gone has changed.
+        using var file = OpenRetry.WhenPresentOrNull(() => new FileStream(_path!, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.None));
         if (file is null) return true;
         var size = file.Length;
         if (size < FormatConstants.PreambleSize + FormatConstants.TrailerSize) return true;
@@ -973,32 +974,8 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     private void CheckPath()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(_released, this);
         if (_path is null) throw new JazminValidationException("Changed and Refresh need a reader opened from a file path, not from bytes or a stream");
-    }
-
-    /// <summary>
-    /// On Windows, where a one-step replace isn't supported, Update and Compact replace a file that readers have open in
-    /// two steps (<see cref="WindowsFiles.TryReplaceInTwoSteps"/>): for an instant its path is missing. Opening it is
-    /// tried again after these waits (about 0.1 s in all). Elsewhere a replace is one step: a missing file is gone.
-    /// </summary>
-    private static readonly int[] MissingWaitsMs = [1, 3, 6, 12, 25, 50];
-
-    /// <summary>Opens a file for <see cref="Changed"/>, waiting briefly on Windows for a path that is missing while the file is replaced; null when it is missing.</summary>
-    private static FileStream? OpenToCheck(string path)
-    {
-        for (var attempt = 0; ; attempt++)
-        {
-            try
-            {
-                return new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.None);
-            }
-            catch (Exception e) when (e is FileNotFoundException or DirectoryNotFoundException)
-            {
-                if (!OperatingSystem.IsWindows() || attempt >= MissingWaitsMs.Length) return null;
-                Thread.Sleep(MissingWaitsMs[attempt]);
-            }
-        }
     }
 
     /// <summary>Internal (tests): the key derived from the password, or null.</summary>
@@ -1068,7 +1045,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     private (HeaderDef, byte[], byte[], KeySchedule?, AccessState?) Open(JazminReadOptions options)
     {
-        var size = _stream.Length;
+        var size = _fileBytes = _stream.Length;
         if (size < FormatConstants.PreambleSize + FormatConstants.TrailerSize) throw new JazminFormatException("File is too small to be JAZMIN");
         var preamble = Read(0, FormatConstants.PreambleSize);
         if (preamble.AsSpan(0, 4).SequenceEqual(FormatConstants.DraftMagic))
@@ -3640,7 +3617,6 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     public void Dispose()
     {
-        _disposed = true;
         _openOptions = null; // the key or password it was opened with
         _derived = null;
         _access?.Readers.Remove(this);
