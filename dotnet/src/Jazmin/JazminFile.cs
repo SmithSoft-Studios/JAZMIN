@@ -1513,7 +1513,8 @@ public static class JazminFile
     /// <summary>What can be read without a key: the file id (send it with a key id to your key service) and its features.</summary>
     public static JazminFileInfo Inspect(string path)
     {
-        using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        // Waits briefly on Windows while the file is replaced (OpenRetry).
+        using var stream = OpenRetry.WhenPresent(() => new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete));
         var preamble = new byte[FormatConstants.PreambleSize];
         var complete = stream.Read(preamble) == preamble.Length;
         if (complete && preamble.AsSpan(0, 4).SequenceEqual(FormatConstants.DraftMagic))

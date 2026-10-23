@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { Worker } from 'node:worker_threads';
-import { open, openAsync, write } from '../src/index.js';
+import { inspect, open, openAsync, write } from '../src/index.js';
 
 // On Windows, update() and compact() replace a file that readers have open in two steps (update.js replaceOpenFile):
 // for an instant its path is missing. A reader opening it then waits briefly for the new version (issue #275).
@@ -88,4 +88,17 @@ test('a file that stays missing still fails to open, with the system error', win
   const missing = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-retry-')), 'none.jzm');
   assert.throws(() => open(missing), { code: 'ENOENT' });
   await assert.rejects(openAsync(missing), { code: 'ENOENT' });
+});
+
+test('inspect waits briefly too (jazmin check calls it first)', windowsOnly, async () => {
+  const file = sample();
+  const away = moveAwayAndBack(file);
+  away.opening();
+  let facts;
+  try {
+    facts = inspect(file);
+  } finally {
+    await away.done;
+  }
+  assert.equal(facts.version, '1.0');
 });

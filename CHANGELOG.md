@@ -55,9 +55,10 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   Each is now a key of its own, as in .NET.
 - **Opening a file on Windows while `update()` or `compact()` replaces it** (#275). Where the file can't be replaced
   in one step (always in JavaScript, which has no single-step way), its path is missing for an instant, and a reader
-  opening it then failed with "file not found". `open`, `openAsync` and `JazminReader.Open` / `OpenAsync` (and an
-  append's own open of the file) now try again on Windows after 1, 3, 6, 12, 25 and 50 ms, so they open the new
-  version; a path that really is missing is reported about 0.1 s later than before. Other systems are unchanged.
+  opening it then failed with "file not found". `open`, `openAsync`, `inspect` and `JazminReader.Open` / `OpenAsync`
+  / `JazminFile.Inspect` (and an append's own open of the file) now try again on Windows after 1, 3, 6, 12, 25 and
+  50 ms, so they open the new version; a path that really is missing is reported about 0.1 s later than before.
+  Other systems are unchanged.
 
 ### Added
 - **Limits per key on what a key may send back (spec 7.9.1, #257).** A grant's `edit` (`columns`, `add`, `delete`)
