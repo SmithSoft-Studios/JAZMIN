@@ -2962,10 +2962,15 @@ export class JazminReader {
    * Throws a JazminFormatError naming the first section that fails. Bytes the current
    * version doesn't use (replaced by appends) are counted, not checked: compact() removes them. Needs the whole file:
    * an owner key, or the key or password of a file that isn't shared.
+   *
+   * options.quick (a plain file only; other files are checked the same either way): each section's CRC-32 and envelope,
+   * without decompressing it, several times faster. The decompressed length a compressed section's envelope gives
+   * isn't in its CRC-32, so a change to it is left to the query that reads the section.
    */
-  verify() {
+  verify({ quick = false } = {}) {
+    if (typeof quick !== 'boolean') throw new JazminValidationError('verify: quick must be true or false');
     try {
-      return this.#verifyWhole();
+      return this.#verifyWhole(quick);
     } catch (error) {
       // The file opened with this key, so a section it can't decrypt was changed: say so, as for any other section.
       if (!(error instanceof JazminKeyError)) throw error;
@@ -2975,7 +2980,7 @@ export class JazminReader {
     }
   }
 
-  #verifyWhole() {
+  #verifyWhole(quick) {
     if (this.#closed) throw new JazminValidationError('This reader is closed');
     if (this.#access && !this.#access.isOwner) throw new JazminValidationError('A shared file is checked whole with its owner key');
     if (this.#recovered) {
@@ -3065,9 +3070,13 @@ export class JazminReader {
         const matches = typeof ref.digest === 'string' ? actual.toString('base64') === ref.digest : actual.equals(ref.digest);
         if (!matches) throw new JazminFormatError(`Section '${sectionId}' does not match the owner's signature`);
       } else if (!this.encrypted) {
-        // The CRC-32 covers the payload, not the envelope: check its fixed bytes, and its codec and length by decoding.
+        // The CRC-32 covers the payload, not the envelope: check its fixed bytes, and its codec and length by decoding
+        // (quick: by the codec and, stored as is, the length; the decompressed length is left to the query that reads it).
         if (section[1] !== 0 || section[2] !== 0 || section[3] !== 0) throw new JazminFormatError(`Section '${sectionId}' has an invalid envelope`);
-        decodeSection(section, { key: undefined, fileId: this.#fileId, sectionId });
+        if (!quick) decodeSection(section, { key: undefined, fileId: this.#fileId, sectionId });
+        else if (crc32(section.subarray(ENVELOPE_SIZE)) !== section.readUInt32LE(12)) throw new JazminFormatError(`Section '${sectionId}' failed its CRC-32 check`);
+        else if (!Object.values(CODEC).includes(section[0])) throw new JazminFormatError(`Section '${sectionId}' has an unknown codec`);
+        else if (section[0] === CODEC.none && section.readUInt32LE(4) !== section.readUInt32LE(8)) throw new JazminFormatError(`Section '${sectionId}' length mismatch`);
       } else {
         const opens = sectionKeyCheck(section, { fileId: this.#fileId, sectionId }); // checks the CRC-32 first
         if (opens === null && this.encrypted) throw new JazminFormatError(`Section '${sectionId}' is not encrypted but the file is`);

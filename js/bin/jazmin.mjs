@@ -81,13 +81,16 @@ Exit codes:
   1  withdrawn, superseded, signed (an unknown key), changed, invalid, none (not signed), not-verified (not a JAZMIN
      file), or a file that could not be read: anything a script should not rely on. With several files, the worst.
   2  the command line is wrong`,
-  check: `Usage: jazmin check <file> [--json]
+  check: `Usage: jazmin check <file> [--quick] [--json]
 
 Checks every section of the file's current version, not only those a query reads: in a shared file each section
 against the owner's signature (needs the owner key), in an encrypted file each section's authentication tag, in a
 plain file each section's checksum (accidental damage only). Reads one section at a time; decodes nothing it needn't.
 Bytes earlier versions left behind (after appends) are counted, not checked: compact() removes them. A publisher
 signature is checked to be whole, not who signed it: jazmin verify does that.
+--quick   a plain file: each section's checksum, without decompressing it (several times faster). A changed length
+          in a compressed section's envelope is then found only when a query reads that section. Encrypted and
+          shared files are checked in full either way.
 --json prints { checkedBy, sections, bytes, unusedBytes, publisherBytes }.
 
 Exit codes:
@@ -356,7 +359,7 @@ const commands = {
   },
 
   check(args) {
-    const { values, positionals } = parse(args, { ...KEY_OPTIONS, json: { type: 'boolean' } });
+    const { values, positionals } = parse(args, { ...KEY_OPTIONS, json: { type: 'boolean' }, quick: { type: 'boolean' } });
     const file = fileArgument(positionals);
     const facts = inspect(file);
     const keys = keyOptions(values);
@@ -367,7 +370,7 @@ const commands = {
     let result;
     try {
       reader = open(file, keys); // damage can show while opening, too
-      result = reader.verify();
+      result = reader.verify({ quick: values.quick === true });
     } catch (error) {
       if (!(error instanceof JazminFormatError)) throw error; // a wrong key, an access key, not a JAZMIN file...
       process.stderr.write(`Changed or damaged: ${error.message}\n`);
@@ -381,6 +384,9 @@ const commands = {
     }
     const by = { signature: "the owner's signature", encryption: 'its encryption', checksum: 'its checksums (accidental damage only: a plain file can be changed on purpose without this noticing; encrypt or sign it for that)' };
     out(`Unchanged: every section checked (${result.sections} sections, ${result.bytes.toLocaleString('en-US')} bytes) by ${by[result.checkedBy]}.`);
+    if (values.quick && result.checkedBy === 'checksum') {
+      out('Quick check: compressed sections were not decompressed, so a changed length in their envelopes would only show when they are read. Run it without --quick to check that too.');
+    }
     if (result.publisherBytes) out(`The publisher signature (${result.publisherBytes.toLocaleString('en-US')} bytes) is whole; jazmin verify checks who signed it.`);
     if (result.unusedBytes) {
       const signature = result.publisherBytes ? ', and the publisher signature with them' : '';

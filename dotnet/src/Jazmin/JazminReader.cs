@@ -646,12 +646,15 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     /// not who signed it). Throws a <see cref="JazminFormatException"/> naming the first section that fails.
     /// Bytes the current version doesn't use (replaced by appends) are counted, not checked: compacting removes them.
     /// Needs the whole file: an owner key, or the key or password of a file that isn't shared.
+    /// <paramref name="quick"/> (a plain file only; other files are checked the same either way): each section's CRC-32 and
+    /// envelope, without decompressing it, several times faster. The decompressed length a compressed section's envelope
+    /// gives isn't in its CRC-32, so a change to it is left to the query that reads the section.
     /// </summary>
-    public JazminVerification Verify()
+    public JazminVerification Verify(bool quick = false)
     {
         try
         {
-            return VerifyWhole();
+            return VerifyWhole(quick);
         }
         catch (JazminKeyException e)
         {
@@ -660,7 +663,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         }
     }
 
-    private JazminVerification VerifyWhole()
+    private JazminVerification VerifyWhole(bool quick)
     {
         if (_closed) throw new JazminValidationException("This reader is closed");
         if (_access is { IsOwner: false }) throw new JazminValidationException("A shared file is checked whole with its owner key");
@@ -779,10 +782,19 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             }
             else if (!encrypted)
             {
-                // The CRC-32 covers the payload, not the envelope: check its fixed bytes, and its codec and length by decoding.
+                // The CRC-32 covers the payload, not the envelope: check its fixed bytes, and its codec and length by decoding
+                // (quick: by the codec and, stored as is, the length; the decompressed length is left to the query that reads it).
                 if (section[1] != 0 || section[2] != 0 || section[3] != 0) throw new JazminFormatException($"Section '{sectionId}' has an invalid envelope");
-                var (decoded, _) = SectionCodec.DecodePooled(scratch, at.Length, null, _fileId, sectionId);
-                System.Buffers.ArrayPool<byte>.Shared.Return(decoded);
+                if (!quick)
+                {
+                    var (decoded, _) = SectionCodec.DecodePooled(scratch, at.Length, null, _fileId, sectionId);
+                    System.Buffers.ArrayPool<byte>.Shared.Return(decoded);
+                }
+                else if (Crc32.Compute(section[FormatConstants.EnvelopeSize..]) != BinaryPrimitives.ReadUInt32LittleEndian(section[12..]))
+                    throw new JazminFormatException($"Section '{sectionId}' failed its CRC-32 check");
+                else if (!Enum.IsDefined((JazminCodec)section[0])) throw new JazminFormatException($"Section '{sectionId}' has an unknown codec");
+                else if (section[0] == (byte)JazminCodec.None && BinaryPrimitives.ReadUInt32LittleEndian(section[4..]) != BinaryPrimitives.ReadUInt32LittleEndian(section[8..]))
+                    throw new JazminFormatException($"Section '{sectionId}' length mismatch");
             }
             else
             {

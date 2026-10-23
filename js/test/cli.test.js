@@ -206,6 +206,16 @@ test('check: every section of a file, with exit code 0 when unchanged and 1 when
   assert.equal(jazmin(['check', paged]).status, 2); // encrypted, and no key
 });
 
+test('check --quick: a plain file without decompressing, saying what that leaves out; an encrypted file in full', () => {
+  const plain = jazmin(['check', path.join(fixtures, 'js-plain.jzm'), '--quick']);
+  assert.equal(plain.status, 0, plain.stderr);
+  assert.match(plain.stdout, /^Unchanged: every section checked/);
+  assert.match(plain.stdout, /Quick check: compressed sections were not decompressed/);
+  const encrypted = jazmin(['check', paged, '--quick'], withKey);
+  assert.equal(encrypted.status, 0, encrypted.stderr);
+  assert.doesNotMatch(encrypted.stdout, /Quick check/);
+});
+
 test('check: a signed file\'s publisher signature is whole, and is not called unused; bytes added beside it are a change', () => {
   const signed = jazmin(['check', path.join(fixtures, 'publisher', 'signed-plain.jzm')]);
   assert.equal(signed.status, 0, signed.stderr);

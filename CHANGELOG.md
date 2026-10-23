@@ -86,8 +86,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   - **.NET 10:** a 2.7 MB encrypted file of 200,000 rows with the same indexes, 16–27 ms (78–97 ms for a process's first
     call), 262 KB allocated.
 
-  **`jazmin check <file>`** does the same from the command line (exit code 0 unchanged, 1 changed or damaged). No
-  format change.
+  **`verify({ quick: true })`** (.NET `Verify(quick: true)`) checks a plain file's sections by their checksums and
+  envelopes without decompressing them: on a plain 2.3 MB file of 200,000 rows, 27 -> 3.6 ms in Node and 22 -> 4.5 ms
+  in .NET (median of 5 runs). It leaves out the decompressed length in a compressed section's envelope, which no
+  checksum covers; a query reading that section still finds a change there. Encrypted and shared files are checked in
+  full either way.
+
+  **`jazmin check <file>`** does the same from the command line (exit code 0 unchanged, 1 changed or damaged;
+  `--quick` for the quick check, which says what it left out). No format change.
 - **Limits per key on what a key may send back (spec 7.9.1, #257).** A grant's `edit` (`columns`, `add`, `delete`)
   narrows the document's `package.edit` for that key: one shared document where a doctor may acknowledge a result and
   infection control may only add a note. `writeChanges` refuses what the key may not send ("Column 'ackAction' can't
