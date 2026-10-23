@@ -29,6 +29,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          check-latest: true # the newest release of the line, with its security fixes (a runner caches older ones)
           cache: npm
           cache-dependency-path: js/package-lock.json
 
@@ -71,6 +72,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 24
+          check-latest: true # the newest release of the line, with its security fixes (a runner caches older ones)
           registry-url: https://registry.npmjs.org
       - uses: actions/download-artifact@v4
         with:
