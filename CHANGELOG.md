@@ -3,6 +3,35 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## 1.7.3 - 2026-10-23 (file format 1.0)
+A security patch for 1.7: a guard against the Node.js Brotli flaw (CVE-2026-111497). 1.7.x has security fixes until
+31 January 2027; 1.8.0 has this guard too.
+
+- **Compatibility:** the same file format, no breaking change. JavaScript now needs Node.js 22.23.4, 24.22.1 or
+  26.12.1 or later (npm warns on others); on a release without the fix, Brotli-compressed sections are refused.
+
+### Security
+- **Brotli and CVE-2026-111497** (Node.js, October 2026: an out-of-bounds write in the Brotli decoder). A JAZMIN file
+  from someone else can hold Brotli-compressed sections built to reach that flaw: a plain file, a change file, a
+  submission, or a file encrypted with the sender's own key (encryption with a key you hold is checked before anything
+  is decompressed, so others can't forge those). Node.js 22.23.4, 24.22.1 and 26.12.1 have the fix; 20.x and older,
+  23.x and 25.x never will.
+  - **The JavaScript library refuses to decompress Brotli on a Node.js release without the fix,** with a
+    `JazminValidationError` that says to update. `JAZMIN_ALLOW_BROTLI=1` declares a build with the fix backported (some
+    Linux distributions keep the version number). Files written with deflate or no compression, the default, are not
+    affected. `package.json`'s `engines` now names the fixed releases, so npm warns on others.
+  - **Both libraries refuse change files and submissions that use Brotli** (`applyChanges` / `ApplyChanges`,
+    `fileSubmission` / `FileSubmission`), on every release, before anything is decompressed. People the owner doesn't
+    control write these, and JAZMIN never writes them with Brotli (browsers can't), so nothing legitimate changes.
+  - **Not affected:** the browser reader and the viewer, which don't decode Brotli.
+  - **.NET:** the .NET runtime bundles the Brotli library too. No .NET advisory had been published by 23 October 2026,
+    and the last .NET servicing update (13 October) came before the disclosure: apply the next one when it is out.
+    Until then, avoid Brotli files from sources you don't trust (JAZMIN writes deflate unless asked otherwise); change
+    files and submissions that use Brotli are already refused.
+  - The other nine issues in the same Node.js release (TLS, DNS, keep-alive, `randomUUID`/`randomInt`, single
+    executables, the Permission Model, ZipFile) don't touch the library: it makes no network connections and uses
+    `randomBytes`. Applications using it should still update Node.js.
+
 ## 1.7.2 - 2026-10-20 (file format 1.0)
 A security fix to `grantAccess()` in the JavaScript library, and a clearer error for a damaged owner key.
 

@@ -165,7 +165,7 @@ internal static class Submissions
         bool withFiles;
         try
         {
-            using var reader = JazminReader.Open(batch, new JazminReadOptions { Key = owner.SubmissionKey(keyId) });
+            using var reader = JazminReader.Open(batch, new JazminReadOptions { Key = owner.SubmissionKey(keyId), RefuseBrotli = true });
             if (expires is { } ends && reader.WrittenAt > ends)
                 throw Rejected($"The batch was written at {Iso(reader.WrittenAt)}, after key {keyId}'s access expired at {Iso(ends)}");
             foreach (var c in reader.Columns)

@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { append } from './append.js';
 import { JazminKeyError, JazminValidationError } from './errors.js';
 import { open, write } from './index.js';
+import { NO_BROTLI } from './reader.js';
 import { JazminKey } from './keys.js';
 
 const VERSION = 1;
@@ -151,7 +152,7 @@ export function writeChanges(source, changes, { key, password } = {}) {
 function openChangeFile(target, change, { key, password, keyId, receivedAt }) {
   if (!target.access) {
     try {
-      return { reader: open(change, { ...(key ? { key } : {}), ...(password ? { password } : {}) }), grant: null };
+      return { reader: open(change, { ...(key ? { key } : {}), ...(password ? { password } : {}), [NO_BROTLI]: true }), grant: null };
     } catch (error) {
       if (error instanceof JazminKeyError) throw new JazminValidationError("The change file doesn't open with this file's key: it was made for another file");
       throw error;
@@ -164,7 +165,7 @@ function openChangeFile(target, change, { key, password, keyId, receivedAt }) {
   for (const grant of candidates) {
     let reader;
     try {
-      reader = open(change, { key: owner.submissionKey(grant.keyId) });
+      reader = open(change, { key: owner.submissionKey(grant.keyId), [NO_BROTLI]: true });
     } catch (error) {
       if (error instanceof JazminKeyError) continue;
       throw error;
