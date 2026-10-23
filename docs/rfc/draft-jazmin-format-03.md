@@ -1083,10 +1083,13 @@ X.509 processing is needed):
   since expired still verifies documents signed while it was valid. A status
   or confirmation certificate MUST be valid at the `time` (or `issued`) of the
   statement it signed.
-- The object identifiers (`id-jazmin-*`) are under the certifier's arc
-  (IANA Private Enterprise Number, to be assigned). Test vectors use the arc
-  `2.999.1` (ITU-T X.660's arc for examples): `.1` policy, `.2` document
-  signing, `.3` status, `.4` confirmation, `.5` publisher kind, `.6` log.
+- The object identifiers (`id-jazmin-*`) are under the arc
+  `1.3.6.1.4.1.67330.1`: SmithSoft's IANA Private Enterprise Number 67330
+  [PEN], then `1` for JAZMIN. `.1` policy, `.2` document signing, `.3` status,
+  `.4` confirmation, `.5` publisher kind, `.6` log; for example
+  `id-jazmin-policy` is `1.3.6.1.4.1.67330.1.1`. Test vectors use the same
+  numbers under `2.999.1` (ITU-T X.660's arc for examples), which no real
+  certificate uses.
 
 #### 6.9.5. Time, the Log and Status
 
@@ -2336,6 +2339,7 @@ encoding), `roaring` (Roaring bitmap postings and deletes), `bloom-filter`
 - [C2SP] Signed notes, transparency log checkpoints, cosignatures and proofs (c2sp.org/signed-note, c2sp.org/tlog-checkpoint, c2sp.org/tlog-cosignature, c2sp.org/tlog-proof).
 - [EN319412-1] ETSI EN 319 412-1: Certificate Profiles; Overview and common data structures.
 - [X.660] ITU-T X.660: object identifiers (the 2.999 arc for examples).
+- [PEN] IANA Private Enterprise Numbers (iana.org/assignments/enterprise-numbers): 67330, SmithSoft Pty Ltd.
 
 ## Appendix A. Worked Example
 
@@ -2457,7 +2461,9 @@ indexes, embedded files) written by both reference implementations.
   the document's facts, code and kind with certificates chaining to a trusted
   root, with RFC 3161 timestamps, transparency-log receipts and the status at
   signing. No reader or writer feature: an append or rewrite by any release
-  leaves the file without a signature until it is signed again.
+  leaves the file without a signature until it is signed again. The
+  `id-jazmin-*` identifiers are under `1.3.6.1.4.1.67330.1` (6.9.4; the IANA
+  Private Enterprise Number was assigned on 23 October 2026).
 - **Since format 1.0, key services for locks (6.8.2):** `keyService` in the
   package settings and in directory and owner-directory locks. Readers that
   don't know it ignore it; writers of releases 1.0 to 1.6 leave it out when
