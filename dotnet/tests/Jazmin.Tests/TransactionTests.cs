@@ -509,9 +509,10 @@ public sealed class TransactionTests : IDisposable
     public async Task Writer_WaitsMaxDelayForMoreCallsBeforeWriting()
     {
         var path = Base("delay.jzm");
-        await using var w = JazminFile.OpenWriter(path, maxDelay: TimeSpan.FromMilliseconds(200));
+        // A wide margin: a busy CI runner once took longer than 200 ms between the two calls.
+        await using var w = JazminFile.OpenWriter(path, maxDelay: TimeSpan.FromSeconds(2));
         var a = w.InsertAsync([Row(10, "x")]);
-        await Task.Delay(5);
+        await Task.Delay(50);
         var b = w.InsertAsync([Row(11, "y")]);
         Assert.Equal(1, (await a).AppendCount);
         Assert.Equal(1, (await b).AppendCount); // the second call joined the first one's append
