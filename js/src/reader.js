@@ -283,6 +283,12 @@ export function findKey(source, keys) {
 }
 /** Internal: the priority a reader was opened with ('memory', 'balanced' or 'speed'), for exports that batch. */
 export const READ_PRIORITY = Symbol('jazmin.readPriority');
+/**
+ * Internal (applyChanges, fileSubmission): refuse Brotli sections. Change files and submissions are written by people
+ * the owner doesn't control, and JAZMIN never writes them with Brotli, so a Brotli section there can only be meant for
+ * the decoder (CVE-2026-111497): it is refused before anything is decompressed.
+ */
+export const NO_BROTLI = Symbol('jazmin.noBrotli');
 
 /** Releases a byte source shared by the readers of several tables (openTable): the last one closes it. */
 function release(source) {
@@ -606,6 +612,7 @@ export class JazminReader {
   #cachedChunk = { ordinal: -1, wanted: null, types: null, chunk: null };
   #sortStatsComplete; // computed on first sorted scan
   #flags = 0;
+  #noBrotli = false; // NO_BROTLI
   #deleted = []; // sorted row ids removed by appends
   #deletedVisible; // computed on first use
   #validEnd = 0; // end of the trailer in use (an interrupted append may have left bytes after it)
@@ -626,7 +633,8 @@ export class JazminReader {
    * `now` (Date / ms, default the system clock) and `accessState` ({ dir } | custom store | false)
    * for expiring keys - see enforceExpiry; `table`: the name of the table to read (default: the first).
    */
-  constructor(source, { key, password, unlockToken, now, accessState, table, priority = 'balanced', [SHARED]: from, [FIND_KEY]: candidates } = {}) {
+  constructor(source, { key, password, unlockToken, now, accessState, table, priority = 'balanced', [SHARED]: from, [FIND_KEY]: candidates, [NO_BROTLI]: noBrotli = false } = {}) {
+    this.#noBrotli = noBrotli;
     if (source === SHARED) {
       this.#share(from, table);
       return;
@@ -690,6 +698,7 @@ export class JazminReader {
       } else if (key || password) {
         throw new JazminKeyError('A key was supplied but the file is not encrypted');
       }
+      this.#refuseBrotli(headerSection, 'header');
       raw = decodeSection(headerSection, { key: this.#keys?.headerKey, fileId: this.#fileId, sectionId: 'header' });
     }
 
@@ -747,6 +756,7 @@ export class JazminReader {
     this.#keys = from.#keys;
     this.#access = from.#access;
     this.#flags = from.#flags;
+    this.#noBrotli = from.#noBrotli;
     this.#validEnd = from.#validEnd;
     this.#recovered = from.#recovered;
     this.kdfIterations = from.kdfIterations;
@@ -876,7 +886,16 @@ export class JazminReader {
       keySlots: { ...trailer.keySlots, section: slotsSection },
       signature: trailer.signature,
     };
+    this.#refuseBrotli(headerSection, 'header');
     return decodeSection(headerSection, { key: headerKey(b(bundle.header), this.#salt), fileId: this.#fileId, sectionId: 'header' });
+  }
+
+  /** NO_BROTLI: a Brotli section is refused before it is decompressed. */
+  #refuseBrotli(section, sectionId) {
+    if (this.#noBrotli && section[0] === CODEC.brotli) {
+      throw new JazminFormatError(`Section '${sectionId}' is compressed with Brotli, which change files and submissions never use: `
+        + 'the file was not written by JAZMIN as it should be, and is refused (CVE-2026-111497)');
+    }
   }
 
   #partitionSecret(id) {
@@ -1975,6 +1994,7 @@ export class JazminReader {
       const matches = typeof ref.digest === 'string' ? actual.toString('base64') === ref.digest : actual.equals(ref.digest);
       if (!matches) throw new JazminFormatError(`Section '${sectionId}' does not match the owner's signature`);
     }
+    this.#refuseBrotli(section, sectionId);
     return decodeSection(section, { key, fileId: this.#fileId, sectionId });
   }
 
@@ -2070,6 +2090,7 @@ export class JazminReader {
       const actual = digest(section);
       if (!(typeof part.digest === 'string' ? actual.toString('base64') === part.digest : actual.equals(part.digest))) return;
     }
+    if (this.#noBrotli && section[0] === CODEC.brotli) return; // read when needed, and refused then
     const sectionId = `${this.#tableIndex}/chunk/${ordinal}/${this.#groups[0].name}`;
     this.#ahead.pool.submit(section, { decode: true, key: this.#keys?.sectionKey(KEYRING_GROUPS.data, sectionId), fileId: this.#fileId, sectionId });
     this.#ahead.ordinals.push(ordinal);

@@ -5,6 +5,25 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased
 
+### Security
+- **Brotli and CVE-2026-111497** (Node.js, October 2026: an out-of-bounds write in the Brotli decoder). A JAZMIN file
+  from someone else can hold Brotli-compressed sections built to reach that flaw: a plain file, a change file, a
+  submission, or a file encrypted with the sender's own key (encryption with a key you hold is checked before anything
+  is decompressed, so others can't forge those). Node.js 22.23.4, 24.22.1 and 26.12.1 have the fix; 20.x and older,
+  23.x and 25.x never will.
+  - **The JavaScript library refuses to decompress Brotli on a Node.js release without the fix,** with a
+    `JazminValidationError` that says to update. `JAZMIN_ALLOW_BROTLI=1` declares a build with the fix backported (some
+    Linux distributions keep the version number). Files written with deflate or no compression, the default, are not
+    affected. `package.json`'s `engines` now names the fixed releases, so npm warns on others.
+  - **Both libraries refuse change files and submissions that use Brotli** (`applyChanges` / `ApplyChanges`,
+    `fileSubmission` / `FileSubmission`), on every release, before anything is decompressed. People the owner doesn't
+    control write these, and JAZMIN never writes them with Brotli (browsers can't), so nothing legitimate changes.
+  - **Not affected:** the browser reader and the viewer, which don't decode Brotli. The .NET runtime bundles the Brotli
+    library too, and no .NET advisory had been published on 22 October 2026: keep .NET updated.
+  - The other nine issues in the same Node.js release (TLS, DNS, keep-alive, `randomUUID`/`randomInt`, single
+    executables, the Permission Model, ZipFile) don't touch the library: it makes no network connections and uses
+    `randomBytes`. Applications using it should still update Node.js.
+
 ### Fixed
 - **A file that changed on disk after it was opened in a browser** (#259). A File is a snapshot: once the file
   changes, browsers refuse to read it. The browser reader now throws `JazminFileChangedError` (a `JazminError`), "The

@@ -47,7 +47,7 @@ Measured on 200,000 records (details and caveats in the user guide):
 | Reading order | Read the **last rows first** (`reverse: true`) as fast as the first, and keep rows in orders that ignore case or put `A2` before `A10` |
 | Viewer | Open `.jzm` files in a browser, as an installed app, a hosted page, a folder on disk, inside your own page (which can pass it the file) or one HTML file: the document, the data and the files, with any kind of key. Nothing is uploaded. Small files open from disk with no choosing, as scripts ([sample](js/examples/from-disk)) |
 | Documents | A file's own document prints as the file asks: page settings, a print mode, Save as PDF, and images, in the viewer or on a server. **Editable documents** let people change, add and delete rows; their changes travel as small change files the owner applies, with conflicts held back. A document can have several **pages**, shown as tabs (a client list, the transactions, a summary with charts), each saying whether it needs the internet |
-| Platforms | Node.js 22+ and TypeScript; .NET 10 (no third-party dependencies) |
+| Platforms | Node.js 22.23.4, 24.22.1 or 26.12.1 and later, and TypeScript; .NET 10 (no third-party dependencies) |
 
 Writing with indexes is slower than System.Text.Json, because the indexes are
 built as the file is written. JSON remains the right choice for small API
@@ -56,7 +56,7 @@ payloads. The user guide shows the trade-offs.
 ## Install
 
 ```bash
-npm install @smithsoft-studios/jazmin   # Node.js 22+ and TypeScript
+npm install @smithsoft-studios/jazmin   # Node.js 22.23.4, 24.22.1 or 26.12.1 and later; TypeScript
 dotnet add package Jazmin               # .NET 10
 dotnet add package Jazmin.AspNetCore    # .NET: serve embedded files from ASP.NET Core
 ```
