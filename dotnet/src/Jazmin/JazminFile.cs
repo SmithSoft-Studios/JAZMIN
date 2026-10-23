@@ -1237,6 +1237,9 @@ public static class JazminFile
     internal sealed record AppendCall(IReadOnlyList<IReadOnlyDictionary<string, object?>> Insert, IReadOnlyList<IReadOnlyDictionary<string, object?>> Upsert, JazminFilter? Delete)
     {
         public string Kind => Delete is not null ? "delete" : Upsert.Count > 0 ? "upsert" : "insert";
+
+        /// <summary>The key of each upserted row, worked out once (<see cref="LastRowPerKey"/>).</summary>
+        public IReadOnlyList<string> UpsertKeys { get; init; } = [];
     }
 
     /// <summary>
@@ -1272,8 +1275,8 @@ public static class JazminFile
             // The table's order, other text comparisons included (spec 6.7): appended rows are put in it.
             var sortedBy = reader.Order;
             // In one call the last row for a key wins, as if the rows were upserted one after another.
-            var lastRows = calls.Select(c => c.Upsert.Count > 1 ? c with { Upsert = LastRowPerKey(c.Upsert, shape, keyCols) } : c).ToList();
-            (var incoming, taken) = OrderedRows(lastRows, shape, keyCols, sortedBy, split);
+            var lastRows = calls.Select(c => c.Upsert.Count > 0 ? LastRowPerKey(c, shape, keyCols) : c).ToList();
+            (var incoming, taken) = OrderedRows(lastRows, shape, keyCols, sortedBy, reader.Masked.Count > 0, split);
             var used = lastRows.Take(taken).ToList();
 
             // Rows to remove: matches of the delete filters, and existing rows replaced by an upsert.
@@ -1296,12 +1299,12 @@ public static class JazminFile
             }
             removed.UnionWith(deletedAt.Keys);
             long updated = 0;
-            var upserts = used.Select((c, i) => (Rows: c.Upsert, At: i)).Where(u => u.Rows.Count > 0).ToList();
+            var upserts = used.Select((c, i) => (Rows: c.Upsert, Keys: c.UpsertKeys, At: i)).Where(u => u.Rows.Count > 0).ToList();
             if (upserts.Count > 0)
             {
                 var pending = new Dictionary<string, int>(StringComparer.Ordinal); // key -> the call that upserts it
-                foreach (var (rows, at) in upserts)
-                    foreach (var r in rows) pending.TryAdd(shape.KeyText(shape.ValuesOf(r), keyCols), at);
+                foreach (var (_, keys, at) in upserts)
+                    foreach (var k in keys) pending.TryAdd(k, at);
                 // A single key column can use its index (or chunk statistics) instead of a full scan. An empty key matches the
                 // empty cells, which a sorted index lists apart (its null postings).
                 JazminFilter? filter = null;
@@ -1402,7 +1405,8 @@ public static class JazminFile
     /// would see a row an earlier call adds: a delete whose filter matches it, an upsert with its key, or (sorted files)
     /// rows that sort before it. That is a clash: refused, or with <paramref name="split"/> the calls are cut before it.
     /// </summary>
-    private static (List<object?[]> Rows, int Taken) OrderedRows(IReadOnlyList<AppendCall> calls, RowShape shape, int[] keyCols, IReadOnlyList<JazminSortKey>? sortedBy, bool split)
+    private static (List<object?[]> Rows, int Taken) OrderedRows(IReadOnlyList<AppendCall> calls, RowShape shape, int[] keyCols, IReadOnlyList<JazminSortKey>? sortedBy,
+        bool masked, bool split)
     {
         var lastDelete = -1;
         var lastUpsert = -1;
@@ -1427,6 +1431,9 @@ public static class JazminFile
             var call = calls[i];
             if (call.Delete is not null && addedValues.Count > 0)
             {
+                // In a table with masked columns the writer changes rows as it stores them (spec 7.6.8): a delete may match a
+                // stored row where it doesn't match the row the call gave, so any row an earlier call adds may be one it matches.
+                if (masked) return Clash(i, addedValues[0].Call, "may match a row that");
                 var bound = BoundFilter.Bind(call.Delete, shape.Columns);
                 foreach (var (values, earlier) in addedValues)
                     if (bound is null || FilterEngine.Evaluate(bound, values)) return Clash(i, earlier, "matches a row that");
@@ -1435,11 +1442,8 @@ public static class JazminFile
             // the rows with an empty key).
             if (call.Upsert.Count > 0 && addedKeys.Count > 0)
             {
-                foreach (var row in call.Upsert)
-                {
-                    var values = shape.ValuesOf(row);
-                    if (addedKeys.TryGetValue(shape.KeyText(values, keyCols), out var earlier)) return Clash(i, earlier, "has the key of a row that");
-                }
+                foreach (var k in call.UpsertKeys)
+                    if (addedKeys.TryGetValue(k, out var earlier)) return Clash(i, earlier, "has the key of a row that");
             }
             var added = call.Insert.Concat(call.Upsert).Select(shape.ValuesOf).ToList();
             if (sortCols is not null && added.Count > 0)
@@ -1460,16 +1464,18 @@ public static class JazminFile
 
     /// <summary>
     /// In one call the last row for a key wins, as if the rows were upserted one after another: a key's earlier rows are
-    /// left out, and the rows kept are in the order of their last rows. Only a call that gives a key more than once pays
-    /// for it: the marks are made only then.
+    /// left out, and the rows kept are in the order of their last rows. The call with the rows kept and their keys, each
+    /// key worked out once.
     /// </summary>
-    private static IReadOnlyList<IReadOnlyDictionary<string, object?>> LastRowPerKey(IReadOnlyList<IReadOnlyDictionary<string, object?>> rows, RowShape shape, int[] keyCols)
+    private static AppendCall LastRowPerKey(AppendCall call, RowShape shape, int[] keyCols)
     {
-        var seen = new HashSet<string>(rows.Count, StringComparer.Ordinal);
-        bool[]? superseded = null;
-        for (var i = rows.Count - 1; i >= 0; i--)
-            if (!seen.Add(shape.KeyText(shape.ValuesOf(rows[i]), keyCols))) (superseded ??= new bool[rows.Count])[i] = true;
-        return superseded is null ? rows : rows.Where((_, i) => !superseded[i]).ToList();
+        var rows = call.Upsert;
+        var keys = new string[rows.Count];
+        var last = new Dictionary<string, int>(rows.Count, StringComparer.Ordinal); // key -> the index of its last row
+        for (var i = 0; i < rows.Count; i++) last[keys[i] = shape.KeyText(shape.ValuesOf(rows[i]), keyCols)] = i;
+        if (last.Count == rows.Count) return call with { UpsertKeys = keys };
+        var kept = Enumerable.Range(0, rows.Count).Where(i => last[keys[i]] == i).ToList();
+        return call with { Upsert = kept.Select(i => rows[i]).ToList(), UpsertKeys = kept.Select(i => keys[i]).ToList() };
     }
 
     /// <summary>Files an append keeps (referenced, not rewritten): every file except removed or replaced ones; and the saved shapes.</summary>

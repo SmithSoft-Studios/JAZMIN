@@ -101,8 +101,9 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   maxRows })` merges many callers' calls into few appends (group commit): each call resolves with the result of the
   append that wrote it, a bad call fails alone, and the flushes to disk are awaited instead of blocking Node's event
   loop. Calls are written in call order, and the file ends up as running them one after another would; a call that
-  one append can't write that way (a delete matching, or an upsert with the key of, a row an earlier call adds) is
-  refused by a transaction and starts a new append in the writer. **.NET:** `JazminFile.BeginAppend` (a disposable
+  one append can't write that way (a delete matching, or an upsert with the key of, a row an earlier call adds; in a
+  table with masked columns, any delete after a call that adds rows) is refused by a transaction and starts a new
+  append in the writer. **.NET:** `JazminFile.BeginAppend` (a disposable
   `JazminTransaction`; disposing without `Commit` rolls back) and `JazminFile.OpenWriter` (`JazminAppendWriter`:
   `InsertAsync` / `UpsertAsync` / `DeleteAsync` / `FlushAsync` / `DisposeAsync`, safe for concurrent callers). 100
   callers adding one row each to a 10,000-row file: one append each took 1,065 ms (median of 5 runs) in JavaScript and

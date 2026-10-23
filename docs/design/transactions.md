@@ -46,9 +46,15 @@ Not clashes: a delete before an insert (the delete can't match a row that isn't 
 upsert of the same key (the calls in turn keep both rows too). A delete of a row an earlier upsert replaced finds the
 old row gone, as it would in turn. An upsert of a key an earlier call deleted adds the row and counts it as inserted.
 
-Duplicate keys **inside one upsert call** behave as `append()` does with them. That is a separate matter, being
-settled separately; once one upsert call keeps only the last row of a key, two upsert calls with the same key in one
-batch could also be merged instead of being a clash (the later call's row wins, as in turn).
+Duplicate keys **inside one upsert call** behave as `append()` does with them: the last row for a key wins. An empty
+key is a key like any other: it matches the rows with an empty key. Two upsert calls with the same key in one batch
+are still a clash; merging them (the later call's row wins, as in turn) is a possible later improvement, which would
+let the group writer batch callers that upsert one key.
+
+**Masked columns.** The writer changes a row as it stores it in a table with masked columns (spec 7.6.8): it makes
+the shown values, and moves a value outside the mask's rows to the unmasked column. A delete can then match the
+stored row where it doesn't match the row the call gave, so in such a table any delete after a call that adds rows
+is a clash.
 
 ## Errors
 

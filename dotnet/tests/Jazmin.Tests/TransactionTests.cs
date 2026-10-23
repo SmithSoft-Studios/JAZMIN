@@ -431,6 +431,55 @@ public sealed class TransactionTests : IDisposable
     }
 
     [Fact]
+    public async Task MaskedColumns_ADeleteAfterACallThatAddsRowsIsAClash_SinceTheWriterChangesRowsAsItStoresThem()
+    {
+        var owner = JazminKey.Generate();
+        JazminColumn[] columns =
+        [
+            new("id", JazminType.Int), new("dept", JazminType.String),
+            new("salary", JazminType.Decimal) { Mask = new JazminMask("hr") { Rows = JazminFilter.Gte("id", 2L) } },
+        ];
+        string Start(string name)
+        {
+            var path = Path.Combine(_dir, name);
+            using (var writer = JazminWriter.Create(path, columns, new JazminWriteOptions
+            {
+                Key = owner, Access = new JazminAccessOptions { PartitionBy = "dept" },
+                Locks = new Dictionary<string, JazminLockOptions?> { ["hr"] = new() { Online = true } },
+            }))
+            {
+                writer.WriteRow(new Dictionary<string, object?> { ["id"] = 1L, ["dept"] = "A", ["salary"] = "52000.00" });
+                writer.WriteRow(new Dictionary<string, object?> { ["id"] = 2L, ["dept"] = "A", ["salary"] = "61000.50" });
+            }
+            return path;
+        }
+        List<string> Show(string path)
+        {
+            using var r = JazminReader.Open(path, new JazminReadOptions { Key = owner });
+            return r.Rows().Select(x => string.Join(",", x.Values)).ToList();
+        }
+        // Row 0 is outside the mask's rows, so the writer stores its salary in salary_unmasked, where the delete looks.
+        var insert = new Dictionary<string, object?> { ["id"] = 0L, ["dept"] = "A", ["salary"] = "70000.00" };
+        var delete = JazminFilter.Gte("salary_unmasked", "60000");
+        var expected = Start("seq.jzm");
+        JazminFile.Append(expected, new JazminAppend { Key = owner, Insert = [insert] });
+        JazminFile.Append(expected, new JazminAppend { Key = owner, Delete = delete });
+        Assert.Equal(2, Show(expected).Count); // run in turn, the delete removes the inserted row
+
+        using (var tx = JazminFile.BeginAppend(Start("tx.jzm"), new JazminAppend { Key = owner }))
+        {
+            tx.Insert([insert]);
+            tx.Delete(delete);
+            Assert.Contains("call 2 (delete) may match a row that call 1 (insert) adds", Assert.Throws<JazminValidationException>(() => tx.Commit()).Message);
+        }
+
+        var grouped = Start("writer.jzm");
+        await using (var w = JazminFile.OpenWriter(grouped, new JazminAppend { Key = owner }))
+            await Task.WhenAll(w.InsertAsync([insert]), w.DeleteAsync(delete));
+        Assert.Equal(Show(expected), Show(grouped));
+    }
+
+    [Fact]
     public async Task TransactionsAndTheWriter_OnEncryptedAndSharedFiles_WithTheOwnerKey()
     {
         var owner = JazminKey.Generate();

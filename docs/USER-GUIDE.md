@@ -3013,7 +3013,8 @@ can't see a row an earlier call in the same batch adds. A transaction refuses su
 nothing; the group writer starts a new append there instead, so each caller still gets what running the calls in turn
 gives. That happens for:
 
-- a `delete` whose filter matches a row an earlier call adds;
+- a `delete` whose filter matches a row an earlier call adds (in a table with masked columns, any `delete` after a
+  call that adds rows: the writer changes rows as it stores them, section 15.7);
 - an `upsert` with the key of a row an earlier call adds (by `insert` or `upsert`);
 - in a `sortedBy` file, a call whose rows sort before rows an earlier call adds.
 

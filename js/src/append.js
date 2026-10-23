@@ -114,12 +114,17 @@ function startAppend(path, options, calls, atClash) {
     });
     // Decimal keys are objects: equal values share their text (keyId), as update() compares them.
     const keyOf = (row) => JSON.stringify(tuple(row, keyColumns).map((k) => keyText(keyId(k))));
-    // In one call the last row for a key wins, as if the rows were upserted one after another.
-    const lastRows = calls.map((c) => (c.upsert?.length > 1 ? { ...c, upsert: lastRowPerKey(c.upsert, keyOf) } : c));
+    // In one call the last row for a key wins, as if the rows were upserted one after another. Each upserted row's key
+    // is worked out once, here.
+    const lastRows = calls.map((c) => {
+      if (!c.upsert?.length) return c;
+      const { rows, keys } = lastRowPerKey(c.upsert, keyOf);
+      return { ...c, upsert: rows, upsertKeys: keys };
+    });
 
     // The table's order, other text comparisons included (spec 6.7): appended rows are put in it.
     const sortedBy = reader.sort ?? reader.sortedBy;
-    const ordered = orderedRows(lastRows, { columns, keyOf, sortedBy }, atClash);
+    const ordered = orderedRows(lastRows, { columns, keyOf, sortedBy, masked: reader.masked.length > 0 }, atClash);
     const taken = lastRows.slice(0, ordered.taken);
     const incoming = ordered.rows;
 
@@ -139,15 +144,10 @@ function startAppend(path, options, calls, atClash) {
       }
     }
     for (const rowId of deletedAt.keys()) removed.add(rowId);
-    const upserts = taken.flatMap((c, i) => (c.upsert?.length ? [{ rows: c.upsert, at: i }] : []));
+    const upserts = taken.flatMap((c, i) => (c.upsert?.length ? [{ rows: c.upsert, keys: c.upsertKeys, at: i }] : []));
     if (upserts.length) {
       const pending = new Map(); // key -> the call that upserts it (a later call with the same key would be a clash)
-      for (const u of upserts) {
-        for (const row of u.rows) {
-          const k = keyOf(row);
-          if (!pending.has(k)) pending.set(k, u.at);
-        }
-      }
+      for (const u of upserts) for (const k of u.keys) if (!pending.has(k)) pending.set(k, u.at);
       // A single key column can use its index (or chunk statistics) instead of a full scan. An empty key matches the
       // empty cells, which a sorted index lists apart (its null postings).
       let filter = null;
@@ -260,21 +260,16 @@ function endAppend(path, options, { writer, counts }) {
 
 /**
  * In one call the last row for a key wins, as if the rows were upserted one after another: a key's earlier rows are
- * left out, and the rows kept are in the order of their last rows. Only a call that gives a key more than once pays for
- * it: a second set of the call's keys, found going backwards.
+ * left out, and the rows kept are in the order of their last rows. Returns the rows kept and their keys, each key
+ * worked out once.
  */
 function lastRowPerKey(rows, keyOf) {
-  if (new Set(rows.map(keyOf)).size === rows.length) return rows;
-  const seen = new Set();
-  const kept = [];
-  for (let i = rows.length - 1; i >= 0; i--) {
-    const k = keyOf(rows[i]);
-    if (!seen.has(k)) {
-      seen.add(k);
-      kept.push(rows[i]);
-    }
-  }
-  return kept.reverse();
+  const keys = rows.map(keyOf);
+  const last = new Map(); // key -> the index of its last row
+  keys.forEach((k, i) => last.set(k, i));
+  if (last.size === rows.length) return { rows, keys };
+  const kept = (_, i) => last.get(keys[i]) === i;
+  return { rows: rows.filter(kept), keys: keys.filter(kept) };
 }
 
 /** A row object as values in column order, as rows are stored (a normalized filter is evaluated on these). */
@@ -289,7 +284,7 @@ function valuesOf(row, columns) {
  * rows that sort before it. That is a clash: refused (`atClash` 'throw'), or the calls are cut before it ('split').
  * Returns { rows, taken }.
  */
-function orderedRows(calls, { columns, keyOf, sortedBy }, atClash) {
+function orderedRows(calls, { columns, keyOf, sortedBy, masked }, atClash) {
   const lastDelete = calls.findLastIndex((c) => c.delete);
   const lastUpsert = calls.findLastIndex((c) => c.upsert?.length);
   const addedKeys = new Map(); // key of a row an earlier call adds -> that call (kept only while a later call upserts)
@@ -307,6 +302,9 @@ function orderedRows(calls, { columns, keyOf, sortedBy }, atClash) {
   for (let i = 0; i < calls.length; i++) {
     const call = calls[i];
     if (call.delete && addedValues.length) {
+      // In a table with masked columns the writer changes rows as it stores them (spec 7.6.8): a delete may match a
+      // stored row where it doesn't match the row the call gave, so any row an earlier call adds may be one it matches.
+      if (masked) return clash(i, addedValues[0][1], 'may match a row that');
       const plan = normalizeFilter(call.delete, columns);
       const hit = addedValues.find(([values]) => plan === null || evaluate(plan, values));
       if (hit) return clash(i, hit[1], 'matches a row that');
@@ -314,8 +312,8 @@ function orderedRows(calls, { columns, keyOf, sortedBy }, atClash) {
     // An upsert with the key of a row an earlier call adds, by insert or by upsert (an empty key included: it matches
     // the rows with an empty key).
     if (call.upsert?.length && addedKeys.size) {
-      for (const row of call.upsert) {
-        const earlier = addedKeys.get(keyOf(row));
+      for (const k of call.upsertKeys) {
+        const earlier = addedKeys.get(k);
         if (earlier !== undefined) return clash(i, earlier, 'has the key of a row that');
       }
     }
