@@ -264,6 +264,37 @@ internal static class SectionCodec
         };
     }
 
+    /// <summary>
+    /// <see cref="JazminReader.Verify"/>: checks a section's CRC-32 and whether <paramref name="key"/> passes its
+    /// authentication tag, decrypting into <paramref name="plain"/> (grown when too small, kept for the next section);
+    /// nothing is decompressed. Null when the section isn't encrypted.
+    /// </summary>
+    public static bool? Authenticate(ReadOnlySpan<byte> section, byte[]? key, byte[] fileId, string sectionId, ref byte[] plain)
+    {
+        if (section.Length < FormatConstants.EnvelopeSize) throw new JazminFormatException($"Section '{sectionId}' is truncated");
+        var envelope = section[..FormatConstants.EnvelopeSize];
+        if (BinaryPrimitives.ReadUInt32LittleEndian(envelope[8..]) != section.Length - FormatConstants.EnvelopeSize)
+            throw new JazminFormatException($"Section '{sectionId}' is truncated");
+        var body = section[FormatConstants.EnvelopeSize..];
+        if (Crc32.Compute(body) != BinaryPrimitives.ReadUInt32LittleEndian(envelope[12..]))
+            throw new JazminFormatException($"Section '{sectionId}' failed its CRC-32 check");
+        if ((envelope[1] & FormatConstants.SectionEncrypted) == 0) return null;
+        if (key is null || body.Length < Crypto.NonceSize + Crypto.TagSize) return false;
+        var length = body.Length - Crypto.NonceSize - Crypto.TagSize;
+        if (plain.Length < length) plain = new byte[length];
+        try
+        {
+            using var gcm = new AesGcm(key, Crypto.TagSize);
+            gcm.Decrypt(body[..Crypto.NonceSize], body.Slice(Crypto.NonceSize, length), body[(Crypto.NonceSize + length)..], plain.AsSpan(0, length),
+                Aad(fileId, envelope, sectionId));
+            return true;
+        }
+        catch (CryptographicException)
+        {
+            return false;
+        }
+    }
+
     private static byte[] Aad(byte[] fileId, ReadOnlySpan<byte> envelope, string sectionId)
     {
         var id = Encoding.UTF8.GetBytes(sectionId);

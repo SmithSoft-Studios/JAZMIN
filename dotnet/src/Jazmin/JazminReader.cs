@@ -158,6 +158,14 @@ public sealed record JazminTableStorage(
 public sealed record JazminStorage(
     long FileBytes, long UsedBytes, long UnusedBytes, long DeletedRows, long DeletedBytes, int AppendCount, IReadOnlyList<JazminTableStorage> Tables);
 
+/// <summary>
+/// What <see cref="JazminReader.Verify"/> checked: how (<paramref name="CheckedBy"/>: "signature" in a shared file,
+/// "encryption" in a file with a key or password, "checksum" in a plain file), the sections and their bytes, and the
+/// bytes the current version doesn't use (replaced by appends), counted, not checked. The preamble (64 bytes), the
+/// trailer (44), <paramref name="Bytes"/> and <paramref name="UnusedBytes"/> make up the file.
+/// </summary>
+public sealed record JazminVerification(string CheckedBy, int Sections, long Bytes, long UnusedBytes);
+
 public sealed record JazminPlan(string Strategy, long CandidateRows, int Chunks, int ChunksSkipped)
 {
     /// <summary>What the query read, from <see cref="JazminReader.Explain(JazminFilter?, bool, JazminQueryOptions?)"/> with analyze; else null.</summary>
@@ -202,6 +210,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
         public required byte[] KeySecret { get; init; }
         public required (long Offset, int Length, byte[] Section) KeySlots { get; init; }
         public SectionRef? Signature { get; init; }
+        public byte[]? SignedBy { get; init; } // the owner public key checked when the file was opened, for Verify()
         public DateTimeOffset? Expires { get; init; }
         public bool Online { get; init; }
         public byte[]? Submission { get; init; } // this access key's submission key (spec 7.8), when the file has one
@@ -335,6 +344,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
     private List<IndexRef>? _indexRefs;
     private bool? _sortStatsComplete;
     private ushort _flags;
+    private bool _closed;
     private long[] _deleted = Array.Empty<long>(); // sorted row ids removed by appends
     private long? _deletedVisible;
     private long _validEnd;
@@ -626,6 +636,135 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             chunks > 0 ? (long)Math.Round((double)stored / chunks) : 0, indexes);
     }
 
+    /// <summary>
+    /// Checks every section of the file's current version, not only those queries read (issue #275): in a shared file
+    /// each section's SHA-256 against the owner's signature, in a file with a key or password each section's CRC-32 and
+    /// authentication tag (any change is caught), in a plain file each CRC-32 and its decoding (accidental damage only).
+    /// One section at a time, nothing kept. Throws a <see cref="JazminFormatException"/> naming the first section that fails.
+    /// Bytes the current version doesn't use (replaced by appends) are counted, not checked: compacting removes them.
+    /// Needs the whole file: an owner key, or the key or password of a file that isn't shared.
+    /// </summary>
+    public JazminVerification Verify()
+    {
+        if (_closed) throw new JazminValidationException("This reader is closed");
+        if (_access is { IsOwner: false }) throw new JazminValidationException("A shared file is checked whole with its owner key");
+        if (Recovered)
+        {
+            throw new JazminFormatException("The file ends in an append that did not finish, or whose end was changed: this reader opened "
+                + "the version before it. Compacting keeps that version and removes the rest");
+        }
+        var encrypted = (_flags & FormatConstants.FlagEncrypted) != 0;
+        var preamble = Read(0, FormatConstants.PreambleSize);
+        // Fields the spec fixes (4.1) but nothing else depends on: reserved bytes, no salt in a plain file, no iterations without a password.
+        var valid = BinaryPrimitives.ReadUInt16LittleEndian(preamble.AsSpan(6)) == 0 && BinaryPrimitives.ReadUInt32LittleEndian(preamble.AsSpan(60)) == 0
+            && (encrypted || !preamble.AsSpan(24, FormatConstants.SaltSize).ContainsAnyExcept((byte)0))
+            && ((_flags & FormatConstants.FlagPassword) != 0 || BinaryPrimitives.ReadUInt32LittleEndian(preamble.AsSpan(56)) == 0);
+        if (!valid) throw new JazminFormatException("The preamble has values the format does not allow - the file was modified");
+
+        // offset -> the section there: each section once, however often it is referenced. Embedded-file blocks keep their digest as text.
+        var sections = new Dictionary<long, (SectionRef At, string SectionId, byte[]? Key, string? DigestText)>();
+        void Add(SectionRef? at, string sectionId, byte[]? key = null, string? digestText = null)
+        {
+            if (at is not null && at.Length != 0) sections.TryAdd(at.Offset, (at, sectionId, key, digestText));
+        }
+        byte[]? KeyOf(string group, string sectionId) => _keys?.SectionKey(group, sectionId);
+        long bytes = 0;
+        if (_access is not null)
+        {
+            // The signature covers the header and the key-slot list; the list holds every page's digest (spec 7.6.4).
+            var (slotsOffset, slotsLength, _) = _access.KeySlots;
+            var signatureAt = _access.Signature!;
+            var slotsSection = Read(slotsOffset, slotsLength);
+            var signature = SectionCodec.Decode(PlainSection(Read(signatureAt.Offset, signatureAt.Length), "signature"), null, _fileId, "signature");
+            AccessCrypto.VerifySignedBy(signature, _fileId, slotsSection, Read(_headerRef.Offset, _headerRef.Length), _access.SignedBy!);
+            bytes += slotsLength + signatureAt.Length + _headerRef.Length;
+            var pages = AccessCrypto.KeySlotPages(SectionCodec.DecodeSegment(PlainSection(slotsSection, "keyslots"), null, _fileId, "keyslots"));
+            for (var n = 0; n < pages.Count; n++) Add(pages[n], $"keyslots/{n}");
+            Add(_header.Access?.OwnerDirectory, "owner");
+            Add(_header.Access?.OwnerCatalog, "owner/catalog");
+        }
+        else
+        {
+            Add(_headerRef, FormatConstants.HeaderSectionId, _keys?.HeaderKey);
+        }
+        for (var i = 0; i < _header.Deltas.Count; i++) Add(_header.Deltas[i], $"delta/{i}", KeyOf(FormatConstants.KeyringData, $"delta/{i}"));
+        if (_header.Files is { } files)
+        {
+            var suffix = files.Segment > 0 ? $"/{files.Segment}" : "";
+            foreach (var (_, section) in files.Directories) Add(section, $"files/dir{suffix}", KeyOf(FormatConstants.KeyringFiles, $"files/dir{suffix}"));
+            foreach (var content in FileIndex().Contents.Values)
+            {
+                for (var b = 0; b < content.Blocks.Count; b++)
+                {
+                    var sectionId = $"file/{content.Id}/{b}";
+                    var (offset, length, digest) = content.Blocks[b];
+                    var key = content.Key is { } contentKey && _access is null ? Crypto.Hkdf(contentKey, _salt, $"JAZMIN/1/{sectionId}") : null;
+                    Add(new SectionRef(offset, length), sectionId, key, digest);
+                }
+            }
+        }
+        for (var t = 0; t < _header.Tables.Count; t++)
+        {
+            var reader = t == _tableIndex ? this : OpenTable(_header.Tables[t].Name);
+            try
+            {
+                reader.TableSections((at, sectionId, group) => Add(at, sectionId, KeyOf(group, sectionId)));
+                if (_access is not null)
+                {
+                    var entry = OwnerCatalog().FirstOrDefault(e => e.Table == t);
+                    Add(entry?.ChunkMap, $"{t}/chunkmap");
+                    Add(entry?.ChunkMapAppended, $"{t}/chunkmap/{entry?.ChunkMapSegment}");
+                }
+            }
+            finally
+            {
+                if (reader != this) reader.Dispose();
+            }
+        }
+
+        var scratch = Array.Empty<byte>(); // one section at a time
+        var plain = Array.Empty<byte>(); // an encrypted section's payload, decrypted only to check its tag
+        Span<byte> hash = stackalloc byte[32];
+        foreach (var offset in sections.Keys.Order())
+        {
+            var (at, sectionId, key, digestText) = sections[offset];
+            if (at.Length < FormatConstants.EnvelopeSize) throw new JazminFormatException($"Section '{sectionId}' is truncated");
+            if (at.Offset < 0 || at.Offset + at.Length > _stream.Length) throw new JazminFormatException("Unexpected end of file");
+            if (scratch.Length < at.Length) scratch = GC.AllocateUninitializedArray<byte>(at.Length);
+            lock (_io)
+            {
+                _stream.Position = at.Offset;
+                _stream.ReadExactly(scratch, 0, at.Length);
+            }
+            var section = scratch.AsSpan(0, at.Length);
+            if (BinaryPrimitives.ReadUInt32LittleEndian(section[8..]) + (long)FormatConstants.EnvelopeSize != at.Length)
+                throw new JazminFormatException($"Section '{sectionId}' length mismatch");
+            if (_access is not null)
+            {
+                if (at.Digest is null && digestText is null) throw new JazminFormatException($"Section '{sectionId}' has no digest");
+                SHA256.HashData(section, hash);
+                var matches = digestText is not null ? Convert.ToBase64String(hash) == digestText : hash.SequenceEqual(at.Digest!);
+                if (!matches) throw new JazminFormatException($"Section '{sectionId}' does not match the owner's signature");
+            }
+            else if (!encrypted)
+            {
+                // The CRC-32 covers the payload, not the envelope: check its fixed bytes, and its codec and length by decoding.
+                if (section[1] != 0 || section[2] != 0 || section[3] != 0) throw new JazminFormatException($"Section '{sectionId}' has an invalid envelope");
+                var (decoded, _) = SectionCodec.DecodePooled(scratch, at.Length, null, _fileId, sectionId);
+                System.Buffers.ArrayPool<byte>.Shared.Return(decoded);
+            }
+            else
+            {
+                var opens = SectionCodec.Authenticate(section, key, _fileId, sectionId, ref plain); // checks the CRC-32 first
+                if (opens is null) throw new JazminFormatException($"Section '{sectionId}' is not encrypted but the file is");
+                if (opens == false) throw new JazminFormatException($"Section '{sectionId}' failed its authentication check - the file was modified");
+            }
+            bytes += at.Length;
+        }
+        return new JazminVerification(_access is not null ? "signature" : encrypted ? "encryption" : "checksum",
+            sections.Count + (_access is not null ? 3 : 0), bytes, _stream.Length - FormatConstants.PreambleSize - FormatConstants.TrailerSize - bytes);
+    }
+
     /// <summary>Whether the file's sorted indexes may hold keys as differences (reader feature 'index-deltas'); update keeps them.</summary>
     internal bool CompactIndexes => _header.ReaderFeatures.Contains(FormatConstants.IndexDeltas);
 
@@ -798,6 +937,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
             KeySecret = secret.ToArray(),
             KeySlots = (trailer.KeySlots.Offset, trailer.KeySlots.Length, slotsSection),
             Signature = trailer.Signature,
+            SignedBy = signature[..AccessCrypto.PublicKeySize],
             Expires = bundle["expires"] is { } expires ? DateTimeOffset.Parse((string)expires!, CultureInfo.InvariantCulture) : null,
             Online = (bool?)bundle["online"] ?? false,
             FileSecrets = Secrets(bundle["files"]),
@@ -3250,6 +3390,7 @@ public sealed class JazminReader : IDisposable, IIndexProvider
 
     public void Dispose()
     {
+        _closed = true;
         _access?.Readers.Remove(this);
         _cachedRows = null;
         foreach (var index in _indexes.Values) (index as LazyTrigramIndex)?.Release(); // their buffers go back to the pool
