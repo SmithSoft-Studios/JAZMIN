@@ -1247,10 +1247,18 @@ public static class JazminFile
                 for (var i = append.Upsert.Count - 1; i >= 0; i--)
                     if (!pending.Add(shape.KeyText(shape.ValuesOf(append.Upsert[i]), keyCols))) (superseded ??= new bool[append.Upsert.Count])[i] = true;
                 if (superseded is not null) upserted = append.Upsert.Where((_, i) => !superseded[i]).ToList();
-                // A single key column can use its index (or chunk statistics) instead of a full scan.
-                var filter = keyCols.Length == 1
-                    ? JazminFilter.In(shape.Columns[keyCols[0]].Name, upserted.Select(r => r.GetValueOrDefault(shape.Columns[keyCols[0]].Name)).Where(v => v is not null).ToArray())
-                    : null;
+                // A single key column can use its index (or chunk statistics) instead of a full scan. An empty key matches the
+                // empty cells, which a sorted index lists apart (its null postings).
+                JazminFilter? filter = null;
+                if (keyCols.Length == 1)
+                {
+                    var name = shape.Columns[keyCols[0]].Name;
+                    var values = upserted.Select(r => r.GetValueOrDefault(name)).Where(v => v is not null).ToArray();
+                    var empty = values.Length < upserted.Count ? JazminFilter.IsNull(name) : null;
+                    filter = empty is null ? JazminFilter.In(name, values)
+                        : values.Length > 0 ? JazminFilter.Or(JazminFilter.In(name, values), empty)
+                        : empty;
+                }
                 var matched = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var row in reader.RowsWithIds(filter))
                 {

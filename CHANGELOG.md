@@ -47,6 +47,9 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   with one row.
 - **An append's upsert by a decimal key column failed in JavaScript** with "Do not know how to serialize a BigInt"; equal
   decimals now match whatever their scale (`'1.5'` and `'1.50'`), as in `update()` and .NET.
+- **An append's upsert by one key column never matched an empty key.** A row upserted with `id: null` was added beside
+  the file's rows with an empty `id` instead of replacing them. It now replaces them, as `update()` and composite keys
+  already did, in both libraries.
 
 ### Added
 - **Limits per key on what a key may send back (spec 7.9.1, #257).** A grant's `edit` (`columns`, `add`, `delete`)
