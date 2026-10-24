@@ -152,6 +152,18 @@
     revoked: "the signer's certificate was revoked before it was signed",
     facts: "its signed facts don't match",
   };
+  // The bar's icons (16 x 16, drawn in the state's colour). Each badge is its icon alone; its words are its accessible
+  // name and its hover text, and the text beside it says what the state means.
+  const svg = (name, inner) => `<svg viewBox="0 0 16 16" data-icon="${name}" aria-hidden="true" focusable="false">${inner}</svg>`;
+  const PUBLISHER_ICONS = {
+    none: svg('none', '<circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="8" cy="5" r="0.95" fill="currentColor"/><path d="M8 7.2v4.3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>'),
+    checking: svg('checking', '<circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 4.4V8l2.4 1.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>'),
+    signed: svg('signed', '<path d="M9.6 2.6l2.8 2.8-6.3 6.3-3.4.6.6-3.4z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M8.4 3.8l2.8 2.8" stroke="currentColor" stroke-width="1.4"/><path d="M8.6 13.6c1-.9 1.6-.9 2 0 .4.8 1 .8 1.6 0 .5-.7 1-.7 1.6-.1" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/>'),
+    verified: svg('verified', '<polygon points="8.00,0.40 9.66,1.82 11.80,1.42 12.53,3.47 14.58,4.20 14.18,6.34 15.60,8.00 14.18,9.66 14.58,11.80 12.53,12.53 11.80,14.58 9.66,14.18 8.00,15.60 6.34,14.18 4.20,14.58 3.47,12.53 1.42,11.80 1.82,9.66 0.40,8.00 1.82,6.34 1.42,4.20 3.47,3.47 4.20,1.42 6.34,1.82" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M5 8.3l2 2 4.1-4.3" fill="none" stroke="#fff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>'),
+    withdrawn: svg('withdrawn', '<circle cx="8" cy="8" r="6.6" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M3.4 12.6l9.2-9.2" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>'),
+    replaced: svg('replaced', '<path d="M13 8a5 5 0 1 1-1.5-3.6" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M12.2 1.8v3h-3" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>'),
+    invalid: svg('invalid', '<path d="M8 1.8l6.6 11.7H1.4z" fill="currentColor" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/><path d="M8 6v3.6" stroke="#fff" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="11.6" r="0.95" fill="#fff"/>'),
+  };
   // The facts of the kinds spec 6.9.3 names, in its order; other facts follow.
   const FACT_ORDER = {
     payslip: ['period', 'recipient', 'gross', 'net', 'currency'], statement: ['period', 'account', 'closing', 'currency'],
@@ -201,7 +213,7 @@
   function showPublisher(result) {
     const bar = $('jz-publisher');
     const status = result?.status;
-    bar.hidden = !status || status === 'none' || status === 'not-verified';
+    bar.hidden = !status || status === 'not-verified';
     $('jz-publisher-details').hidden = true;
     $('jz-publisher-more').hidden = true;
     $('jz-publisher-more').setAttribute('aria-expanded', 'false');
@@ -218,32 +230,48 @@
     };
     const what = () => (result.code ? [` · ${result.documentKind || 'document'} ${result.code}`] : []);
     let badge;
+    let icon;
     let parts;
     if (status === 'checking') {
       badge = 'Checking…';
+      icon = 'checking';
       parts = ['Checking who published this file…'];
     } else if (embedded) {
       badge = 'Signed';
+      icon = 'signed';
       parts = ["This file is signed. An embedded viewer doesn't show who published it: open the file in the JAZMIN viewer, or confirm it with SmithSoft."];
     } else if (status === 'certified') {
       badge = `${test ? 'TEST · ' : ''}${result.kind === 'individual' ? 'Verified individual' : 'Verified publisher'}`;
+      icon = 'verified';
       parts = [...who(), ...what(), test ? ' · signed under a test root, not a real certification' : ''];
     } else if (status === 'withdrawn' || status === 'superseded') {
       badge = `${test ? 'TEST · ' : ''}${status === 'withdrawn' ? 'Withdrawn' : 'Replaced'}`;
+      icon = status === 'withdrawn' ? 'withdrawn' : 'replaced';
       const from = result.statusAnswer?.status === status && result.statusAnswer.from ? ` on ${day(result.statusAnswer.from)}` : '';
       parts = [...who(), status === 'withdrawn' ? ` withdrew this document${from}.` : ` issued a newer version of this document${from}.`,
         ' Its signature is still valid.'];
+    } else if (status === 'none') {
+      badge = 'Not signed';
+      icon = 'none';
+      parts = ["This file isn't signed, so who created it, and whether it has been changed, can't be confirmed. Rely on it only if you trust where it came from."];
     } else if (status === 'signed') {
       badge = 'Signed';
-      parts = ["Signed with a key SmithSoft doesn't certify. It hasn't changed since it was signed, but who signed it isn't known."];
+      icon = 'signed';
+      parts = ["Signed, but who signed it isn't verified. It hasn't changed since it was signed."];
     } else if (status === 'changed') {
       badge = 'Not valid';
+      icon = 'invalid';
       parts = [`This file was signed, but ${PUBLISHER_REASONS[result.reason] ?? 'it changed after it was signed'}. Don't rely on it.`];
     } else {
       badge = 'Not valid';
+      icon = 'invalid';
       parts = [`This file's publisher signature doesn't hold: ${PUBLISHER_REASONS[result.reason] ?? result.reason}. Don't rely on it.`];
     }
-    $('jz-publisher-badge').textContent = badge;
+    const badgeEl = $('jz-publisher-badge');
+    badgeEl.innerHTML = PUBLISHER_ICONS[icon]; // our own constant markup, never the file's
+    if (test && !embedded) badgeEl.append(Object.assign(document.createElement('span'), { className: 'pub-test', textContent: 'TEST' }));
+    badgeEl.setAttribute('aria-label', badge);
+    badgeEl.title = badge;
     $('jz-publisher-text').replaceChildren(...parts);
     if (!shown || embedded) return;
 

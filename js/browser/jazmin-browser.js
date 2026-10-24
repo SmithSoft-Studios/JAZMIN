@@ -7603,7 +7603,8 @@
   // are hashed in 1 MiB slices with the SHA-256 below (WebCrypto hashes only whole buffers). CI checks it gives the
   // results spec/fixtures/publisher/expected.json names, as the library does.
 
-  // SmithSoft's roots (spec 6.9.4), as base64 DER: none yet; added in 1.8.1. Only a test build (made by
+  // SmithSoft's roots (spec 6.9.4), as base64 DER: none yet; added when SmithSoft's certification service
+  // launches. Only a test build (made by
   // js/scripts/publisher-test-build.mjs for the tests and the demo gallery) has other roots, and its results say so.
   // `at`: the time to verify at, null for now (a test build may fix it).
   const PUBLISHER_TRUST = Object.freeze({ roots: Object.freeze([]), arc: null, test: false, at: null });

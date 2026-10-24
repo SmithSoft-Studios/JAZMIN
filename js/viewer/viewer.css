@@ -29,12 +29,15 @@ main { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .status { margin: 0; padding: 4px 16px; color: var(--muted); font-size: 12.5px; }
 /* Who published the file (spec 6.9): the viewer's own bar, under its header. */
 .publisher { --pub: #5b6475; --pub-bg: #f1f3f6; padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--pub-bg); }
+.publisher[data-state="none"] { --pub-bg: #f8f9fb; }
+.publisher[data-state="none"] .pub-text { color: var(--muted); }
 .publisher[data-state="certified"] { --pub: #067647; --pub-bg: #ecfdf3; }
 .publisher[data-state="test"] { --pub: #93370d; --pub-bg: repeating-linear-gradient(-45deg, #fffaeb 0 14px, #fef0c7 14px 28px); }
 .publisher[data-state="withdrawn"], .publisher[data-state="superseded"] { --pub: #93370d; --pub-bg: #fffaeb; }
 .publisher[data-state="changed"], .publisher[data-state="invalid"] { --pub: var(--danger); --pub-bg: #fef3f2; }
 .pub-line { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.pub-badge { flex: none; padding: 2px 10px; border-radius: 999px; background: var(--pub); color: #fff; font-weight: 600; font-size: 12.5px; }
+.pub-badge { flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--pub); font-weight: 700; font-size: 11.5px; letter-spacing: .04em; }
+.pub-badge svg { width: 22px; height: 22px; }
 .pub-text { flex: 1 1 260px; min-width: 0; }
 .pub-text strong { color: var(--pub); }
 .publisher button.small { padding: 3px 10px; font-size: 12.5px; }

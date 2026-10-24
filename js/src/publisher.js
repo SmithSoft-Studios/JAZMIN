@@ -33,8 +33,8 @@ const OID = Object.freeze({
   commonName: '2.5.4.3', country: '2.5.4.6', organization: '2.5.4.10', organizationIdentifier: '2.5.4.97',
 });
 
-/** SmithSoft's roots (6.9.4): none yet; added in 1.8.1. The arc of the id-jazmin-* identifiers,
- * 1.3.6.1.4.1.67330.1, is set with them. */
+/** SmithSoft's roots (6.9.4): none yet; added when SmithSoft's certification service launches. The arc of the
+ * id-jazmin-* identifiers, 1.3.6.1.4.1.67330.1, is set with them. */
 const BUILT_IN = Object.freeze({ roots: Object.freeze([]), arc: null });
 
 const ROOT = 'root';

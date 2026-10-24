@@ -5723,10 +5723,11 @@ against certificates that SmithSoft issues after verifying who the publisher is.
 
 Verifying is free, offline, and needs no key; a key or password only adds the facts of an encrypted file.
 
-> **1.8.0 has no roots yet:** the libraries verify signatures now. A certified result rests on the roots SmithSoft
-> publishes, built in from 1.8.1, so it can't be forged with a root of one's own. Until then a signed file shows as
-> `signed` (by an unknown key, with no name), never `certified`; a 1.8.0 library never shows `certified`, so upgrade
-> to 1.8.1 for that. That the file hasn't changed since it was signed is checked now. The test files in
+> **SmithSoft's certification comes later.** The libraries check signatures now, and the viewer shows for every file
+> whether it is signed, so a file from an unknown sender can be judged. A certified result ("Verified publisher") rests
+> on the roots SmithSoft publishes, built into a later release when its certification service launches (no date yet),
+> so it can't be forged with a root of one's own. Until then a signed file shows as `signed` (by an unknown key, with
+> no name), never `certified`. That the file hasn't changed since it was signed is checked now. The test files in
 > `spec/fixtures/publisher` are signed under a test root that no release trusts.
 
 ### 26.1 Verifying
@@ -5771,7 +5772,7 @@ signed-plain.jzm: Certified: signed by Sable Line Logistics (Pty) Ltd (verified 
   Revocation:   checked 2026-10-01T09:00:05Z (16 days ago)
 ```
 
-Several files, as the command shows them until 1.8.1, with the test files:
+Several files, as the command shows them until SmithSoft's roots are built in, with the test files:
 
 ```text
 $ jazmin verify signed-plain.jzm self-signed.jzm changed-byte.jzm
@@ -5867,9 +5868,11 @@ The demo gallery's `signatures.html` shows each result in a test build of the vi
 
 ### 26.7 What each result looks like
 
-These pictures come from the **test build** of the viewer, so each verified result says **TEST** and that it was
-signed under a test root. A file SmithSoft certifies shows the same bar in the released viewer, in green, without
-"TEST". Learn the bar's place: it is part of the viewer, above the document's tabs. Anything inside the document's
+The bar shows every file's state as an icon, whose name appears on hover and to screen readers: an **i** for not
+signed, a **pen** for signed, a **seal with a tick** for a verified publisher, and a **warning sign** for not valid
+(withdrawn and replaced have their own). The pictures of verified results come from the **test build** of the
+viewer, so they say **TEST** and that the file was signed under a test root. Once SmithSoft's certification service
+launches, a file it certifies shows the same bar in the released viewer, in green, without "TEST". Learn the bar's place: it is part of the viewer, above the document's tabs. Anything inside the document's
 own page is the document's, and proves nothing.
 
 **Verified publisher:** the name from the certificate SmithSoft issued, the document's kind and code.
@@ -5895,7 +5898,12 @@ version. Don't use it.
 
 ![The bar for a withdrawn document: the publisher withdrew it on a date; its signature is still valid](images/publisher/withdrawn.png)
 
-**Signed** by a key SmithSoft doesn't certify: the file hasn't changed since it was signed, but **no name is shown**,
+**Not signed:** the file has no publisher signature, so who created it, and whether it has been changed, can't be
+confirmed. Rely on it only if you trust where it came from; if you expected a signature, treat it as a failure.
+
+![The bar for a file that is not signed: who created it, and whether it changed, can't be confirmed](images/publisher/not-signed.png)
+
+**Signed**, but who signed it isn't verified: the file hasn't changed since it was signed, but **no name is shown**,
 because anyone can write any name in a certificate of their own. Treat it as unsigned.
 
 ![The bar for a file signed by an unknown key: no name](images/publisher/signed-unknown-key.png)
@@ -5911,4 +5919,4 @@ the file can be looked at, but it must not be relied on.
 
 ![The viewer inside another site's page: Signed, with no name, and a pointer to the JAZMIN viewer or SmithSoft](images/publisher/embedded.png)
 
-A file without a publisher signature shows no bar at all. If you expected one, that is a failure too.
+Up to 1.8.0, a file without a publisher signature showed no bar at all.

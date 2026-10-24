@@ -1150,7 +1150,8 @@ for (const name of chosen) {
     // so; the released viewer trusts the published roots built into it, so the same file shows as signed by an unknown key.
     const publisherShown = `(() => {
       const bar = document.getElementById('jz-publisher');
-      return bar.hidden ? { hidden: true } : { state: bar.dataset.state, badge: document.getElementById('jz-publisher-badge').textContent,
+      const badge = document.getElementById('jz-publisher-badge');
+      return bar.hidden ? { hidden: true } : { state: bar.dataset.state, badge: badge.getAttribute('aria-label'), icon: badge.querySelector('svg')?.dataset.icon,
         text: document.getElementById('jz-publisher-text').textContent, details: document.getElementById('jz-publisher-details').textContent };
     })()`;
     const showSigned = async (viewer, file) => {
@@ -1163,21 +1164,22 @@ for (const name of chosen) {
     const signedChecks = [];
     const certified = await showSigned('viewer-test', 'signed-plain.jzm');
     signedChecks.push(['signed-plain.jzm in the test viewer: a verified publisher, marked TEST, with its code and facts', certified.state === 'test'
-      && certified.badge === 'TEST · Verified publisher' && certified.text.includes('Sable Line Logistics (Pty) Ltd') && /JZ-[0-9A-Z]{5}-[0-9A-Z]{5}/.test(certified.text)
+      && certified.badge === 'TEST · Verified publisher' && certified.icon === 'verified' && certified.text.includes('Sable Line Logistics (Pty) Ltd') && /JZ-[0-9A-Z]{5}-[0-9A-Z]{5}/.test(certified.text)
       && certified.details.includes('TEST BUILD') && certified.details.includes('NTRZA-2020/123456/07') && certified.details.includes('14102.37'), certified]);
     const released = await showSigned('viewer', 'signed-plain.jzm');
     signedChecks.push(['signed-plain.jzm in the released viewer: signed by a key SmithSoft does not certify, no name', released.state === 'signed'
-      && released.badge === 'Signed' && !released.text.includes('Sable'), released]);
+      && released.badge === 'Signed' && released.icon === 'signed' && released.text.includes("who signed it isn't verified") && !released.text.includes('Sable'), released]);
     const individual = await showSigned('viewer-test', 'signed-sole-trader.jzm');
     signedChecks.push(['signed-sole-trader.jzm: a verified individual, trading as', individual.badge === 'TEST · Verified individual'
       && individual.text.includes('Thandi Mokoena, trading as TM Bookkeeping'), individual]);
-    for (const [file, state, words] of [['withdrawn.jzm', 'withdrawn', 'withdrew this document'], ['changed-byte.jzm', 'changed', 'changed after it was signed'],
-      ['self-signed.jzm', 'signed', "SmithSoft doesn't certify"], ['invalid-block-crc.jzm', 'invalid', 'signature block is damaged']]) {
+    for (const [file, state, icon, words] of [['withdrawn.jzm', 'withdrawn', 'withdrawn', 'withdrew this document'], ['changed-byte.jzm', 'changed', 'invalid', 'changed after it was signed'],
+      ['self-signed.jzm', 'signed', 'signed', "who signed it isn't verified"], ['invalid-block-crc.jzm', 'invalid', 'invalid', 'signature block is damaged']]) {
       const shown = await showSigned('viewer-test', file);
-      signedChecks.push([`${file}: ${state}`, shown.state === state && shown.text.includes(words), shown]);
+      signedChecks.push([`${file}: ${state}`, shown.state === state && shown.icon === icon && shown.text.includes(words), shown]);
     }
     const unsigned = await showSigned('viewer-test', 'unsigned.jzm');
-    signedChecks.push(['unsigned.jzm: no bar', unsigned.hidden === true, unsigned]);
+    signedChecks.push(['unsigned.jzm: a neutral "Not signed" note: who made it, and whether it changed, can\x27t be confirmed', unsigned.state === 'none'
+      && unsigned.badge === 'Not signed' && unsigned.icon === 'none' && unsigned.text.includes('whether it has been changed'), unsigned]);
     // An encrypted file: who published it shows before the password; its facts once the password opens it.
     const locked = await showSigned('viewer-test', 'signed-password.jzm');
     await waitFor(page, `document.getElementById('jz-unlock')?.hidden === false`, 'the unlock form');
@@ -1477,7 +1479,7 @@ for (const name of chosen) {
     await waitFor(page, `!!document.querySelector('[data-sample]')`, 'the signatures page');
     const overlayViewer = `document.querySelector('.viewer-overlay iframe').contentWindow`;
     const overlayPublisher = `document.querySelector('.viewer-overlay iframe') && ${overlayViewer}.JazminViewer?.state?.publisher?.status
-      && ({ status: ${overlayViewer}.JazminViewer.state.publisher.status, badge: ${overlayViewer}.document.getElementById('jz-publisher-badge').textContent })`;
+      && ({ status: ${overlayViewer}.JazminViewer.state.publisher.status, badge: ${overlayViewer}.document.getElementById('jz-publisher-badge').getAttribute('aria-label') })`;
     await page.evaluate(`(document.querySelector('[data-sample="signed-document.jzm"]:not([data-viewer])').click(), true)`);
     const galleryTest = await waitFor(page, overlayPublisher, 'the certified payslip in the test viewer', 30000);
     await page.evaluate(`(document.querySelector('.viewer-overlay button').click(), document.querySelector('[data-viewer="released"]').click(), true)`);
