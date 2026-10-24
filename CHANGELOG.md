@@ -5,11 +5,21 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased
 
+### Viewer
+- **Every file shows whether it is signed,** so a file from an unknown sender can be judged. The publisher bar now
+  appears for every file, as an icon whose name shows on hover and to screen readers: an i for **Not signed** (who
+  created the file, and whether it has been changed, can't be confirmed: rely on it only if you trust where it came
+  from), a pen for **Signed** (not changed since it was signed, but who signed it isn't verified), a seal with a tick
+  for a **Verified publisher**, and a warning sign for **Not valid**. Up to 1.8.0 a file without a signature showed no
+  bar, and the badges were words. Verified publishers appear once SmithSoft's certification service launches (no date
+  yet); until then no release builds in SmithSoft's roots, and the documentation no longer promises them for 1.8.1.
+
 ### Spec
 - **Publisher signatures' object identifiers** (6.9.4): IANA assigned SmithSoft Private Enterprise Number 67330 on
   23 October 2026, so the `id-jazmin-*` identifiers are under `1.3.6.1.4.1.67330.1` (`.1` policy, `.2` document
-  signing, `.3` status, `.4` confirmation, `.5` publisher kind, `.6` log). The libraries use the arc from 1.8.1, with
-  SmithSoft's roots; until then they trust no roots, as in 1.8.0. Test vectors keep `2.999.1`.
+  signing, `.3` status, `.4` confirmation, `.5` publisher kind, `.6` log). The libraries use the arc once
+  SmithSoft's roots are built in, when its certification service launches; until then they trust no roots, as in
+  1.8.0. Test vectors keep `2.999.1`.
 
 ## 1.8.0 - 2026-10-23 (file format 1.0)
 Check a whole file, also the parts no query reads; write many changes as one append; keep readers open across
