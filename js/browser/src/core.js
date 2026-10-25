@@ -4,6 +4,7 @@
   const FLAG_ENCRYPTED = 0x1;
   const FLAG_PASSWORD = 0x2;
   const FLAG_ACCESS = 0x4;
+  const FLAG_APPENDED = 0x8; // appended to (spec 11.2): verify() checks that a file with appends says so
   const KNOWN_FLAGS = 0xf;
   const CODEC_NONE = 0;
   const CODEC_DEFLATE = 1;
@@ -2813,6 +2814,7 @@
 
     const file = {
       header, fileId, salt, size, keys, access, section, read, readSections,
+      trailer, flags, iterations, // for verify()
       cost: null, // while explain({ analyze }) runs a query: what it reads
       gate: limiter(PARALLEL_SECTIONS), // file.gate(fn): fn() once fewer than PARALLEL_SECTIONS sections are being read
       metadata: header.metadata ? parseJson(header.metadata, 'Metadata', true) : {},
@@ -2838,9 +2840,10 @@
   }
 
   async function locateTrailer(read, size) {
-    const parse = (t) => {
+    const parse = (t, end) => {
       const v = view(t);
       return {
+        end, // where this version ends: the file's size, unless an append was cut short
         header: { offset: Number(v.getBigUint64(0, true)), length: v.getUint32(8, true) },
         keySlots: { offset: Number(v.getBigUint64(12, true)), length: v.getUint32(20, true) },
         signature: { offset: Number(v.getBigUint64(24, true)), length: v.getUint32(32, true) },
@@ -2848,14 +2851,185 @@
     };
     const valid = (t) => fromUtf8.decode(t.subarray(40, 44)) === 'JZM1' && crc32(t.subarray(0, 36)) === view(t).getUint32(36, true);
     const last = await read(size - TRAILER, TRAILER);
-    if (valid(last)) return parse(last);
+    if (valid(last)) return parse(last, size);
     // An interrupted append left bytes after the last complete version: find its trailer (spec 4.2, 11.2).
     const start = Math.max(PREAMBLE, size - 4 * 1024 * 1024);
     const tail = await read(start, size - start);
     for (let at = tail.length - TRAILER; at >= 0; at--) {
-      if (tail[at + 40] === 0x4a && valid(tail.subarray(at, at + TRAILER))) return parse(tail.subarray(at, at + TRAILER));
+      if (tail[at + 40] === 0x4a && valid(tail.subarray(at, at + TRAILER))) return parse(tail.subarray(at, at + TRAILER), start + at + TRAILER);
     }
     throw new JazminFormatError('Missing trailer - the file is truncated');
+  }
+
+  /**
+   * Checks every section of the file's current version, as the library's verify() does (issue #275): in a file with a
+   * key or password each section's CRC-32 and authentication tag (a change to any section is caught), in a plain file
+   * each CRC-32 (accidental damage only). Also the preamble and trailer values no checksum covers, and a publisher
+   * signature block (whole, not who signed it). Throws a JazminFormatError naming the first section that fails.
+   * `files`: the reader's embedded-file index (their blocks are sections too). quick (a plain file only): each section's
+   * CRC-32 and envelope, without decompressing it. A shared file needs its owner key, which browsers never hold.
+   */
+  async function verifyFile(file, files, quick) {
+    try {
+      return await verifyWhole(file, files, quick);
+    } catch (error) {
+      // The file opened with this key, so a section it can't decrypt was changed: say so, as for any other section.
+      if (!(error instanceof JazminKeyError)) throw error;
+      const changed = new JazminFormatError(`A section could not be decrypted with the key the file opened with - the file was modified (${error.message})`);
+      changed.cause = error;
+      throw changed;
+    }
+  }
+
+  async function verifyWhole(file, files, quick) {
+    const { header, keys, salt, fileId, trailer, flags, iterations, read } = file;
+    if (trailer.end !== file.size) {
+      throw new JazminFormatError('The file ends in an append that did not finish, or whose end was changed: this reader opened '
+        + 'the version before it. compact() keeps that version and removes the rest');
+    }
+    // Fields no checksum or tag covers, checked for the values the format allows (spec 4.1, 4.2, 11.2), as the library.
+    const encrypted = Boolean(keys);
+    const preamble = await read(0, PREAMBLE);
+    const pv = view(preamble);
+    const password = (flags & FLAG_PASSWORD) !== 0;
+    const fixed = pv.getUint16(6, true) === 0 && pv.getUint32(60, true) === 0
+      && (encrypted || preamble.subarray(24, 56).every((b) => b === 0))
+      && (password ? encrypted && iterations >= MIN_KDF_ITERATIONS && iterations <= MAX_KDF_ITERATIONS : iterations === 0)
+      && (!header.appendCount || (flags & FLAG_APPENDED) !== 0)
+      && (await read(trailer.end - TRAILER, TRAILER)).subarray(12, 36).every((b) => b === 0);
+    if (!fixed) throw new JazminFormatError('The preamble or trailer has values the format does not allow - the file was modified');
+
+    const end = trailer.end - TRAILER; // sections lie between the preamble and the trailer
+    const sections = new Map(); // offset -> { ref, sectionId, key }: each section once, however often it is referenced
+    const add = (ref, sectionId, key) => {
+      if (!ref?.length || sections.has(ref.offset)) return;
+      if (!(ref.offset >= PREAMBLE && ref.offset + ref.length <= end)) throw new JazminFormatError(`Section '${sectionId}' lies outside the file`);
+      sections.set(ref.offset, { ref: { offset: ref.offset, length: ref.length }, sectionId, key });
+    };
+    // A section's key, derived when it is checked: from its keyring group (spec 7.5); none in a plain file.
+    const inGroup = (group) => (sectionId) => () => (keys ? file.key(sectionId, null, group) : null);
+    const data = inGroup('data');
+    const index = inGroup('index');
+    // A catalog section that lists others is read once it is known to lie inside the file.
+    const listing = async (ref, sectionId, key) => {
+      add(ref, sectionId, key);
+      return file.section({ offset: ref.offset, length: ref.length }, sectionId, await key());
+    };
+
+    add(trailer.header, 'header', () => (keys ? hkdf(keys.master, salt, 'JAZMIN/1/header') : null));
+    const deltas = [];
+    for (let d = 0; d < header.deltas.length; d++) deltas.push(readDelta(await listing(header.deltas[d], `delta/${d}`, data(`delta/${d}`))));
+    if (header.files) {
+      const suffix = header.files.segment ? `/${header.files.segment}` : '';
+      for (const dir of header.files.directories) add(dir.section, `files/dir${suffix}`, inGroup('files')(`files/dir${suffix}`));
+      for (const content of (await files()).contents.values()) {
+        content.blocks.forEach((block, b) => {
+          const sectionId = `file/${content.id}/${b}`;
+          add(block, sectionId, () => (content.key ? hkdf(base64ToBytes(content.key), salt, `JAZMIN/1/${sectionId}`) : null));
+        });
+      }
+    }
+    for (let t = 0; t < header.tables.length; t++) {
+      const table = header.tables[t];
+      if (table.chunkCount * ENVELOPE > file.size) throw new JazminFormatError('Catalog: the chunk count is larger than the file can hold');
+      for (const g of table.groups) if (g.definitions) add(g.definitions, `${t}/columns/${g.name}`, data(`${t}/columns/${g.name}`));
+      const partitions = table.partitionTable ? readPartitionList(await listing(table.partitionTable, `${t}/partitions`, data(`${t}/partitions`))) : table.partitions;
+      if (table.deletes) add(table.deletes, `${t}/deletes/${table.deletedCount}`, data(`${t}/deletes/${table.deletedCount}`));
+      // Each partition's directory segments: listed in the catalog, then one more per append (in the deltas).
+      const segments = new Map(partitions.map((p) => [p.id.length ? bytesToBase64Url(p.id) : WHOLE_TABLE, [...p.segments]]));
+      for (const delta of deltas) {
+        for (const d of delta) {
+          if (d.table !== t) continue;
+          for (const p of d.partitions) {
+            const id = p.id.length ? bytesToBase64Url(p.id) : WHOLE_TABLE;
+            segments.set(id, [...(segments.get(id) ?? []), ...p.segments]);
+          }
+        }
+      }
+      const listed = new Uint8Array(table.chunkCount); // each chunk in exactly one directory
+      for (const [id, list] of segments) {
+        for (let s = 0; s < list.length; s++) {
+          const suffix = s ? `/${s}` : '';
+          const sectionId = `${t}/dir/${id}${suffix}`;
+          const directory = readDirectory(await listing(list[s], sectionId, data(sectionId)), table.groups.length);
+          directory.statistics.forEach((block, b) => add(block.section, `${t}/stats/${id}/${b}${suffix}`, data(`${t}/stats/${id}/${b}${suffix}`)));
+          for (const chunk of directory.chunks) {
+            if (!(chunk.ordinal < table.chunkCount) || listed[chunk.ordinal]) throw new JazminFormatError('Chunk ordinals are inconsistent');
+            listed[chunk.ordinal] = 1;
+            chunk.parts.forEach((part, g) => {
+              const partId = `${t}/chunk/${chunk.ordinal}/${table.groups[g].name}`;
+              add(part, partId, data(partId));
+            });
+          }
+        }
+      }
+      const missing = listed.indexOf(0);
+      if (missing >= 0) throw new JazminFormatError(`Chunk ${missing} is in no chunk directory`);
+      for (const ix of table.indexes) {
+        const base = `${t}/index/${ix.column}/${ix.kind}${ix.segment ? `/${ix.segment}` : ''}`;
+        if (ix.kind !== 'sorted') {
+          add(ix.section, base, index(base));
+          continue;
+        }
+        const directory = readIndexDirectory(await listing(ix.section, base, index(base)));
+        directory.pages.forEach((page, n) => add(page, `${base}/page/${n}`, index(`${base}/page/${n}`)));
+        if (directory.nulls) add(directory.nulls, `${base}/nulls`, index(`${base}/nulls`));
+      }
+    }
+
+    // In file order, a batch at a time (neighbours read together): only one batch of bytes is held at once.
+    let bytes = 0;
+    const ordered = [...sections.values()].sort((a, b) => a.ref.offset - b.ref.offset);
+    for (const batch of inBatches(ordered, (x) => x.ref)) {
+      const stored = await file.readSections(batch.map((x) => x.ref));
+      for (let k = 0; k < batch.length; k++) {
+        const { ref, sectionId, key } = batch[k];
+        if (!(ref.length >= ENVELOPE)) throw new JazminFormatError(`Section '${sectionId}' is truncated`);
+        const s = stored[k] ?? await read(ref.offset, ref.length);
+        const v = view(s);
+        if (v.getUint32(8, true) + ENVELOPE !== ref.length) throw new JazminFormatError(`Section '${sectionId}' length mismatch`);
+        if (!encrypted) {
+          // The CRC-32 covers the payload, not the envelope: its fixed bytes are checked, and its codec and length by
+          // decoding (quick: by the codec and, stored as is, the length).
+          if (s[1] !== 0 || s[2] !== 0 || s[3] !== 0) throw new JazminFormatError(`Section '${sectionId}' has an invalid envelope`);
+          if (!quick) await file.section(ref, sectionId, null, { bytes: s });
+          else if (crc32(s.subarray(ENVELOPE)) !== v.getUint32(12, true)) throw new JazminFormatError(`Section '${sectionId}' failed its CRC-32 check`);
+          else if (s[0] !== CODEC_NONE && s[0] !== CODEC_DEFLATE && s[0] !== CODEC_BROTLI) throw new JazminFormatError(`Section '${sectionId}' has an unknown codec`);
+          else if (s[0] === CODEC_NONE && v.getUint32(4, true) !== v.getUint32(8, true)) throw new JazminFormatError(`Section '${sectionId}' length mismatch`);
+        } else {
+          if (crc32(s.subarray(ENVELOPE)) !== v.getUint32(12, true)) throw new JazminFormatError(`Section '${sectionId}' failed its CRC-32 check`);
+          if ((s[1] & 1) === 0) throw new JazminFormatError(`Section '${sectionId}' is not encrypted but the file is`);
+          const sectionKey = await key();
+          const opens = sectionKey !== null && await decrypt(sectionKey, s.subarray(ENVELOPE), concat(fileId, s.subarray(0, 8), utf8.encode(sectionId)))
+            .then(() => true, () => false);
+          if (!opens) throw new JazminFormatError(`Section '${sectionId}' failed its authentication check - the file was modified`);
+        }
+        bytes += ref.length;
+      }
+    }
+
+    // A publisher signature block just before the header (spec 6.9.1): whole (its footer and CRC); who signed it, and
+    // what it covers, is verifyPublisher()'s to check.
+    let publisherBytes = 0;
+    const blockEnd = trailer.header.offset;
+    if (blockEnd >= PREAMBLE + 16) {
+      const footer = view(await read(blockEnd - 16, 16));
+      if (footer.getUint32(12, true) === 0x53505a4a) { // 'JZPS'
+        const length = footer.getUint32(0, true);
+        const start = blockEnd - 16 - length;
+        if (start < PREAMBLE || footer.getUint16(8, true) !== 1 || footer.getUint16(10, true) !== 0
+          || crc32(await read(start, length)) !== footer.getUint32(4, true)) {
+          throw new JazminFormatError('The publisher signature block before the header is damaged - the file was modified');
+        }
+        publisherBytes = 16 + length;
+      }
+    }
+    const unusedBytes = end - PREAMBLE - bytes - publisherBytes;
+    // Only appends leave bytes behind: in a file never appended to, every byte is a section, the trailer or the block.
+    if (unusedBytes !== 0 && !header.appendCount) {
+      throw new JazminFormatError(`${unusedBytes} bytes are not part of the file, which was never appended to - the file was modified`);
+    }
+    return { checkedBy: encrypted ? 'encryption' : 'checksum', sections: sections.size, bytes, unusedBytes, publisherBytes };
   }
 
   function findPage(list, id) {
@@ -3781,6 +3955,16 @@
        * indexes or statistics answer it). From chunk directories, statistics and indexes only: no row is read.
        * { offset } as find()'s: leading chunks it skips whole are counted, not read.
        */
+      /**
+       * Checks every section of the file, not only those a query reads, as the library's verify(): { checkedBy,
+       * sections, bytes, unusedBytes, publisherBytes }, or a JazminFormatError naming the first section that fails.
+       * { quick: true } (a plain file): CRC-32s and envelopes only, without decompressing. Not for a shared file.
+       */
+      async verify({ quick = false } = {}) {
+        if (typeof quick !== 'boolean') throw new JazminValidationError('verify: quick must be true or false');
+        if (access) throw new JazminValidationError('A shared file is checked whole with its owner key, which browsers never hold');
+        return verifyFile(file, files, quick);
+      },
       async estimate(filter, { offset = 0 } = {}) {
         if (filter) compileFilter(filter, visibleColumns);
         const plan = planOf(filter, planColumnsList);

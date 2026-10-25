@@ -3024,6 +3024,16 @@ How each kind of file is checked:
   every row. Peak memory was about 22 MB above what opening the file takes;
   most of it is the largest section (the 5 MB trigram index) and buffers freed
   straight after.
+- **In a browser:** the browser reader has the same `await reader.verify({ quick })`,
+  with the same result, for plain files and files with a key or password. A
+  shared file needs its owner key, which browsers never hold; its reads are
+  checked against the owner's signature as always. The viewer runs it on every
+  file that isn't signed, once the file has opened, and shows **Damaged** if a
+  part fails (26.7). Measured in Node 24 through the browser reader, a plain
+  5.9 MB file of 1,000,000 rows with sorted and trigram indexes, five runs:
+  the quick check 28–34 ms with about 0.4 MB of extra memory; the same file
+  encrypted (checked in full) 154–203 ms with up to about 19 MB, freed straight
+  after. In full, the plain file takes 376–474 ms: the viewer uses the quick check.
 - **Proof of who made a file** is a publisher signature (section 26).
   `verify()` checks that the file is whole, not who wrote it.
 
@@ -5395,6 +5405,7 @@ await reader.columnArrays(null, { select: ['at', 'amount'] }); // arrays for cha
 reader.submissionKey;                                  // the key to send records back with (section 15.6)
 await reader.explain({ id: 7 }, { analyze: true });    // as in the library (section 9.6)
 await reader.estimate({ id: 7 });                      // what a read will cost, before it runs, as in the library (9.6)
+await reader.verify({ quick: true });                  // every section checked, as in the library (17.6); not for shared files
 const pdf = await reader.readFile('terms.pdf');
 // A locked file (section 19.6): files() and locks() say which; unlock with its password and/or unlock token first.
 await reader.unlock('contracts', { password });        // or { unlockToken: 'jzf1-…' } from the owner's key service
@@ -5870,7 +5881,7 @@ The demo gallery's `signatures.html` shows each result in a test build of the vi
 
 The bar shows every file's state as an icon, whose name appears on hover and to screen readers: an **i** for not
 signed, a **pen** for signed, a **seal with a tick** for a verified publisher, and a **warning sign** for not valid
-(withdrawn and replaced have their own). The pictures of verified results come from the **test build** of the
+or damaged (withdrawn and replaced have their own). The pictures of verified results come from the **test build** of the
 viewer, so they say **TEST** and that the file was signed under a test root. Once SmithSoft's certification service
 launches, a file it certifies shows the same bar in the released viewer, in green, without "TEST". Learn the bar's place: it is part of the viewer, above the document's tabs. Anything inside the document's
 own page is the document's, and proves nothing.
@@ -5914,6 +5925,12 @@ the file can be looked at, but it must not be relied on.
 ![The bar for a file changed after signing: not valid](images/publisher/not-valid-changed.png)
 
 ![The bar for a damaged signature block: not valid](images/publisher/not-valid-damaged.png)
+
+**Damaged:** a file that isn't signed, in which a part failed its check (17.6). The viewer checks the whole file once
+it has opened, so this can appear a moment after the data, also for a part no page has read yet. The data may still
+show, but the file must not be relied on.
+
+![The bar for a damaged file: part of it was changed or corrupted after it was written](images/publisher/damaged.png)
 
 **In another site's page**, the viewer names nobody: the page around it could draw anything beside it.
 

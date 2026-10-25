@@ -13,6 +13,16 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   for a **Verified publisher**, and a warning sign for **Not valid**. Up to 1.8.0 a file without a signature showed no
   bar, and the badges were words. Verified publishers appear once SmithSoft's certification service launches (no date
   yet); until then no release builds in SmithSoft's roots, and the documentation no longer promises them for 1.8.1.
+- **Damaged files are shown.** Once a file that isn't signed has opened, the viewer checks every part of it in the
+  background (the browser reader's new `verify()`), and the bar shows a warning sign for **Damaged** if a part fails,
+  also a part no page has read. Signed files are covered by their signature already; shared files are checked as
+  their parts are read. A plain 5.9 MB file of 1,000,000 rows takes 28–34 ms and about 0.4 MB more memory; encrypted,
+  154–203 ms and up to about 19 MB, freed straight after (Node 24 through the browser reader, five runs).
+
+### Browser reader
+- **`await reader.verify({ quick })`** checks every section of a file, as the library's `verify()` (User Guide 17.6),
+  with the same result: for plain files and files with a key or password. A shared file is refused: it needs its
+  owner key, which browsers never hold.
 
 ### Spec
 - **Publisher signatures' object identifiers** (6.9.4): IANA assigned SmithSoft Private Enterprise Number 67330 on

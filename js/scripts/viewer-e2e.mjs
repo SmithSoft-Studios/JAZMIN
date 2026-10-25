@@ -231,6 +231,36 @@ const TABLES_READY = {
   table: 'clients', tables: [['clients', 2, 2], ['transactions', 2, 3]], amounts: [2.5, 10], count: 2, own: 2, missing: "The file has no table 'nope'",
 };
 
+// A file that isn't signed, damaged in a part its first page doesn't read (a page of a sorted index): it opens, then the
+// viewer checks the whole file and says it is damaged.
+{
+  const good = write(null, Array.from({ length: 400 }, (_, i) => ({ id: i, city: ['Durban', 'Cape Town'][i % 2] })), {
+    columns: [{ name: 'id', type: 'int' }, { name: 'city', type: 'string', index: 'sorted' }], chunkRows: 100,
+  });
+  // The first byte, from the end, whose change the library finds only in the index: every row still reads.
+  const inIndex = (p) => {
+    const bad = Buffer.from(good);
+    bad[p] ^= 0xff;
+    try {
+      const reader = open(new Uint8Array(bad));
+      try {
+        if ([...reader.rows()].length !== 400) return null;
+        reader.verify();
+        return null;
+      } catch (error) {
+        return error.message.includes('/index/') ? bad : null;
+      } finally {
+        reader.close();
+      }
+    } catch {
+      return null;
+    }
+  };
+  let bad = null;
+  for (let p = good.length - 45; p > 64 && !bad; p--) bad = inIndex(p);
+  fs.writeFileSync(path.join(temp, 'damaged.jzm'), bad);
+}
+
 // A document that tries to pass the viewer a file of its own: the viewer takes files only from the page around it.
 write(path.join(temp, 'post.jzm'), [{ n: 1 }], {
   files: [
@@ -1180,6 +1210,23 @@ for (const name of chosen) {
     const unsigned = await showSigned('viewer-test', 'unsigned.jzm');
     signedChecks.push(['unsigned.jzm: a neutral "Not signed" note: who made it, and whether it changed, can\x27t be confirmed', unsigned.state === 'none'
       && unsigned.badge === 'Not signed' && unsigned.icon === 'none' && unsigned.text.includes('whether it has been changed'), unsigned]);
+    // Its whole-file check finds nothing: it stays Not signed. A damaged one opens, then says it is damaged.
+    await sleep(1500);
+    const unsignedAfter = await page.evaluate(publisherShown);
+    signedChecks.push(['unsigned.jzm: its whole-file check passes, so it stays Not signed', unsignedAfter.state === 'none', unsignedAfter]);
+    await page.navigate(`${base}/js/viewer/index.html`);
+    await waitFor(page, `typeof JazminViewer === 'object'`, 'the viewer');
+    await page.evaluate(`fetch('/e2e/damaged.jzm').then((r) => r.blob()).then((b) => JazminViewer.choose(b, 'damaged.jzm')).then(() => true)`);
+    let damaged;
+    try {
+      await waitFor(page, `JazminViewer.state.publisher?.status === 'damaged'`, 'damaged.jzm: the whole-file check', 30000);
+      damaged = await page.evaluate(publisherShown);
+    } catch (error) {
+      damaged = { error: String(error), shown: await page.evaluate(publisherShown) };
+    }
+    const damagedRows = await page.evaluate(`document.querySelectorAll('#jz-rows tbody tr').length`);
+    signedChecks.push(['damaged.jzm (not signed, a damaged index page): it opens, then says Damaged', damaged.state === 'damaged' && damaged.badge === 'Damaged'
+      && damaged.icon === 'invalid' && damaged.text.includes("Don't rely on it") && damagedRows > 0, { damaged, damagedRows }]);
     // An encrypted file: who published it shows before the password; its facts once the password opens it.
     const locked = await showSigned('viewer-test', 'signed-password.jzm');
     await waitFor(page, `document.getElementById('jz-unlock')?.hidden === false`, 'the unlock form');

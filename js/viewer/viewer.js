@@ -91,7 +91,24 @@
     await render(reader);
     status(describe(reader));
     tell('opened');
+    checkWhole(reader);
     return reader;
+  }
+
+  /**
+   * Checks every part of a file that isn't signed once it opens (a signature already covers every byte), so damage in a
+   * part no page has read yet is shown: the bar says Damaged. A shared file is left to the checks its reads make.
+   */
+  async function checkWhole(reader) {
+    const publisher = await state.publisherFirst;
+    if (state.reader !== reader || reader.access || publisher?.status !== 'none') return;
+    try {
+      await reader.verify({ quick: true });
+    } catch (error) {
+      if (state.reader !== reader || !(error instanceof JazminBrowser.JazminFormatError)) return;
+      state.publisher = { status: 'damaged', reason: error.message };
+      showPublisher(state.publisher);
+    }
   }
 
   function fail(error) {
@@ -258,6 +275,10 @@
       badge = 'Signed';
       icon = 'signed';
       parts = ["Signed, but who signed it isn't verified. It hasn't changed since it was signed."];
+    } else if (status === 'damaged') {
+      badge = 'Damaged';
+      icon = 'invalid';
+      parts = ["This file is damaged: part of it was changed or corrupted after it was written. Don't rely on it."];
     } else if (status === 'changed') {
       badge = 'Not valid';
       icon = 'invalid';
