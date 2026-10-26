@@ -37,7 +37,7 @@ an out-of-bounds write in the Brotli decoder, rated critical) is fixed in these 
 | Runtime | Fixed in | What JAZMIN does on an older one |
 |---|---|---|
 | Node.js | 22.23.4, 24.22.1, 26.12.1 (20.x, 23.x and 25.x are not fixed) | Refuses to decompress Brotli; `JAZMIN_ALLOW_BROTLI=1` for a build with the fix backported. `engines` names the fixed releases |
-| .NET | 10.0.14 (SDK 10.0.114 or 10.0.403); 11.0.0-rc.3 for .NET 11 previews | Refuses to decompress Brotli (the next release; 1.8.0 and 1.7.x rely on the runtime). Microsoft also fixed 8.0.33 and 9.0.22 |
+| .NET | 10.0.14 (SDK 10.0.114 or 10.0.403); 11.0.0-rc.3 for .NET 11 previews | Refuses to decompress Brotli (from 1.8.1; 1.8.0 and 1.7.x rely on the runtime). Microsoft also fixed 8.0.33 and 9.0.22 |
 | Browsers | Not used: the browser reader and the viewer don't decode Brotli | Nothing to do |
 
 On every runtime, change files and submissions that use Brotli are refused before anything is decompressed: people

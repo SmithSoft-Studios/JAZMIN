@@ -1,9 +1,9 @@
-// Checks that the previous release reads the files this one writes (release checklist: "1.7.x reads 1.8 files"). It
+// Checks that the previous release reads the files this one writes (release checklist: "1.8.0 reads 1.8.1 files"). It
 // writes one file for each kind of file added since then, installs the previous release from npm in a scratch folder,
 // and opens each with it as its users would: what they must read, and what they must refuse or not see. The .NET twin,
 // dotnet/scripts/compat-previous.cs, reads the same files with the previous NuGet package.
 //
-//   node scripts/compat-previous.mjs [--version 1.7.2] [--out <folder>]   (the files and keys.json stay in --out)
+//   node scripts/compat-previous.mjs [--version 1.8.0] [--out <folder>]   (the files and keys.json stay in --out)
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -13,7 +13,7 @@ import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { JazminKey, open, update, write } from '../src/index.js';
 
-const { values: args } = parseArgs({ options: { version: { type: 'string', default: '1.7.2' }, out: { type: 'string' } } });
+const { values: args } = parseArgs({ options: { version: { type: 'string', default: '1.8.0' }, out: { type: 'string' } } });
 if (!/^\d+\.\d+\.\d+$/.test(args.version)) throw new Error(`--version is a release such as 1.6.2, not '${args.version}'`);
 const out = path.resolve(args.out ?? fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-compat-')));
 fs.mkdirSync(out, { recursive: true });
@@ -156,22 +156,44 @@ check('masked columns: the owner reads every column', () => {
 
 // Limits per key (7.9.1): no release that doesn't know them may apply a change file to such a file, or leave it so
 // that one could be applied beyond a limit.
-const knowsWriterFeatures = Number(args.version.split('.')[0]) > 1 || Number(args.version.split('.')[1]) >= 7;
-check('limits per key: the limited key reads every row; the document takes no changes there', () => {
+// 1.8 and later know them: they apply what a key may send and refuse the rest, with the reason, and keep the limit.
+const [major, minor] = args.version.split('.').map(Number);
+const knowsWriterFeatures = major > 1 || minor >= 7;
+const knowsLimits = major > 1 || minor >= 8;
+const OUT_OF_LIMIT = { id: 99, region: 'North', name: 'x', account: 'y', status: null, note: null };
+check(knowsLimits ? 'limits per key: the limited key reads every row, and may send only what its limit allows'
+  : 'limits per key: the limited key reads every row; the document takes no changes there', () => {
   const r = as('edit-limits.jzm', keys.reader);
-  return same([r.rowCount, r.package?.edit ?? null], [60, null]);
+  return knowsLimits ? same([r.rowCount, r.edit ?? null], [60, { key: ['id'], columns: ['note'], add: false, delete: false }])
+    : same([r.rowCount, r.package?.edit ?? null], [60, null]);
 });
 if (previous.applyChanges) {
-  check('limits per key: applying the out-of-limit change file is refused, also as a dry run', () => {
+  check(knowsLimits ? 'limits per key: the out-of-limit changes are refused with their reasons; nothing applied, the file unchanged'
+    : 'limits per key: applying the out-of-limit change file is refused, also as a dry run', () => {
     const copy = file('edit-limits-apply.jzm');
     fs.copyFileSync(file('edit-limits.jzm'), copy);
     const before = fs.readFileSync(copy);
+    if (knowsLimits) {
+      const result = previous.applyChanges(copy, fs.readFileSync(file('edit-limits-change.jzm')), { key: keys.owner });
+      return same([result.updated, result.added, result.deleted, result.refused.map((r) => r.op)], [0, 0, 0, ['update', 'delete']])
+        ?? (fs.readFileSync(copy).equals(before) ? null : 'the file changed');
+    }
     return refuses(() => previous.applyChanges(copy, fs.readFileSync(file('edit-limits-change.jzm')), { key: keys.owner, dryRun: true }), /doesn't take changes/)
       ?? refuses(() => previous.applyChanges(copy, fs.readFileSync(file('edit-limits-change.jzm')), { key: keys.owner }), /doesn't take changes/)
       ?? (fs.readFileSync(copy).equals(before) ? null : 'the file changed');
   });
 }
-check(knowsWriterFeatures ? 'limits per key: a rewrite is refused (the writer feature), the file unchanged'
+if (knowsLimits) {
+  check('limits per key: a rewrite keeps the limit', () => {
+    const copy = file('edit-limits-rewrite.jzm');
+    fs.copyFileSync(file('edit-limits.jzm'), copy);
+    previous.update(copy, { key: keys.owner, insert: [OUT_OF_LIMIT] });
+    const now = open(copy, { key: owner });
+    const grant = now.access.grants[0];
+    now.close();
+    return same([grant.edit ?? null, grant.editLost ?? false], [{ columns: ['note'], add: false, delete: false }, false]);
+  });
+} else check(knowsWriterFeatures ? 'limits per key: a rewrite is refused (the writer feature), the file unchanged'
   : 'limits per key: a rewrite there leaves no way to send changes beyond the limit (checked with this release)', () => {
   const copy = file('edit-limits-rewrite.jzm');
   fs.copyFileSync(file('edit-limits.jzm'), copy);

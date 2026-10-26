@@ -3,7 +3,15 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
-## Unreleased
+## 1.8.1 - 2026-10-26 (file format 1.0)
+A security and viewer release. The .NET library guards against the Brotli decoder flaw (CVE-2026-111497) on runtimes
+without Microsoft's fix; the viewer shows for every file whether it is signed, and says when a file is damaged; and
+the browser reader checks a whole file as the libraries do.
+
+- **Compatibility:** the same file format; every earlier file reads as before. On .NET 10 before 10.0.14 (and .NET 11
+  previews before RC3) Brotli-compressed files are refused until the runtime is updated; deflate (the default) and
+  uncompressed files are unaffected, as on an unfixed Node.js since 1.8.0. In the viewer, the publisher bar now shows
+  for every file, as an icon: apps that read its badge find the name in `aria-label`, not in its text.
 
 ### Security
 - **.NET Brotli decoder and CVE-2026-111497:** .NET 10.0.14 is the first patched runtime (Microsoft's advisory,
@@ -20,7 +28,7 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   from), a pen for **Signed** (not changed since it was signed, but who signed it isn't verified), a seal with a tick
   for a **Verified publisher**, and a warning sign for **Not valid**. Up to 1.8.0 a file without a signature showed no
   bar, and the badges were words. Verified publishers appear once SmithSoft's certification service launches (no date
-  yet); until then no release builds in SmithSoft's roots, and the documentation no longer promises them for 1.8.1.
+  yet); until then no release builds in SmithSoft's roots. (1.8.0's notes said 1.8.1; the service now comes later.)
 - **Damaged files are shown.** Once a file that isn't signed has opened, the viewer checks every part of it in the
   background (the browser reader's new `verify()`), and the bar shows a warning sign for **Damaged** if a part fails,
   also a part no page has read. Signed files are covered by their signature already; shared files are checked as
@@ -38,6 +46,13 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
   signing, `.3` status, `.4` confirmation, `.5` publisher kind, `.6` log). The libraries use the arc once
   SmithSoft's roots are built in, when its certification service launches; until then they trust no roots, as in
   1.8.0. Test vectors keep `2.999.1`.
+
+### Releases and tests
+- **npm's `latest` goes only to the newest release:** a patch for an older minor line (such as 1.7.x after 1.8.0) is
+  published under `release-1.7`, so `npm install @smithsoft-studios/jazmin` keeps the newest. 1.7.3 had taken `latest`
+  for a day.
+- A .NET test of a refresh after a key expired no longer fails on a slow CI runner (it waited 1.5 s for a key that had
+  expired before the reader opened).
 
 ## 1.8.0 - 2026-10-23 (file format 1.0)
 Check a whole file, also the parts no query reads; write many changes as one append; keep readers open across
