@@ -3,6 +3,22 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## 1.7.4 - 2026-10-26 (file format 1.0)
+A security patch for 1.7: the .NET library's guard against the Brotli decoder flaw (CVE-2026-111497), as in 1.8.1.
+1.7.x has security fixes until 31 January 2027.
+
+- **Compatibility:** the same file format, no breaking change. On .NET 10 before 10.0.14 (and .NET 11 previews before
+  RC3) Brotli-compressed files are refused until the runtime is updated; deflate (the default) and uncompressed files
+  are unaffected, as on an unfixed Node.js since 1.7.3.
+
+### Security
+- **.NET Brotli decoder and CVE-2026-111497:** Microsoft fixed the flaw in .NET 10.0.14 (SDK 10.0.114 or 10.0.403)
+  and 11.0.0-rc.3 on 25 October 2026 ([advisory](https://github.com/dotnet/announcements/issues/494)). The .NET
+  library now refuses Brotli-compressed sections before the decoder on an earlier runtime, .NET 11 previews before RC3
+  included (told apart by the runtime's framework description, as each reports version 11.0.0), with a message that
+  names 10.0.14. The Blazor sample uses the 10.0.14 packages. Update the deployed runtime before reading Brotli files;
+  self-contained and NativeAOT apps are rebuilt with it.
+
 ## 1.7.3 - 2026-10-23 (file format 1.0)
 A security patch for 1.7: a guard against the Node.js Brotli flaw (CVE-2026-111497). 1.7.x has security fixes until
 31 January 2027; 1.8.0 has this guard too.

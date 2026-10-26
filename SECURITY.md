@@ -28,6 +28,22 @@ it, and credit you in the release notes unless you prefer not to be named.
 | 1.0.x | No: upgrade to 1.7 (1.1 fixed a data-loss bug in the JS writer) |
 | Pre-release versions (before 1.0.0) | No |
 
+## Keep your runtime patched
+
+JAZMIN decompresses with the Brotli and deflate decoders built into Node.js and .NET. CVE-2026-111497 (October 2026,
+an out-of-bounds write in the Brotli decoder, rated critical) is fixed in these runtimes:
+
+| Runtime | Fixed in | What JAZMIN does on an older one |
+|---|---|---|
+| Node.js | 22.23.4, 24.22.1, 26.12.1 (20.x, 23.x and 25.x are not fixed) | Refuses to decompress Brotli (from 1.7.3); `JAZMIN_ALLOW_BROTLI=1` for a build with the fix backported |
+| .NET | 10.0.14 (SDK 10.0.114 or 10.0.403); 11.0.0-rc.3 for .NET 11 previews | Refuses to decompress Brotli (from 1.7.4 and 1.8.1). Microsoft also fixed 8.0.33 and 9.0.22 |
+| Browsers | Not used: the browser reader and the viewer don't decode Brotli | Nothing to do |
+
+On every runtime, change files and submissions that use Brotli are refused before anything is decompressed. Files
+written with deflate (the default) or no compression don't use the Brotli decoder. Sources:
+[Node.js](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases),
+[.NET](https://github.com/dotnet/announcements/issues/494), [NVD](https://nvd.nist.gov/vuln/detail/CVE-2026-111497).
+
 ## Scope
 
 In scope:

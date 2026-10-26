@@ -1,4 +1,4 @@
-#:package Jazmin@1.6.2
+#:package Jazmin@1.7.3
 #:property PublishAot=false
 // Checks that the previous release (the package above: change its version for the next release) reads the files this
 // one writes: the twin of js/scripts/compat-previous.mjs, which writes them and keys.json into a folder first.
@@ -49,7 +49,7 @@ Check("stored-file options: the files, rows and each file's content", () =>
     return Same(new object[] { r.Files.Select(f => f.Path).Order(StringComparer.Ordinal).ToArray(), r.RowCount, System.Text.Encoding.UTF8.GetString(r.ReadFile("terms.pdf")) },
         new object[] { new[] { "font.woff2", "index.html", "terms.pdf" }, 60L, "terms" });
 });
-Check("locked files: the rows and the open file; the locked one refused (it has no key there)", () =>
+Check("locked files: the rows and the open file; the locked one refused (before 1.7: no key for it; 1.7 on: locked)", () =>
 {
     using var r = Open("locks.jzm", keys["reader"]!.GetValue<string>());
     var problem = Same(new object[] { r.RowCount, System.Text.Encoding.UTF8.GetString(r.ReadFile("readme.txt")) }, new object[] { 60L, "open" });
@@ -61,7 +61,7 @@ Check("locked files: the rows and the open file; the locked one refused (it has 
     }
     catch (JazminException error)
     {
-        return error.Message.Contains("key", StringComparison.OrdinalIgnoreCase) ? null : error.Message;
+        return error.Message.Contains("key", StringComparison.OrdinalIgnoreCase) || error.Message.Contains("is locked", StringComparison.Ordinal) ? null : error.Message;
     }
 });
 Check("masked columns: an access key reads the rows and what the column shows, never the masked values", () =>
