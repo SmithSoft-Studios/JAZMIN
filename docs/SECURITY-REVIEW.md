@@ -117,12 +117,13 @@ section it reads against the signed catalog.
    after expiry, beyond the documented limits.
 6. **Hostile file author:** make a reader crash, hang or exhaust memory, or
    reach a flaw in the runtime's decompressor (for example CVE-2026-111497 in
-   the Node.js Brotli decoder, October 2026). Fuzzing (S-5) covers damaged
+   the Brotli decoder that Node.js and .NET bundle, October 2026). Fuzzing (S-5) covers damaged
    plain files; hostile *encrypted* files are worth a look too. Readers check a
    section's checksum and authentication tag before decompressing it; change
    files and submissions, which people the owner doesn't control write, are
-   refused if they use Brotli; and the JavaScript library won't decompress
-   Brotli on a Node.js release without the fix (TASKS S-9).
+   refused if they use Brotli; and neither library decompresses Brotli on a
+   runtime without the fix: Node.js before 22.23.4, 24.22.1 or 26.12.1, .NET
+   before 10.0.14, and .NET 11 previews before RC3 (TASKS S-9).
 7. **Key service attacker** (sample): get an unlock token without the second
    factor, after expiry, or by replaying a code.
 

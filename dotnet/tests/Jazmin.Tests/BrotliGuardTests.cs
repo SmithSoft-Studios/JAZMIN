@@ -1,4 +1,5 @@
 using System.Text;
+using Jazmin.Format;
 using Xunit;
 
 namespace Jazmin.Tests;
@@ -11,6 +12,35 @@ namespace Jazmin.Tests;
 public sealed class BrotliGuardTests
 {
     private static string Temp() => Directory.CreateTempSubdirectory("jazmin-brotli-").FullName;
+
+    // Patched runtimes (Microsoft's advisory, dotnet/announcements#494): 10.0.14, and 11.0.0-rc.3 for .NET 11 previews,
+    // which all report Environment.Version 11.0.0: only the framework description tells them apart.
+    [Theory]
+    [InlineData("10.0.13", ".NET 10.0.13", false)]
+    [InlineData("10.0.14", ".NET 10.0.14", true)]
+    [InlineData("10.0.15", ".NET 10.0.15", true)]
+    [InlineData("11.0.0", ".NET 11.0.0-preview.7.26404.104", false)]
+    [InlineData("11.0.0", ".NET 11.0.0-rc.1.26451.101", false)]
+    [InlineData("11.0.0", ".NET 11.0.0-rc.2.26478.121", false)]
+    [InlineData("11.0.0", ".NET 11.0.0-rc.3.26522.148", true)]
+    [InlineData("11.0.0", ".NET 11.0.0", true)]
+    [InlineData("12.0.0", ".NET 12.0.0-preview.1.27050.101", true)]
+    public void Brotli_decoder_requires_the_patched_dotnet_runtime(string version, string description, bool expected) =>
+        Assert.Equal(expected, SectionCodec.HasPatchedBrotliDecoder(Version.Parse(version), description));
+
+    [Fact]
+    public void Brotli_sections_are_refused_until_the_runtime_is_patched()
+    {
+        var columns = new[] { new JazminColumn("note", JazminType.String) };
+        var rows = Enumerable.Range(0, 200).Select(i => new object?[] { $"{i}: {string.Concat(Enumerable.Repeat("a Brotli section ", 20))}" });
+        var bytes = TestData.Write(columns, rows, new JazminWriteOptions { Codec = JazminCodec.Brotli });
+        using var reader = JazminReader.Open(bytes);
+
+        if (SectionCodec.HasPatchedBrotliDecoder(Environment.Version, System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription))
+            Assert.Equal(200, reader.Rows().Count());
+        else
+            Assert.Contains("10.0.14", Assert.Throws<JazminValidationException>(() => reader.Rows().ToList()).Message, StringComparison.Ordinal);
+    }
 
     /// <summary>The same file written again with Brotli: its rows, columns and metadata as they are.</summary>
     private static byte[] WithBrotli(byte[] file, JazminKey key)

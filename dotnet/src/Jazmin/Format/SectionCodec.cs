@@ -319,10 +319,36 @@ internal static class SectionCodec
     /// reserve more than this up front: larger sections grow their buffer as the data arrives.
     /// </summary>
     private const int MaxPreallocate = 64 * 1024 * 1024;
+    private static readonly Version MinimumBrotliRuntime = new(10, 0, 14);
 
     private static JazminFormatException WrongLength(string sectionId) => new($"Section '{sectionId}' has the wrong decompressed length");
 
     private static JazminFormatException TooLarge(string sectionId) => new($"Section '{sectionId}' is larger than this reader supports");
+
+    /// <summary>
+    /// Whether the runtime contains the Brotli decoder fix for CVE-2026-111497 (Microsoft's advisory,
+    /// dotnet/announcements#494): .NET 10.0.14, and 11.0.0-rc.3 for .NET 11 previews. Every .NET 11 preview reports
+    /// Environment.Version 11.0.0, so <paramref name="description"/> (RuntimeInformation.FrameworkDescription, such as
+    /// ".NET 11.0.0-rc.2.26478.121") tells them apart. Later releases ship with the fix.
+    /// </summary>
+    internal static bool HasPatchedBrotliDecoder(Version runtime, string description)
+    {
+        if (runtime.Major <= MinimumBrotliRuntime.Major) return runtime >= MinimumBrotliRuntime;
+        if (runtime.Major == 11 && runtime.Minor == 0 && runtime.Build == 0)
+        {
+            var preview = System.Text.RegularExpressions.Regex.Match(description, @"11\.0\.0-(preview|rc)\.(\d+)");
+            if (preview.Success) return preview.Groups[1].Value == "rc" && int.Parse(preview.Groups[2].Value, System.Globalization.CultureInfo.InvariantCulture) >= 3;
+        }
+        return true;
+    }
+
+    private static void RequirePatchedBrotliDecoder(string sectionId)
+    {
+        var description = System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription;
+        if (!HasPatchedBrotliDecoder(Environment.Version, description))
+            throw new JazminValidationException($"Section '{sectionId}' uses Brotli, which requires .NET 10.0.14 or later to fix CVE-2026-111497; "
+                + $"the current runtime is {description}");
+    }
 
     private static byte[] Decompress(JazminCodec codec, byte[] body, uint rawLength, string sectionId)
     {
@@ -337,6 +363,7 @@ internal static class SectionCodec
     /// <summary>Decompresses into <paramref name="output"/>[0..rawLength); damaged data is a JazminFormatException.</summary>
     private static void DecompressInto(JazminCodec codec, byte[] body, int offset, int length, byte[] output, int rawLength, string sectionId)
     {
+        if (codec == JazminCodec.Brotli) RequirePatchedBrotliDecoder(sectionId);
         try
         {
             switch (codec)
@@ -371,6 +398,7 @@ internal static class SectionCodec
     /// <summary>A section larger than <see cref="MaxPreallocate"/>: the buffer grows with the data, up to the declared length.</summary>
     private static byte[] DecompressLarge(JazminCodec codec, byte[] body, int offset, int length, int rawLength, string sectionId)
     {
+        if (codec == JazminCodec.Brotli) RequirePatchedBrotliDecoder(sectionId);
         try
         {
             using var input = new MemoryStream(body, offset, length, writable: false);
