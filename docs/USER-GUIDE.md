@@ -86,7 +86,10 @@ npm install @smithsoft-studios/jazmin
 import { open, write } from '@smithsoft-studios/jazmin';
 ```
 
-**.NET** (.NET 10, no third-party dependencies):
+**.NET** (.NET 10.0.14 or later, no third-party dependencies): Earlier .NET 10 releases, and .NET 11 previews before
+RC3, have a flaw in their Brotli decoder (CVE-2026-111497). From 1.7.4 the library refuses Brotli-compressed sections
+before they reach that decoder; deflate and uncompressed files are unaffected. Update the deployed runtime to 10.0.14
+or later (SDK 10.0.114 or 10.0.403) before reading Brotli files.
 
 ```bash
 dotnet add package Jazmin
