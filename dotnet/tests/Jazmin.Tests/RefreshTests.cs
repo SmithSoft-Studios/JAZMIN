@@ -194,9 +194,26 @@ public sealed class RefreshTests : IDisposable
     {
         var owner = JazminKey.Generate();
         var bob = owner.CreateAccessKey();
-        var expires = DateTimeOffset.UtcNow.AddMilliseconds(1500); // the system clock: Refresh() opens with the options the reader was given
-        var path = Shared("expiring.jzm", owner, new JazminGrant(bob) { Expires = expires });
-        using var r = JazminReader.Open(path, new JazminReadOptions { AccessKey = bob, CheckClockRollback = false });
+        // The system clock: Refresh() opens with the options the reader was given. The key must still be valid when the
+        // reader opens; on a machine too slow to write and open the file within the margin, try again with twice it.
+        DateTimeOffset expires;
+        JazminReader? opened = null;
+        string path;
+        var margin = TimeSpan.FromMilliseconds(1500);
+        do
+        {
+            expires = DateTimeOffset.UtcNow + margin;
+            path = Shared($"expiring-{margin.TotalMilliseconds}.jzm", owner, new JazminGrant(bob) { Expires = expires });
+            try
+            {
+                opened = JazminReader.Open(path, new JazminReadOptions { AccessKey = bob, CheckClockRollback = false });
+            }
+            catch (JazminAccessExpiredException) when (margin < TimeSpan.FromSeconds(30))
+            {
+                margin *= 2;
+            }
+        } while (opened is null);
+        using var r = opened;
         JazminFile.Append(path, new JazminAppend { Key = owner, Insert = Rows(3, 1) });
         var wait = expires - DateTimeOffset.UtcNow + TimeSpan.FromMilliseconds(50);
         if (wait > TimeSpan.Zero) await Task.Delay(wait);
