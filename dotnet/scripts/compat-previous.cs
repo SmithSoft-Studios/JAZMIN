@@ -1,4 +1,4 @@
-#:package Jazmin@1.7.2
+#:package Jazmin@1.8.0
 #:property PublishAot=false
 // Checks that the previous release (the package above: change its version for the next release) reads the files this
 // one writes: the twin of js/scripts/compat-previous.mjs, which writes them and keys.json into a folder first.
@@ -82,19 +82,31 @@ Check("masked columns: the owner reads every column", () =>
     using var r = Open("masks.jzm", keys["owner"]!.GetValue<string>());
     return Same((string?)r.Rows().First()["account"], "4821 1000");
 });
-// Limits per key (spec 7.9.1): no release that doesn't know them may apply a change file to such a file.
-Check("limits per key: the limited key reads every row; the document takes no changes there", () =>
+// Limits per key (spec 7.9.1): no release that doesn't know them may apply a change file to such a file. 1.8 and later
+// know them: they apply what a key may send, refuse the rest with the reason, and keep the limit.
+var knowsLimits = Version.Parse(version) >= new Version(1, 8);
+Check(knowsLimits ? "limits per key: the limited key reads every row, and may send only what its limit allows"
+    : "limits per key: the limited key reads every row; the document takes no changes there", () =>
 {
     using var r = Open("edit-limits.jzm", keys["reader"]!.GetValue<string>());
-    return Same((r.RowCount, r.Package?.Edit is null), (60L, true));
+    return knowsLimits
+        ? Same(new object?[] { r.RowCount, r.Edit?.Columns, r.Edit?.Add, r.Edit?.Delete }, new object?[] { 60L, new[] { "note" }, false, false })
+        : Same(new object?[] { r.RowCount, r.Package?.Edit is null }, new object?[] { 60L, true });
 });
-Check("limits per key: applying the out-of-limit change file is refused, also as a dry run", () =>
+Check(knowsLimits ? "limits per key: the out-of-limit changes are refused with their reasons; nothing applied, the file unchanged"
+    : "limits per key: applying the out-of-limit change file is refused, also as a dry run", () =>
 {
     var copy = Path.Combine(Path.GetTempPath(), $"jazmin-compat-{Guid.NewGuid():N}.jzm");
     File.Copy(Path.Combine(folder, "edit-limits.jzm"), copy);
     var before = File.ReadAllBytes(copy);
     var change = File.ReadAllBytes(Path.Combine(folder, "edit-limits-change.jzm"));
     var owner = JazminKey.Parse(keys["owner"]!.GetValue<string>());
+    if (knowsLimits)
+    {
+        var result = JazminFile.ApplyChanges(copy, change, new JazminApplyChangesOptions { Key = owner });
+        return Same(new object[] { result.Updated, result.Added, result.Deleted, result.Refused.Select(r => r.Op).ToArray() }, new object[] { 0L, 0L, 0L, new[] { "update", "delete" } })
+            ?? (File.ReadAllBytes(copy).AsSpan().SequenceEqual(before) ? null : "the file changed");
+    }
     foreach (var dryRun in new[] { true, false })
     {
         try
@@ -106,7 +118,18 @@ Check("limits per key: applying the out-of-limit change file is refused, also as
     }
     return File.ReadAllBytes(copy).AsSpan().SequenceEqual(before) ? null : "the file changed";
 });
-if (Version.Parse(version) >= new Version(1, 7))
+if (knowsLimits)
+    Check("limits per key: a rewrite keeps the limit", () =>
+    {
+        var copy = Path.Combine(Path.GetTempPath(), $"jazmin-compat-{Guid.NewGuid():N}.jzm");
+        File.Copy(Path.Combine(folder, "edit-limits.jzm"), copy);
+        var owner = JazminKey.Parse(keys["owner"]!.GetValue<string>());
+        JazminFile.Compact(copy, owner);
+        using var r = JazminReader.Open(copy, new JazminReadOptions { Key = owner });
+        var edit = r.Access!.Grants[0].Edit;
+        return Same(new object?[] { edit?.Columns, edit?.Add, edit?.Delete }, new object?[] { new[] { "note" }, false, false });
+    });
+else if (Version.Parse(version) >= new Version(1, 7))
     Check("limits per key: a rewrite is refused (the writer feature edit-limits), the file unchanged", () =>
     {
         var copy = Path.Combine(Path.GetTempPath(), $"jazmin-compat-{Guid.NewGuid():N}.jzm");
