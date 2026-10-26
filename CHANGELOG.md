@@ -5,6 +5,14 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased
 
+### Security
+- **.NET Brotli decoder and CVE-2026-111497:** .NET 10.0.14 is the first patched runtime (Microsoft's advisory,
+  dotnet/announcements#494, 25 October 2026), and 11.0.0-rc.3 for .NET 11 previews. The .NET library now refuses
+  Brotli-compressed sections before invoking the decoder on earlier runtimes, .NET 11 previews before RC3 included
+  (told apart by the runtime's framework description, as each reports version 11.0.0); deflate and uncompressed
+  files remain readable. The Blazor sample now bundles the patched 10.0.14 runtime packages. Deploy .NET 10.0.14 or
+  later before reading Brotli files.
+
 ### Viewer
 - **Every file shows whether it is signed,** so a file from an unknown sender can be judged. The publisher bar now
   appears for every file, as an icon whose name shows on hover and to screen readers: an i for **Not signed** (who
