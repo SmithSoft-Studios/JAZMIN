@@ -4,15 +4,15 @@
 // each workload runs in a process of its own, the two versions taking turns at going first; the median of --rounds
 // runs of time and peak memory. Reads use one file both read, made by the previous release. Run it on a quiet machine.
 //
-//   dotnet run -c Release dotnet/bench/compare-previous/compare-previous.cs -- [--version 1.6.2] [--rows 500000] [--rounds 5]
+//   dotnet run -c Release dotnet/bench/compare-previous/compare-previous.cs -- [--version 1.8.1] [--rows 500000] [--rounds 5]
 //     [--only "<workload>"]   (one workload again, with more rounds, before calling a change a regression)
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
 string Option(string name, string fallback) => args.SkipWhile(a => a != name).Skip(1).FirstOrDefault() ?? fallback;
-var version = Option("--version", "1.6.2");
-if (!Regex.IsMatch(version, @"^\d+\.\d+\.\d+$")) throw new ArgumentException($"--version is a release such as 1.6.2, not '{version}'");
+var version = Option("--version", "1.8.1");
+if (!Regex.IsMatch(version, @"^\d+\.\d+\.\d+$")) throw new ArgumentException($"--version is a release such as 1.8.1, not '{version}'");
 var rows = int.Parse(Option("--rows", "500000"));
 var rounds = int.Parse(Option("--rounds", "5"));
 var here = Path.GetDirectoryName(Path.GetFullPath(Environment.GetCommandLineArgs().FirstOrDefault(a => a.EndsWith("compare-previous.cs")) ?? "dotnet/bench/compare-previous/compare-previous.cs"))!;

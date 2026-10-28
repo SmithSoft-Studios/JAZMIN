@@ -13,7 +13,7 @@ import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { JazminKey, open, update, write } from '../src/index.js';
 
-const { values: args } = parseArgs({ options: { version: { type: 'string', default: '1.8.0' }, out: { type: 'string' } } });
+const { values: args } = parseArgs({ options: { version: { type: 'string', default: '1.8.1' }, out: { type: 'string' } } });
 if (!/^\d+\.\d+\.\d+$/.test(args.version)) throw new Error(`--version is a release such as 1.6.2, not '${args.version}'`);
 const out = path.resolve(args.out ?? fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-compat-')));
 fs.mkdirSync(out, { recursive: true });
