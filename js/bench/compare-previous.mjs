@@ -3,7 +3,7 @@
 // Reads use one file both versions read (written by the previous release), so only the readers differ; writes and
 // rewrites each make their own. Run it on a quiet machine: other work running alongside skews it.
 //
-//   node --expose-gc bench/compare-previous.mjs [--version 1.6.2] [--rows 500000] [--rounds 5] [--only "<workload>"]
+//   node --expose-gc bench/compare-previous.mjs [--version 1.8.1] [--rows 500000] [--rounds 5] [--only "<workload>"]
 import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -15,7 +15,7 @@ import { parseArgs } from 'node:util';
 const here = fileURLToPath(import.meta.url);
 const { values: args } = parseArgs({
   options: {
-    version: { type: 'string', default: '1.6.2' }, rows: { type: 'string', default: '500000' }, rounds: { type: 'string', default: '5' },
+    version: { type: 'string', default: '1.8.1' }, rows: { type: 'string', default: '500000' }, rounds: { type: 'string', default: '5' },
     run: { type: 'string' }, workload: { type: 'string' }, dir: { type: 'string' }, only: { type: 'string' },
   },
 });
@@ -97,7 +97,7 @@ if (args.run) {
 }
 
 // ---- the comparison ----------------------------------------------------------------------------------------------
-if (!/^\d+\.\d+\.\d+$/.test(args.version)) throw new Error(`--version is a release such as 1.6.2, not '${args.version}'`);
+if (!/^\d+\.\d+\.\d+$/.test(args.version)) throw new Error(`--version is a release such as 1.8.1, not '${args.version}'`);
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-compare-'));
 execSync(`npm install @smithsoft-studios/jazmin@${args.version} --prefix "${dir}" --no-audit --no-fund --silent`, { stdio: 'inherit' });
 const previous = createRequire(path.join(dir, 'x.js')).resolve('@smithsoft-studios/jazmin');
