@@ -3346,7 +3346,8 @@
       readerFeatures: [...header.readerFeatures],
       access: access ? {
         isOwner: access.isOwner, ...(access.isOwner ? {} : { keyId: access.keyId }), online: access.online, expires: access.expires, partitionBy: table.partitionBy || null,
-      } : null,
+                visibleColumnGroups: groups.filter((group) => group.visible).map((group) => group.name),
+              } : null,
       /**
        * The submission key (spec 7.8), as key text: lock the files you send back to the owner with it, for example
        * with JazminBrowser.write(rows, { columns, key: reader.submissionKey }). Null for files written before

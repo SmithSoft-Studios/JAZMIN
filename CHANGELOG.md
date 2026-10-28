@@ -3,6 +3,14 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## 1.7.5 - 2026-10-28 (file format 1.0)
+A bug-fix patch for 1.7, as in 1.8.2.
+
+- **Browser access metadata:** the browser reader now exposes `access.visibleColumnGroups`, matching the JavaScript
+  reader and the published type definitions. It lists only the column groups the current key can read. Before this, the
+  browser reader left it out. No file-format change.
+- **Compatibility:** the same file format, no breaking change.
+
 ## 1.7.4 - 2026-10-26 (file format 1.0)
 A security patch for 1.7: the .NET library's guard against the Brotli decoder flaw (CVE-2026-111497), as in 1.8.1.
 1.7.x has security fixes until 31 January 2027.
