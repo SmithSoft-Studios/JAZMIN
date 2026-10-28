@@ -55,6 +55,7 @@ for (const name of files) {
         assert.deepEqual(reader.tables, expected.tables);
         assert.deepEqual(reader.columns.map((c) => [c.name, c.type]), expected.columns.map((c) => [c.name, c.type]));
         assert.deepEqual(reader.metadata, expected.metadata);
+        if (expected.access) assert.deepEqual(reader.access.visibleColumnGroups, expected.access.visibleColumnGroups);
         assert.equal(reader.rowCount, expected.rowCount);
         assert.equal(reader.hiddenRowCount, expected.hiddenRowCount);
         assert.deepEqual(await browserRows(reader), rowsOf([...expected.rows()]));
@@ -232,6 +233,24 @@ test('browser reader: keys are checked, and an online key asks for its unlock to
   assert.ok(error instanceof JazminUnlockRequiredError);
   assert.match(error.keyId, /^[0-9a-f]{16}$/);
   await assert.rejects(JazminBrowser.open(fixture('js-brotli.jzm')), /Brotli/);
+});
+
+test('browser reader reports the visible column groups as the library does', async () => {
+  const owner = JazminKey.generate();
+  const key = owner.createAccessKey();
+  const bytes = write(null, [{ id: 1 }], {
+    columns: [{ name: 'id', type: 'int' }],
+    key: owner,
+    access: { grants: [{ key }] },
+  });
+  const library = open(bytes, { key: key.toString(), accessState: false });
+  const browser = await JazminBrowser.open(new Uint8Array(bytes), { key: key.toString() });
+  try {
+    assert.deepEqual(browser.access.visibleColumnGroups, library.access.visibleColumnGroups);
+    assert.deepEqual(browser.access.visibleColumnGroups, ['*']);
+  } finally {
+    library.close();
+  }
 });
 
 test("an owner key that isn't a point on the curve is an invalid owner signature, in both readers", async () => {

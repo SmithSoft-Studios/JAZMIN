@@ -1,9 +1,9 @@
-// Checks that the previous release reads the files this one writes (release checklist: "1.7.3 reads 1.7.4 files"). It
+// Checks that the previous release reads the files this one writes (release checklist: "1.7.4 reads 1.7.5 files"). It
 // writes one file for each kind of file added since then, installs the previous release from npm in a scratch folder,
 // and opens each with it as its users would: what they must read, and what they must refuse or not see. The .NET twin,
 // dotnet/scripts/compat-previous.cs, reads the same files with the previous NuGet package.
 //
-//   node scripts/compat-previous.mjs [--version 1.7.3] [--out <folder>]   (the files and keys.json stay in --out)
+//   node scripts/compat-previous.mjs [--version 1.7.4] [--out <folder>]   (the files and keys.json stay in --out)
 import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -13,7 +13,7 @@ import { parseArgs } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { JazminKey, open, update, write } from '../src/index.js';
 
-const { values: args } = parseArgs({ options: { version: { type: 'string', default: '1.7.3' }, out: { type: 'string' } } });
+const { values: args } = parseArgs({ options: { version: { type: 'string', default: '1.7.4' }, out: { type: 'string' } } });
 if (!/^\d+\.\d+\.\d+$/.test(args.version)) throw new Error(`--version is a release such as 1.6.2, not '${args.version}'`);
 const out = path.resolve(args.out ?? fs.mkdtempSync(path.join(os.tmpdir(), 'jazmin-compat-')));
 fs.mkdirSync(out, { recursive: true });
