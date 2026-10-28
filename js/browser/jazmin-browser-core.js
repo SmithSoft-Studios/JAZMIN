@@ -3842,6 +3842,7 @@
       readerFeatures: [...header.readerFeatures],
       access: access ? {
         isOwner: access.isOwner, ...(access.isOwner ? {} : { keyId: access.keyId }), online: access.online, expires: access.expires, partitionBy: table.partitionBy || null,
+        visibleColumnGroups: groups.filter((group) => group.visible).map((group) => group.name),
         ...(ownLimit?.edit ? { edit: ownLimit.edit } : {}), ...(ownLimit?.lost ? { editLost: true } : {}), // what this key may send back (7.9.1)
       } : null,
       /**
