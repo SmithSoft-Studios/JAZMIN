@@ -3,7 +3,7 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
-## Unreleased
+## 1.8.3 - 2026-10-30 (file format 1.0)
 Fixes for saved shapes, editable documents and portable HTML; no change to the file format.
 
 - **Compatibility:** the same file format; every earlier file reads as before. A write that 1.8.2 and earlier accepted
