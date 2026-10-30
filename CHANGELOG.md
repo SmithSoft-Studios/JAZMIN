@@ -4,11 +4,26 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased
-A fix for portable HTML; no change to the file format.
+Fixes for saved shapes, editable documents and portable HTML; no change to the file format.
 
-- **Compatibility:** the same file format; every earlier file reads as before.
+- **Compatibility:** the same file format; every earlier file reads as before. A write that 1.8.2 and earlier accepted
+  by mistake is now refused (see Fixed): authoring code that passed only because of its grant order will now throw.
 
 ### Fixed
+- **Saved-shape check and grant order (#312):** when a shared file's saved shape used a column that a key could not
+  see, the writer refused it or not depending on the order of the grants. A key that sees every column (`columns: '*'`)
+  was checked first, and its result was reused for a key limited to the ordinary column group (`columns: ['*']`). Both
+  libraries now check each kind of key separately, so every key that would see a shape must be able to use every
+  column it names, in any grant order. A reader never exposed a hidden column or listed an unusable shape; only the
+  write-time check was wrong. Files already written keep working; to find an affected file, open it with each
+  restricted key and compare its shape list with the owner's.
+- **Editable documents on a sorted table (#310):** `applyChanges` failed with "out of order for sortedBy" when a
+  change edited any row but the last of a table with `sortedBy`, as an edit is an appended row. The refused append
+  writes nothing; the change is now applied with a rewrite (`update`), in both libraries, so the table stays sorted
+  and the conflict checks are unchanged. Rows that sort after the last row still append. The rewrite costs the file's
+  size, not the change's (about 1.5 s for one row at 500,000 rows): for a large, often edited table, leave out
+  `sortedBy` and give the key a `sorted` index instead, which an append keeps up to date. See
+  docs/design/editable-documents.md.
 - **Portable HTML and publisher verification (#308):** `portableHtml()` left out the viewer's publisher add-on
   (`jazmin-browser-publisher.js`), so a copy opened from disk, or offline, asked for it beside the HTML and the
   request failed: the file opened, but its publisher was never verified. The add-on is now inline with the others,

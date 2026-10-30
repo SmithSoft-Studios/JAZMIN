@@ -538,15 +538,31 @@ internal static class Changes
         var (upsert, remove, result) = plan;
         if (!options.DryRun && (upsert.Count > 0 || remove.Count > 0))
         {
-            JazminFile.Append(path, new JazminAppend
+            try
             {
-                Key = options.Key,
-                Password = options.Password,
-                Table = severalTables ? tableName : null,
-                Upsert = upsert,
-                KeyColumns = upsert.Count > 0 ? edit.Key : null,
-                Delete = remove.Count > 0 ? KeyFilter(edit.Key, remove) : null,
-            });
+                JazminFile.Append(path, new JazminAppend
+                {
+                    Key = options.Key,
+                    Password = options.Password,
+                    Table = severalTables ? tableName : null,
+                    Upsert = upsert,
+                    KeyColumns = upsert.Count > 0 ? edit.Key : null,
+                    Delete = remove.Count > 0 ? KeyFilter(edit.Key, remove) : null,
+                });
+            }
+            catch (JazminValidationException e) when (e.Data.Contains(JazminFile.SortOrderKey))
+            {
+                // A sorted table can't take an edited row at its end. The refused append wrote nothing: rewrite the file in order.
+                JazminFile.Update(path, new JazminUpdate
+                {
+                    Key = options.Key,
+                    Password = options.Password,
+                    Table = severalTables ? tableName : null,
+                    Upsert = upsert,
+                    KeyColumns = upsert.Count > 0 ? edit.Key : null,
+                    Delete = remove.Count > 0 ? KeyFilter(edit.Key, remove) : null,
+                });
+            }
         }
         return result;
     }
