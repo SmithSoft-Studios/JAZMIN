@@ -302,3 +302,87 @@ test("the browser reader makes the same change files (a viewer's), and the libra
   assert.equal(applyChanges(own, sealed, { key }).deleted, 1);
   assert.equal(rowsOf(own, { key })['C-3'], undefined);
 });
+
+// Issue #310: a table with sortedBy can't take an edited row at its end; applyChanges then rewrites the file in order
+// (append stays the way for changes that keep the order), with everything else of the file kept.
+const sortedColumns = [{ name: 'id', type: 'int' }, { name: 'notes', type: 'string' }];
+const sortedRows = Array.from({ length: 12 }, (_, i) => ({ id: i + 1, notes: '' }));
+const sortedEdit = { key: ['id'], columns: ['notes'], add: true, delete: true };
+const sortedFile = (file, options = {}) => write(file, sortedRows, {
+  columns: sortedColumns, sortedBy: ['id'], files: [doc], package: { entry: 'index.html', edit: sortedEdit }, ...options,
+});
+const idsOf = (file, options) => {
+  const r = open(file, options);
+  try {
+    return { rows: [...r.rows()], sortedBy: r.sortedBy, appendCount: r.appendCount };
+  } finally {
+    r.close();
+  }
+};
+const changeFor = (file, edits, options) => {
+  const r = open(file, options);
+  try {
+    return writeChanges(r, edits, options);
+  } finally {
+    r.close();
+  }
+};
+
+test('sortedBy and package.edit: an edit to an earlier row is applied, the table stays sorted, nothing else is lost', () => {
+  const file = path.join(tmp(), 'sorted.jzm');
+  sortedFile(file, { metadata: { owner: 'kept' } });
+  const result = applyChanges(file, changeFor(file, { update: [{ id: 1, notes: 'Field inspection' }, { id: 7, notes: 'Second' }] }));
+  assert.equal(result.updated, 2);
+  const { rows, sortedBy } = idsOf(file);
+  assert.deepEqual(rows.map((r) => r.id), sortedRows.map((r) => r.id));
+  assert.deepEqual(rows.filter((r) => r.notes).map((r) => [r.id, r.notes]), [[1, 'Field inspection'], [7, 'Second']]);
+  assert.deepEqual(sortedBy, ['id']);
+  const r = open(file);
+  assert.deepEqual(r.package.edit, sortedEdit);
+  assert.equal(r.metadata.owner, 'kept');
+  assert.equal(r.files.length, 1);
+  r.close();
+  // Applied again on the rewritten file: a further edit, and a deletion, still work.
+  applyChanges(file, changeFor(file, { update: [{ id: 3, notes: 'Third' }], delete: [{ id: 12 }] }));
+  assert.deepEqual(idsOf(file).rows.map((r) => r.id), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+});
+
+test('sortedBy and package.edit: a row that sorts after the last still appends; a conflict is refused before anything is written', () => {
+  const file = path.join(tmp(), 'sorted.jzm');
+  sortedFile(file);
+  applyChanges(file, changeFor(file, { add: [{ id: 13, notes: 'new' }] }));
+  assert.equal(idsOf(file).appendCount, 1); // appended, not rewritten
+  assert.deepEqual(idsOf(file).rows.at(-1), { id: 13, notes: 'new' });
+  const mine = changeFor(file, { update: [{ id: 2, notes: 'mine' }] });
+  applyChanges(file, changeFor(file, { update: [{ id: 2, notes: 'theirs' }] })); // the rewrite: appendCount is back to 0
+  const before = fs.readFileSync(file);
+  const result = applyChanges(file, mine);
+  assert.equal(result.conflicts.length, 1);
+  assert.ok(fs.readFileSync(file).equals(before)); // the conflict is held, the file is not touched
+  assert.equal(idsOf(file).appendCount, 0);
+});
+
+test('sortedBy and package.edit: an encrypted file stays encrypted with its key after the rewrite', () => {
+  const key = JazminKey.generate();
+  const file = path.join(tmp(), 'sorted.jzm');
+  sortedFile(file, { key });
+  applyChanges(file, changeFor(file, { update: [{ id: 1, notes: 'secret' }] }, { key }), { key });
+  assert.equal(idsOf(file, { key }).rows[0].notes, 'secret');
+  assert.throws(() => open(file), /key|password|encrypted/i);
+});
+
+test('sortedBy and package.edit: another table of the file is kept, and the edit goes to the document table', () => {
+  const file = path.join(tmp(), 'tables.jzm');
+  write(file, { main: sortedRows, other: [{ x: 1 }, { x: 2 }] }, {
+    tables: [{ name: 'main', columns: sortedColumns, sortedBy: ['id'] }, { name: 'other', columns: [{ name: 'x', type: 'int' }] }],
+    files: [doc], package: { entry: 'index.html', edit: { ...sortedEdit, table: 'main' } },
+  });
+  applyChanges(file, changeFor(file, { update: [{ id: 1, notes: 'edited' }] }));
+  const main = open(file, { table: 'main' });
+  const other = open(file, { table: 'other' });
+  assert.equal([...main.rows()][0].notes, 'edited');
+  assert.deepEqual([...main.rows()].map((r) => r.id), sortedRows.map((r) => r.id));
+  assert.deepEqual([...other.rows()], [{ x: 1 }, { x: 2 }]);
+  main.close();
+  other.close();
+});

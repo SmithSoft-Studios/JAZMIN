@@ -345,6 +345,9 @@ public static class JazminFile
     /// Memory is bounded by the change set, not the file. Indexes, sort order, metadata and
     /// access grants carry over; every new version gets fresh secrets, so revoked keys cannot read it.
     /// </summary>
+    /// <summary>Marks the refusal of rows that would break a sorted table's order (internal: ApplyChanges rewrites instead).</summary>
+    internal const string SortOrderKey = "jazmin.sortOrder";
+
     public static JazminUpdateResult Update(string path, JazminUpdate update) => WithLock(path, () => UpdateUnlocked(path, update));
 
     /// <summary>
@@ -1302,7 +1305,9 @@ public static class JazminFile
             }
             catch (JazminValidationException e) when (sortedBy is not null && e.Message.Contains("out of order"))
             {
-                throw new JazminValidationException($"{e.Message}. Appended rows must sort after the existing rows; use JazminFile.Update to insert them in the middle");
+                var refusal = new JazminValidationException($"{e.Message}. Appended rows must sort after the existing rows; use JazminFile.Update to insert them in the middle");
+                refusal.Data[SortOrderKey] = true;
+                throw refusal;
             }
             writer.Finish();
 

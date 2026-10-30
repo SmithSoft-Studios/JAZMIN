@@ -10,6 +10,9 @@ import { normalizeValue, toKey } from './types.js';
 import { accessFor, checkAppendGrants, columnsWithIndexes, updateUnlocked } from './update.js';
 import { CONTINUE, JazminWriter } from './writer.js';
 
+/** Marks the refusal of rows that would break a sorted table's order (internal: applyChanges rewrites instead). */
+export const SORT_ORDER = Symbol('jazmin.sortOrder');
+
 function keyText(value) {
   return typeof value === 'bigint' ? `${value}n` : value;
 }
@@ -151,7 +154,7 @@ function appendUnlocked(path, options) {
       writer.writeRows(incoming);
     } catch (error) {
       if (sortedBy && /out of order/.test(error.message)) {
-        throw new JazminValidationError(`${error.message}. Appended rows must sort after the existing rows; use update() to insert them in the middle`);
+        throw Object.assign(new JazminValidationError(`${error.message}. Appended rows must sort after the existing rows; use update() to insert them in the middle`), { [SORT_ORDER]: true });
       }
       throw error;
     }
