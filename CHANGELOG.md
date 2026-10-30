@@ -6,6 +6,12 @@ are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 ## Unreleased
 A bug-fix patch for 1.7, as in 1.8.3.
 
+- **Saved-shape check and grant order (#312):** when a shared file's saved shape used a column that a key could not
+  see, the writer refused it or not depending on the order of the grants: a key that sees every column
+  (`columns: '*'`) was checked first, and its result was reused for a key limited to the ordinary column group
+  (`columns: ['*']`). Both libraries now check each kind of key separately. A reader never exposed a hidden column or
+  listed an unusable shape; only the write-time check was wrong. Authoring code that passed only because of its grant
+  order will now throw. No file-format change; files already written keep working.
 - **Editable documents on a sorted table (#310):** `applyChanges` failed with "out of order for sortedBy" when a
   change edited any row but the last of a table with `sortedBy`, as an edit is an appended row. The refused append
   writes nothing; the change is now applied with a rewrite (`update`), in both libraries, so the table stays sorted

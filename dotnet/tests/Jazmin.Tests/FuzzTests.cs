@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json.Nodes;
 using Jazmin.Format;
 using Jazmin.Query;
@@ -185,7 +186,7 @@ internal static class Fuzzing
     private static object?[] NestedRow(int i) =>
     [
         i % 6 == 0 ? null : JsonNode.Parse(i % 5 == 0 ? "[]" : $$"""[{"name":"N{{i % 7}}","pay":"{{i}}.5","since":"2020-01-0{{1 + i % 9}}T00:00:00Z","tags":["a","t{{i % 3}}"]},null,{"name":null,"tags":[]}]"""),
-        i % 4 == 0 ? null : JsonNode.Parse($$"""{"city":"C{{i % 3}}","score":{{i / 4.0}},"open":{{(i % 2 == 0 ? "true" : "false")}}}"""),
+        i % 4 == 0 ? null : JsonNode.Parse($$"""{"city":"C{{i % 3}}","score":{{(i / 4.0).ToString(CultureInfo.InvariantCulture)}},"open":{{(i % 2 == 0 ? "true" : "false")}}}"""),
     ];
 
     private static byte[] Write(int rows, JazminCodec codec, int chunkRows = 16, bool files = false, bool nested = false)
