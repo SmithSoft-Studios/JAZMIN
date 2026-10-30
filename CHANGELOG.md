@@ -3,7 +3,7 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
-## Unreleased
+## 1.7.6 - 2026-10-30 (file format 1.0)
 A bug-fix patch for 1.7, as in 1.8.3.
 
 - **Saved-shape check and grant order (#312):** when a shared file's saved shape used a column that a key could not
