@@ -3,7 +3,8 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
-## Unreleased
+## 1.8.4 - 2026-10-31 (file format 1.0)
+A fix to PDF rendering in the JavaScript server renderer; no change to the file format.
 
 ### Fixed
 - **JavaScript server PDF layout (#325):** `renderPdf` now applies the shown main page's `package.pages[].pdf` or
