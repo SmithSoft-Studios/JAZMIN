@@ -3,6 +3,18 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## Unreleased
+A fix for portable HTML; no change to the file format.
+
+- **Compatibility:** the same file format; every earlier file reads as before.
+
+### Fixed
+- **Portable HTML and publisher verification (#308):** `portableHtml()` left out the viewer's publisher add-on
+  (`jazmin-browser-publisher.js`), so a copy opened from disk, or offline, asked for it beside the HTML and the
+  request failed: the file opened, but its publisher was never verified. The add-on is now inline with the others,
+  as in the viewer's own Save as HTML, and a test keeps every add-on the viewer knows in a portable copy.
+  Copies made by 1.8.0 to 1.8.2 need making again to verify offline.
+
 ## 1.8.2 - 2026-10-28 (file format 1.0)
 A browser reader bug fix; no change to the file format.
 
