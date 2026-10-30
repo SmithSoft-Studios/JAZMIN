@@ -1,4 +1,4 @@
-#:package Jazmin@1.8.2
+#:package Jazmin@1.8.3
 #:property PublishAot=false
 // Checks that the previous release (the package above: change its version for the next release) reads the files this
 // one writes: the twin of js/scripts/compat-previous.mjs, which writes them and keys.json into a folder first.
