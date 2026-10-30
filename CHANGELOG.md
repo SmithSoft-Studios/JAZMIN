@@ -4,7 +4,7 @@ Both libraries share a version number. File format versions are listed separatel
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
 ## Unreleased
-Fixes for saved shapes and editable documents; no change to the file format.
+Fixes for saved shapes, editable documents and portable HTML; no change to the file format.
 
 - **Compatibility:** the same file format; every earlier file reads as before. A write that 1.8.2 and earlier accepted
   by mistake is now refused (see Fixed): authoring code that passed only because of its grant order will now throw.
@@ -24,6 +24,11 @@ Fixes for saved shapes and editable documents; no change to the file format.
   size, not the change's (about 1.5 s for one row at 500,000 rows): for a large, often edited table, leave out
   `sortedBy` and give the key a `sorted` index instead, which an append keeps up to date. See
   docs/design/editable-documents.md.
+- **Portable HTML and publisher verification (#308):** `portableHtml()` left out the viewer's publisher add-on
+  (`jazmin-browser-publisher.js`), so a copy opened from disk, or offline, asked for it beside the HTML and the
+  request failed: the file opened, but its publisher was never verified. The add-on is now inline with the others,
+  as in the viewer's own Save as HTML, and a test keeps every add-on the viewer knows in a portable copy.
+  Copies made by 1.8.0 to 1.8.2 need making again to verify offline.
 
 ## 1.8.2 - 2026-10-28 (file format 1.0)
 A browser reader bug fix; no change to the file format.

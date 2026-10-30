@@ -10,7 +10,7 @@ const VIEWER = new URL('../viewer/', import.meta.url);
 const MAGIC = 'JZM1';
 // The browser reader's add-ons the viewer loads when first needed (viewer.js, addOn): a copy opens offline, so they go
 // inline after the core, as the viewer's own Save as HTML puts them.
-const READER_ADD_ONS = ['shapes', 'writer'];
+const READER_ADD_ONS = ['shapes', 'writer', 'publisher'];
 
 const read = (relative) => fs.readFileSync(new URL(relative, VIEWER), 'utf8');
 const attribute = (text) => String(text).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');

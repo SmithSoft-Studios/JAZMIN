@@ -23,7 +23,7 @@ test('portableHtml: the viewer, its styles and scripts inline, with the file ins
   const viewer = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../viewer');
   // The reader's core, and its add-ons after it (the viewer loads them when first needed; a copy has them inline).
   const sources = [['reader', '../browser/jazmin-browser-core.js'], ['reader-shapes', '../browser/jazmin-browser-shapes.js'],
-    ['reader-writer', '../browser/jazmin-browser-writer.js'], ['sandbox', 'sandbox.js'], ['viewer', 'viewer.js']];
+    ['reader-writer', '../browser/jazmin-browser-writer.js'], ['reader-publisher', '../browser/jazmin-browser-publisher.js'], ['sandbox', 'sandbox.js'], ['viewer', 'viewer.js']];
   assert.deepEqual(sources.map(([kind]) => html.indexOf(`<script data-jz-inline="${kind}">`)), sources.map(([kind]) => html.indexOf(`<script data-jz-inline="${kind}">`)).sort((a, b) => a - b), 'in this order');
   for (const [kind, source] of sources) {
     const start = html.indexOf(`<script data-jz-inline="${kind}">`) + `<script data-jz-inline="${kind}">`.length;
@@ -34,6 +34,21 @@ test('portableHtml: the viewer, its styles and scripts inline, with the file ins
   assert.match(portableHtml(fs.readFileSync(file), { name: 'a "b".jzm' }), /data-name="a &quot;b&quot;\.jzm"/);
   assert.match(portableHtml(fs.readFileSync(file)), /data-name="file\.jzm"/);
   assert.throws(() => portableHtml(Buffer.from('not a jazmin file at all, just some text that is long enough to check')), /not a JAZMIN file/);
+});
+
+// Issue #308: the viewer loads its add-ons beside the page when first needed, and a copy opened from disk has nothing
+// beside it. Every add-on the viewer knows (viewer.js ADD_ONS) must therefore be inline in a portable copy.
+test('portableHtml: every add-on the viewer loads is inline, so a copy opened from disk fetches nothing', () => {
+  const viewer = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../viewer');
+  const known = /const ADD_ONS = \{([^}]*)\}/.exec(fs.readFileSync(path.join(viewer, 'viewer.js'), 'utf8'))[1].split(',').map((entry) => entry.split(':')[0].trim());
+  assert.deepEqual(known.sort(), ['publisher', 'shapes', 'writer']); // a new add-on: add it here and to portable.js
+  const html = portableHtml(path.join(fixtures, 'js-files-access.jzm'));
+  for (const name of known) {
+    assert.match(html, new RegExp(`<script data-jz-inline="reader-${name}">`), name);
+    assert.ok(fs.existsSync(path.join(viewer, `../browser/jazmin-browser-${name}.js`)), name);
+  }
+  // The add-on that verifies a publisher is the one a missing file broke: nothing in the page names it as a src.
+  assert.doesNotMatch(html, /src="[^"]*jazmin-browser-/);
 });
 
 // A .jzm as a script (portableScript), for pages opened from disk: they can't read a file beside them, but they can load
