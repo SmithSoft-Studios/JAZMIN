@@ -12,6 +12,13 @@ drafts. Format numbers 1.1–1.3 below refer to those drafts.
 
 Status: ✅ done · 🔶 partly done · 🔜 next · ⬜ later
 
+## Renderer fixes in 1.7.7
+
+- **Stored page PDF layouts:** JS server rendering composes `package.pages[].pdf` or the visible directory page's
+  `page.pdf` above attachment defaults and below script/caller settings, using the final shown page. `server.test.js`
+  verifies actual PDF dimensions in Playwright and Puppeteer, recipient row/column and page visibility, navigation,
+  precedence, invalid-layout errors and context cleanup. No format change; .NET has no server PDF renderer.
+
 ## Done in v0.1.0
 
 | ID | Task | Evidence |

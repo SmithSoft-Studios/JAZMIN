@@ -220,10 +220,12 @@ write(statementFile, [{ account: 'A1', amount: '12.50' }], {
     { path: 'index.html', content: '<h1>Statement</h1>', actions: { pdf: { format: 'A4', margin: { top: '15mm' } } } },
     { path: 'data.csv', content: 'account,amount\nA1,12.50\n', actions: { open: false, save: false } }, // the page reads it; viewers don't offer it
   ],
-  package: { entry: 'index.html', title: 'Statement', pdf: { format: 'A4', landscape: false } },
+  package: { entry: 'index.html', title: 'Statement', pdf: { format: 'A4', landscape: false },
+    pages: [{ path: 'index.html', title: 'Statement', pdf: { format: 'Letter', landscape: true } }] },
 });
 const statement = open(statementFile);
 console.log('16.', statement.files.map((f) => `${f.path} ${JSON.stringify(f.actions)}`).join('; '));
+console.log('   ', 'Stored page PDF layout:', statement.package.pages[0].pdf); // renderPdf: Letter landscape, with the file's top margin
 statement.close();
 console.log('   ', `portableHtml: ${Math.round(portableHtml(statementFile).length / 1024)} KB, opens offline and asks for the key`);
 
