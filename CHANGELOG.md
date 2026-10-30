@@ -371,6 +371,32 @@ faster, in the libraries and the viewer. Publisher signatures and `jazmin verify
     `finish()` 0.48-0.52 s to 0.46-0.52 s. A plain write of 200,000 rows (49 chunks) and a regrouped write (16 chunks)
     stay as they were: 126-129 MB and 1.1-1.2 s, 95-97 MB and 0.34-0.42 s. The files are byte for byte the same.
 
+## 1.7.6 - 2026-10-30 (file format 1.0)
+A bug-fix patch for 1.7, as in 1.8.3.
+
+- **Saved-shape check and grant order (#312):** when a shared file's saved shape used a column that a key could not
+  see, the writer refused it or not depending on the order of the grants: a key that sees every column
+  (`columns: '*'`) was checked first, and its result was reused for a key limited to the ordinary column group
+  (`columns: ['*']`). Both libraries now check each kind of key separately. A reader never exposed a hidden column or
+  listed an unusable shape; only the write-time check was wrong. Authoring code that passed only because of its grant
+  order will now throw. No file-format change; files already written keep working.
+- **Editable documents on a sorted table (#310):** `applyChanges` failed with "out of order for sortedBy" when a
+  change edited any row but the last of a table with `sortedBy`, as an edit is an appended row. The refused append
+  writes nothing; the change is now applied with a rewrite (`update`), in both libraries, so the table stays sorted
+  and the conflict checks are unchanged. Rows that sort after the last row still append. The rewrite costs the file's
+  size, not the change's (about 1.5 s for one row at 500,000 rows): for a large, often edited table, leave out
+  `sortedBy` and give the key a `sorted` index instead, which an append keeps up to date. See
+  docs/design/editable-documents.md.
+- **Compatibility:** the same file format, no breaking change.
+
+## 1.7.5 - 2026-10-28 (file format 1.0)
+A bug-fix patch for 1.7, as in 1.8.2.
+
+- **Browser access metadata:** the browser reader now exposes `access.visibleColumnGroups`, matching the JavaScript
+  reader and the published type definitions. It lists only the column groups the current key can read. Before this, the
+  browser reader left it out. No file-format change.
+- **Compatibility:** the same file format, no breaking change.
+
 ## 1.7.4 - 2026-10-26 (file format 1.0)
 A security patch for 1.7: the .NET library's guard against the Brotli decoder flaw (CVE-2026-111497), as in 1.8.1.
 1.7.x has security fixes until 31 January 2027.
