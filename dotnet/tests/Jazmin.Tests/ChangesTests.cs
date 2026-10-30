@@ -285,4 +285,54 @@ public class ChangesTests
         var rows = requests.Rows().ToDictionary(r => (string)r["request_id"]!);
         Assert.Equal(("urgent", "C1", "dispute", "checked"), ((string)rows["R-1"]["note"]!, (string)rows["R-9"]["customer"]!, (string)rows["R-9"]["kind"]!, (string)rows["R-2"]["staff_note"]!));
     }
+
+    // Issue #310: a table with sortedBy can't take an edited row at its end; ApplyChanges then rewrites the file in order
+    // (append stays the way for changes that keep the order), with everything else of the file kept.
+    private static byte[] ChangeFor(string path, JazminKey key, JazminChanges changes)
+    {
+        using var source = JazminReader.Open(path, new JazminReadOptions { Key = key });
+        return JazminFile.WriteChanges(source, changes, key);
+    }
+
+    [Fact]
+    public void SortedTable_AnEditToAnEarlierRow_IsApplied_TheTableStaysSorted_NothingElseIsLost()
+    {
+        var path = Path.Combine(Temp(), "sorted.jzm");
+        var key = JazminKey.Generate();
+        WriteFile(path, new JazminWriteOptions
+        {
+            Key = key, SortedBy = ["claim"], Files = [Doc], Metadata = new System.Text.Json.Nodes.JsonObject { ["owner"] = "kept" },
+            Package = new JazminPackage { Entry = "index.html", Edit = Edit },
+        });
+        var change = ChangeFor(path, key, new JazminChanges { Update = [Row(("claim", "C-1"), ("status", "paid")), Row(("claim", "C-2"), ("note", "second"))] });
+        var applied = JazminFile.ApplyChanges(path, change, new JazminApplyChangesOptions { Key = key });
+        Assert.Equal(2L, applied.Updated);
+        using var reader = JazminReader.Open(path, new JazminReadOptions { Key = key });
+        var rows = reader.Rows().ToList();
+        Assert.Equal(["C-1", "C-2", "C-3"], rows.Select(r => (string)r["claim"]!));
+        Assert.Equal(("paid", "second"), ((string)rows[0]["status"]!, (string)rows[1]["note"]!));
+        Assert.Equal(["claim"], reader.SortedBy);
+        Assert.Equal("kept", (string?)reader.Metadata["owner"]);
+        Assert.Single(reader.Files);
+        Assert.Equal(0, reader.AppendCount); // rewritten, not appended
+        Assert.Throws<JazminKeyException>(() => JazminReader.Open(path)); // still encrypted
+
+        // A deletion and a further edit on the rewritten file.
+        JazminFile.ApplyChanges(path, ChangeFor(path, key, new JazminChanges { Update = [Row(("claim", "C-3"), ("note", "third"))], Delete = [Row(("claim", "C-1"))] }),
+            new JazminApplyChangesOptions { Key = key });
+        Assert.Equal(["C-2", "C-3"], RowsOf(path, new JazminReadOptions { Key = key }).Keys.Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
+    public void SortedTable_ARowThatSortsAfterTheLast_StillAppends()
+    {
+        var path = Path.Combine(Temp(), "sorted.jzm");
+        var key = JazminKey.Generate();
+        WriteFile(path, new JazminWriteOptions { Key = key, SortedBy = ["claim"], Files = [Doc], Package = new JazminPackage { Entry = "index.html", Edit = Edit } });
+        var change = ChangeFor(path, key, new JazminChanges { Add = [Row(("claim", "C-9"), ("region", "B"), ("status", "new"))] });
+        JazminFile.ApplyChanges(path, change, new JazminApplyChangesOptions { Key = key });
+        using var reader = JazminReader.Open(path, new JazminReadOptions { Key = key });
+        Assert.Equal(1, reader.AppendCount); // appended, not rewritten
+        Assert.Equal("C-9", (string)reader.Rows().Last()["claim"]!);
+    }
 }

@@ -2,9 +2,10 @@
 // from an open file, as its document's viewer does; applyChanges writes one into the file, checking every change again
 // and holding those whose rows changed since the sender's copy.
 import { isDeepStrictEqual } from 'node:util';
-import { append } from './append.js';
+import { SORT_ORDER, append } from './append.js';
 import { JazminKeyError, JazminValidationError } from './errors.js';
 import { open, write } from './index.js';
+import { update } from './update.js';
 import { NO_BROTLI } from './reader.js';
 import { JazminKey } from './keys.js';
 
@@ -228,10 +229,17 @@ export function applyChanges(path, change, options = {}) {
     const filter = remove.length === 0 ? undefined : edit.key.length === 1
       ? { [edit.key[0]]: { in: remove.map((r) => r[edit.key[0]]) } }
       : { or: remove.map((r) => Object.fromEntries(edit.key.map((k) => [k, r[k]]))) };
-    append(path, {
+    const changes = {
       ...(key ? { key } : {}), ...(password ? { password } : {}), ...(target.tables.length > 1 ? { table: tableName } : {}),
       ...(upsert.length ? { upsert, keyColumns: edit.key } : {}), ...(filter ? { delete: filter } : {}),
-    });
+    };
+    try {
+      append(path, changes);
+    } catch (error) {
+      // A sorted table can't take an edited row at its end. The refused append wrote nothing: rewrite the file in order.
+      if (!error?.[SORT_ORDER]) throw error;
+      update(path, changes);
+    }
   }
   return result;
 }

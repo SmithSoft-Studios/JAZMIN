@@ -3,6 +3,18 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## Unreleased
+A bug-fix patch for 1.7, as in 1.8.3.
+
+- **Editable documents on a sorted table (#310):** `applyChanges` failed with "out of order for sortedBy" when a
+  change edited any row but the last of a table with `sortedBy`, as an edit is an appended row. The refused append
+  writes nothing; the change is now applied with a rewrite (`update`), in both libraries, so the table stays sorted
+  and the conflict checks are unchanged. Rows that sort after the last row still append. The rewrite costs the file's
+  size, not the change's (about 1.5 s for one row at 500,000 rows): for a large, often edited table, leave out
+  `sortedBy` and give the key a `sorted` index instead, which an append keeps up to date. See
+  docs/design/editable-documents.md.
+- **Compatibility:** the same file format, no breaking change.
+
 ## 1.7.5 - 2026-10-28 (file format 1.0)
 A bug-fix patch for 1.7, as in 1.8.2.
 
