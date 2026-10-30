@@ -423,14 +423,19 @@ async function renderDocument({ file, key, password, unlockToken, table, entry, 
     } finally {
       clearTimeout(timer);
     }
-    // The page settings of the page shown now: the package's, its file's (actions.pdf), the page's own (setActions).
+    // Resolve the final visible page after navigation, not just the requested entry.
     const shown = decodeURIComponent(new URL(tab.url()).pathname.slice(1));
-    const fileActions = reader.files.find((f) => f.path === shown)?.actions ?? {};
+    const shownFile = reader.files.find((f) => f.path === shown);
+    const fileActions = shownFile?.actions ?? {};
+    const shownPage = shownFile && (settings.pages?.find((p) => p.path === shown) ?? shownFile.page);
+    const storedPdf = what === 'renderPdf' && shownPage?.pdf !== undefined
+      ? normalizePdf(shownPage.pdf, `The stored page '${shown}'.pdf`) : {};
     const fromPage = await tab.evaluate(() => window[Symbol.for('jazmin.pagePdf')] ?? null);
     const pdf = {
       ...defaults,
       ...(settings.pdf ?? {}),
       ...(typeof fileActions.pdf === 'object' ? fileActions.pdf : {}),
+      ...storedPdf,
       ...(fromPage === null ? {} : normalizePdf(fromPage, 'The page\'s jazmin.setActions pdf')),
     };
     return Buffer.from(await capture(tab, pdf));
@@ -488,7 +493,8 @@ function documentTables(reader, filter, tableFilters, opened) {
  *              that don't set them: a viewer's paper size, say), pdf (the browser's PDF options), waitFor
  *              ('ready' | 'load'), timeout (ms), onReady(info), onDownload({ filename, type, bytes }) }
  * Page settings, each over the ones before: A4 with backgrounds; pdfDefaults; the package's (package.pdf); the page's
- * file's (actions.pdf); the page's own (jazmin.setActions({ pdf })); options.pdf. Settings from untrusted places (a
+ * file's (actions.pdf); the stored page's (package.pages[].pdf or file.page.pdf); the page's own
+ * (jazmin.setActions({ pdf })); options.pdf. Settings from untrusted places (a
  * page's jazmin.savePdf) go through checkPageSettings before they become options.pdf. A file's actions steer viewers:
  * renderPdf renders a page whose file says pdf: false (the caller has the key, and decides).
  */

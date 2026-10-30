@@ -281,6 +281,98 @@ for (const { name, browser } of drivers) {
     assert.equal(png.readUInt32BE(16), 640); // IHDR width
   });
 
+  test(`${name}: stored page PDF layouts compose below scripts and explicit options for the final visible page`, async () => {
+    const file = path.join(temp, `stored-layout-${name.split(' ')[0]}.jzm`);
+    const owner = JazminKey.generate();
+    const audit = owner.createAccessKey();
+    const privateKey = owner.createAccessKey();
+    const both = owner.createAccessKey();
+    const hidden = owner.createAccessKey();
+    const ready = '<script>jazmin.ready({ rows: jazmin.rows(), columns: jazmin.columns.map(c => c.name) })</script>';
+    write(file, [{ region: 'A', n: 1, secret: 'fictional A' }, { region: 'B', n: 2, secret: 'fictional B' }], {
+      columns: [{ name: 'region', type: 'string' }, { name: 'n', type: 'int' }, { name: 'secret', type: 'string' }],
+      key: owner,
+      access: { partitionBy: 'region', columnGroups: { private: ['secret'] }, grants: [
+        { key: audit, rows: ['A'], columns: ['*'], files: ['audit'] },
+        { key: privateKey, rows: ['B'], columns: ['*'], files: ['private'] },
+        { key: both, rows: ['A'], columns: ['*'], files: ['audit', 'private'] },
+        { key: hidden, rows: ['A'], columns: ['*'], files: [] },
+      ] },
+      files: [
+        { path: 'main.html', content: `<!doctype html><p>Main</p>${ready}`, groups: ['*'],
+          actions: { pdf: { format: 'A5', landscape: false } } },
+        { path: 'audit.html', content: `<!doctype html><p>Audit</p>${ready}`, groups: ['audit'],
+          actions: { pdf: { format: 'A5', landscape: false } }, page: { title: 'Audit', pdf: { format: 'Letter', landscape: true } } },
+        { path: 'private.html', content: `<!doctype html><p>Private</p>${ready}`, groups: ['private'],
+          actions: { pdf: false, image: false },
+          page: { title: 'Private', pdf: { format: 'Letter' }, actions: { pdf: false, image: false } } },
+        { path: 'script.html', content: `<!doctype html><script>jazmin.setActions({ pdf: { format: 'A3' } })</script>${ready}`,
+          groups: ['audit'], page: { title: 'Script', pdf: { format: 'Letter', landscape: true } } },
+        { path: 'redirect.html', content: '<!doctype html><script>location.replace("audit.html")</script>', groups: ['*'],
+          actions: { pdf: { format: 'A5' } } },
+      ],
+      package: { entry: 'main.html', pdf: { format: 'A4', landscape: false },
+        pages: [{ path: 'main.html', title: 'Main', pdf: { format: 'Letter', landscape: true } }] },
+    });
+    const near = (bytes, [w, h]) => {
+      const box = bytes.toString('latin1').match(/\/MediaBox\s*\[\s*0\s+0\s+([\d.]+)\s+([\d.]+)\s*\]/);
+      assert.ok(box, 'PDF has a MediaBox');
+      const [bw, bh] = box.slice(1).map(Number);
+      assert.ok(Math.abs(bw - w) <= 1.5 && Math.abs(bh - h) <= 1.5, `${bw} x ${bh}, not ${w} x ${h}`);
+    };
+    const pdf = (entry, key = audit, options = {}) => renderPdf({
+      file, browser, entry, key: key.export(), pdfDefaults: { format: 'A6', landscape: false }, ...options,
+    });
+    let info;
+    near(await pdf('main.html'), [792, 612]);
+    for (const key of [audit, both]) {
+      near(await pdf('audit.html', key, { onReady: (i) => { info = i; } }), [792, 612]);
+      assert.deepEqual(info, { rows: [{ region: 'A', n: 1 }], columns: ['region', 'n'] });
+    }
+    near(await pdf('private.html', privateKey, { onReady: (i) => { info = i; } }), [612, 792]);
+    assert.deepEqual(info, { rows: [{ region: 'B', n: 2 }], columns: ['region', 'n'] });
+    near(await pdf('private.html', both), [612, 792]);
+    near(await pdf('script.html'), [1191, 842]);
+    near(await pdf('script.html', audit, { pdf: { landscape: false } }), [842, 1191]);
+    near(await pdf('redirect.html'), [792, 612]);
+    for (const key of [privateKey, hidden]) {
+      await assert.rejects(pdf('audit.html', key), /No page 'audit.html' is visible with this key/);
+    }
+    const png = await renderImage({ file, browser, entry: 'audit.html', key: audit.export(), viewport: { width: 640, height: 400 } });
+    assert.equal(png.readUInt32BE(16), 640);
+  });
+
+  test(`${name}: invalid stored page PDF layouts fail with context and release their browser context`, async () => {
+    const file = path.join(temp, `invalid-layout-${name.split(' ')[0]}.jzm`);
+    const owner = JazminKey.generate();
+    const key = owner.createAccessKey();
+    write(file, [{ n: 1 }], {
+      key: owner, access: { grants: [{ key, files: ['audit'] }] },
+      files: [{ path: 'audit.html', content: '<!doctype html><p>Audit</p>', groups: ['audit'], page: { title: 'Audit' } }],
+    });
+    const reader = open(file, { key: key.export() });
+    const files = reader.files;
+    const contexts = () => (browser.contexts ? browser.contexts() : browser.browserContexts()).length;
+    const before = contexts();
+    try {
+      // Simulate malformed reader metadata without bypassing the writer's checks in an on-disk fixture.
+      for (const pdf of [{ format: 'Z9' }, { path: 'unwanted.pdf' }]) {
+        Object.defineProperty(reader, 'files', { configurable: true, get: () => files.map((f) => ({ ...f, page: { ...f.page, pdf } })) });
+        await assert.rejects(renderPdf({ file: reader, browser, entry: 'audit.html', waitFor: 'load' }),
+          /The stored page 'audit.html'\.pdf(?:\.format: 'Z9'|: unknown setting 'path')/);
+        assert.equal(contexts(), before);
+      }
+      const png = await renderImage({ file: reader, browser, entry: 'audit.html', waitFor: 'load' });
+      assert.deepEqual([...png.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+      delete reader.files;
+      const pdf = await renderPdf({ file: reader, browser, entry: 'audit.html', waitFor: 'load' });
+      assert.equal(pdf.subarray(0, 5).toString(), '%PDF-');
+      assert.equal(contexts(), before);
+    } finally {
+      reader.close();
+    }
+  });
+
   test(`${name}: a document reads every table of its file, each limited by the filter where it fits, the others only when named`, async () => {
     const file = path.join(temp, `tables-${name.split(' ')[0]}.jzm`);
     const clients = [{ clientId: 'C1', name: 'Ann' }, { clientId: 'C2', name: 'Ben' }];
@@ -305,7 +397,7 @@ for (const { name, browser } of drivers) {
           })();`,
         },
       ],
-      package: { entry: 'index.html' },
+      package: { entry: 'index.html', pages: [{ path: 'index.html', title: 'Tables', pdf: { format: 'Letter' } }] },
     });
     // No filter: every table whole.
     let info;

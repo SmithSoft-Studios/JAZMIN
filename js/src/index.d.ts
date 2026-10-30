@@ -1603,7 +1603,8 @@ export interface RenderPdfOptions {
   pdfDefaults?: PdfSettings;
   /**
    * The browser's PDF options, over the page settings: the package's (package.pdf), the page's file's (actions.pdf),
-   * and the page's own (jazmin.setActions). Default A4, with backgrounds.
+   * the stored page's (package.pages[].pdf or file.page.pdf), and the page's own (jazmin.setActions).
+   * Settings merge by field for the final visible page. Default A4, with backgrounds.
    */
   pdf?: Record<string, unknown>;
   /** Render when the document calls jazmin.ready() (default), or when it has loaded. */
