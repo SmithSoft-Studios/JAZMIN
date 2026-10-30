@@ -225,3 +225,77 @@ test('readers leave out saved shapes they cannot use or do not understand', () =
   const ok = { name: 'a', shape: {} };
   assert.deepEqual(directoryShapes({ shapes: [ok, null, { name: '', shape: {} }, { name: 'b', shape: [] }, { name: 'c', shape: {}, default: 'yes' }, { name: 'd', shape: {}, groups: [1] }] }), [ok]);
 });
+
+// Issue #312: the check once cached its answer per shape and column scope, and 'all columns' ('*') and the ordinary
+// group only (['*']) shared a cache entry, so the grant order decided whether a shape that Bob cannot use was refused.
+const permutations = (items) => (items.length < 2 ? [items] : items.flatMap((x, i) => permutations([...items.slice(0, i), ...items.slice(i + 1)]).map((p) => [x, ...p])));
+const moneyShape = { $rows: { amount: 'total' } };
+
+function moneyFile(file, grants, shapes) {
+  return write(file, [{ id: 1, total: '2.50' }], {
+    columns: [{ name: 'id', type: 'int' }, { name: 'total', type: 'decimal' }],
+    key: grants.owner,
+    access: { partitionBy: 'id', columnGroups: { money: ['total'] }, grants: grants.list },
+    shapes,
+  });
+}
+
+test('a shape a restricted key cannot use is refused whichever order the grants are in (all columns vs the ordinary group)', () => {
+  const dir = tmpDir();
+  for (const [i, restrictedFirst] of [false, true].entries()) {
+    const owner = JazminKey.generate();
+    const all = owner.createAccessKey();
+    const restricted = owner.createAccessKey();
+    const list = [{ key: all, rows: '*', columns: '*' }, { key: restricted, rows: ['1'], columns: ['*'] }];
+    if (restrictedFirst) list.reverse();
+    const file = path.join(dir, `${i}.jzm`);
+    refused(() => moneyFile(file, { owner, list }, [{ name: 'totals', shape: moneyShape }]),
+      /^Saved shape 'totals' doesn't fit access key [0-9a-f]+, which sees it \(a shape for everyone\): Shape at shape\[\]\.amount: unknown or hidden column 'total'$/);
+    assert.equal(fs.existsSync(file), false);
+  }
+});
+
+test('shape checks give the same answer for every order of the grants, with several column scopes', () => {
+  const dir = tmpDir();
+  const owner = JazminKey.generate();
+  const scopes = [
+    { key: owner.createAccessKey(), columns: '*' }, // every column
+    { key: owner.createAccessKey(), columns: ['*'] }, // the ordinary group only
+    { key: owner.createAccessKey(), columns: ['*', 'money'] }, // both groups
+    { key: owner.createAccessKey(), columns: ['money'] }, // the money group only
+  ];
+  const cases = [
+    { shapes: [{ name: 'plain', shape: { $rows: 'id' } }], refusedBy: [], only: [0, 1, 2] }, // every scope that sees 'id'
+    { shapes: [{ name: 'id', shape: { $rows: 'id' } }], refusedBy: [scopes[3]] },
+    { shapes: [{ name: 'money', shape: moneyShape }], refusedBy: [scopes[1], scopes[3]] },
+    { shapes: [{ name: 'both', shape: { $rows: { id: 'id', amount: 'total' } } }], refusedBy: [scopes[1], scopes[3]] },
+  ];
+  let n = 0;
+  for (const { shapes, refusedBy, only = [0, 1, 2, 3] } of cases) {
+    for (const order of permutations(only.map((i) => scopes[i]))) {
+      const list = order.map((s) => ({ key: s.key, rows: '*', columns: s.columns }));
+      const file = path.join(dir, `p${n++}.jzm`);
+      if (refusedBy.length) {
+        refused(() => moneyFile(file, { owner, list }, shapes), new RegExp(`doesn't fit access key (${refusedBy.map((s) => s.key.id).join('|')})`)); // a key that cannot use it
+      } else {
+        moneyFile(file, { owner, list }, shapes);
+        for (const s of order) assert.deepEqual(open(file, { key: s.key }).shapes.map((x) => x.name), ['plain']);
+      }
+    }
+  }
+});
+
+test('granting later is refused whichever key was granted first: update and grantAccess apply the same check', () => {
+  const dir = tmpDir();
+  const owner = JazminKey.generate();
+  const all = owner.createAccessKey();
+  const restricted = owner.createAccessKey();
+  const file = path.join(dir, 'later.jzm');
+  moneyFile(file, { owner, list: [{ key: all, rows: '*', columns: '*' }] }, [{ name: 'totals', shape: moneyShape }]);
+  const before = fs.readFileSync(file);
+  refused(() => update(file, { key: owner, grant: [{ key: restricted, rows: ['1'], columns: ['*'] }] }), /^Saved shape 'totals' doesn't fit access key/);
+  refused(() => grantAccess(file, owner, restricted, { rows: ['1'], columns: ['*'] }), /^Saved shape 'totals' doesn't fit access key/);
+  assert.ok(fs.readFileSync(file).equals(before));
+  update(file, { key: owner, grant: [{ key: restricted, rows: ['1'], columns: ['*', 'money'] }] }); // seeing the column is fine
+  assert.deepEqual(names(open(file, { key: restricted })), ['totals']);
+});
