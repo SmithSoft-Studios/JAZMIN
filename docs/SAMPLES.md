@@ -84,6 +84,7 @@ viewer.
 | Stored files, served by path (19, 19.4) | 14 | | |
 | What viewers may do with a file; `list: false`; actions by file group (19.3) | 16, 36 | 18, 37 | `documents.html` |
 | A print-ready document and its PDFs (19.3) | 16 | 18 | `documents.html` (report) |
+| Stored page PDF layout above attachment defaults in JS server rendering (19.4) | 16 | Not applicable: server PDF rendering is JS-only | |
 | An editable document and change files (19.5) | 17 | 19 | `documents.html` (tasks) |
 | A document that needs the internet (24.1) | 37 | 38 | `documents.html` (dashboard, the client file's Summary) |
 | Document pages as tabs, the document's own files (19.7) | 38 | 39 | `documents.html` (client file) |
