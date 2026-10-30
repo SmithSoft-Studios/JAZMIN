@@ -3289,6 +3289,16 @@ foreach (var c in result.Conflicts) Console.WriteLine($"{c.Kind}: {string.Join("
   value before, the value wanted and the value now. So are an added row whose
   key is already there and a change to a row that's gone. The owner decides:
   `applyChanges(file, change, { key: owner, overwrite: true })` applies them.
+- **A table with `sortedBy` is rewritten, not appended to.** An edit is an
+  appended row, which would break the table's order, so `applyChanges` then
+  rewrites the file in order (as `update` does), with the same checks and the
+  same result. Rows that sort after the last row still append. The rewrite
+  costs the size of the file, not of the change: about 1.5 seconds for one
+  row at 500,000 rows, against about 20 milliseconds for an append. For a
+  large table that is edited often, leave out `sortedBy` and give the key
+  column a `sorted` index, which an append keeps up to date. (Before 1.7.6 a
+  change to any row but the last of a sorted table failed with "out of order
+  for sortedBy".)
 - **`dryRun: true`** shows what would happen without writing. **`keyId`**
   names the sender when you know it (otherwise each grant is tried), and
   **`receivedAt`** is when the change file arrived, checked against the
@@ -4112,7 +4122,10 @@ names columns, and a key isn't told the names of columns it can't see. So:
   every table it reads. Otherwise the file isn't written:
   `Saved shape 'Balances' doesn't fit access key 3f2a9c… (Bob), which sees it (a shape for everyone): Shape at shape[].balance: unknown or hidden column 'balance'`.
   A later grant that would show the shape to such a key is refused the same
-  way. Save such a shape for the keys that see the column, for example
+  way, whatever the order of the grants. (1.7.5 and earlier could accept
+  such a shape when a key that sees every column was listed before a key
+  limited to the ordinary column group; 1.7.6 refuses it.) Save such
+  a shape for the keys that see the column, for example
   `groups: ['finance']`, with `files: ['finance']` in their grants.
 - **Readers list only the shapes their key can use,** so different people
   see different shapes in the same file.
