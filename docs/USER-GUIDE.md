@@ -3186,8 +3186,13 @@ await renderPdf({ file: 'statements.jzm', key, browser, filter: { clientId }, ta
 
 - **Page settings,** each over the ones before: A4 with backgrounds;
   `pdfDefaults` (your paper size for documents that don't set one); the
-  package's (`package.pdf`); the page's file's (`actions.pdf`); what the
-  page set with `jazmin.setActions({ pdf })`; and `pdf` here. `renderPdf`
+  package's (`package.pdf`); the page's file's (`actions.pdf`); the stored
+  page's (`package.pages[].pdf`, or the visible file's `page.pdf`); what the
+  page set with `jazmin.setActions({ pdf })`; and `pdf` here. Settings merge
+  by field, using the final visible page after navigation. Stored page
+  layouts were ignored by server rendering through 1.7.6; invalid stored
+  layout settings now report an error rather than reaching the browser.
+  PDF layout settings do not size image exports. `renderPdf`
   renders a page whose file says `pdf: false`: you hold the key, and decide.
 - **Settings from a page** (what it passes to `jazmin.savePdf`, say) are
   untrusted: pass them through `checkPageSettings(settings)` before using
