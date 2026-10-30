@@ -83,6 +83,14 @@ nothing for files that aren't encrypted.
    - otherwise applied.
 5. One `append` writes it all (upserts and deletes by the key), unless `dryRun`.
 
+   **A table with `sortedBy`.** An append puts an edited row at the end of the file, and a sorted table has to stay in
+   order (spec 6.7), so an edit to any row but the last is refused by the append (nothing is written). `applyChanges`
+   then rewrites the file in order with `update`, with the same upserts and deletes: the result is the same, the
+   cost is the file's, not the change's. Rows that sort after the last row still append. An editable table that is
+   edited often and is large is better without `sortedBy`: give its key column a `sorted` index, which an append
+   adjusts, so that an edit stays an append. (The rewrite took about 1.5 s for one row at 500,000 rows; an append
+   about 20 ms.)
+
 Returns `{ sender, fileChanged, updated, added, deleted, conflicts: [{ op, key, kind, columns: [{ name, before,
 wanted, now }] }], refused: [{ op, key, reason }] }`.
 
