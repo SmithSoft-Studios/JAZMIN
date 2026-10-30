@@ -160,7 +160,8 @@ internal static class SavedShapes
             {
                 var group = s.Groups.FirstOrDefault(v.Sees);
                 if (group is null) continue;
-                var id = $"{s.Name}\0{(v.Columns is null ? "*" : string.Join('\u0001', v.Columns.Order(StringComparer.Ordinal)))}";
+                // Every column (null) and the ordinary group ("*") must not share an id: the prefix tells them apart.
+                var id = $"{s.Name}\0{(v.Columns is null ? "all" : "groups\u0001" + string.Join('\u0001', v.Columns.Order(StringComparer.Ordinal)))}";
                 if (!seen.TryGetValue(id, out var mistake))
                 {
                     try

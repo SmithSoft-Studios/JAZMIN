@@ -274,4 +274,68 @@ public class SavedShapesTests
         JazminFile.Update(path, new JazminUpdate { Table = "tx", AddShapes = [new JazminSavedShape("Count", Json("""{"$count":true}""")) { Table = "tx" }] });
         using (var r = JazminReader.Open(path)) Assert.Equal(["Amounts", "Big", "Clients", "Count"], Names(r));
     }
+
+    private static IEnumerable<T[]> Permutations<T>(T[] items) =>
+        items.Length < 2 ? [items] : items.SelectMany((x, i) => Permutations(items.Where((_, j) => j != i).ToArray()).Select(p => new[] { x }.Concat(p).ToArray()));
+
+    private static byte[] WriteMoney(JazminKey owner, JazminGrant[] grants, params JazminSavedShape[] shapes) => TestData.Write(
+        [new("id", JazminType.Int), new("total", JazminType.Decimal)], [[1L, 2.5m]],
+        new JazminWriteOptions
+        {
+            Key = owner,
+            Access = new JazminAccessOptions { PartitionBy = "id", ColumnGroups = new() { ["money"] = ["total"] }, Grants = [.. grants] },
+            Shapes = shapes,
+        });
+
+    // Issue #312: the check once cached its answer per shape and column scope, and 'all columns' (null) and the
+    // ordinary group only (["*"]) shared a cache entry, so the grant order decided whether a shape a key can't use was refused.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SharedFile_ShapeIsRefused_WhateverOrderTheGrantsAreIn_AllColumnsVersusTheOrdinaryGroup(bool restrictedFirst)
+    {
+        var owner = JazminKey.Generate();
+        JazminGrant[] grants = [new(owner.CreateAccessKey()) { Label = "all" }, new(owner.CreateAccessKey()) { Rows = ["1"], Columns = ["*"], Label = "restricted" }];
+        if (restrictedFirst) Array.Reverse(grants);
+        var message = Assert.Throws<JazminValidationException>(() => WriteMoney(owner, grants, Shape("totals", """{"$rows":{"amount":"total"}}"""))).Message;
+        Assert.Matches(@"^Saved shape 'totals' doesn't fit access key [0-9a-f]+ \(restricted\), which sees it \(a shape for everyone\): Shape at shape\[\]\.amount: unknown or hidden column 'total'$", message);
+    }
+
+    [Fact]
+    public void SharedFile_ShapeChecksGiveTheSameAnswer_ForEveryOrderOfTheGrants_WithSeveralColumnScopes()
+    {
+        var owner = JazminKey.Generate();
+        var scopes = new (JazminAccessKey Key, string[]? Columns)[]
+        {
+            (owner.CreateAccessKey(), null), (owner.CreateAccessKey(), ["*"]), (owner.CreateAccessKey(), ["*", "money"]), (owner.CreateAccessKey(), ["money"]),
+        };
+        var cases = new (string Shape, int[] RefusedBy, int[] Only)[]
+        {
+            ("""{"$rows":"id"}""", [], [0, 1, 2]), // every scope that sees 'id'
+            ("""{"$rows":"id"}""", [3], [0, 1, 2, 3]),
+            ("""{"$rows":{"amount":"total"}}""", [1, 3], [0, 1, 2, 3]),
+            ("""{"$rows":{"id":"id","amount":"total"}}""", [1, 3], [0, 1, 2, 3]),
+        };
+        foreach (var (shape, refusedBy, only) in cases)
+        {
+            foreach (var order in Permutations(only))
+            {
+                var grants = order.Select(i => new JazminGrant(scopes[i].Key) { Columns = scopes[i].Columns }).ToArray();
+                if (refusedBy.Length == 0)
+                {
+                    var bytes = WriteMoney(owner, grants, Shape("s", shape));
+                    foreach (var i in order)
+                    {
+                        using var r = JazminReader.Open(bytes, new JazminReadOptions { AccessKey = scopes[i].Key });
+                        Assert.Equal(["s"], Names(r));
+                    }
+                }
+                else
+                {
+                    var message = Assert.Throws<JazminValidationException>(() => WriteMoney(owner, grants, Shape("s", shape))).Message;
+                    Assert.Matches($"doesn't fit access key ({string.Join('|', refusedBy.Select(i => scopes[i].Key.Id))})", message);
+                }
+            }
+        }
+    }
 }
