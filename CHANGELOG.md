@@ -3,6 +3,21 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## Unreleased
+A saved-shape validation fix; no change to the file format.
+
+- **Compatibility:** the same file format; every earlier file reads as before. A write that 1.8.2 and earlier accepted
+  by mistake is now refused (see Fixed): authoring code that passed only because of its grant order will now throw.
+
+### Fixed
+- **Saved-shape check and grant order (#312):** when a shared file's saved shape used a column that a key could not
+  see, the writer refused it or not depending on the order of the grants. A key that sees every column (`columns: '*'`)
+  was checked first, and its result was reused for a key limited to the ordinary column group (`columns: ['*']`). Both
+  libraries now check each kind of key separately, so every key that would see a shape must be able to use every
+  column it names, in any grant order. A reader never exposed a hidden column or listed an unusable shape; only the
+  write-time check was wrong. Files already written keep working; to find an affected file, open it with each
+  restricted key and compare its shape list with the owner's.
+
 ## 1.8.2 - 2026-10-28 (file format 1.0)
 A browser reader bug fix; no change to the file format.
 

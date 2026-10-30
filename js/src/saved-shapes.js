@@ -94,7 +94,8 @@ export function checkShapes(shapes, tables, viewers = null) {
     for (const v of viewers ?? []) {
       const group = s.groups.find((g) => v.sees(g));
       if (group === undefined) continue;
-      const id = `${s.name}\u0000${v.columns === '*' ? '*' : [...v.columns].sort().join('\u0001')}`;
+      // Every column ('*') and the ordinary group (Set(['*'])) must not share an id: the prefix tells them apart.
+      const id = `${s.name}\u0000${v.columns === '*' ? 'all' : `groups\u0001${[...v.columns].sort().join('\u0001')}`}`;
       if (!seen.has(id)) {
         try {
           fit(s, v.columns);
