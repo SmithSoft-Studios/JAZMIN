@@ -3,6 +3,15 @@
 Both libraries share a version number. File format versions are listed separately and
 are specified in [docs/rfc](docs/rfc/draft-jazmin-format-03.md).
 
+## 1.7.7 - 2026-10-31 (file format 1.0)
+A bug-fix patch for 1.7, as in 1.8.4.
+
+- **JavaScript server PDF layout (#325):** `renderPdf` now applies the shown main page's `package.pages[].pdf` or
+  recipient-visible directory page's `page.pdf`, above attachment layout settings and below script and caller
+  overrides. Previously these stored page layouts were ignored. The final visible page after navigation determines
+  the layout; invalid stored PDF settings fail with a contextual error. No file-format, key-access or action-policy
+  changes; files without stored page layouts render as before.
+
 ## 1.7.6 - 2026-10-30 (file format 1.0)
 A bug-fix patch for 1.7, as in 1.8.3.
 
