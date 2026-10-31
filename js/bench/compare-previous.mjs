@@ -3,7 +3,7 @@
 // Reads use one file both versions read (written by the previous release), so only the readers differ; writes and
 // rewrites each make their own. Run it on a quiet machine: other work running alongside skews it.
 //
-//   node --expose-gc bench/compare-previous.mjs [--version 1.7.5] [--rows 500000] [--rounds 5] [--only "<workload>"]
+//   node --expose-gc bench/compare-previous.mjs [--version 1.7.6] [--rows 500000] [--rounds 5] [--only "<workload>"]
 import { execFileSync, execSync } from 'node:child_process';
 import fs from 'node:fs';
 import { createRequire } from 'node:module';
@@ -15,7 +15,7 @@ import { parseArgs } from 'node:util';
 const here = fileURLToPath(import.meta.url);
 const { values: args } = parseArgs({
   options: {
-    version: { type: 'string', default: '1.7.5' }, rows: { type: 'string', default: '500000' }, rounds: { type: 'string', default: '5' },
+    version: { type: 'string', default: '1.7.6' }, rows: { type: 'string', default: '500000' }, rounds: { type: 'string', default: '5' },
     run: { type: 'string' }, workload: { type: 'string' }, dir: { type: 'string' }, only: { type: 'string' },
   },
 });
