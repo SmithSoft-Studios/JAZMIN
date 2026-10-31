@@ -381,6 +381,15 @@ faster, in the libraries and the viewer. Publisher signatures and `jazmin verify
     `finish()` 0.48-0.52 s to 0.46-0.52 s. A plain write of 200,000 rows (49 chunks) and a regrouped write (16 chunks)
     stay as they were: 126-129 MB and 1.1-1.2 s, 95-97 MB and 0.34-0.42 s. The files are byte for byte the same.
 
+## 1.7.7 - 2026-10-31 (file format 1.0)
+A bug-fix patch for 1.7, as in 1.8.4.
+
+- **JavaScript server PDF layout (#325):** `renderPdf` now applies the shown main page's `package.pages[].pdf` or
+  recipient-visible directory page's `page.pdf`, above attachment layout settings and below script and caller
+  overrides. Previously these stored page layouts were ignored. The final visible page after navigation determines
+  the layout; invalid stored PDF settings fail with a contextual error. No file-format, key-access or action-policy
+  changes; files without stored page layouts render as before.
+
 ## 1.7.6 - 2026-10-30 (file format 1.0)
 A bug-fix patch for 1.7, as in 1.8.3.
 
